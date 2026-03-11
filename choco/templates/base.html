@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}choco{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        .status-badge {
+            display: inline-block;
+            padding: 0.2em 0.6em;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        .status-up { background: #2ecc40; color: white; }
+        .status-down { background: #ff4136; color: white; }
+        .status-drift { background: #ff851b; color: white; }
+        .status-unknown { background: #aaa; color: white; }
+        table { margin-top: 1em; }
+        .flash-success { color: #2ecc40; }
+        .flash-error { color: #ff4136; }
+        nav { margin-bottom: 1em; }
+    </style>
+</head>
+<body>
+    <nav class="container">
+        <ul>
+            <li><strong><a href="/">choco</a></strong></li>
+        </ul>
+        <ul>
+            {% if current_user.is_authenticated %}
+            <li><small>{{ current_user.username }}</small></li>
+            <li><a href="/logout">Logout</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <p class="flash-{{ category }}">{{ message }}</p>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        const socket = io();
+
+        function refreshDashboard() {
+            const table = document.getElementById('dashboard-table');
+            if (table) {
+                htmx.trigger(table, 'refresh');
+            }
+        }
+
+        socket.on('node_status_changed', refreshDashboard);
+        socket.on('config_reloaded', refreshDashboard);
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

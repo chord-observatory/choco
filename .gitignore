@@ -1,0 +1,7 @@
+config.yaml
+__pycache__/
+*.egg-info/
+.venv/
+kotekan/*
+coco/*
+

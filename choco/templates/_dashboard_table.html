@@ -1,0 +1,43 @@
+{% if not nodes %}
+<p>No nodes configured. Edit <code>configs/nodes.yaml</code> to add kotekan instances.</p>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            <th>Node</th>
+            <th>Status</th>
+            <th>Branch</th>
+            <th>Config</th>
+            <th>Synced</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for key, node in nodes.items() %}
+        {% set branch = deploy.get_branch(key) %}
+        {% set config_name = deploy.get_config_name(key) %}
+        <tr>
+            <td>{{ node.key }}</td>
+            <td>
+                <span class="status-badge status-{{ node.state.status.value }}">
+                    {{ node.state.status.value }}
+                </span>
+                {% if node.state.error %}<br><small>{{ node.state.error }}</small>{% endif %}
+            </td>
+            <td>{{ branch }}</td>
+            <td>{{ config_name }}</td>
+            <td>
+                {% if node.state.status.value == "drift" %}
+                    No
+                {% elif node.state.status.value == "up" %}
+                    Yes
+                {% else %}
+                    —
+                {% endif %}
+            </td>
+            <td><a href="/node/{{ key }}/edit" role="button" class="outline">Edit</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

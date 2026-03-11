@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "choco"
+version = "0.1.0"
+description = "CHORD Config Orchestrator — manages kotekan instances on a cluster"
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.0",
+    "flask-socketio>=5.3",
+    "flask-login>=0.6",
+    "flask-ldap3-login>=0.9",
+    "gevent>=24.0",
+    "gevent-websocket>=0.10",
+    "requests>=2.31",
+    "cryptography>=42.0",
+    "pyyaml>=6.0",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "responses>=0.25",
+]
+
+[project.scripts]
+choco = "choco.app:main"
+
+[tool.setuptools.packages.find]
+include = ["choco*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

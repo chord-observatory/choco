@@ -1,0 +1,42 @@
+# choco configuration
+# Copy this file to config.yaml and edit as needed.
+
+server:
+  host: 0.0.0.0
+  port: 5000
+  secret_key: change-me           # Change this in production!
+  log_level: INFO
+  ssl_cert:                       # Path to SSL certificate (PEM). Leave empty to auto-generate self-signed.
+  ssl_key:                        # Path to SSL private key (PEM). Leave empty to auto-generate self-signed.
+  http_redirect_port:             # Optional: listen on this port for HTTP and redirect to HTTPS (e.g. 3000)
+
+# Path to the directory containing nodes.yaml, deploy.yaml, and per-node config files.
+configs_dir: configs
+
+# FreeIPA LDAP authentication.
+# All routes require login. Leave host empty to disable (dev/testing only).
+ldap:
+  host:                           # e.g. ldaps://ipa1.auth.chord-observatory.ca
+  port: 636
+  use_ssl: true
+  base_dn:                       # e.g. dc=auth,dc=chord-observatory,dc=ca
+  user_dn: cn=users,cn=accounts
+  user_login_attr: uid
+  user_object_filter: "(objectclass=posixaccount)"
+  bind_dn:                       # e.g. uid=choco,cn=users,cn=accounts,dc=auth,dc=chord-observatory,dc=ca
+  bind_password:
+
+# SSH settings for remote kotekan management.
+# Authentication uses Kerberos/GSSAPI via FreeIPA. choco obtains a Kerberos
+# ticket automatically using ssh_password. The kotekan directory must exist
+# and be owned by ssh_user on each node (set up by ansible).
+ssh:
+  kotekan_dir: /kotekan                                   # Source directory on remote nodes
+  build_dir: /kotekan/build                               # Build directory for cmake
+  ssh_user: choco                                          # SSH/Kerberos user for remote connections
+  ssh_password:                                            # Kerberos password for ssh_user (used for kinit)
+  repo_url: https://github.com/kotekan/kotekan.git        # Git repository URL
+  cmake_args:                                             # Extra CMake args (e.g. "-DUSE_HDF5=ON")
+  # After build, `sudo make install` installs the binary to /usr/local/bin/kotekan
+  # and the kotekan.service systemd unit. The choco user needs limited sudo via FreeIPA
+  # for: make install, systemctl start/stop/restart/daemon-reload kotekan.

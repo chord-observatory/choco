@@ -1,0 +1,4 @@
+default_branch: main
+nodes:
+  cx/cx27:
+    branch: chord
