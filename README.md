@@ -4,12 +4,13 @@
 
 choco provides a web UI that shows the live status of every kotekan instance, detects when their configs drift from the desired state, and lets you push config updates. It talks to kotekan's built-in REST API, so no agent software is needed on the nodes.
 
+Kotekan itself is deployed and managed on nodes by Ansible. choco only handles monitoring and config management.
+
 ## Requirements
 
 - Python 3.10+
 - A FreeIPA server for LDAP authentication (e.g. `ipa1.auth.chord-observatory.ca`)
 - Kotekan instances reachable over HTTP (default port 12048)
-- FreeIPA sudo rules for the `choco` user on managed nodes (see [Node Setup](#node-setup))
 
 ## Installation
 
@@ -76,27 +77,35 @@ The config directory is the source of truth for which nodes choco manages and wh
 ```
 configs/
 ├── nodes.yaml          # Node registry
+├── vars.yaml           # (optional) Shared Jinja2 template variables
 ├── cx/
 │   └── cx27.yaml       # Desired kotekan config for cx27
 └── recv/
-    └── recv1.yaml      # Desired kotekan config for recv1
+    └── recv1.j2        # Desired kotekan config (Jinja2 template)
 ```
 
 #### `nodes.yaml` - Node Registry
 
-Defines the kotekan instances choco should monitor, organized into groups:
+Defines the kotekan instances choco should monitor, organized into groups. An optional `config` field overrides which config file a node uses (default: `<group>/<node>.yaml`):
 
 ```yaml
 groups:
   cx:
     cx27: {host: cx27.site.chord-observatory.ca, port: 12048}
   recv:
-    recv1: {host: recv1.site.chord-observatory.ca, port: 12048}
+    recv1: {host: recv1.site.chord-observatory.ca, port: 12048, config: cx/cx27}
 ```
 
 #### Per-Node Config Files
 
-Each file at `<group>/<node>.yaml` contains the desired kotekan config for that node. For example, `cx/cx27.yaml` is the desired config for node `cx27` in the `cx` group.
+Each file at `<group>/<node>.yaml` (or `<group>/<node>.j2`) contains the desired kotekan config for that node. All config files are rendered through Jinja2 using variables from `vars.yaml` (if present), then sent to kotekan as JSON.
+
+For example, a Jinja2 template `cx/cx27.j2` might reference shared variables:
+
+```yaml
+num_elements: {{ n_elem }}
+log_level: info
+```
 
 These files can be edited directly on disk — choco watches for changes and picks them up automatically.
 
@@ -119,7 +128,7 @@ Then open `http://localhost:5000` in a browser. You'll be prompted to log in wit
 
 ### Dashboard
 
-The main page shows a table of all registered nodes with live-updating columns: node name, status, branch, config, sync state, and an Edit link.
+The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and an Edit link.
 
 Status indicators:
 - **Green (up)** — kotekan is running and config matches the desired state
@@ -131,19 +140,17 @@ Status updates are pushed to the browser in real time via WebSockets — no need
 
 ### Node Edit
 
-Click Edit on a node to manage its deploy settings:
-- **Branch** — which git branch of kotekan to build. Changing the branch prompts a reinstall.
+Click Edit on a node to manage its settings:
 - **Config selector** — which desired config file to use for this node.
 - **Config editor** — edit the desired kotekan config YAML. "Save & Push" saves to disk and pushes to the node. "Re-push Current" re-pushes without editing.
-- **Reinstall** — clone/update, build, `make install`, and restart the kotekan systemd service on the remote node via SSH.
 
 ## How Sync Works
 
 A background process runs continuously:
 
 1. Every 5 seconds, it polls each registered kotekan instance via `GET /status`
-2. It checks `GET /config_md5sum` for a fast hash comparison against the desired config
-3. If the hash differs, the node is marked as drifted
+2. It fetches the running config via `GET /config` and compares it against the desired config
+3. If the configs differ, the node is marked as drifted
 4. If kotekan is unreachable, the node is marked as down
 5. Any status change is pushed to all connected browsers via WebSocket
 
@@ -158,56 +165,16 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-## Node Setup
-
-Each managed node needs the following (typically provisioned by ansible):
-
-1. **Directories**: `/kotekan` owned by `choco` user (source + build), `/var/lib/kotekan` (systemd WorkingDirectory)
-2. **Build dependencies**: `build-essential`, `cmake`, `git`, `libevent-dev`, `libssl-dev`, `libyaml-cpp-dev`, `python3`, `python3-yaml`, `python3-jinja2`
-3. **FreeIPA sudo rules** for the `choco` user (see below)
-
-### FreeIPA Sudo Configuration
-
-The `choco` user needs passwordless sudo for a limited set of commands on managed nodes. Configure this via the FreeIPA web UI:
-
-**1. Create sudo commands** (Policy → Sudo → Sudo Commands → Add):
-
-| Command |
-|---------|
-| `/usr/bin/make install` |
-| `/usr/bin/systemctl start kotekan` |
-| `/usr/bin/systemctl stop kotekan` |
-| `/usr/bin/systemctl restart kotekan` |
-| `/usr/bin/systemctl daemon-reload` |
-
-**2. Create a sudo command group** (Policy → Sudo → Sudo Command Groups → Add):
-- Name: `choco-kotekan-mgmt`
-- Add all five commands above to the group
-
-**3. Create a sudo rule** (Policy → Sudo → Sudo Rules → Add):
-- Rule name: `choco-kotekan-mgmt`
-- **Who**: User → add `choco`
-- **Access this host**: Category "All" (or a specific host group for kotekan nodes)
-- **Run Commands**: Allow → add the `choco-kotekan-mgmt` command group
-- **As whom**: RunAsUser → `root`
-- **Options**: add `!authenticate` (this enables NOPASSWD)
-
-**4. Verify** from the choco server:
-```bash
-ssh choco@<node> sudo systemctl status kotekan
-```
-
 ## Project Structure
 
 ```
 choco/
 ├── app.py          # Flask app factory, SocketIO setup, entry point
 ├── auth.py         # LDAP authentication (Flask-Login + Flask-LDAP3-Login)
-├── web.py          # Flask routes: dashboard, node edit, reinstall, login/logout
+├── web.py          # Flask routes: dashboard, node edit, login/logout
 ├── kotekan.py      # HTTP client for kotekan's REST API
-├── state.py        # Node registry, config store, runtime state tracking
+├── state.py        # Node registry, config store, config overrides, runtime state tracking
 ├── sync.py         # Background sync loop + file watcher
-├── ssh.py          # SSH client for remote kotekan management (Kerberos/GSSAPI)
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Static assets
 ```

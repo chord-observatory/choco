@@ -30,7 +30,7 @@ _DEFAULT_CONFIG = {
     },
     "configs_dir": "configs",
     "ldap": {},
-    "ssh": {},
+
 }
 
 
@@ -58,7 +58,6 @@ def load_config(path: str | Path) -> dict:
     config["server"]["port"] = int(config["server"]["port"])
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["ldap"] = raw.get("ldap") or {}
-    config["ssh"] = raw.get("ssh") or {}
     return config
 
 
@@ -91,9 +90,6 @@ def create_app(
     # Store on app for access in routes
     app.config["registry"] = registry
     app.config["sync_loop"] = sync_loop
-    app.config["_raw_config"] = config
-    app.config["_installing"] = set()
-
     # Initialize authentication
     init_auth(app, config)
 
@@ -207,6 +203,12 @@ def main():
         http_port = config["server"].get("http_redirect_port")
         if http_port:
             _start_http_redirect(host, int(http_port), port)
+
+    # Suppress noisy SSL handshake tracebacks (e.g. clients rejecting self-signed certs)
+    if ssl_context:
+        import gevent
+        hub = gevent.get_hub()
+        hub.NOT_ERROR = hub.NOT_ERROR + (ssl.SSLError,)
 
     logger.info(f"Starting choco on {host}:{port} ({'https' if ssl_context else 'http'})")
     socketio.run(app, host=host, port=port, debug=False, ssl_context=ssl_context)

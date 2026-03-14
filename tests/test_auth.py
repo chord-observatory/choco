@@ -59,7 +59,7 @@ class TestUnauthenticatedAccess:
         assert "/login" in resp.headers["Location"]
 
     def test_node_edit_redirects(self, client):
-        resp = client.get("/node/cx/cx1/edit", follow_redirects=False)
+        resp = client.get("/edit/cx/cx1", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 

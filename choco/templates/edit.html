@@ -16,47 +16,37 @@
                 {% if node.state.error %} — {{ node.state.error }}{% endif %}
             </td>
         </tr>
+        <tr><th>Version</th><td>{{ node.state.version or "—" }}</td></tr>
         <tr><th>Last Seen</th><td>{{ node.state.last_seen_ago or "Never" }}</td></tr>
+        <tr><th>Config File</th><td>
+            <form method="post" style="display: flex; align-items: center; gap: 0.5em; margin: 0;">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="save">
+                <select id="config" name="config" style="margin: 0; width: auto; height: 2.5rem; padding: 0.25rem 0.5rem;">
+                    {% for name in config_names %}
+                    <option value="{{ name }}" {% if name == config_name %}selected{% endif %}>{{ name }}{{ registry.config_store.get_file_suffix(name) }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" style="margin: 0; width: auto; height: 2.5rem; padding: 0.25rem 0.75rem;">Save</button>
+                <a href="/" role="button" class="secondary" style="margin: 0; width: auto; height: 2.5rem; padding: 0.25rem 0.75rem; line-height: 2rem;">Cancel</a>
+            </form>
+        </td></tr>
     </tbody>
 </table>
 
-<h3>Deploy Settings</h3>
+
+<h3>Config: {{ config_filename }}</h3>
 <form method="post">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="action" value="save">
-
-    <label for="branch">Kotekan Branch</label>
-    <input type="text" id="branch" name="branch" value="{{ branch }}"
-           placeholder="{{ default_branch }}">
-    <small>Default: {{ default_branch }}. Changing the branch will prompt a reinstall.</small>
-
-    <label for="config">Config</label>
-    <select id="config" name="config">
-        {% for name in config_names %}
-        <option value="{{ name }}" {% if name == config_name %}selected{% endif %}>{{ name }}</option>
-        {% endfor %}
-    </select>
-
-    <div style="display: flex; gap: 0.5em; margin-top: 1em;">
-        <button type="submit">Save</button>
-        <a href="/" role="button" class="secondary">Cancel</a>
-    </div>
-</form>
-
-<h3>Config: {{ config_name }}</h3>
-<form method="post">
-    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="action" value="save_push">
+    <input type="hidden" name="action" value="save_config">
     <textarea id="config_content" name="config_content" rows="20"
               style="font-family: monospace; font-size: 0.9em; tab-size: 2;">{{ config_content }}</textarea>
     <div style="display: flex; gap: 0.5em; margin-top: 0.5em;">
-        <button type="submit">Save &amp; Push</button>
+        <button type="submit">Save</button>
         <button type="submit" name="action" value="push_config" class="outline">Re-push Current</button>
     </div>
 </form>
 
-<h3>Actions</h3>
-<a href="/node/{{ node_key }}/reinstall" role="button" class="contrast">Reinstall Kotekan</a>
 {% endblock %}
 
 {% block scripts %}

@@ -56,18 +56,6 @@ class TestGetConfig:
         assert client.get_config() is None
 
 
-class TestGetConfigHash:
-    @responses.activate
-    def test_returns_hash(self, client):
-        responses.get(f"{BASE}/config_md5sum", json={"md5sum": "abc123"})
-        assert client.get_config_hash() == "abc123"
-
-    @responses.activate
-    def test_unreachable(self, client):
-        responses.get(f"{BASE}/config_md5sum", body=ConnectionError())
-        assert client.get_config_hash() is None
-
-
 class TestUpdateConfig:
     @responses.activate
     def test_success(self, client):

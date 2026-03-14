@@ -3,8 +3,6 @@
 import logging
 import secrets
 
-import yaml
-
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
     current_app, session, abort,
@@ -97,38 +95,24 @@ def dashboard():
     return render_template("dashboard.html", **ctx)
 
 
-@bp.route("/node/<path:node_key>/edit", methods=["GET", "POST"])
+@bp.route("/edit/<path:node_key>", methods=["GET", "POST"])
 @login_required
 def node_edit(node_key):
-    """Edit deploy settings for a node: branch, config, reinstall."""
+    """Edit config settings for a node."""
     registry = _registry()
     node = registry.get_node(node_key)
     if node is None:
         flash(f"Node {node_key} not found", "error")
         return redirect(url_for("web.dashboard"))
 
-    deploy = registry.deploy_store
-
     if request.method == "POST":
         _check_csrf()
         action = request.form.get("action", "save")
 
         if action == "save":
-            branch = request.form.get("branch", "").strip()
             config_name = request.form.get("config", "").strip()
-            old_branch = deploy.get_branch(node_key)
-            # Empty branch means "use default"
-            new_branch = branch or deploy.default_branch
-            deploy.set_node(
-                node_key,
-                branch=new_branch,
-                config=config_name or node_key,
-            )
+            registry.set_config_name(node_key, config_name or node_key)
             flash(f"Settings saved for {node_key}", "success")
-
-            # Auto-reinstall if branch changed
-            if new_branch != old_branch:
-                return redirect(url_for("web.node_reinstall", node_key=node_key))
 
         elif action == "push_config":
             success = _sync_loop().push_config(node_key)
@@ -137,87 +121,31 @@ def node_edit(node_key):
             else:
                 flash(f"Failed to push config to {node_key}", "error")
 
-        elif action == "save_push":
+        elif action == "save_config":
             content = request.form.get("config_content", "")
+            config_name = registry.get_config_name(node_key)
             try:
-                config_dict = yaml.safe_load(content)
-                if not isinstance(config_dict, dict):
-                    raise ValueError("Config must be a YAML mapping.")
+                registry.config_store.save_raw(config_name, content)
             except Exception as e:
-                flash(f"Invalid YAML: {e}", "error")
+                flash(f"Invalid config: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            config_name = deploy.get_config_name(node_key)
-            registry.config_store.save_config(config_name, config_dict)
-            success = _sync_loop().push_config(node_key)
-            if success:
-                flash(f"Config saved and pushed to {node_key}.", "success")
-            else:
-                flash(f"Config saved but push failed for {node_key}.", "error")
+            flash(f"Config saved for {node_key}.", "success")
 
         return redirect(url_for("web.node_edit", node_key=node_key))
 
-    config_name = deploy.get_config_name(node_key)
-    config_dict = registry.config_store.get_desired_config(config_name)
-    config_content = yaml.dump(config_dict, default_flow_style=False) if config_dict else ""
+    config_name = registry.get_config_name(node_key)
+    config_content = registry.config_store.get_raw_content(config_name) or ""
+    config_filename = registry.get_config_filename(node_key)
 
     return render_template(
         "edit.html",
         node=node,
         node_key=node_key,
-        branch=deploy.get_branch(node_key),
         config_name=config_name,
+        config_filename=config_filename,
         config_names=registry.config_store.config_names,
         config_content=config_content,
-        default_branch=deploy.default_branch,
-    )
-
-
-@bp.route("/node/<path:node_key>/reinstall", methods=["GET", "POST"])
-@login_required
-def node_reinstall(node_key):
-    """Reinstall kotekan on a node (clone + build + install + restart)."""
-    registry = _registry()
-    node = registry.get_node(node_key)
-    if node is None:
-        flash(f"Node {node_key} not found", "error")
-        return redirect(url_for("web.dashboard"))
-
-    installing = current_app.config["_installing"]
-
-    if request.method == "POST":
-        _check_csrf()
-        if node_key in installing:
-            flash(f"Installation already in progress on {node_key}.", "error")
-            return redirect(url_for("web.node_reinstall", node_key=node_key))
-
-        from .ssh import SSHConfig, install_kotekan
-        from .app import socketio
-
-        ssh_cfg = SSHConfig.from_config(current_app.config.get("_raw_config", {}))
-        branch = registry.deploy_store.get_branch(node_key)
-        installing.add(node_key)
-
-        def _do_install(app, nk, host, br, cfg):
-            with app.app_context():
-                success = install_kotekan(host, br, cfg)
-                app.config["_installing"].discard(nk)
-                socketio.emit("install_complete", {
-                    "node": nk, "success": success,
-                }, namespace="/")
-
-        socketio.start_background_task(
-            _do_install, current_app._get_current_object(),
-            node_key, node.host, branch, ssh_cfg,
-        )
-        return redirect(url_for("web.node_reinstall", node_key=node_key))
-
-    branch = registry.deploy_store.get_branch(node_key)
-    return render_template(
-        "reinstall.html",
-        node=node,
-        node_key=node_key,
-        branch=branch,
-        installing=node_key in installing,
+        registry=registry,
     )
 
 

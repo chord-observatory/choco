@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from choco.state import Registry, ConfigStore, DeployStore, NodeStatus
+from choco.state import Registry, ConfigStore, NodeStatus
 
 
 @pytest.fixture
@@ -73,12 +73,6 @@ class TestConfigStore:
         store = ConfigStore(configs_dir)
         assert store.get_desired_config("cx/cx2") is None
 
-    def test_hash(self, configs_dir):
-        store = ConfigStore(configs_dir)
-        h = store.get_desired_hash("cx/cx1")
-        assert h is not None
-        assert len(h) == 32  # md5 hex
-
     def test_save_config(self, configs_dir):
         store = ConfigStore(configs_dir)
         new_config = {"log_level": "debug", "num_elements": 1024}
@@ -105,65 +99,119 @@ class TestConfigStore:
         assert store.get_desired_config("recv/recv1") is not None
 
     def test_skips_meta_files(self, configs_dir):
-        """deploy.yaml and nodes.yaml should not be loaded as configs."""
-        with open(configs_dir / "deploy.yaml", "w") as f:
-            yaml.dump({"default_branch": "main"}, f)
+        """nodes.yaml and vars.yaml should not be loaded as configs."""
+        with open(configs_dir / "vars.yaml", "w") as f:
+            yaml.dump({"some_var": "val"}, f)
         store = ConfigStore(configs_dir)
-        assert store.get_desired_config("deploy") is None
         assert store.get_desired_config("nodes") is None
+        assert store.get_desired_config("vars") is None
 
     def test_config_names(self, configs_dir):
         store = ConfigStore(configs_dir)
         assert "cx/cx1" in store.config_names
 
+    def test_loads_j2_config(self, configs_dir):
+        cx_dir = configs_dir / "cx"
+        (cx_dir / "cx2.j2").write_text("num_elements: 1024\nlog_level: debug\n")
+        store = ConfigStore(configs_dir)
+        config = store.get_desired_config("cx/cx2")
+        assert config == {"num_elements": 1024, "log_level": "debug"}
+        assert store.get_file_suffix("cx/cx2") == ".j2"
 
-class TestDeployStore:
-    def test_defaults(self, tmp_path):
-        store = DeployStore(tmp_path)
-        assert store.default_branch == "main"
-        assert store.get_branch("cx/cx1") == "main"
-        assert store.get_config_name("cx/cx1") == "cx/cx1"
+    def test_j2_renders_with_vars(self, configs_dir):
+        with open(configs_dir / "vars.yaml", "w") as f:
+            yaml.dump({"n_elem": 2048}, f)
+        cx_dir = configs_dir / "cx"
+        (cx_dir / "cx2.j2").write_text("num_elements: {{ n_elem }}\n")
+        store = ConfigStore(configs_dir)
+        config = store.get_desired_config("cx/cx2")
+        assert config["num_elements"] == 2048
 
-    def test_loads_from_file(self, tmp_path):
-        data = {
-            "default_branch": "develop",
-            "nodes": {
-                "cx/cx1": {"branch": "feature-x", "config": "shared-config"},
-            },
+    def test_yaml_renders_with_vars(self, configs_dir):
+        with open(configs_dir / "vars.yaml", "w") as f:
+            yaml.dump({"level": "debug"}, f)
+        cx_dir = configs_dir / "cx"
+        (cx_dir / "cx1.yaml").write_text("log_level: {{ level }}\n")
+        store = ConfigStore(configs_dir)
+        config = store.get_desired_config("cx/cx1")
+        assert config["log_level"] == "debug"
+
+    def test_raw_content(self, configs_dir):
+        store = ConfigStore(configs_dir)
+        raw = store.get_raw_content("cx/cx1")
+        assert raw is not None
+        assert "num_elements" in raw
+
+    def test_save_raw(self, configs_dir):
+        store = ConfigStore(configs_dir)
+        store.save_raw("cx/cx1", "num_elements: 512\nlog_level: warn\n")
+        assert store.get_desired_config("cx/cx1") == {"num_elements": 512, "log_level": "warn"}
+        assert store.get_raw_content("cx/cx1") == "num_elements: 512\nlog_level: warn\n"
+
+    def test_save_raw_j2(self, configs_dir):
+        cx_dir = configs_dir / "cx"
+        (cx_dir / "cx2.j2").write_text("num_elements: 1024\n")
+        store = ConfigStore(configs_dir)
+        store.save_raw("cx/cx2", "num_elements: 2048\n")
+        # Should preserve the .j2 extension
+        assert (cx_dir / "cx2.j2").read_text() == "num_elements: 2048\n"
+        assert not (cx_dir / "cx2.yaml").exists()
+
+    def test_save_raw_invalid_raises(self, configs_dir):
+        store = ConfigStore(configs_dir)
+        with pytest.raises(ValueError):
+            store.save_raw("cx/cx1", "not_a_mapping")
+
+
+class TestConfigOverrides:
+    def test_default_config_name(self, configs_dir):
+        registry = Registry(configs_dir)
+        assert registry.get_config_name("cx/cx1") == "cx/cx1"
+
+    def test_loads_override_from_nodes_yaml(self, configs_dir):
+        # Rewrite nodes.yaml with a config override
+        nodes = {
+            "groups": {
+                "cx": {
+                    "cx1": {"host": "cx1.chord.ca", "port": 12048,
+                            "config": "shared-config"},
+                    "cx2": {"host": "cx2.chord.ca", "port": 12048},
+                },
+            }
         }
-        with open(tmp_path / "deploy.yaml", "w") as f:
+        with open(configs_dir / "nodes.yaml", "w") as f:
+            yaml.dump(nodes, f)
+        registry = Registry(configs_dir)
+        assert registry.get_config_name("cx/cx1") == "shared-config"
+        assert registry.get_config_name("cx/cx2") == "cx/cx2"
+
+    def test_set_config_name(self, configs_dir):
+        registry = Registry(configs_dir)
+        registry.set_config_name("cx/cx1", "shared-config")
+        assert registry.get_config_name("cx/cx1") == "shared-config"
+        # Verify persisted to nodes.yaml
+        with open(configs_dir / "nodes.yaml") as f:
+            data = yaml.safe_load(f)
+        assert data["groups"]["cx"]["cx1"]["config"] == "shared-config"
+
+    def test_set_default_clears_override(self, configs_dir):
+        registry = Registry(configs_dir)
+        registry.set_config_name("cx/cx1", "shared-config")
+        assert registry.get_config_name("cx/cx1") == "shared-config"
+        # Setting back to node key should remove the override
+        registry.set_config_name("cx/cx1", "cx/cx1")
+        assert registry.get_config_name("cx/cx1") == "cx/cx1"
+        with open(configs_dir / "nodes.yaml") as f:
+            data = yaml.safe_load(f)
+        assert "config" not in data["groups"]["cx"]["cx1"]
+
+    def test_reload_config_overrides(self, configs_dir):
+        registry = Registry(configs_dir)
+        # Edit nodes.yaml to add an override
+        with open(configs_dir / "nodes.yaml") as f:
+            data = yaml.safe_load(f)
+        data["groups"]["cx"]["cx1"]["config"] = "other"
+        with open(configs_dir / "nodes.yaml", "w") as f:
             yaml.dump(data, f)
-        store = DeployStore(tmp_path)
-        assert store.default_branch == "develop"
-        assert store.get_branch("cx/cx1") == "feature-x"
-        assert store.get_config_name("cx/cx1") == "shared-config"
-        # Node without override falls back to defaults
-        assert store.get_branch("cx/cx2") == "develop"
-        assert store.get_config_name("cx/cx2") == "cx/cx2"
-
-    def test_set_node(self, tmp_path):
-        store = DeployStore(tmp_path)
-        store.set_node("cx/cx1", branch="feature-y")
-        assert store.get_branch("cx/cx1") == "feature-y"
-        # Verify persisted to disk
-        with open(tmp_path / "deploy.yaml") as f:
-            data = yaml.safe_load(f)
-        assert data["nodes"]["cx/cx1"]["branch"] == "feature-y"
-
-    def test_set_default_branch_clears_override(self, tmp_path):
-        store = DeployStore(tmp_path)
-        store.set_node("cx/cx1", branch="develop")
-        assert store.get_branch("cx/cx1") == "develop"
-        # Setting to the default branch should remove the override
-        store.set_node("cx/cx1", branch="main")
-        assert store.get_branch("cx/cx1") == "main"
-        with open(tmp_path / "deploy.yaml") as f:
-            data = yaml.safe_load(f)
-        assert "cx/cx1" not in (data.get("nodes") or {})
-
-    def test_reload(self, tmp_path):
-        store = DeployStore(tmp_path)
-        with open(tmp_path / "deploy.yaml", "w") as f:
-            yaml.dump({"default_branch": "v2", "nodes": {}}, f)
-        store.reload()
-        assert store.default_branch == "v2"
+        registry._reload_config_overrides()
+        assert registry.get_config_name("cx/cx1") == "other"

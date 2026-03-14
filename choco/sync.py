@@ -22,12 +22,12 @@ class ConfigFileHandler(FileSystemEventHandler):
         self._sync_loop = sync_loop
 
     def on_modified(self, event):
-        if event.src_path.endswith((".yaml", ".yml")):
+        if event.src_path.endswith((".yaml", ".yml", ".j2")):
             logger.info(f"Config file changed: {event.src_path}")
             self._sync_loop.on_config_changed()
 
     def on_created(self, event):
-        if event.src_path.endswith((".yaml", ".yml")):
+        if event.src_path.endswith((".yaml", ".yml", ".j2")):
             logger.info(f"Config file created: {event.src_path}")
             self._sync_loop.on_config_changed()
 
@@ -60,15 +60,15 @@ class SyncLoop:
 
     def on_config_changed(self):
         """Called when a config file changes on disk. Auto-pushes changed configs."""
-        old_hashes = dict(self.registry.config_store._desired_hashes)
+        old_configs = dict(self.registry.config_store._desired_configs)
         self.registry.config_store.reload()
-        self.registry.deploy_store.reload()
+        self.registry._reload_config_overrides()
 
-        # Find configs whose hash changed and push to affected nodes
-        new_hashes = self.registry.config_store._desired_hashes
-        changed = {k for k in new_hashes if new_hashes.get(k) != old_hashes.get(k)}
+        # Find configs that changed and push to affected nodes
+        new_configs = self.registry.config_store._desired_configs
+        changed = {k for k in new_configs if new_configs.get(k) != old_configs.get(k)}
         for key in self.registry.nodes:
-            config_name = self.registry.deploy_store.get_config_name(key)
+            config_name = self.registry.get_config_name(key)
             if config_name in changed:
                 logger.info(f"Config '{config_name}' changed on disk, pushing to {key}")
                 self.push_config(key)
@@ -115,34 +115,30 @@ class SyncLoop:
 
         node.state.last_seen = time.time()
         node.state.error = None
+        node.state.version = node.client.get_version()
 
         if not status.ok:
             node.state.status = NodeStatus.DOWN
             node.state.error = "Not running"
             return
 
-        # Resolve which config this node uses
-        config_name = self.registry.deploy_store.get_config_name(key)
-        desired_hash = self.registry.config_store.get_desired_hash(config_name)
-        if desired_hash is None:
+        # Resolve which config this node uses and compare directly
+        config_name = self.registry.get_config_name(key)
+        desired = self.registry.config_store.get_desired_config(config_name)
+        if desired is None:
             node.state.status = NodeStatus.UP
             return
 
-        actual_hash = node.client.get_config_hash()
-        node.state.config_hash = actual_hash
-
-        if actual_hash is None:
+        actual = node.client.get_config()
+        if actual is None:
             node.state.status = NodeStatus.UP
             return
 
-        if actual_hash == desired_hash:
+        if actual == desired:
             node.state.status = NodeStatus.UP
         else:
             node.state.status = NodeStatus.DRIFT
-            logger.info(
-                f"Config drift detected on {key}: "
-                f"desired={desired_hash[:8]}... actual={actual_hash[:8]}..."
-            )
+            logger.info(f"Config drift detected on {key}")
 
     def push_config(self, key: str) -> bool:
         """Push the desired config to a node (stop + start with new config)."""
@@ -151,16 +147,26 @@ class SyncLoop:
             logger.error(f"Node {key} not found")
             return False
 
-        config_name = self.registry.deploy_store.get_config_name(key)
+        config_name = self.registry.get_config_name(key)
         desired = self.registry.config_store.get_desired_config(config_name)
         if desired is None:
             logger.warning(f"No config '{config_name}' for {key}")
             return False
 
-        # Kotekan has no "replace config" endpoint — must stop then start.
+        # Kill the running instance; the daemon restarts kotekan, then we
+        # provide the new config via /start.
         status = node.client.get_status()
         if status.ok:
-            node.client.stop()
+            node.client.kill()
+            # Wait for the daemon to restart kotekan into idle state
+            for _ in range(60):
+                gevent.sleep(5)
+                status = node.client.get_status()
+                if status.reachable and not status.ok:
+                    break
+            else:
+                logger.warning(f"Timed out waiting for {key} to restart after kill")
+                return False
 
         success = node.client.start(desired)
         if success:
@@ -177,5 +183,5 @@ class SyncLoop:
         """Get context for dashboard templates."""
         return {
             "nodes": self.registry.nodes,
-            "deploy": self.registry.deploy_store,
+            "registry": self.registry,
         }

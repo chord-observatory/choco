@@ -67,17 +67,6 @@ class KotekanClient:
             logger.warning(f"Failed to parse config JSON from {self._base_url}")
             return None
 
-    def get_config_hash(self) -> str | None:
-        """Get the MD5 hash of the current config."""
-        resp = self._request("GET", "/config_md5sum")
-        if resp is None:
-            return None
-        try:
-            data = resp.json()
-            return data.get("md5sum") or data.get("hash") or resp.text.strip()
-        except Exception:
-            return resp.text.strip()
-
     def update_config(self, path: str, values: dict) -> bool:
         """Push a config update to an updatable config block."""
         return self._request("POST", path, json=values) is not None
@@ -89,6 +78,10 @@ class KotekanClient:
     def stop(self) -> bool:
         """Stop the running kotekan config."""
         return self._request("GET", "/stop") is not None
+
+    def kill(self) -> bool:
+        """Kill the kotekan process. The daemon will restart it."""
+        return self._request("GET", "/kill") is not None
 
     def get_version(self) -> str | None:
         """Get the kotekan version string."""

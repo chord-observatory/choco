@@ -5,8 +5,9 @@
     <thead>
         <tr>
             <th>Node</th>
+            <th>Group</th>
             <th>Status</th>
-            <th>Branch</th>
+            <th>Version</th>
             <th>Config</th>
             <th>Synced</th>
             <th></th>
@@ -14,18 +15,18 @@
     </thead>
     <tbody>
         {% for key, node in nodes.items() %}
-        {% set branch = deploy.get_branch(key) %}
-        {% set config_name = deploy.get_config_name(key) %}
+        {% set config_name = registry.get_config_name(key) %}
         <tr>
-            <td>{{ node.key }}</td>
+            <td>{{ node.name }}</td>
+            <td>{{ node.group }}</td>
             <td>
                 <span class="status-badge status-{{ node.state.status.value }}">
                     {{ node.state.status.value }}
                 </span>
                 {% if node.state.error %}<br><small>{{ node.state.error }}</small>{% endif %}
             </td>
-            <td>{{ branch }}</td>
-            <td>{{ config_name }}</td>
+            <td>{{ node.state.version or "—" }}</td>
+            <td>{{ registry.get_config_filename(key) }}</td>
             <td>
                 {% if node.state.status.value == "drift" %}
                     No
@@ -35,7 +36,7 @@
                     —
                 {% endif %}
             </td>
-            <td><a href="/node/{{ key }}/edit" role="button" class="outline">Edit</a></td>
+            <td><a href="/edit/{{ key }}" role="button" class="outline">Edit</a></td>
         </tr>
         {% endfor %}
     </tbody>

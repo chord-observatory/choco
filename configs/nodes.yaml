@@ -1,8 +1,9 @@
-# Node registry for choco.
-# Each group contains named nodes with host and port.
-
 groups:
   cx:
-    cx27: {host: cx27.site.chord-observatory.ca, port: 12048}
+    cx27:
+      host: cx27.site.chord-observatory.ca
+      port: 12048
   recv:
-    recv1: {host: recv1.site.chord-observatory.ca, port: 12048}
+    recv1:
+      host: recv1.site.chord-observatory.ca
+      port: 12048
