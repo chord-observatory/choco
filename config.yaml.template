@@ -3,12 +3,12 @@
 
 server:
   host: 0.0.0.0
-  port: 5000
+  port: 5000                     # Use iptables to redirect 443 -> 5000 (see ./choco.sh setup-ports)
   secret_key: change-me           # Change this in production!
   log_level: INFO
   ssl_cert:                       # Path to SSL certificate (PEM). Leave empty to auto-generate self-signed.
   ssl_key:                        # Path to SSL private key (PEM). Leave empty to auto-generate self-signed.
-  http_redirect_port:             # Optional: listen on this port for HTTP and redirect to HTTPS (e.g. 3000)
+  http_redirect_port: 8080        # HTTP listener that redirects to HTTPS (iptables redirects 80 -> 8080)
 
 # Path to the directory containing nodes.yaml, deploy.yaml, and per-node config files.
 configs_dir: configs

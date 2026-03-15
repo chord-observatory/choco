@@ -7,9 +7,8 @@ from enum import Enum
 from pathlib import Path
 
 import jinja2
+import requests
 import yaml
-
-from .kotekan import KotekanClient
 
 logger = logging.getLogger(__name__)
 
@@ -19,22 +18,45 @@ _META_FILES = {"nodes.yaml", "vars.yaml"}
 # Config file extensions (order matters: later wins if both exist for same key)
 _CONFIG_SUFFIXES = (".yaml", ".yml", ".j2")
 
+DEFAULT_TIMEOUT = 5  # seconds
+
 
 class NodeStatus(Enum):
     UNKNOWN = "unknown"
-    UP = "up"
-    DOWN = "down"
-    DRIFT = "drift"  # Running but config doesn't match desired
+    DOWN = "down"       # Unreachable
+    IDLE = "idle"       # Reachable but kotekan not running (ready for /start)
+    UP = "up"           # Running with correct config
+    SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
 
 @dataclass
-class NodeState:
-    """Runtime state for a single node (ephemeral, rebuilt from polling)."""
+class Node:
+    """A kotekan node managed by choco.
 
+    Combines node identity, runtime state, and the HTTP client for
+    communicating with the kotekan REST API on this node.
+    """
+
+    name: str
+    group: str
+    host: str
+    port: int = 12048
+    timeout: float = DEFAULT_TIMEOUT
+
+    # Runtime state (ephemeral, rebuilt from polling)
     status: NodeStatus = NodeStatus.UNKNOWN
     last_seen: float | None = None
     error: str | None = None
     version: str | None = None
+
+    _base_url: str = field(init=False, repr=False)
+
+    def __post_init__(self):
+        self._base_url = f"http://{self.host}:{self.port}"
+
+    @property
+    def key(self) -> str:
+        return f"{self.group}/{self.name}"
 
     @property
     def last_seen_ago(self) -> str | None:
@@ -48,24 +70,72 @@ class NodeState:
             return f"{int(delta / 60)}m ago"
         return f"{int(delta / 3600)}h ago"
 
+    # --- Kotekan REST API ---
 
-@dataclass
-class Node:
-    """A kotekan node managed by choco."""
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response | None:
+        url = f"{self._base_url}/{path.lstrip('/')}"
+        try:
+            resp = requests.request(method, url, timeout=self.timeout, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except (requests.ConnectionError, ConnectionError):
+            logger.debug(f"Connection failed: {url}")
+        except requests.Timeout:
+            logger.debug(f"Timeout: {url}")
+        except requests.HTTPError as e:
+            logger.warning(f"HTTP error from {url}: {e}")
+        return None
 
-    name: str
-    group: str
-    host: str
-    port: int
-    client: KotekanClient = field(init=False, repr=False)
-    state: NodeState = field(default_factory=NodeState)
+    def get_status(self) -> NodeStatus:
+        """Probe kotekan: returns DOWN, IDLE, UP, or UNKNOWN."""
+        resp = self._request("GET", "/status")
+        if resp is None:
+            return NodeStatus.DOWN
+        try:
+            data = resp.json()
+            return NodeStatus.UP if data.get("running", False) else NodeStatus.IDLE
+        except Exception:
+            return NodeStatus.UNKNOWN
 
-    def __post_init__(self):
-        self.client = KotekanClient(self.host, self.port)
+    def get_config(self) -> dict | None:
+        """Get the full current config. Returns None if unreachable."""
+        resp = self._request("GET", "/config")
+        if resp is None:
+            return None
+        try:
+            return resp.json()
+        except Exception:
+            logger.warning(f"Failed to parse config JSON from {self._base_url}")
+            return None
 
-    @property
-    def key(self) -> str:
-        return f"{self.group}/{self.name}"
+    def update_config(self, path: str, values: dict) -> bool:
+        """Push a config update to an updatable config block."""
+        return self._request("POST", path, json=values) is not None
+
+    def start(self, config: dict) -> bool:
+        """Start kotekan with the given config via POST /start."""
+        return self._request("POST", "/start", json=config) is not None
+
+    def stop(self) -> bool:
+        """Stop the running kotekan config."""
+        return self._request("GET", "/stop") is not None
+
+    def kill(self) -> bool:
+        """Kill the kotekan process. The daemon will restart it."""
+        return self._request("GET", "/kill") is not None
+
+    def get_version(self) -> str | None:
+        """Get the kotekan version string."""
+        resp = self._request("GET", "/version")
+        if resp is None:
+            return None
+        try:
+            return resp.json().get("kotekan_version")
+        except Exception:
+            return None
+
+    def __repr__(self) -> str:
+        return f"Node({self.key}, {self.host}:{self.port}, {self.status.value})"
 
 
 class ConfigStore:
@@ -134,6 +204,11 @@ class ConfigStore:
         return config
 
     @property
+    def desired_configs(self) -> dict[str, dict]:
+        """All desired configs (config_name -> parsed config dict)."""
+        return dict(self._desired_configs)
+
+    @property
     def config_names(self) -> list[str]:
         """All available config names."""
         return list(self._desired_configs.keys())
@@ -180,6 +255,17 @@ class Registry:
         self._config_overrides: dict[str, str] = {}
         self._load_nodes()
 
+    @staticmethod
+    def _parse_config_overrides(data: dict) -> dict[str, str]:
+        """Extract config overrides from parsed nodes.yaml data."""
+        overrides = {}
+        for group_name, members in (data.get("groups") or {}).items():
+            for node_name, node_info in members.items():
+                config = node_info.get("config")
+                if config:
+                    overrides[f"{group_name}/{node_name}"] = config
+        return overrides
+
     def _load_nodes(self):
         """Load node definitions from nodes.yaml."""
         nodes_file = self.configs_dir / "nodes.yaml"
@@ -190,11 +276,8 @@ class Registry:
         with open(nodes_file) as f:
             data = yaml.safe_load(f) or {}
 
-        groups = data.get("groups", {})
         self.nodes.clear()
-        self._config_overrides.clear()
-
-        for group_name, members in groups.items():
+        for group_name, members in (data.get("groups") or {}).items():
             for node_name, node_info in members.items():
                 key = f"{group_name}/{node_name}"
                 host = node_info.get("host", node_name)
@@ -202,10 +285,8 @@ class Registry:
                 self.nodes[key] = Node(
                     name=node_name, group=group_name, host=host, port=port
                 )
-                config = node_info.get("config")
-                if config:
-                    self._config_overrides[key] = config
 
+        self._config_overrides = self._parse_config_overrides(data)
         logger.info(f"Loaded {len(self.nodes)} nodes")
 
     def _reload_config_overrides(self):
@@ -216,12 +297,7 @@ class Registry:
             return
         with open(nodes_file) as f:
             data = yaml.safe_load(f) or {}
-        self._config_overrides.clear()
-        for group_name, members in (data.get("groups") or {}).items():
-            for node_name, node_info in members.items():
-                config = node_info.get("config")
-                if config:
-                    self._config_overrides[f"{group_name}/{node_name}"] = config
+        self._config_overrides = self._parse_config_overrides(data)
 
     def get_config_name(self, key: str) -> str:
         """Get the config name for a node (falls back to node key)."""

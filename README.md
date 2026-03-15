@@ -12,20 +12,30 @@ Kotekan itself is deployed and managed on nodes by Ansible. choco only handles m
 - A FreeIPA server for LDAP authentication (e.g. `ipa1.auth.chord-observatory.ca`)
 - Kotekan instances reachable over HTTP (default port 12048)
 
-## Installation
+## Quick Start
+
+A convenience script `choco.sh` wraps common commands:
 
 ```bash
 git clone <this repo>
 cd choco
 
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./choco.sh install   # create venv, install deps (including dev), copy config template
+$EDITOR config.yaml  # edit LDAP settings + secret_key
+./choco.sh run       # start the server
 ```
 
-For development/testing:
+You can also pass extra arguments: `./choco.sh run /path/to/config.yaml`.
+
+To run tests: `./choco.sh test` (extra args forwarded to pytest, e.g. `./choco.sh test -k test_kotekan`).
+
+### Manual Installation
+
+If you prefer not to use the script:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -112,15 +122,15 @@ These files can be edited directly on disk — choco watches for changes and pic
 ## Running
 
 ```bash
-# Create config from template and edit LDAP settings + secret_key
-cp config.yaml.template config.yaml
-$EDITOR config.yaml
-
-# Start the server
-choco
+./choco.sh run
 ```
 
-You can also pass a custom config path: `choco /path/to/config.yaml`.
+Or manually:
+
+```bash
+source .venv/bin/activate
+choco                          # or: choco /path/to/config.yaml
+```
 
 Then open `http://localhost:5000` in a browser. You'll be prompted to log in with your LDAP credentials.
 
@@ -161,7 +171,13 @@ The config directory is also watched for local file changes — editing a YAML f
 ## Tests
 
 ```bash
-pip install -e ".[dev]"
+./choco.sh test
+```
+
+Or manually:
+
+```bash
+source .venv/bin/activate
 pytest tests/ -v
 ```
 

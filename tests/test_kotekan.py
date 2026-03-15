@@ -1,11 +1,11 @@
-"""Tests for the kotekan REST API client."""
+"""Tests for the kotekan REST API methods on Node."""
 
 import json
 
 import pytest
 import responses
 
-from choco.kotekan import KotekanClient, KotekanStatus
+from choco.state import Node, NodeStatus
 
 HOST = "localhost"
 PORT = 12048
@@ -13,73 +13,65 @@ BASE = f"http://{HOST}:{PORT}"
 
 
 @pytest.fixture
-def client():
-    return KotekanClient(HOST, PORT, timeout=1)
+def node():
+    return Node(name="test", group="test", host=HOST, port=PORT, timeout=1)
 
 
 class TestGetStatus:
     @responses.activate
-    def test_running(self, client):
+    def test_running(self, node):
         responses.get(f"{BASE}/status", json={"running": True})
-        status = client.get_status()
-        assert status.reachable is True
-        assert status.running is True
-        assert status.ok is True
+        assert node.get_status() == NodeStatus.UP
 
     @responses.activate
-    def test_not_running(self, client):
+    def test_not_running(self, node):
         responses.get(f"{BASE}/status", json={"running": False})
-        status = client.get_status()
-        assert status.reachable is True
-        assert status.running is False
-        assert status.ok is False
+        assert node.get_status() == NodeStatus.IDLE
 
     @responses.activate
-    def test_unreachable(self, client):
+    def test_unreachable(self, node):
         responses.get(f"{BASE}/status", body=ConnectionError("refused"))
-        status = client.get_status()
-        assert status.reachable is False
-        assert status.ok is False
+        assert node.get_status() == NodeStatus.DOWN
 
 
 class TestGetConfig:
     @responses.activate
-    def test_returns_config(self, client):
+    def test_returns_config(self, node):
         config = {"num_elements": 2048, "log_level": "info"}
         responses.get(f"{BASE}/config", json=config)
-        result = client.get_config()
+        result = node.get_config()
         assert result == config
 
     @responses.activate
-    def test_unreachable(self, client):
+    def test_unreachable(self, node):
         responses.get(f"{BASE}/config", body=ConnectionError())
-        assert client.get_config() is None
+        assert node.get_config() is None
 
 
 class TestUpdateConfig:
     @responses.activate
-    def test_success(self, client):
+    def test_success(self, node):
         responses.post(f"{BASE}/foo/bar", json={"status": "ok"})
-        assert client.update_config("foo/bar", {"val": 42}) is True
+        assert node.update_config("foo/bar", {"val": 42}) is True
 
     @responses.activate
-    def test_failure(self, client):
+    def test_failure(self, node):
         responses.post(f"{BASE}/foo/bar", body=ConnectionError())
-        assert client.update_config("foo/bar", {"val": 42}) is False
+        assert node.update_config("foo/bar", {"val": 42}) is False
 
 
 class TestLifecycle:
     @responses.activate
-    def test_start(self, client):
+    def test_start(self, node):
         responses.post(f"{BASE}/start", json={"status": "ok"})
-        assert client.start({"config": "data"}) is True
+        assert node.start({"config": "data"}) is True
 
     @responses.activate
-    def test_stop(self, client):
+    def test_stop(self, node):
         responses.get(f"{BASE}/stop", json={"status": "ok"})
-        assert client.stop() is True
+        assert node.stop() is True
 
     @responses.activate
-    def test_version(self, client):
+    def test_version(self, node):
         responses.get(f"{BASE}/version", json={"kotekan_version": "2024.11"})
-        assert client.get_version() == "2024.11"
+        assert node.get_version() == "2024.11"

@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}choco{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    {% if current_user.is_authenticated %}
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    {% endif %}
     <style>
         .status-badge {
             display: inline-block;
@@ -17,12 +19,14 @@
         }
         .status-up { background: #2ecc40; color: white; }
         .status-down { background: #ff4136; color: white; }
-        .status-drift { background: #ff851b; color: white; }
+        .status-idle { background: #ffdc00; color: #333; }
+        .status-syncing { background: #0074d9; color: white; }
         .status-unknown { background: #aaa; color: white; }
         table { margin-top: 1em; }
         .flash-success { color: #2ecc40; }
         .flash-error { color: #ff4136; }
         nav { margin-bottom: 1em; }
+        {% block styles %}{% endblock %}
     </style>
 </head>
 <body>
@@ -50,6 +54,7 @@
         {% block content %}{% endblock %}
     </main>
 
+    {% if current_user.is_authenticated %}
     <script>
         const socket = io();
 
@@ -63,6 +68,7 @@
         socket.on('node_status_changed', refreshDashboard);
         socket.on('config_reloaded', refreshDashboard);
     </script>
+    {% endif %}
     {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -20,18 +20,18 @@
             <td>{{ node.name }}</td>
             <td>{{ node.group }}</td>
             <td>
-                <span class="status-badge status-{{ node.state.status.value }}">
-                    {{ node.state.status.value }}
+                <span class="status-badge status-{{ node.status.value }}">
+                    {{ node.status.value }}
                 </span>
-                {% if node.state.error %}<br><small>{{ node.state.error }}</small>{% endif %}
+                {% if node.error %}<br><small>{{ node.error }}</small>{% endif %}
             </td>
-            <td>{{ node.state.version or "—" }}</td>
+            <td>{{ node.version or "—" }}</td>
             <td>{{ registry.get_config_filename(key) }}</td>
             <td>
-                {% if node.state.status.value == "drift" %}
-                    No
-                {% elif node.state.status.value == "up" %}
+                {% if node.status.value == "up" %}
                     Yes
+                {% elif node.status.value == "syncing" %}
+                    No
                 {% else %}
                     —
                 {% endif %}

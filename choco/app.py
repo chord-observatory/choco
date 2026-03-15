@@ -100,12 +100,8 @@ def create_app(
     # Initialize SocketIO
     socketio.init_app(app)
 
-    # Start background sync loop after first request or on startup
-    @app.before_request
-    def start_sync_once():
-        if not hasattr(app, "_sync_started"):
-            app._sync_started = True
-            socketio.start_background_task(sync_loop.run)
+    # Start background sync loop immediately (not deferred to first request)
+    socketio.start_background_task(sync_loop.run)
 
     return app
 
@@ -122,8 +118,8 @@ def _start_http_redirect(host: str, http_port: int, https_port: int):
     @redirect_app.route("/<path:path>")
     def _redirect(path):
         url = request.url.replace("http://", "https://", 1)
-        if https_port != 443:
-            url = url.replace(f":{http_port}", f":{https_port}", 1)
+        # Strip the internal HTTP port — the public HTTPS port (443) is the default
+        url = url.replace(f":{http_port}", "", 1)
         return redirect(url, code=301)
 
     server = WSGIServer((host, http_port), redirect_app, log=None)
@@ -141,15 +137,26 @@ def _make_ssl_context(server_config: dict) -> ssl.SSLContext | None:
         ctx.load_cert_chain(cert, key)
         return ctx
 
-    # Auto-generate a self-signed certificate
+    # Auto-generate a self-signed certificate, persisted to disk so it
+    # survives restarts (avoids new browser cert warnings each time).
     import datetime
-    import tempfile
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
-    logger.info("Generating self-signed SSL certificate")
+    cert_path = Path(__file__).parent.parent / ".ssl" / "cert.pem"
+    key_path = Path(__file__).parent.parent / ".ssl" / "key.pem"
+
+    if cert_path.exists() and key_path.exists():
+        logger.info(f"Using existing self-signed certificate from {cert_path.parent}")
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert_path), str(key_path))
+        return ctx
+
+    logger.info(f"Generating self-signed SSL certificate in {cert_path.parent}")
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+
     key_obj = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "choco")])
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -164,21 +171,18 @@ def _make_ssl_context(server_config: dict) -> ssl.SSLContext | None:
         .sign(key_obj, hashes.SHA256())
     )
 
-    cert_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
-    key_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
-    cert_file.write(cert_obj.public_bytes(serialization.Encoding.PEM))
-    key_file.write(
+    key_path.write_bytes(
         key_obj.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
         )
     )
-    cert_file.close()
-    key_file.close()
+    key_path.chmod(0o600)
+    cert_path.write_bytes(cert_obj.public_bytes(serialization.Encoding.PEM))
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(cert_file.name, key_file.name)
+    ctx.load_cert_chain(str(cert_path), str(key_path))
     return ctx
 
 

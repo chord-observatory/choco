@@ -1,41 +1,19 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>choco — Login</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <style>
-        .login-container {
-            max-width: 400px;
-            margin: 10vh auto;
-        }
-        .flash-success { color: #2ecc40; }
-        .flash-error { color: #ff4136; }
-    </style>
-</head>
-<body>
-    <main class="container login-container">
-        <h2>choco</h2>
+{% extends "base.html" %}
+{% block title %}choco — Login{% endblock %}
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-        {% for category, message in messages %}
-        <p class="flash-{{ category }}">{{ message }}</p>
-        {% endfor %}
-        {% endif %}
-        {% endwith %}
+{% block styles %}
+main.container { max-width: 400px; margin-top: 10vh; }
+{% endblock %}
 
-        <form method="post">
-            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-            <label for="username">Username</label>
-            <input type="text" id="username" name="username" required autofocus>
+{% block content %}
+<form method="post">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required autofocus>
 
-            <label for="password">Password</label>
-            <input type="password" id="password" name="password" required>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
 
-            <button type="submit">Log in</button>
-        </form>
-    </main>
-</body>
-</html>
+    <button type="submit">Log in</button>
+</form>
+{% endblock %}

@@ -2,6 +2,7 @@ config.yaml
 __pycache__/
 *.egg-info/
 .venv/
+.ssl/
 kotekan/*
 coco/*
 

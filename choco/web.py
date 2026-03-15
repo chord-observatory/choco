@@ -91,8 +91,8 @@ def logout():
 @bp.route("/")
 @login_required
 def dashboard():
-    ctx = _sync_loop().get_template_context()
-    return render_template("dashboard.html", **ctx)
+    registry = _registry()
+    return render_template("dashboard.html", nodes=registry.nodes, registry=registry)
 
 
 @bp.route("/edit/<path:node_key>", methods=["GET", "POST"])
@@ -154,5 +154,5 @@ def node_edit(node_key):
 @bp.route("/partials/dashboard-table")
 @login_required
 def partial_dashboard_table():
-    ctx = _sync_loop().get_template_context()
-    return render_template("_dashboard_table.html", **ctx)
+    registry = _registry()
+    return render_template("_dashboard_table.html", nodes=registry.nodes, registry=registry)

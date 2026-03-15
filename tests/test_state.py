@@ -55,7 +55,7 @@ class TestRegistry:
     def test_initial_status(self, configs_dir):
         registry = Registry(configs_dir)
         node = registry.get_node("cx/cx1")
-        assert node.state.status == NodeStatus.UNKNOWN
+        assert node.status == NodeStatus.UNKNOWN
 
     def test_missing_node(self, configs_dir):
         registry = Registry(configs_dir)
