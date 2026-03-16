@@ -10,7 +10,10 @@ from gevent.lock import BoundedSemaphore
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from .state import Node, Registry, NodeStatus, strip_updatable_values
+from .state import (
+    Node, Registry, NodeStatus,
+    strip_updatable_values, find_updatable_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +155,11 @@ class SyncLoop:
                 node.error = "Unable to get remote node config"
 
             if strip_updatable_values(actual) == strip_updatable_values(desired):
-                # All is good!
-                if actual is not None: # Idle, otherwise
+                # Base config matches.
+                if actual is not None:
                     node.status = NodeStatus.UP
+                    # Also sync any stored updatable config values.
+                    self._sync_updatable(key, node, actual)
             else:
                 logger.info(f"Config drift detected on {key}, pushing desired config")
                 node.status = NodeStatus.SYNCING
@@ -234,11 +239,30 @@ class SyncLoop:
             logger.info(f"Successfully pushed config to {key}")
             node.status = NodeStatus.UP
             node.error = None
+            # Re-apply stored updatable config values after restart.
+            stored = self.registry.updatable_store.get(key)
+            if stored:
+                for endpoint, values in stored.items():
+                    if not node.update_config(f"/{endpoint}", values):
+                        logger.warning(
+                            f"Failed to re-apply updatable config /{endpoint} to {key}"
+                        )
         else:
             logger.error(f"Failed to push config to {key}")
             node.status = NodeStatus.DOWN
             node.error = "Failed to push config via /start"
         return success
+
+    def _sync_updatable(self, key: str, node: Node, live_config: dict):
+        """Push any stored updatable config values that differ from live."""
+        stored = self.registry.updatable_store.get(key)
+        if not stored:
+            return
+        live_blocks = find_updatable_blocks(live_config)
+        for endpoint, values in stored.items():
+            if live_blocks.get(endpoint) != values:
+                logger.info(f"Updatable config drift on {key} at /{endpoint}")
+                node.update_config(f"/{endpoint}", values)
 
     def _emit(self, event: str, data: dict):
         if self.socketio:

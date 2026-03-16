@@ -47,6 +47,21 @@
     </div>
 </form>
 
+{% if updatable_json %}
+<h3>Updatable Config</h3>
+{% for endpoint, json_str in updatable_json.items() %}
+<form method="post" style="display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em;">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="update_config">
+    <input type="hidden" name="endpoint" value="{{ endpoint }}">
+    <strong style="white-space: nowrap;">/{{ endpoint }}</strong>
+    <input type="text" name="updatable_content" value="{{ json_str }}"
+           style="font-family: monospace; font-size: 0.9em; margin: 0; flex: 1;">
+    <button type="submit" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;">Update</button>
+</form>
+{% endfor %}
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}

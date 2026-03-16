@@ -1,5 +1,6 @@
 """Node registry and runtime state tracking."""
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -34,6 +35,11 @@ def strip_updatable_values(config: dict) -> dict:
     equal.
     """
     out = {}
+
+    # Empty config / nothing to strip.
+    if not config :
+        return out
+
     for key, value in config.items():
         if isinstance(value, dict):
             if _UPDATABLE_MARKER in value:
@@ -44,6 +50,32 @@ def strip_updatable_values(config: dict) -> dict:
         else:
             out[key] = value
     return out
+
+
+def find_updatable_blocks(config: dict, _prefix: str = "") -> dict[str, dict]:
+    """Find all updatable config blocks and return their endpoint paths + values.
+
+    Walks *config* recursively.  Any sub-dict containing the
+    ``kotekan_update_endpoint`` key is collected; its path (joined with ``/``)
+    becomes the key and the values (without the marker) become the value.
+
+    For cx27.yaml this returns something like::
+
+        {"updatable_config/flagging": {"start_time": …, …},
+         "updatable_config/gains":    {"start_time": …, …},
+         "updatable_config/26m_gated": {"enabled": False}}
+    """
+    blocks: dict[str, dict] = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            path = f"{_prefix}/{key}" if _prefix else key
+            if _UPDATABLE_MARKER in value:
+                blocks[path] = {
+                    k: v for k, v in value.items() if k != _UPDATABLE_MARKER
+                }
+            else:
+                blocks.update(find_updatable_blocks(value, path))
+    return blocks
 
 
 class NodeStatus(Enum):
@@ -270,6 +302,51 @@ class ConfigStore:
         self._desired_configs[config_name] = config
 
 
+class UpdatableStore:
+    """Persists per-node updatable config values as JSON files.
+
+    Storage layout::
+
+        configs_dir/.updatable/<group>/<node>.json
+
+    Each file maps endpoint paths to their current values, e.g.::
+
+        {"updatable_config/gains": {"start_time": …, …}}
+
+    Files are only created when a user explicitly sets values via the web UI.
+    """
+
+    def __init__(self, configs_dir: Path):
+        self._dir = Path(configs_dir) / ".updatable"
+
+    def _path(self, node_key: str) -> Path:
+        return self._dir / f"{node_key}.json"
+
+    def get(self, node_key: str) -> dict[str, dict] | None:
+        """Load stored updatable values for a node.  Returns None if no file."""
+        path = self._path(node_key)
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return json.load(f)
+
+    def save(self, node_key: str, endpoint: str, values: dict):
+        """Merge-save one endpoint's values into the node's store file."""
+        existing = self.get(node_key) or {}
+        existing[endpoint] = values
+        self._write(node_key, existing)
+
+    def save_all(self, node_key: str, blocks: dict[str, dict]):
+        """Overwrite all stored blocks for a node."""
+        self._write(node_key, blocks)
+
+    def _write(self, node_key: str, data: dict):
+        path = self._path(node_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+
 class Registry:
     """Node registry: loads node definitions and tracks their state."""
 
@@ -277,6 +354,7 @@ class Registry:
         self.configs_dir = Path(configs_dir)
         self.nodes: dict[str, Node] = {}
         self.config_store = ConfigStore(configs_dir)
+        self.updatable_store = UpdatableStore(configs_dir)
         self._config_overrides: dict[str, str] = {}
         self._load_nodes()
 

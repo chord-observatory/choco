@@ -5,7 +5,10 @@ from pathlib import Path
 
 import yaml
 
-from choco.state import Registry, ConfigStore, NodeStatus, strip_updatable_values
+from choco.state import (
+    Registry, ConfigStore, NodeStatus, UpdatableStore,
+    strip_updatable_values, find_updatable_blocks,
+)
 
 
 @pytest.fixture
@@ -257,6 +260,99 @@ class TestStripUpdatableValues:
         }
         strip_updatable_values(config)
         assert "start_time" in config["updatable_config"]["gains"]
+
+
+class TestFindUpdatableBlocks:
+    def test_no_updatable_blocks(self):
+        config = {"log_level": "info", "num_elements": 2048}
+        assert find_updatable_blocks(config) == {}
+
+    def test_single_block(self):
+        config = {
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 1500000000,
+                    "update_id": "g1",
+                },
+            },
+        }
+        result = find_updatable_blocks(config)
+        assert result == {
+            "updatable_config/gains": {
+                "start_time": 1500000000,
+                "update_id": "g1",
+            },
+        }
+
+    def test_multiple_blocks(self):
+        config = {
+            "updatable_config": {
+                "flagging": {
+                    "kotekan_update_endpoint": "json",
+                    "bad_inputs": [1, 2],
+                },
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 100,
+                },
+            },
+        }
+        result = find_updatable_blocks(config)
+        assert "updatable_config/flagging" in result
+        assert "updatable_config/gains" in result
+        assert "kotekan_update_endpoint" not in result["updatable_config/flagging"]
+
+    def test_deeply_nested(self):
+        config = {
+            "pipeline": {
+                "stage": {
+                    "tuning": {
+                        "kotekan_update_endpoint": "json",
+                        "param": 42,
+                    }
+                }
+            }
+        }
+        result = find_updatable_blocks(config)
+        assert result == {"pipeline/stage/tuning": {"param": 42}}
+
+
+class TestUpdatableStore:
+    def test_get_missing(self, tmp_path):
+        store = UpdatableStore(tmp_path)
+        assert store.get("cx/cx1") is None
+
+    def test_save_and_get(self, tmp_path):
+        store = UpdatableStore(tmp_path)
+        values = {"start_time": 100, "update_id": "g1"}
+        store.save("cx/cx1", "updatable_config/gains", values)
+        result = store.get("cx/cx1")
+        assert result == {"updatable_config/gains": values}
+
+    def test_save_merges(self, tmp_path):
+        store = UpdatableStore(tmp_path)
+        store.save("cx/cx1", "updatable_config/gains", {"start_time": 100})
+        store.save("cx/cx1", "updatable_config/flagging", {"bad_inputs": [1]})
+        result = store.get("cx/cx1")
+        assert "updatable_config/gains" in result
+        assert "updatable_config/flagging" in result
+
+    def test_save_all(self, tmp_path):
+        store = UpdatableStore(tmp_path)
+        blocks = {
+            "updatable_config/gains": {"start_time": 100},
+            "updatable_config/flagging": {"bad_inputs": [1, 2]},
+        }
+        store.save_all("cx/cx1", blocks)
+        assert store.get("cx/cx1") == blocks
+
+    def test_save_overwrites_endpoint(self, tmp_path):
+        store = UpdatableStore(tmp_path)
+        store.save("cx/cx1", "updatable_config/gains", {"start_time": 100})
+        store.save("cx/cx1", "updatable_config/gains", {"start_time": 200})
+        result = store.get("cx/cx1")
+        assert result["updatable_config/gains"]["start_time"] == 200
 
 
 class TestConfigOverrides:

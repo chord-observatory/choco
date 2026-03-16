@@ -1,5 +1,6 @@
 """Flask routes for the choco web UI."""
 
+import json
 import logging
 import secrets
 
@@ -10,6 +11,7 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user
+from .state import find_updatable_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -131,11 +133,35 @@ def node_edit(node_key):
                 return redirect(url_for("web.node_edit", node_key=node_key))
             flash(f"Config saved for {node_key}.", "success")
 
+        elif action == "update_config":
+            endpoint = request.form.get("endpoint", "")
+            raw_json = request.form.get("updatable_content", "")
+            try:
+                values = json.loads(raw_json)
+            except json.JSONDecodeError as e:
+                flash(f"Invalid JSON: {e}", "error")
+                return redirect(url_for("web.node_edit", node_key=node_key))
+            if node.update_config(f"/{endpoint}", values):
+                registry.updatable_store.save(node_key, endpoint, values)
+                flash(f"Updated /{endpoint}", "success")
+            else:
+                flash(f"Failed to update /{endpoint}", "error")
+
         return redirect(url_for("web.node_edit", node_key=node_key))
 
     config_name = registry.get_config_name(node_key)
     config_content = registry.config_store.get_raw_content(config_name) or ""
     config_filename = registry.get_config_filename(node_key)
+
+    # Extract updatable config blocks from the live config.
+    # Pre-serialize to compact JSON strings so Jinja2 auto-escaping
+    # safely handles quotes inside HTML attributes.
+    live_config = node.get_config()
+    updatable_blocks = find_updatable_blocks(live_config) if live_config else {}
+    updatable_json = {
+        endpoint: json.dumps(values, separators=(",", ": "))
+        for endpoint, values in updatable_blocks.items()
+    }
 
     return render_template(
         "edit.html",
@@ -145,6 +171,7 @@ def node_edit(node_key):
         config_filename=config_filename,
         config_names=registry.config_store.config_names,
         config_content=config_content,
+        updatable_json=updatable_json,
         registry=registry,
     )
 
