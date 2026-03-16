@@ -10,7 +10,7 @@ from gevent.lock import BoundedSemaphore
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from .state import Node, Registry, NodeStatus
+from .state import Node, Registry, NodeStatus, strip_updatable_values
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ class SyncLoop:
             if actual is None:
                 node.error = "Unable to get remote node config"
 
-            if actual == desired:
+            if strip_updatable_values(actual) == strip_updatable_values(desired):
                 # All is good!
                 if actual is not None: # Idle, otherwise
                     node.status = NodeStatus.UP

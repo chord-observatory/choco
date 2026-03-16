@@ -21,6 +21,31 @@ _CONFIG_SUFFIXES = (".yaml", ".yml", ".j2")
 DEFAULT_TIMEOUT = 5  # seconds
 
 
+_UPDATABLE_MARKER = "kotekan_update_endpoint"
+
+
+def strip_updatable_values(config: dict) -> dict:
+    """Return a deep copy of *config* with updatable config values removed.
+
+    Any sub-dict (at any depth) that contains the key
+    ``kotekan_update_endpoint`` is replaced with just that marker key,
+    dropping the mutable value keys that kotekan may change at runtime.
+    This lets two configs that differ only in updatable values compare as
+    equal.
+    """
+    out = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            if _UPDATABLE_MARKER in value:
+                # Keep only the marker so the block still "exists" in both.
+                out[key] = {_UPDATABLE_MARKER: value[_UPDATABLE_MARKER]}
+            else:
+                out[key] = strip_updatable_values(value)
+        else:
+            out[key] = value
+    return out
+
+
 class NodeStatus(Enum):
     UNKNOWN = "unknown"
     DOWN = "down"       # Unreachable

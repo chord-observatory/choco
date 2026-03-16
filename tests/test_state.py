@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from choco.state import Registry, ConfigStore, NodeStatus
+from choco.state import Registry, ConfigStore, NodeStatus, strip_updatable_values
 
 
 @pytest.fixture
@@ -161,6 +161,102 @@ class TestConfigStore:
         store = ConfigStore(configs_dir)
         with pytest.raises(ValueError):
             store.save_raw("cx/cx1", "not_a_mapping")
+
+
+class TestStripUpdatableValues:
+    def test_no_updatable_blocks(self):
+        config = {"log_level": "info", "num_elements": 2048}
+        assert strip_updatable_values(config) == config
+
+    def test_strips_updatable_values(self):
+        config = {
+            "log_level": "info",
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 1500000000,
+                    "update_id": "gains1500000000",
+                    "transition_interval": 10.0,
+                },
+            },
+        }
+        result = strip_updatable_values(config)
+        assert result["log_level"] == "info"
+        assert result["updatable_config"]["gains"] == {
+            "kotekan_update_endpoint": "json"
+        }
+
+    def test_differing_updatable_values_compare_equal(self):
+        desired = {
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 1500000000,
+                    "update_id": "old",
+                },
+            },
+            "other": "value",
+        }
+        actual = {
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 9999999999,
+                    "update_id": "new",
+                },
+            },
+            "other": "value",
+        }
+        assert strip_updatable_values(desired) == strip_updatable_values(actual)
+
+    def test_non_updatable_diff_still_detected(self):
+        a = {
+            "log_level": "info",
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 1,
+                },
+            },
+        }
+        b = {
+            "log_level": "debug",
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 1,
+                },
+            },
+        }
+        assert strip_updatable_values(a) != strip_updatable_values(b)
+
+    def test_deeply_nested_updatable(self):
+        config = {
+            "pipeline": {
+                "stage1": {
+                    "tuning": {
+                        "kotekan_update_endpoint": "json",
+                        "param": 42,
+                    }
+                }
+            }
+        }
+        result = strip_updatable_values(config)
+        assert result["pipeline"]["stage1"]["tuning"] == {
+            "kotekan_update_endpoint": "json"
+        }
+
+    def test_does_not_mutate_original(self):
+        config = {
+            "updatable_config": {
+                "gains": {
+                    "kotekan_update_endpoint": "json",
+                    "start_time": 1,
+                },
+            },
+        }
+        strip_updatable_values(config)
+        assert "start_time" in config["updatable_config"]["gains"]
 
 
 class TestConfigOverrides:
