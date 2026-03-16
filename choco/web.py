@@ -3,6 +3,7 @@
 import json
 import logging
 import secrets
+import time
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
@@ -11,7 +12,7 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user
-from .state import find_updatable_blocks
+from .state import NodeStatus, find_updatable_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,22 @@ def node_edit(node_key):
 
 
 # --- htmx partial endpoints for live updates ---
+
+@bp.route("/partials/node-status/<path:node_key>")
+@login_required
+def partial_node_status(node_key):
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    # Light probe so the edit page gets fresh data between sync loop polls.
+    probe = node.get_status()
+    if probe != node.status:
+        node.status = probe
+    if probe not in (NodeStatus.DOWN, NodeStatus.UNKNOWN):
+        node.last_seen = time.time()
+    return render_template("_node_status.html", node=node)
+
 
 @bp.route("/partials/dashboard-table")
 @login_required

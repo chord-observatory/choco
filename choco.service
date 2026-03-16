@@ -1,0 +1,14 @@
+[Unit]
+Description=choco - CHORD Config Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/choco
+ExecStart=/opt/choco/.venv/bin/choco /etc/choco/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

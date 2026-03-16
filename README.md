@@ -12,32 +12,51 @@ Kotekan itself is deployed and managed on nodes by Ansible. choco only handles m
 - A FreeIPA server for LDAP authentication (e.g. `ipa1.auth.chord-observatory.ca`)
 - Kotekan instances reachable over HTTP (default port 12048)
 
-## Quick Start
-
-A convenience script `choco.sh` wraps common commands:
+## Installation
 
 ```bash
 git clone <this repo>
 cd choco
 
-./choco.sh install   # create venv, install deps (including dev), copy config template
-$EDITOR config.yaml  # edit LDAP settings + secret_key
-./choco.sh run       # start the server
+./choco.sh install   # install app, configure iptables, start systemd service
+sudo $EDITOR /etc/choco/config.yaml  # edit LDAP settings + secret_key
+sudo systemctl restart choco
 ```
 
-You can also pass extra arguments: `./choco.sh run /path/to/config.yaml`.
+This installs choco as a system service with the following layout:
 
-To run tests: `./choco.sh test` (extra args forwarded to pytest, e.g. `./choco.sh test -k test_kotekan`).
+| Path | Contents |
+|---|---|
+| `/opt/choco/.venv/` | Python virtual environment with choco installed |
+| `/etc/choco/config.yaml` | choco configuration (chmod 600) |
+| `/etc/choco/configs/` | Kotekan config files (nodes.yaml, group dirs) |
 
-### Manual Installation
+The install script also:
+- Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080
+- Installs and enables a systemd service that starts on boot and restarts on failure
 
-If you prefer not to use the script:
+Re-running `./choco.sh install` is safe - it won't overwrite existing config files, and iptables rules are deduplicated.
+
+### Service management
+
+```bash
+sudo systemctl status choco        # check status
+sudo systemctl restart choco       # restart after config changes
+sudo journalctl -u choco -f        # follow logs
+```
+
+### Development
+
+For local development and testing, create a venv in the repo directory:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+choco                              # or: choco /path/to/config.yaml
 ```
+
+Run tests with `./choco.sh test` (extra args forwarded to pytest, e.g. `./choco.sh test -k test_kotekan`).
 
 ## Configuration
 
@@ -45,13 +64,7 @@ choco is configured via a `config.yaml` file and a config directory containing n
 
 ### `config.yaml`
 
-Copy the template and edit it:
-
-```bash
-cp config.yaml.template config.yaml
-```
-
-The template contains all settings with defaults and comments:
+The install script creates `/etc/choco/config.yaml` from the template. Edit it:
 
 ```yaml
 server:
@@ -74,7 +87,7 @@ ldap:
   bind_password:
 ```
 
-`config.yaml` is gitignored (it contains secrets). Only `config.yaml.template` is checked in.
+`config.yaml` contains secrets and is chmod 600. Only `config.yaml.template` is checked into the repo.
 
 #### LDAP Authentication (FreeIPA)
 
@@ -82,10 +95,10 @@ choco authenticates against a FreeIPA LDAP directory. FreeIPA does not allow ano
 
 ### Config Directory
 
-The config directory is the source of truth for which nodes choco manages and what their desired configs should be.
+The config directory (`/etc/choco/configs/`) is the source of truth for which nodes choco manages and what their desired configs should be.
 
 ```
-configs/
+/etc/choco/configs/
 ├── nodes.yaml          # Node registry
 ├── vars.yaml           # (optional) Shared Jinja2 template variables
 ├── cx/
@@ -117,22 +130,18 @@ num_elements: {{ n_elem }}
 log_level: info
 ```
 
-These files can be edited directly on disk — choco watches for changes and picks them up automatically.
+These files can be edited directly on disk - choco watches for changes and picks them up automatically.
 
 ## Running
 
-```bash
-./choco.sh run
-```
+After installation, choco runs as a systemd service. Open `https://<hostname>` in a browser and log in with your LDAP credentials.
 
-Or manually:
+To run manually (e.g. for debugging):
 
 ```bash
-source .venv/bin/activate
-choco                          # or: choco /path/to/config.yaml
+sudo systemctl stop choco
+/opt/choco/.venv/bin/choco /etc/choco/config.yaml
 ```
-
-Then open `http://localhost:5000` in a browser. You'll be prompted to log in with your LDAP credentials.
 
 ## Web UI
 
@@ -141,18 +150,18 @@ Then open `http://localhost:5000` in a browser. You'll be prompted to log in wit
 The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and an Edit link.
 
 Status indicators:
-- **Green (up)** — kotekan is running and config matches the desired state
-- **Orange (drift)** — kotekan is running but its config differs from the desired state
-- **Red (down)** — kotekan is unreachable or not running
-- **Grey (unknown)** — not yet polled
+- **Green (up)** - kotekan is running and config matches the desired state
+- **Orange (drift)** - kotekan is running but its config differs from the desired state
+- **Red (down)** - kotekan is unreachable or not running
+- **Grey (unknown)** - not yet polled
 
-Status updates are pushed to the browser in real time via WebSockets — no need to refresh.
+Status updates are pushed to the browser in real time via WebSockets - no need to refresh.
 
 ### Node Edit
 
 Click Edit on a node to manage its settings:
-- **Config selector** — which desired config file to use for this node.
-- **Config editor** — edit the desired kotekan config YAML. "Save & Push" saves to disk and pushes to the node. "Re-push Current" re-pushes without editing.
+- **Config selector** - which desired config file to use for this node.
+- **Config editor** - edit the desired kotekan config YAML. "Save & Push" saves to disk and pushes to the node. "Re-push Current" re-pushes without editing.
 
 ## How Sync Works
 
@@ -166,7 +175,7 @@ A background process runs continuously:
 
 Config pushes (triggered from the web UI) stop kotekan and restart it with the desired config via `POST /start`.
 
-The config directory is also watched for local file changes — editing a YAML file on disk triggers an immediate reload and auto-push to all affected nodes.
+The config directory is also watched for local file changes - editing a YAML file on disk triggers an immediate reload and auto-push to all affected nodes.
 
 ## Tests
 

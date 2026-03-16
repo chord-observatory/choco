@@ -1,0 +1,10 @@
+<tr><th>Status</th>
+    <td>
+        <span class="status-badge status-{{ node.status.value }}">
+            {{ node.status.value }}
+        </span>
+        {% if node.error %} — {{ node.error }}{% endif %}
+    </td>
+</tr>
+<tr><th>Version</th><td>{{ node.version or "—" }}</td></tr>
+<tr><th>Last Seen</th><td>{{ node.last_seen_ago or "Never" }}</td></tr>

@@ -7,17 +7,12 @@
 <table>
     <tbody>
         <tr><th>Host</th><td>{{ node.host }}:{{ node.port }}</td></tr>
-        <tr>
-            <th>Status</th>
-            <td>
-                <span class="status-badge status-{{ node.status.value }}">
-                    {{ node.status.value }}
-                </span>
-                {% if node.error %} — {{ node.error }}{% endif %}
-            </td>
-        </tr>
-        <tr><th>Version</th><td>{{ node.version or "—" }}</td></tr>
-        <tr><th>Last Seen</th><td>{{ node.last_seen_ago or "Never" }}</td></tr>
+        <tbody id="node-status"
+               hx-get="/partials/node-status/{{ node_key }}"
+               hx-trigger="load, every 0.5s"
+               hx-swap="innerHTML">
+            {% include "_node_status.html" %}
+        </tbody>
         <tr><th>Config File</th><td>
             <form method="post" style="display: flex; align-items: center; gap: 0.5em; margin: 0;">
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">

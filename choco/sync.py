@@ -17,7 +17,7 @@ from .state import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POLL_INTERVAL = 10  # seconds
+DEFAULT_POLL_INTERVAL = 5 # seconds
 DEFAULT_RESTART_TIMEOUT = 10 # seconds
 
 class ConfigFileHandler(FileSystemEventHandler):
