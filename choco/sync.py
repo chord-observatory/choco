@@ -1,6 +1,7 @@
 """Background sync loop: polls kotekan instances and reconciles config."""
 
 import collections
+import copy
 import logging
 import time
 
@@ -18,7 +19,7 @@ from .state import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 5 # seconds
-DEFAULT_RESTART_TIMEOUT = 10 # seconds
+DEFAULT_KOTEKAN_RESTART_TIMEOUT = 10 # seconds
 
 class ConfigFileHandler(FileSystemEventHandler):
     """Watch the configs directory for changes and trigger a reload."""
@@ -26,20 +27,23 @@ class ConfigFileHandler(FileSystemEventHandler):
     def __init__(self, sync_loop: "SyncLoop"):
         self._sync_loop = sync_loop
 
-    def on_modified(self, event):
-        if event.src_path.endswith((".yaml", ".yml", ".j2")):
-            logger.info(f"Config file changed: {event.src_path}")
+    def _handle(self, event, action):
+        path = event.src_path
+        if path.endswith((".yaml", ".yml", ".j2")):
+            logger.info(f"Config file {action}: {path}")
             self._sync_loop.on_config_changed()
+        elif path.endswith(".json") and "/.updatable/" in path:
+            logger.info(f"Updatable config file {action}: {path}")
+            self._sync_loop.on_updatable_changed(path)
+
+    def on_modified(self, event):
+        self._handle(event, "changed")
 
     def on_created(self, event):
-        if event.src_path.endswith((".yaml", ".yml", ".j2")):
-            logger.info(f"Config file created: {event.src_path}")
-            self._sync_loop.on_config_changed()
+        self._handle(event, "created")
 
     def on_deleted(self, event):
-        if event.src_path.endswith((".yaml", ".yml", ".j2")):
-            logger.info(f"Config file deleted: {event.src_path}")
-            self._sync_loop.on_config_changed()
+        self._handle(event, "deleted")
 
 
 class SyncLoop:
@@ -69,6 +73,27 @@ class SyncLoop:
             self._observer.stop()
             self._observer.join()
 
+    def on_updatable_changed(self, path: str):
+        """Called when an updatable config JSON file changes on disk."""
+        from pathlib import Path
+        updatable_dir = self.registry.configs_dir / ".updatable"
+        try:
+            rel = Path(path).relative_to(updatable_dir)
+            node_key = str(rel.with_suffix(""))
+        except ValueError:
+            return
+        node = self.registry.get_node(node_key)
+        if node is None:
+            logger.warning(f"Updatable config changed for unknown node: {node_key}")
+            return
+        stored = self.registry.updatable_store.get(node_key)
+        if not stored:
+            return
+        for endpoint, values in stored.items():
+            logger.info(f"Updatable config changed on disk for {node_key} at /{endpoint}")
+            if not node.update_config(f"/{endpoint}", values):
+                logger.warning(f"Failed to push updatable config /{endpoint} to {node_key}")
+
     def on_config_changed(self):
         """Called when a config file changes on disk. Auto-pushes changed configs."""
         old_configs = self.registry.config_store.desired_configs
@@ -76,7 +101,7 @@ class SyncLoop:
         self.registry._reload_config_overrides()
         self._emit("config_reloaded", {})
 
-        # Push changed configs to affected nodes (fire-and-forget — the poll
+        # Push changed configs to affected nodes (fire-and-forget - the poll
         # loop and per-node locks handle convergence)
         new_configs = self.registry.config_store.desired_configs
         changed = {k for k in new_configs if new_configs.get(k) != old_configs.get(k)}
@@ -123,6 +148,7 @@ class SyncLoop:
             return
         else:
             probe = node.get_status()
+            node.error = None
 
             if probe == NodeStatus.DOWN:
                 node.status = NodeStatus.DOWN
@@ -132,15 +158,11 @@ class SyncLoop:
             if probe == NodeStatus.UNKNOWN:
                 node.status = NodeStatus.UNKNOWN
                 node.error = "Unknown State"
+                return
 
             node.last_seen = time.time()
             node.version = node.get_version()
 
-            if probe == NodeStatus.IDLE:
-                node.status = NodeStatus.IDLE
-                node.error = "Not running" # not an error necessarily
-
-            node.error = None
 
             # Try to validate the node is running the correct config.
 
@@ -151,14 +173,22 @@ class SyncLoop:
                 return
 
             actual = node.get_config()
-            if actual is None:
-                node.error = "Unable to get remote node config"
 
+            if probe == NodeStatus.IDLE and actual is None:
+                # Node config route 404's when idle, we should try to update
+                node.status = NodeStatus.IDLE
+                node.error = "Not running" # not an error necessarily
+            elif actual is None:
+                # Something has gone wrong
+                node.status = NodeStatus.UNKNOWN
+                node.error = "Unable to get remote node config; status indeterminate."
+                return
+                
             if strip_updatable_values(actual) == strip_updatable_values(desired):
                 # Base config matches.
                 if actual is not None:
                     node.status = NodeStatus.UP
-                    # Also sync any stored updatable config values.
+                    # Also set updatable config values
                     self._sync_updatable(key, node, actual)
             else:
                 logger.info(f"Config drift detected on {key}, pushing desired config")
@@ -202,6 +232,20 @@ class SyncLoop:
             node.error = f"No config '{config_name}'"
             return False
 
+        # Merge stored updatable values into the config so kotekan boots
+        # with the correct values (no window with stale defaults).
+        desired = copy.deepcopy(desired)
+        stored = self.registry.updatable_store.get(key)
+        if stored:
+            config_blocks = find_updatable_blocks(desired)
+            for endpoint, values in stored.items():
+                if endpoint in config_blocks:
+                    parts = endpoint.split("/")
+                    target = desired
+                    for part in parts:
+                        target = target[part]
+                    target.update(values)
+
         probe = node.get_status()
         if probe == NodeStatus.DOWN :
             logger.warning(f"Unable to send config to {key} due to kotekan down")
@@ -209,16 +253,18 @@ class SyncLoop:
             return False
         else :
             # Kill the running instance; the daemon restarts kotekan, then we
-            # provide the new config via /start.
+            # provide the new config via /start. We should always restart the
+            # process to ensure kotekan is booting up cleanly (killing IDLE, UP,
+            # and UNKNOWN is intentional here).
             logger.info(f"Sending /kill to {key}")
             node.kill()
 
         # Wait for the daemon to restart kotekan into idle state.
         # After kill, kotekan may be briefly unreachable before the
-        # daemon restarts it — that's expected, keep waiting.
+        # daemon restarts it - that's expected, keep waiting.
         logger.info(f"Waiting for {key} to restart into idle state")
         for _ in range(10):
-            gevent.sleep(DEFAULT_RESTART_TIMEOUT//10)
+            gevent.sleep(DEFAULT_KOTEKAN_RESTART_TIMEOUT//10)
             probe = node.get_status()
             if probe == NodeStatus.IDLE:
                 break
@@ -239,17 +285,9 @@ class SyncLoop:
             logger.info(f"Successfully pushed config to {key}")
             node.status = NodeStatus.UP
             node.error = None
-            # Re-apply stored updatable config values after restart.
-            stored = self.registry.updatable_store.get(key)
-            if stored:
-                for endpoint, values in stored.items():
-                    if not node.update_config(f"/{endpoint}", values):
-                        logger.warning(
-                            f"Failed to re-apply updatable config /{endpoint} to {key}"
-                        )
         else:
             logger.error(f"Failed to push config to {key}")
-            node.status = NodeStatus.DOWN
+            node.status = NodeStatus.UNKNOWN # Flag state as unknown until next time it is polled.
             node.error = "Failed to push config via /start"
         return success
 
@@ -262,7 +300,8 @@ class SyncLoop:
         for endpoint, values in stored.items():
             if live_blocks.get(endpoint) != values:
                 logger.info(f"Updatable config drift on {key} at /{endpoint}")
-                node.update_config(f"/{endpoint}", values)
+                if not node.update_config(f"/{endpoint}", values):
+                    logger.warning(f"Failed to sync updatable config /{endpoint} to {key}")
 
     def _emit(self, event: str, data: dict):
         if self.socketio:

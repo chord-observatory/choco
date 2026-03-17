@@ -14,11 +14,13 @@ Kotekan itself is deployed and managed on nodes by Ansible. choco only handles m
 
 ## Installation
 
+Requires root (uses sudo internally):
+
 ```bash
 git clone <this repo>
 cd choco
 
-./choco.sh install   # install app, configure iptables, start systemd service
+sudo ./choco.sh install            # install system + local dev venv, configure iptables, start service
 sudo $EDITOR /etc/choco/config.yaml  # edit LDAP settings + secret_key
 sudo systemctl restart choco
 ```
@@ -27,15 +29,17 @@ This installs choco as a system service with the following layout:
 
 | Path | Contents |
 |---|---|
-| `/opt/choco/.venv/` | Python virtual environment with choco installed |
+| `/opt/choco/.venv/` | System Python venv with choco installed |
 | `/etc/choco/config.yaml` | choco configuration (chmod 600) |
-| `/etc/choco/configs/` | Kotekan config files (nodes.yaml, group dirs) |
+| `/etc/choco/configs/` | Kotekan config files (nodes.yaml, group dirs, `.updatable/`) |
 
 The install script also:
-- Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080
+- Creates a local `.venv` in the repo directory (editable install, owned by invoking user) for development
+- Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
+- Seeds `/etc/choco/configs/` from the repo's `configs/` directory on first install
 
-Re-running `./choco.sh install` is safe - it won't overwrite existing config files, and iptables rules are deduplicated.
+Re-running `sudo ./choco.sh install` is safe - it won't overwrite existing config files, and iptables rules are deduplicated.
 
 ### Service management
 
@@ -45,18 +49,24 @@ sudo systemctl restart choco       # restart after config changes
 sudo journalctl -u choco -f        # follow logs
 ```
 
-### Development
-
-For local development and testing, create a venv in the repo directory:
+### Running manually
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-choco                              # or: choco /path/to/config.yaml
+./choco.sh run                     # run from system install (/opt/choco)
+./choco.sh run local               # run from local repo code (for development)
 ```
 
-Run tests with `./choco.sh test` (extra args forwarded to pytest, e.g. `./choco.sh test -k test_kotekan`).
+Both will warn if the systemd service is already running.
+
+### Development
+
+The install script creates a local `.venv` with an editable install, so code changes in the repo are picked up immediately:
+
+```bash
+./choco.sh run local               # run local code against /etc/choco/config.yaml
+./choco.sh test                    # run tests (extra args forwarded to pytest)
+./choco.sh test -k test_kotekan   # run specific tests
+```
 
 ## Configuration
 
@@ -101,6 +111,9 @@ The config directory (`/etc/choco/configs/`) is the source of truth for which no
 /etc/choco/configs/
 ├── nodes.yaml          # Node registry
 ├── vars.yaml           # (optional) Shared Jinja2 template variables
+├── .updatable/         # Per-node updatable config overrides (JSON)
+│   └── cx/
+│       └── cx27.json   # Updatable values for cx27
 ├── cx/
 │   └── cx27.yaml       # Desired kotekan config for cx27
 └── recv/
@@ -131,6 +144,16 @@ log_level: info
 ```
 
 These files can be edited directly on disk - choco watches for changes and picks them up automatically.
+
+#### Updatable Config Overrides
+
+Kotekan configs can contain updatable blocks - sections marked with `kotekan_update_endpoint` that can be changed at runtime without restarting kotekan. When updatable values are set (via the web UI or by editing files on disk), they are stored as JSON files under `.updatable/<group>/<node>.json`:
+
+```json
+{"updatable_config/gains": {"start_time": 1234, "coeff": 1.0}}
+```
+
+When a config is pushed, stored updatable values are merged into the config before sending to kotekan, so it boots with the correct values immediately. These files are also watched - editing them on disk triggers an immediate push of the updatable values to the running kotekan instance (without a restart).
 
 ## Running
 
@@ -173,9 +196,11 @@ A background process runs continuously:
 4. If kotekan is unreachable, the node is marked as down
 5. Any status change is pushed to all connected browsers via WebSocket
 
-Config pushes (triggered from the web UI) stop kotekan and restart it with the desired config via `POST /start`.
+Config pushes (triggered by drift detection, the web UI, or file changes on disk) kill kotekan and restart it with the desired config via `POST /start`. Stored updatable config values are merged into the config before sending, so kotekan boots with the correct values.
 
-The config directory is also watched for local file changes - editing a YAML file on disk triggers an immediate reload and auto-push to all affected nodes.
+The config directory is watched for file changes:
+- **YAML/J2 files** - triggers a config reload and auto-push (kill + restart) to all affected nodes
+- **`.updatable/` JSON files** - triggers an immediate push of updatable values to the running kotekan instance (no restart)
 
 ## Tests
 
