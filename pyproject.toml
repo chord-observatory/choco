@@ -33,5 +33,8 @@ choco = "choco.app:main"
 [tool.setuptools.packages.find]
 include = ["choco*"]
 
+[tool.setuptools.package-data]
+choco = ["templates/*.html", "static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
