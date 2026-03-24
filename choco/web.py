@@ -40,8 +40,8 @@ def _registry():
     return current_app.config["registry"]
 
 
-def _sync_loop():
-    return current_app.config["sync_loop"]
+def _orchestrator():
+    return current_app.config["orchestrator"]
 
 
 # --- Authentication routes ---
@@ -95,13 +95,13 @@ def logout():
 @login_required
 def dashboard():
     registry = _registry()
-    return render_template("dashboard.html", nodes=registry.nodes, registry=registry)
+    return render_template("dashboard.html", nodes=registry.nodes)
 
 
 @bp.route("/edit/<path:node_key>", methods=["GET", "POST"])
 @login_required
 def node_edit(node_key):
-    """Edit config settings for a node."""
+    """Edit base config or updatable config for a node."""
     registry = _registry()
     node = registry.get_node(node_key)
     if node is None:
@@ -110,31 +110,24 @@ def node_edit(node_key):
 
     if request.method == "POST":
         _check_csrf()
-        action = request.form.get("action", "save")
+        orchestrator = _orchestrator()
+        action = request.form.get("action", "push_config")
 
-        if action == "save":
-            config_name = request.form.get("config", "").strip()
-            registry.set_config_name(node_key, config_name or node_key)
-            flash(f"Settings saved for {node_key}", "success")
-
-        elif action == "push_config":
-            success = _sync_loop().push_config(node_key)
-            if success:
-                flash(f"Config pushed to {node_key}", "success")
-            else:
-                flash(f"Failed to push config to {node_key}", "error")
+        if action == "push_config":
+            orchestrator.submit_resync(node_key)
+            flash(f"Config re-push queued for {node_key}", "success")
 
         elif action == "save_config":
             content = request.form.get("config_content", "")
-            config_name = registry.get_config_name(node_key)
             try:
-                registry.config_store.save_raw(config_name, content)
+                node.render(content)
             except Exception as e:
                 flash(f"Invalid config: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            flash(f"Config saved for {node_key}.", "success")
+            orchestrator.submit_base_config(node_key, content)
+            flash(f"Config change queued for {node_key}.", "success")
 
-        elif action == "update_config":
+        elif action == "update_config":  # updatable_config change
             endpoint = request.form.get("endpoint", "")
             raw_json = request.form.get("updatable_content", "")
             try:
@@ -142,17 +135,12 @@ def node_edit(node_key):
             except json.JSONDecodeError as e:
                 flash(f"Invalid JSON: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            if node.update_config(f"/{endpoint}", values):
-                registry.updatable_store.save(node_key, endpoint, values)
-                flash(f"Updated /{endpoint}", "success")
-            else:
-                flash(f"Failed to update /{endpoint}", "error")
+            orchestrator.submit_updatable_config(node_key, endpoint, values)
+            flash(f"Update queued for /{endpoint}", "success")
 
         return redirect(url_for("web.node_edit", node_key=node_key))
 
-    config_name = registry.get_config_name(node_key)
-    config_content = registry.config_store.get_raw_content(config_name) or ""
-    config_filename = registry.get_config_filename(node_key)
+    config_content = node.base_content or ""
 
     # Extract updatable config blocks from the live config.
     # Pre-serialize to compact JSON strings so Jinja2 auto-escaping
@@ -168,12 +156,8 @@ def node_edit(node_key):
         "edit.html",
         node=node,
         node_key=node_key,
-        config_name=config_name,
-        config_filename=config_filename,
-        config_names=registry.config_store.config_names,
         config_content=config_content,
         updatable_json=updatable_json,
-        registry=registry,
     )
 
 
@@ -199,4 +183,78 @@ def partial_node_status(node_key):
 @login_required
 def partial_dashboard_table():
     registry = _registry()
-    return render_template("_dashboard_table.html", nodes=registry.nodes, registry=registry)
+    return render_template("_dashboard_table.html", nodes=registry.nodes)
+
+
+# --- JSON API endpoints for queue-based updates ---
+
+@bp.route("/update/<group>", methods=["POST"])
+@login_required
+def update_group(group):
+    """Queue a config change for all nodes in a group."""
+    registry = _registry()
+    orchestrator = _orchestrator()
+
+    # Find a node in the group (for validation and to confirm group exists).
+    sample_node = next(
+        (n for n in registry.nodes.values() if n.group == group), None
+    )
+    if sample_node is None:
+        return {"error": f"Group '{group}' not found"}, 404
+
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "")
+
+    if action == "base_config":
+        content = data.get("config_content", "")
+        try:
+            sample_node.render(content)
+        except Exception as e:
+            return {"error": f"Invalid config: {e}"}, 400
+        orchestrator.submit_group_base_config(group, content)
+        return {"status": "queued", "group": group, "action": action}
+
+    if action == "updatable_config":
+        endpoint = data.get("endpoint", "")
+        values = data.get("values")
+        if not endpoint or values is None:
+            return {"error": "endpoint and values are required"}, 400
+        orchestrator.submit_group_updatable_config(group, endpoint, values)
+        return {"status": "queued", "group": group, "action": action}
+
+    return {"error": f"Unknown action '{action}'"}, 400
+
+
+@bp.route("/update/<group>/<node>", methods=["POST"])
+@login_required
+def update_node(group, node):
+    """Queue a config change for a single node."""
+    registry = _registry()
+    orchestrator = _orchestrator()
+    node_key = f"{group}/{node}"
+
+    node_obj = registry.get_node(node_key)
+    if node_obj is None:
+        return {"error": f"Node '{node_key}' not found"}, 404
+
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "")
+
+    if action == "base_config":
+        content = data.get("config_content", "")
+        try:
+            node_obj.render(content)
+        except Exception as e:
+            return {"error": f"Invalid config: {e}"}, 400
+        orchestrator.submit_base_config(node_key, content)
+        return {"status": "queued", "node": node_key, "action": action}
+
+    if action == "updatable_config":
+        endpoint = data.get("endpoint", "")
+        values = data.get("values")
+        if not endpoint or values is None:
+            return {"error": "endpoint and values are required"}, 400
+        orchestrator.submit_updatable_config(node_key, endpoint, values)
+        return {"status": "queued", "node": node_key, "action": action}
+
+    return {"error": f"Unknown action '{action}'"}, 400

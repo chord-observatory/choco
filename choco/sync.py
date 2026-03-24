@@ -1,9 +1,25 @@
-"""Background sync loop: polls kotekan instances and reconciles config."""
+"""Queue-based sync system for pushing configs to kotekan nodes.
 
-import collections
-import copy
+Architecture:
+
+    Input Queue (serialized) --> Per-Node Queues (FIFO, on Node) --> Worker Pool
+
+Changes enter through the single serialized input queue, which fans them out
+to per-node queues (each Node holds its own).  A pool of worker greenlets
+scans nodes; when a worker finds an unlocked, non-empty queue it locks it,
+drains all pending changes (writing base configs to YAML files and updatable
+configs to the JSON store), then syncs the result to the remote kotekan
+instance: a full restart (kill -> start) if any base-config changes were
+applied, or just updatable-endpoint POSTs otherwise.
+
+Periodic polling adds POLL items for every node so remote drift is detected
+even when no local changes are made.
+"""
+
 import logging
 import time
+from dataclasses import dataclass
+from enum import Enum
 
 import gevent
 from gevent.lock import BoundedSemaphore
@@ -18,23 +34,83 @@ from .state import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POLL_INTERVAL = 5 # seconds
-DEFAULT_KOTEKAN_RESTART_TIMEOUT = 10 # seconds
+
+# --- Queue data types ---
+
+class ChangeType(Enum):
+    """Types of changes that flow through the queue system."""
+    BASE_CONFIG = "base_config"
+    UPDATABLE_CONFIG = "updatable_config"
+    POLL = "poll"
+    RESYNC = "resync"
+
+
+@dataclass
+class ChangeItem:
+    """A single queued change destined for one node."""
+    type: ChangeType
+    node_key: str
+    config_content: str | None = None  # BASE_CONFIG: base config text (YAML/Jinja2)
+    endpoint: str | None = None        # UPDATABLE_CONFIG: REST path
+    values: dict | None = None         # UPDATABLE_CONFIG: JSON payload
+
+
+# --- Serialized input queue ---
+
+class InputQueue:
+    """Single serialized entry point that distributes items to node queues.
+
+    Every public method acquires the same lock, so only one caller submits
+    at a time.
+    """
+
+    def __init__(self, registry: Registry):
+        self._lock = BoundedSemaphore()
+        self.registry = registry
+
+    def submit_node(self, item: ChangeItem):
+        """Submit a change for one node."""
+        with self._lock:
+            node = self.registry.get_node(item.node_key)
+            if node is not None:
+                node.queue_put(item)
+            else:
+                logger.warning(f"No node for key {item.node_key}")
+
+    def submit_group(self, group: str, make_item):
+        """Submit a change for every node in *group*.
+
+        *make_item(node_key)* is called once per matching node to create the
+        ChangeItem.
+        """
+        with self._lock:
+            for key, node in self.registry.nodes.items():
+                if node.group == group:
+                    node.queue_put(make_item(key))
+
+    def submit_all(self, make_item):
+        """Submit a change for every registered node."""
+        with self._lock:
+            for key, node in self.registry.nodes.items():
+                node.queue_put(make_item(key))
+
+
+# --- File-system watcher ---
 
 class ConfigFileHandler(FileSystemEventHandler):
-    """Watch the configs directory for changes and trigger a reload."""
+    """Detect on-disk config changes and feed them into the queue."""
 
-    def __init__(self, sync_loop: "SyncLoop"):
-        self._sync_loop = sync_loop
+    def __init__(self, orchestrator: "Orchestrator"):
+        self._orchestrator = orchestrator
 
     def _handle(self, event, action):
         path = event.src_path
         if path.endswith((".yaml", ".yml", ".j2")):
             logger.info(f"Config file {action}: {path}")
-            self._sync_loop.on_config_changed()
+            self._orchestrator.on_file_changed(path)
         elif path.endswith(".json") and "/.updatable/" in path:
             logger.info(f"Updatable config file {action}: {path}")
-            self._sync_loop.on_updatable_changed(path)
+            self._orchestrator.on_file_changed(path)
 
     def on_modified(self, event):
         self._handle(event, "changed")
@@ -46,23 +122,41 @@ class ConfigFileHandler(FileSystemEventHandler):
         self._handle(event, "deleted")
 
 
-class SyncLoop:
-    """Background loop that polls kotekan instances and reconciles state."""
+# --- Sync loop (orchestrator) ---
+
+class Orchestrator:
+    """Manages the input queue and worker pool.
+
+    Each :class:`Node` holds its own change queue.  Call :meth:`run` to
+    start the worker pool and periodic polling (blocks until :meth:`stop`
+    is called).  Use the ``submit_*`` helpers to feed changes from web
+    routes or other callers.
+    """
 
     def __init__(self, registry: Registry, socketio=None,
-                 poll_interval: float = DEFAULT_POLL_INTERVAL):
+                 poll_interval: int = 5, restart_timeout: int = 10,
+                 num_workers: int = 4):
         self.registry = registry
         self.socketio = socketio
         self.poll_interval = poll_interval
+        self.restart_timeout = restart_timeout
+        self.num_workers = num_workers
         self._observer: Observer | None = None
         self._running = False
-        self._push_locks: dict[str, BoundedSemaphore] = collections.defaultdict(BoundedSemaphore)
+
+        self.input_queue = InputQueue(registry)
+
+        # Give each node a gevent-aware queue lock.
+        for node in registry.nodes.values():
+            node._queue_lock = BoundedSemaphore()
+
+    # --- File-watcher callbacks ---
 
     def start_file_watcher(self):
         handler = ConfigFileHandler(self)
         self._observer = Observer()
         self._observer.schedule(
-            handler, str(self.registry.configs_dir), recursive=True
+            handler, str(self.registry.configs_dir), recursive=True,
         )
         self._observer.daemon = True
         self._observer.start()
@@ -73,211 +167,215 @@ class SyncLoop:
             self._observer.stop()
             self._observer.join()
 
-    def on_updatable_changed(self, path: str):
-        """Called when an updatable config JSON file changes on disk."""
+    def on_file_changed(self, path: str):
+        """Reload the affected node's config from disk and queue a poll.
+
+        If vars.yaml changed, all nodes are re-rendered.
+        """
         from pathlib import Path
-        updatable_dir = self.registry.configs_dir / ".updatable"
+        p = Path(path)
+        configs_dir = self.registry.configs_dir
+
+        # vars.yaml affects all nodes — reload template vars and re-render.
+        if p.name == "vars.yaml":
+            template_vars = self.registry._load_vars()
+            for node in self.registry.nodes.values():
+                node.template_vars = template_vars
+                node.load_config()
+            self._emit("config_reloaded", {})
+            self.input_queue.submit_all(
+                lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
+            )
+            return
+
+        # Resolve path to a node key: strip configs_dir prefix, .updatable/
+        # prefix, and file extension to get <group>/<name>.
         try:
-            rel = Path(path).relative_to(updatable_dir)
-            node_key = str(rel.with_suffix(""))
+            rel = p.relative_to(configs_dir)
         except ValueError:
             return
+        rel_str = str(rel)
+        if rel_str.startswith(".updatable/"):
+            rel = Path(rel_str.removeprefix(".updatable/"))
+        node_key = str(rel.with_suffix(""))
+
         node = self.registry.get_node(node_key)
         if node is None:
-            logger.warning(f"Updatable config changed for unknown node: {node_key}")
             return
-        stored = self.registry.updatable_store.get(node_key)
-        if not stored:
-            return
-        for endpoint, values in stored.items():
-            logger.info(f"Updatable config changed on disk for {node_key} at /{endpoint}")
-            if not node.update_config(f"/{endpoint}", values):
-                logger.warning(f"Failed to push updatable config /{endpoint} to {node_key}")
 
-    def on_config_changed(self):
-        """Called when a config file changes on disk. Auto-pushes changed configs."""
-        old_configs = self.registry.config_store.desired_configs
-        self.registry.config_store.reload()
-        self.registry._reload_config_overrides()
+        node.load_config()
+        node.load_updatable()
         self._emit("config_reloaded", {})
+        self.input_queue.submit_node(
+            ChangeItem(type=ChangeType.POLL, node_key=node_key)
+        )
 
-        # Push changed configs to affected nodes (fire-and-forget - the poll
-        # loop and per-node locks handle convergence)
-        new_configs = self.registry.config_store.desired_configs
-        changed = {k for k in new_configs if new_configs.get(k) != old_configs.get(k)}
-        for key in self.registry.nodes:
-            config_name = self.registry.get_config_name(key)
-            if config_name in changed:
-                logger.info(f"Config '{config_name}' changed on disk, pushing to {key}")
-                gevent.spawn(self.push_config, key)
+    # --- Main loop ---
 
     def run(self):
-        """Main sync loop. Intended to run in a background thread."""
+        """Start the worker pool and periodic polling.  Blocks."""
         self._running = True
         self.start_file_watcher()
+
+        for _ in range(self.num_workers):
+            gevent.spawn(self._worker_loop)
+
         logger.info(
-            f"Sync loop started (polling every {self.poll_interval}s, "
+            f"Sync loop started ({self.num_workers} workers, "
+            f"polling every {self.poll_interval}s, "
             f"{len(self.registry.nodes)} nodes)"
         )
 
         while self._running:
-            self.poll_all()
             gevent.sleep(self.poll_interval)
+            self.input_queue.submit_all(
+                lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
+            )
 
     def stop(self):
         self._running = False
         self.stop_file_watcher()
 
-    def poll_all(self):
-        """Poll every registered node and update state."""
-        for key, node in self.registry.nodes.items():
-            prev_status = node.status
-            self._poll_node(key, node)
-            if node.status != prev_status:
-                self._emit("node_status_changed", {
-                    "node": key,
-                    "status": node.status.value,
-                    "last_seen": node.last_seen_ago,
-                })
+    # --- Worker pool ---
 
-    def _poll_node(self, key: str, node):
-        """Poll a single node: check status and detect config drift."""
-        
+    def _worker_loop(self):
+        """Continuously scan node queues for work."""
+        while self._running:
+            found_work = False
+            for node in self.registry.nodes.values():
+                if not node.queue_try_lock():
+                    continue
+                if node.queue_empty:
+                    node.queue_unlock()
+                    continue
+                try:
+                    self._process_node(node)
+                    found_work = True
+                finally:
+                    node.queue_unlock()
+            if not found_work:
+                gevent.sleep(0.1)
+
+    def _process_node(self, node: Node):
+        """Drain all items from a node's queue, then sync to remote."""
+        had_base_change = False
+
+        # 1. Drain queue -- apply each item to on-disk files.
+        while True:
+            item = node.queue_pop()
+            if item is None:
+                break
+            if item.type == ChangeType.BASE_CONFIG:
+                if item.config_content is not None:
+                    node.save_base(item.config_content)
+                    logger.info(f"Wrote base config for {node.key}")
+                had_base_change = True
+            elif item.type == ChangeType.UPDATABLE_CONFIG:
+                if item.endpoint and item.values is not None:
+                    node.save_updatable(item.endpoint, item.values)
+                    logger.info(f"Wrote updatable config for {node.key} "
+                                f"at /{item.endpoint}")
+            elif item.type == ChangeType.RESYNC:
+                had_base_change = True  # force restart
+            # POLL: no file changes
+
+        # 2. Sync to remote kotekan instance.
+        prev_status = node.status
+        self._sync_node(node, had_base_change)
+        if node.status != prev_status:
+            self._emit("node_status_changed", {
+                "node": node.key,
+                "status": node.status.value,
+                "last_seen": node.last_seen_ago,
+            })
+
+    # --- Remote sync ---
+
+    def _sync_node(self, node: Node, had_base_change: bool):
+        """Compare desired state with the remote node and reconcile."""
         if node.status == NodeStatus.SYNCING:
-            # Waiting for push_config to complete.
             return
+
+        probe = node.get_status()
+        node.error = None
+
+        if probe == NodeStatus.DOWN:
+            node.status = NodeStatus.DOWN
+            node.error = "Unreachable"
+            return
+
+        if probe == NodeStatus.UNKNOWN:
+            node.status = NodeStatus.UNKNOWN
+            node.error = "Unknown state"
+            return
+
+        node.last_seen = time.time()
+        node.version = node.get_version()
+
+        desired = node.desired_config
+        if desired is None:
+            node.error = f"No config file ({node.config_filename})"
+            return
+
+        actual = node.get_config()
+
+        # Node idle with no config -> start it.
+        if probe == NodeStatus.IDLE and actual is None:
+            self._push_config(node, desired)
+            return
+
+        if actual is None:
+            node.status = NodeStatus.UNKNOWN
+            node.error = "Unable to get remote config; status indeterminate."
+            return
+
+        base_drift = (strip_updatable_values(actual)
+                      != strip_updatable_values(desired))
+
+        if had_base_change or base_drift:
+            self._push_config(node, desired)
         else:
-            probe = node.get_status()
-            node.error = None
+            node.status = NodeStatus.UP
+            self._sync_updatable(node, actual)
 
-            if probe == NodeStatus.DOWN:
-                node.status = NodeStatus.DOWN
-                node.error = "Unreachable"
-                return
+    def _push_config(self, node: Node, desired: dict) -> bool:
+        """Kill -> wait for idle -> start with *desired* config.
 
-            if probe == NodeStatus.UNKNOWN:
-                node.status = NodeStatus.UNKNOWN
-                node.error = "Unknown State"
-                return
-
-            node.last_seen = time.time()
-            node.version = node.get_version()
-
-
-            # Try to validate the node is running the correct config.
-
-            config_name = self.registry.get_config_name(key)
-            desired = self.registry.config_store.get_desired_config(config_name)
-            if desired is None:
-                node.error = "No valid desired config"
-                return
-
-            actual = node.get_config()
-
-            if probe == NodeStatus.IDLE and actual is None:
-                # Node config route 404's when idle, we should try to update
-                node.status = NodeStatus.IDLE
-                node.error = "Not running" # not an error necessarily
-            elif actual is None:
-                # Something has gone wrong
-                node.status = NodeStatus.UNKNOWN
-                node.error = "Unable to get remote node config; status indeterminate."
-                return
-                
-            if strip_updatable_values(actual) == strip_updatable_values(desired):
-                # Base config matches.
-                if actual is not None:
-                    node.status = NodeStatus.UP
-                    # Also set updatable config values
-                    self._sync_updatable(key, node, actual)
-            else:
-                logger.info(f"Config drift detected on {key}, pushing desired config")
-                node.status = NodeStatus.SYNCING
-                gevent.spawn(self.push_config, key)
-
-    def push_config(self, key: str) -> bool:
-        """Push the desired config to a node (stop + start with new config).
-
-        Uses a per-node lock so concurrent pushes to different nodes run in
-        parallel, but only one push per node runs at a time.
+        *desired* should already include updatable overrides (as returned
+        by ``Node.desired_config``).
         """
-        node = self.registry.get_node(key)
-        if node is None:
-            logger.error(f"Node {key} not found")
-            return False
-
-        lock = self._push_locks[key]
-        if not lock.acquire(blocking=False):
-            logger.debug(f"Push already in progress for {key}, skipping")
-            return False
-
+        key = node.key
         node.status = NodeStatus.SYNCING
         self._emit("node_status_changed", {
-            "node": key,
-            "status": node.status.value,
+            "node": key, "status": node.status.value,
         })
-        try:
-            return self._push_config(node)
-        finally:
-            lock.release()
-
-    def _push_config(self, node: Node) -> bool:
-        """Internal push implementation (caller must hold the per-node lock)."""
-        key = node.key
-        config_name = self.registry.get_config_name(key)
-        desired = self.registry.config_store.get_desired_config(config_name)
-        if desired is None:
-            logger.warning(f"No config '{config_name}' for {key}")
-            node.status = NodeStatus.UNKNOWN
-            node.error = f"No config '{config_name}'"
-            return False
-
-        # Merge stored updatable values into the config so kotekan boots
-        # with the correct values (no window with stale defaults).
-        desired = copy.deepcopy(desired)
-        stored = self.registry.updatable_store.get(key)
-        if stored:
-            config_blocks = find_updatable_blocks(desired)
-            for endpoint, values in stored.items():
-                if endpoint in config_blocks:
-                    parts = endpoint.split("/")
-                    target = desired
-                    for part in parts:
-                        target = target[part]
-                    target.update(values)
 
         probe = node.get_status()
-        if probe == NodeStatus.DOWN :
-            logger.warning(f"Unable to send config to {key} due to kotekan down")
+        if probe == NodeStatus.DOWN:
+            logger.warning(f"Cannot push config to {key}: kotekan down")
             node.status = probe
+            node.error = "Unreachable"
             return False
-        else :
-            # Kill the running instance; the daemon restarts kotekan, then we
-            # provide the new config via /start. We should always restart the
-            # process to ensure kotekan is booting up cleanly (killing IDLE, UP,
-            # and UNKNOWN is intentional here).
+
+        if probe != NodeStatus.IDLE:
             logger.info(f"Sending /kill to {key}")
             node.kill()
+            logger.info(f"Waiting for {key} to reach idle state")
+            for _ in range(10):
+                gevent.sleep(self.restart_timeout // 10)
+                if node.get_status() == NodeStatus.IDLE:
+                    break
+            else:
+                logger.warning(
+                    f"Timed out waiting for {key} to become idle"
+                )
 
-        # Wait for the daemon to restart kotekan into idle state.
-        # After kill, kotekan may be briefly unreachable before the
-        # daemon restarts it - that's expected, keep waiting.
-        logger.info(f"Waiting for {key} to restart into idle state")
-        for _ in range(10):
-            gevent.sleep(DEFAULT_KOTEKAN_RESTART_TIMEOUT//10)
             probe = node.get_status()
-            if probe == NodeStatus.IDLE:
-                break
-            # UP: kill hasn't taken effect yet; DOWN: daemon hasn't
-            # restarted kotekan yet. Either way, keep waiting.
-        else :
-            logger.warning(f"Timed out waiting for {key} to become idle after kill.")
-
-        probe = node.get_status()
-        if probe != NodeStatus.IDLE :
-            node.status = probe
-            node.error = "Current status is: " + node.status.value + ", failed to push config."
-            return False
+            if probe != NodeStatus.IDLE:
+                node.status = probe
+                node.error = (f"Status is {probe.value}, "
+                              f"failed to push config")
+                return False
 
         logger.info(f"Sending config to {key} via /start")
         success = node.start(desired)
@@ -287,22 +385,75 @@ class SyncLoop:
             node.error = None
         else:
             logger.error(f"Failed to push config to {key}")
-            node.status = NodeStatus.UNKNOWN # Flag state as unknown until next time it is polled.
+            node.status = NodeStatus.UNKNOWN
             node.error = "Failed to push config via /start"
         return success
 
-    def _sync_updatable(self, key: str, node: Node, live_config: dict):
-        """Push any stored updatable config values that differ from live."""
-        stored = self.registry.updatable_store.get(key)
+    def _sync_updatable(self, node: Node, live_config: dict):
+        """Push stored updatable values that differ from the live config."""
+        stored = node.updatable_config
         if not stored:
             return
         live_blocks = find_updatable_blocks(live_config)
         for endpoint, values in stored.items():
             if live_blocks.get(endpoint) != values:
-                logger.info(f"Updatable config drift on {key} at /{endpoint}")
-                if not node.update_config(f"/{endpoint}", values):
-                    logger.warning(f"Failed to sync updatable config /{endpoint} to {key}")
+                logger.info(f"Updatable config drift on {node.key} "
+                            f"at /{endpoint}")
+                if not node.push_updatable(f"/{endpoint}", values):
+                    logger.warning(f"Failed to sync updatable "
+                                   f"/{endpoint} to {node.key}")
 
     def _emit(self, event: str, data: dict):
         if self.socketio:
             self.socketio.emit(event, data, namespace="/")
+
+    # --- Public API (called by web routes) ---
+
+    def submit_base_config(self, node_key: str, config_content: str):
+        """Queue a base-config file change for one node."""
+        self.input_queue.submit_node(ChangeItem(
+            type=ChangeType.BASE_CONFIG,
+            node_key=node_key,
+            config_content=config_content,
+        ))
+
+    def submit_updatable_config(self, node_key: str, endpoint: str,
+                                values: dict):
+        """Queue an updatable-config change for one node."""
+        self.input_queue.submit_node(ChangeItem(
+            type=ChangeType.UPDATABLE_CONFIG,
+            node_key=node_key,
+            endpoint=endpoint,
+            values=values,
+        ))
+
+    def submit_resync(self, node_key: str):
+        """Queue a forced full config re-push for one node."""
+        self.input_queue.submit_node(ChangeItem(
+            type=ChangeType.RESYNC,
+            node_key=node_key,
+        ))
+
+    def submit_group_base_config(self, group: str, config_content: str):
+        """Queue a base-config file change for every node in *group*."""
+        self.input_queue.submit_group(
+            group,
+            lambda key: ChangeItem(
+                type=ChangeType.BASE_CONFIG,
+                node_key=key,
+                config_content=config_content,
+            ),
+        )
+
+    def submit_group_updatable_config(self, group: str, endpoint: str,
+                                      values: dict):
+        """Queue an updatable-config change for every node in *group*."""
+        self.input_queue.submit_group(
+            group,
+            lambda key: ChangeItem(
+                type=ChangeType.UPDATABLE_CONFIG,
+                node_key=key,
+                endpoint=endpoint,
+                values=values,
+            ),
+        )

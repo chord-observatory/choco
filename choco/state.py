@@ -1,9 +1,10 @@
 """Node registry and runtime state tracking."""
 
+import copy
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from collections import deque
 from enum import Enum
 from pathlib import Path
 
@@ -13,14 +14,8 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# Files in configs_dir that are not kotekan configs
-_META_FILES = {"nodes.yaml", "vars.yaml"}
-
 # Config file extensions (order matters: later wins if both exist for same key)
 _CONFIG_SUFFIXES = (".yaml", ".yml", ".j2")
-
-DEFAULT_TIMEOUT = 5  # seconds
-
 
 _UPDATABLE_MARKER = "kotekan_update_endpoint"
 
@@ -35,15 +30,11 @@ def strip_updatable_values(config: dict) -> dict:
     equal.
     """
     out = {}
-
-    # Empty config / nothing to strip.
-    if not config :
+    if not config:
         return out
-
     for key, value in config.items():
         if isinstance(value, dict):
             if _UPDATABLE_MARKER in value:
-                # Keep only the marker so the block still "exists" in both.
                 out[key] = {_UPDATABLE_MARKER: value[_UPDATABLE_MARKER]}
             else:
                 out[key] = strip_updatable_values(value)
@@ -59,7 +50,7 @@ def find_updatable_blocks(config: dict, _prefix: str = "") -> dict[str, dict]:
     ``kotekan_update_endpoint`` key is collected; its path (joined with ``/``)
     becomes the key and the values (without the marker) become the value.
 
-    For cx27.yaml this returns something like::
+    For example, this might return something like::
 
         {"updatable_config/flagging": {"start_time": …, …},
          "updatable_config/gains":    {"start_time": …, …},
@@ -86,30 +77,57 @@ class NodeStatus(Enum):
     SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
 
-@dataclass
 class Node:
-    """A kotekan node managed by choco.
+    """A kotekan instance on the cluster.
 
-    Combines node identity, runtime state, and the HTTP client for
-    communicating with the kotekan REST API on this node.
+    Each node owns its identity (name, group, host, port), its config
+    state (base config file on disk, rendered config, updatable overrides),
+    a FIFO change queue (used by the sync worker pool), and an HTTP
+    client for the kotekan REST API.
+
+    Config lifecycle:
+        - **base_content** — the on-disk file text (YAML or Jinja2)
+        - **rendered_config** — base rendered through Jinja2 and parsed
+        - **updatable_config** — runtime-mutable overrides stored in JSON
+        - **desired_config** — rendered + updatable merged; what gets pushed
+
+    REST methods return ``None`` / ``False`` on connection failure rather
+    than raising, so callers can treat unreachable nodes as a normal state.
+
+    The *configs_dir* and *template_vars* parameters are optional so that
+    the REST client can be used standalone in tests without a config
+    directory.
     """
 
-    name: str
-    group: str
-    host: str
-    port: int = 12048
-    timeout: float = DEFAULT_TIMEOUT
+    def __init__(self, name: str, group: str, host: str,
+                 port: int = 12048, timeout: int = 10, *,
+                 configs_dir: Path | None = None,
+                 template_vars: dict | None = None):
+        # Identity
+        self.name = name
+        self.group = group
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self._base_url = f"http://{host}:{port}"
 
-    # Runtime state (ephemeral, rebuilt from polling)
-    status: NodeStatus = NodeStatus.UNKNOWN
-    last_seen: float | None = None
-    error: str | None = None
-    version: str | None = None
+        # Config state (loaded from disk by load_config / load_updatable)
+        self.configs_dir = configs_dir
+        self.template_vars: dict = template_vars or {}
+        self.base_content: str | None = None
+        self.rendered_config: dict | None = None
+        self._file_suffix: str = ".yaml"
+        self.updatable_config: dict[str, dict] | None = None
 
-    _base_url: str = field(init=False, repr=False)
+        # Runtime state (ephemeral, rebuilt from polling)
+        self.status: NodeStatus = NodeStatus.UNKNOWN
+        self.last_seen: float | None = None
+        self.error: str | None = None
+        self.version: str | None = None
 
-    def __post_init__(self):
-        self._base_url = f"http://{self.host}:{self.port}"
+        # Change queue (used by the sync worker pool)
+        self._queue: deque = deque()
+        self._queue_lock: object | None = None  # set by Orchestrator (gevent semaphore)
 
     @property
     def key(self) -> str:
@@ -126,6 +144,122 @@ class Node:
         if delta < 3600:
             return f"{int(delta / 60)}m ago"
         return f"{int(delta / 3600)}h ago"
+
+    def __repr__(self) -> str:
+        return f"Node({self.key}, {self.host}:{self.port}, {self.status.value})"
+
+    # --- Change queue ---
+
+    def queue_put(self, item):
+        """Append a ChangeItem to this node's queue."""
+        self._queue.append(item)
+
+    def queue_pop(self):
+        """Pop the next ChangeItem, or None if empty."""
+        try:
+            return self._queue.popleft()
+        except IndexError:
+            return None
+
+    def queue_try_lock(self) -> bool:
+        """Try to acquire exclusive access to this node's queue."""
+        if self._queue_lock is None:
+            return False
+        return self._queue_lock.acquire(blocking=False)
+
+    def queue_unlock(self):
+        """Release exclusive access to this node's queue."""
+        if self._queue_lock is not None:
+            self._queue_lock.release()
+
+    @property
+    def queue_empty(self) -> bool:
+        return len(self._queue) == 0
+
+    # --- Config state ---
+
+    @property
+    def config_filename(self) -> str:
+        """Relative path of this node's base config file."""
+        return f"{self.group}/{self.name}{self._file_suffix}"
+
+    @property
+    def desired_config(self) -> dict | None:
+        """Rendered config with updatable overrides applied.
+
+        Computed from the current ``_rendered_config`` and ``_updatable``
+        on every access — no separate cache.  Returns a fresh deep copy
+        safe to mutate, or None if no base config exists.
+        """
+        if self.rendered_config is None:
+            return None
+        desired = copy.deepcopy(self.rendered_config)
+        if self.updatable_config:
+            blocks = find_updatable_blocks(desired)
+            for endpoint, values in self.updatable_config.items():
+                if endpoint in blocks:
+                    target = desired
+                    for part in endpoint.split("/"):
+                        target = target[part]
+                    target.update(values)
+        return desired
+
+    def load_config(self):
+        """Load (or reload) the base config from disk and render it."""
+        if self.configs_dir is None:
+            return
+        for suffix in _CONFIG_SUFFIXES:
+            path = self.configs_dir / self.group / f"{self.name}{suffix}"
+            if path.exists():
+                self._file_suffix = suffix
+                self.base_content = path.read_text()
+                self.rendered_config = self.render(self.base_content)
+                return
+        self.base_content = None
+        self.rendered_config = None
+
+    def load_updatable(self):
+        """Load updatable overrides from the JSON store on disk."""
+        if self.configs_dir is None:
+            self.updatable_config = None
+            return
+        path = self.configs_dir / ".updatable" / self.group / f"{self.name}.json"
+        if not path.exists():
+            self.updatable_config = None
+            return
+        with open(path) as f:
+            self.updatable_config = json.load(f)
+
+    def save_base(self, base_content: str):
+        """Validate, write base config to disk, and update caches."""
+        rendered = self.render(base_content)
+        path = self.configs_dir / self.group / f"{self.name}{self._file_suffix}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(base_content)
+        self.base_content = base_content
+        self.rendered_config = rendered
+
+    def save_updatable(self, endpoint: str, values: dict):
+        """Save updatable values for one endpoint to memory and disk."""
+        if self.updatable_config is None:
+            self.updatable_config = {}
+        self.updatable_config[endpoint] = values
+        if self.configs_dir is not None:
+            path = self.configs_dir / ".updatable" / self.group / f"{self.name}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self.updatable_config, f, indent=2)
+
+    def render(self, base_content: str) -> dict:
+        """Render base config text through Jinja2 and parse as YAML.
+
+        Also serves as validation — raises on invalid content.
+        """
+        rendered = jinja2.Template(base_content).render(self.template_vars)
+        config = yaml.safe_load(rendered)
+        if not isinstance(config, dict):
+            raise ValueError("Config must render to a YAML mapping")
+        return config
 
     # --- Kotekan REST API ---
 
@@ -155,7 +289,7 @@ class Node:
             return NodeStatus.UNKNOWN
 
     def get_config(self) -> dict | None:
-        """Get the full current config. Returns None if unreachable."""
+        """Get the live config from kotekan.  Returns None if unreachable."""
         resp = self._request("GET", "/config")
         if resp is None:
             return None
@@ -165,13 +299,13 @@ class Node:
             logger.warning(f"Failed to parse config JSON from {self._base_url}")
             return None
 
-    def update_config(self, path: str, values: dict) -> bool:
-        """Push a config update to an updatable config block."""
+    def push_updatable(self, path: str, values: dict) -> bool:
+        """Push values to an updatable config endpoint on kotekan."""
         return self._request("POST", path, json=values) is not None
 
-    def start(self, config: dict) -> bool:
-        """Start kotekan with the given config via POST /start."""
-        return self._request("POST", "/start", json=config) is not None
+    def start(self, desired_config: dict) -> bool:
+        """Start kotekan with the desired config via POST /start."""
+        return self._request("POST", "/start", json=desired_config) is not None
 
     def stop(self) -> bool:
         """Stop the running kotekan config."""
@@ -191,186 +325,30 @@ class Node:
         except Exception:
             return None
 
-    def __repr__(self) -> str:
-        return f"Node({self.key}, {self.host}:{self.port}, {self.status.value})"
 
+class Registry:
+    """Node registry: loads node definitions from nodes.yaml and provides lookup.
 
-class ConfigStore:
-    """Manages desired configs stored as YAML/Jinja2 files on disk.
-
-    All config files are rendered through Jinja2 (using vars.yaml as context)
-    and parsed as YAML before being pushed to kotekan as JSON.
-
-    Directory structure:
-        configs_dir/
-            nodes.yaml
-            vars.yaml           (optional shared template variables)
-            <group>/
-                <node_id>.yaml  (or .j2)
+    Each :class:`Node` owns its own config state (base config file,
+    rendered config, updatable overrides).  The registry creates them
+    and loads shared Jinja2 template variables from ``vars.yaml``.
     """
 
-    def __init__(self, configs_dir: Path):
+    def __init__(self, configs_dir: Path, kotekan_timeout: int = 10):
         self.configs_dir = Path(configs_dir)
-        self._desired_configs: dict[str, dict] = {}
-        self._raw_contents: dict[str, str] = {}
-        self._file_suffixes: dict[str, str] = {}
-        self._vars: dict = {}
-        self.reload()
+        self.kotekan_timeout = kotekan_timeout
+        self.nodes: dict[str, Node] = {}
+        self._load_nodes()
 
-    def _load_vars(self):
+    def _load_vars(self) -> dict:
         vars_file = self.configs_dir / "vars.yaml"
         if vars_file.exists():
             with open(vars_file) as f:
-                self._vars = yaml.safe_load(f) or {}
-        else:
-            self._vars = {}
-
-    def reload(self):
-        """Reload all desired configs from disk."""
-        self._desired_configs.clear()
-        self._raw_contents.clear()
-        self._file_suffixes.clear()
-        self._load_vars()
-
-        for config_file in self.configs_dir.rglob("*"):
-            if not config_file.is_file():
-                continue
-            if config_file.name in _META_FILES:
-                continue
-            suffix = config_file.suffix
-            if suffix not in _CONFIG_SUFFIXES:
-                continue
-            rel = config_file.relative_to(self.configs_dir)
-            key = str(rel.with_suffix(""))
-            try:
-                raw = config_file.read_text()
-                self._raw_contents[key] = raw
-                self._file_suffixes[key] = suffix
-                config = self._render(raw)
-                self._desired_configs[key] = config
-                logger.debug(f"Loaded desired config for {key}")
-            except Exception as e:
-                logger.error(f"Failed to load config {config_file}: {e}")
-
-    def _render(self, raw: str) -> dict:
-        """Render Jinja2 template with shared vars and parse as YAML."""
-        rendered = jinja2.Template(raw).render(self._vars)
-        config = yaml.safe_load(rendered)
-        if not isinstance(config, dict):
-            raise ValueError("Config must render to a YAML mapping")
-        return config
-
-    @property
-    def desired_configs(self) -> dict[str, dict]:
-        """All desired configs (config_name -> parsed config dict)."""
-        return dict(self._desired_configs)
-
-    @property
-    def config_names(self) -> list[str]:
-        """All available config names."""
-        return list(self._desired_configs.keys())
-
-    def get_desired_config(self, config_name: str) -> dict | None:
-        return self._desired_configs.get(config_name)
-
-    def get_raw_content(self, config_name: str) -> str | None:
-        """Get the raw file content (for editing in the web UI)."""
-        return self._raw_contents.get(config_name)
-
-    def get_file_suffix(self, config_name: str) -> str:
-        """Get the file extension for a config (e.g. '.yaml' or '.j2')."""
-        return self._file_suffixes.get(config_name, ".yaml")
-
-    def save_raw(self, config_name: str, content: str):
-        """Save raw content to disk, render, and update caches."""
-        suffix = self._file_suffixes.get(config_name, ".yaml")
-        path = self.configs_dir / f"{config_name}{suffix}"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        config = self._render(content)
-        path.write_text(content)
-        self._raw_contents[config_name] = content
-        self._desired_configs[config_name] = config
-
-    def save_config(self, config_name: str, config: dict):
-        """Save a config dict as YAML."""
-        path = self.configs_dir / f"{config_name}.yaml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        raw = yaml.dump(config, default_flow_style=False)
-        path.write_text(raw)
-        self._raw_contents[config_name] = raw
-        self._file_suffixes[config_name] = ".yaml"
-        self._desired_configs[config_name] = config
-
-
-class UpdatableStore:
-    """Persists per-node updatable config values as JSON files.
-
-    Storage layout::
-
-        configs_dir/.updatable/<group>/<node>.json
-
-    Each file maps endpoint paths to their current values, e.g.::
-
-        {"updatable_config/gains": {"start_time": …, …}}
-
-    Files are only created when a user explicitly sets values via the web UI.
-    """
-
-    def __init__(self, configs_dir: Path):
-        self._dir = Path(configs_dir) / ".updatable"
-
-    def _path(self, node_key: str) -> Path:
-        return self._dir / f"{node_key}.json"
-
-    def get(self, node_key: str) -> dict[str, dict] | None:
-        """Load stored updatable values for a node.  Returns None if no file."""
-        path = self._path(node_key)
-        if not path.exists():
-            return None
-        with open(path) as f:
-            return json.load(f)
-
-    def save(self, node_key: str, endpoint: str, values: dict):
-        """Merge-save one endpoint's values into the node's store file."""
-        existing = self.get(node_key) or {}
-        existing[endpoint] = values
-        self._write(node_key, existing)
-
-    def save_all(self, node_key: str, blocks: dict[str, dict]):
-        """Overwrite all stored blocks for a node."""
-        self._write(node_key, blocks)
-
-    def _write(self, node_key: str, data: dict):
-        path = self._path(node_key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-
-
-class Registry:
-    """Node registry: loads node definitions and tracks their state."""
-
-    def __init__(self, configs_dir: Path):
-        self.configs_dir = Path(configs_dir)
-        self.nodes: dict[str, Node] = {}
-        self.config_store = ConfigStore(configs_dir)
-        self.updatable_store = UpdatableStore(configs_dir)
-        self._config_overrides: dict[str, str] = {}
-        self._load_nodes()
-
-    @staticmethod
-    def _parse_config_overrides(data: dict) -> dict[str, str]:
-        """Extract config overrides from parsed nodes.yaml data."""
-        overrides = {}
-        for group_name, members in (data.get("groups") or {}).items():
-            for node_name, node_info in members.items():
-                config = node_info.get("config")
-                if config:
-                    overrides[f"{group_name}/{node_name}"] = config
-        return overrides
+                return yaml.safe_load(f) or {}
+        return {}
 
     def _load_nodes(self):
-        """Load node definitions from nodes.yaml."""
+        """Load node definitions from nodes.yaml and their configs from disk."""
         nodes_file = self.configs_dir / "nodes.yaml"
         if not nodes_file.exists():
             logger.warning(f"No nodes.yaml found at {nodes_file}")
@@ -379,66 +357,25 @@ class Registry:
         with open(nodes_file) as f:
             data = yaml.safe_load(f) or {}
 
+        template_vars = self._load_vars()
+
         self.nodes.clear()
         for group_name, members in (data.get("groups") or {}).items():
             for node_name, node_info in members.items():
                 key = f"{group_name}/{node_name}"
                 host = node_info.get("host", node_name)
                 port = node_info.get("port", 12048)
-                self.nodes[key] = Node(
-                    name=node_name, group=group_name, host=host, port=port
+                node = Node(
+                    node_name, group_name, host, port,
+                    timeout=self.kotekan_timeout,
+                    configs_dir=self.configs_dir,
+                    template_vars=template_vars,
                 )
+                node.load_config()
+                node.load_updatable()
+                self.nodes[key] = node
 
-        self._config_overrides = self._parse_config_overrides(data)
         logger.info(f"Loaded {len(self.nodes)} nodes")
-
-    def _reload_config_overrides(self):
-        """Re-read config overrides from nodes.yaml without rebuilding nodes."""
-        nodes_file = self.configs_dir / "nodes.yaml"
-        if not nodes_file.exists():
-            self._config_overrides.clear()
-            return
-        with open(nodes_file) as f:
-            data = yaml.safe_load(f) or {}
-        self._config_overrides = self._parse_config_overrides(data)
-
-    def get_config_name(self, key: str) -> str:
-        """Get the config name for a node (falls back to node key)."""
-        return self._config_overrides.get(key, key)
-
-    def set_config_name(self, key: str, config_name: str):
-        """Update the config override for a node and save to nodes.yaml."""
-        if config_name == key:
-            self._config_overrides.pop(key, None)
-        else:
-            self._config_overrides[key] = config_name
-        self._save_nodes()
-
-    def _save_nodes(self):
-        """Write current node definitions back to nodes.yaml."""
-        nodes_file = self.configs_dir / "nodes.yaml"
-        with open(nodes_file) as f:
-            data = yaml.safe_load(f) or {}
-        for group_name, members in (data.get("groups") or {}).items():
-            for node_name, node_info in members.items():
-                key = f"{group_name}/{node_name}"
-                if key in self._config_overrides:
-                    node_info["config"] = self._config_overrides[key]
-                else:
-                    node_info.pop("config", None)
-        with open(nodes_file, "w") as f:
-            yaml.dump(data, f, default_flow_style=False)
-
-    def reload(self):
-        """Reload node definitions and configs."""
-        self._load_nodes()
-        self.config_store.reload()
-
-    def get_config_filename(self, key: str) -> str:
-        """Get the config filename for a node (e.g. 'cx/cx27.yaml')."""
-        name = self.get_config_name(key)
-        suffix = self.config_store.get_file_suffix(name)
-        return f"{name}{suffix}"
 
     def get_node(self, key: str) -> Node | None:
         return self.nodes.get(key)

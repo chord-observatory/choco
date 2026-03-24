@@ -10,8 +10,18 @@ server:
   ssl_key:                        # Path to SSL private key (PEM). Leave empty to auto-generate self-signed.
   http_redirect_port: 8080        # HTTP listener that redirects to HTTPS (iptables redirects 80 -> 8080)
 
-# Path to the directory containing nodes.yaml, deploy.yaml, and per-node config files.
+# Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs
+
+# kotekan connection settings.
+kotekan:
+  timeout: 10                       # HTTP request timeout (seconds) for kotekan REST API calls
+
+# Sync system settings.
+sync:
+  poll_interval: 5                  # Seconds between polling all nodes for drift
+  restart_timeout: 10               # Seconds to wait for kotekan to restart after /kill
+  num_workers: 4                    # Number of worker greenlets processing node queues
 
 # FreeIPA LDAP authentication.
 # All routes require login. Leave host empty to disable (dev/testing only).

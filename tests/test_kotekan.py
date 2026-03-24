@@ -48,16 +48,16 @@ class TestGetConfig:
         assert node.get_config() is None
 
 
-class TestUpdateConfig:
+class TestPushUpdatable:
     @responses.activate
     def test_success(self, node):
         responses.post(f"{BASE}/foo/bar", json={"status": "ok"})
-        assert node.update_config("foo/bar", {"val": 42}) is True
+        assert node.push_updatable("foo/bar", {"val": 42}) is True
 
     @responses.activate
     def test_failure(self, node):
         responses.post(f"{BASE}/foo/bar", body=ConnectionError())
-        assert node.update_config("foo/bar", {"val": 42}) is False
+        assert node.push_updatable("foo/bar", {"val": 42}) is False
 
 
 class TestLifecycle:

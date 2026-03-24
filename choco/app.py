@@ -15,7 +15,7 @@ from flask_socketio import SocketIO
 
 from .auth import init_auth
 from .state import Registry
-from .sync import SyncLoop
+from .sync import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,15 @@ _DEFAULT_CONFIG = {
         "log_level": "INFO",
     },
     "configs_dir": "configs",
+    "kotekan": {
+        "timeout": 10,
+    },
+    "sync": {
+        "poll_interval": 5,
+        "restart_timeout": 10,
+        "num_workers": 4,
+    },
     "ldap": {},
-
 }
 
 
@@ -57,6 +64,8 @@ def load_config(path: str | Path) -> dict:
     config["server"] = {**_DEFAULT_CONFIG["server"], **(raw.get("server") or {})}
     config["server"]["port"] = int(config["server"]["port"])
     config["configs_dir"] = raw.get("configs_dir", "configs")
+    config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
+    config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
     config["ldap"] = raw.get("ldap") or {}
     return config
 
@@ -84,12 +93,20 @@ def create_app(
     configs_dir = Path(configs_dir).resolve()
 
     # Initialize registry and sync loop
-    registry = Registry(configs_dir)
-    sync_loop = SyncLoop(registry, socketio=socketio)
+    kotekan_timeout = int(config["kotekan"]["timeout"])
+    registry = Registry(configs_dir, kotekan_timeout=kotekan_timeout)
+
+    sync_cfg = config["sync"]
+    orchestrator = Orchestrator(
+        registry, socketio=socketio,
+        poll_interval=int(sync_cfg["poll_interval"]),
+        restart_timeout=int(sync_cfg["restart_timeout"]),
+        num_workers=int(sync_cfg["num_workers"]),
+    )
 
     # Store on app for access in routes
     app.config["registry"] = registry
-    app.config["sync_loop"] = sync_loop
+    app.config["orchestrator"] = orchestrator
     # Initialize authentication
     init_auth(app, config)
 
@@ -101,7 +118,7 @@ def create_app(
     socketio.init_app(app)
 
     # Start background sync loop immediately (not deferred to first request)
-    socketio.start_background_task(sync_loop.run)
+    socketio.start_background_task(orchestrator.run)
 
     return app
 

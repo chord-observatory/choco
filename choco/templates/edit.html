@@ -13,24 +13,12 @@
                hx-swap="innerHTML">
             {% include "_node_status.html" %}
         </tbody>
-        <tr><th>Config File</th><td>
-            <form method="post" style="display: flex; align-items: center; gap: 0.5em; margin: 0;">
-                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="action" value="save">
-                <select id="config" name="config" style="margin: 0; width: auto; height: 2.5rem; padding: 0.25rem 0.5rem;">
-                    {% for name in config_names %}
-                    <option value="{{ name }}" {% if name == config_name %}selected{% endif %}>{{ name }}{{ registry.config_store.get_file_suffix(name) }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit" style="margin: 0; width: auto; height: 2.5rem; padding: 0.25rem 0.75rem;">Save</button>
-                <a href="/" role="button" class="secondary" style="margin: 0; width: auto; height: 2.5rem; padding: 0.25rem 0.75rem; line-height: 2rem;">Cancel</a>
-            </form>
-        </td></tr>
+        <tr><th>Config File</th><td>{{ node.config_filename }}</td></tr>
     </tbody>
 </table>
 
 
-<h3>Config: {{ config_filename }}</h3>
+<h3>Config: {{ node.config_filename }}</h3>
 <form method="post">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="save_config">

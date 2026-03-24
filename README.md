@@ -1,6 +1,6 @@
 # choco
 
-**CHORD COntroller** - monitors and manages [kotekan](https://github.com/kotekan/kotekan/) instances running on a cluster of nodes.
+**CHORD Config Orchestrator** — monitors and manages [kotekan](https://github.com/kotekan/kotekan/) instances running on a cluster of nodes.
 
 choco provides a web UI that shows the live status of every kotekan instance, detects when their configs drift from the desired state, and lets you push config updates. It talks to kotekan's built-in REST API, so no agent software is needed on the nodes.
 
@@ -105,7 +105,7 @@ choco authenticates against a FreeIPA LDAP directory. FreeIPA does not allow ano
 
 ### Config Directory
 
-The config directory (`/etc/choco/configs/`) is the source of truth for which nodes choco manages and what their desired configs should be.
+The config directory (`/etc/choco/configs/`) is the source of truth for which nodes choco manages and what their base configs are.
 
 ```
 /etc/choco/configs/
@@ -115,26 +115,26 @@ The config directory (`/etc/choco/configs/`) is the source of truth for which no
 │   └── cx/
 │       └── cx27.json   # Updatable values for cx27
 ├── cx/
-│   └── cx27.yaml       # Desired kotekan config for cx27
+│   └── cx27.yaml       # Base kotekan config for cx27
 └── recv/
-    └── recv1.j2        # Desired kotekan config (Jinja2 template)
+    └── recv1.j2        # Base kotekan config (Jinja2 template)
 ```
 
 #### `nodes.yaml` - Node Registry
 
-Defines the kotekan instances choco should monitor, organized into groups. An optional `config` field overrides which config file a node uses (default: `<group>/<node>.yaml`):
+Defines the kotekan instances choco should monitor, organized into groups. Each node's base config lives at `<group>/<node>.yaml` (or `.j2`):
 
 ```yaml
 groups:
   cx:
     cx27: {host: cx27.site.chord-observatory.ca, port: 12048}
   recv:
-    recv1: {host: recv1.site.chord-observatory.ca, port: 12048, config: cx/cx27}
+    recv1: {host: recv1.site.chord-observatory.ca, port: 12048}
 ```
 
 #### Per-Node Config Files
 
-Each file at `<group>/<node>.yaml` (or `<group>/<node>.j2`) contains the desired kotekan config for that node. All config files are rendered through Jinja2 using variables from `vars.yaml` (if present), then sent to kotekan as JSON.
+Each file at `<group>/<node>.yaml` (or `<group>/<node>.j2`) contains the base kotekan config for that node. All base config files are rendered through Jinja2 using variables from `vars.yaml` (if present) to produce rendered configs, which are then merged with any updatable overrides to form the desired config that gets pushed to kotekan as JSON.
 
 For example, a Jinja2 template `cx/cx27.j2` might reference shared variables:
 
@@ -153,7 +153,7 @@ Kotekan configs can contain updatable blocks - sections marked with `kotekan_upd
 {"updatable_config/gains": {"start_time": 1234, "coeff": 1.0}}
 ```
 
-When a config is pushed, stored updatable values are merged into the config before sending to kotekan, so it boots with the correct values immediately. These files are also watched - editing them on disk triggers an immediate push of the updatable values to the running kotekan instance (without a restart).
+When a config is pushed, stored updatable values are merged into the rendered config to produce the desired config, which is sent to kotekan so it boots with the correct values immediately. These files are also watched - editing them on disk triggers an immediate push of the updatable values to the running kotekan instance (without a restart).
 
 ## Running
 
@@ -173,34 +173,53 @@ sudo systemctl stop choco
 The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and an Edit link.
 
 Status indicators:
-- **Green (up)** - kotekan is running and config matches the desired state
-- **Orange (drift)** - kotekan is running but its config differs from the desired state
-- **Red (down)** - kotekan is unreachable or not running
-- **Grey (unknown)** - not yet polled
+- **Green (up)** — kotekan is running and config matches the desired state
+- **Yellow (idle)** — kotekan is reachable but not running (ready for `/start`)
+- **Blue (syncing)** — config push in progress (kill → restart → start)
+- **Red (down)** — kotekan is unreachable
+- **Grey (unknown)** — not yet polled or state indeterminate
 
 Status updates are pushed to the browser in real time via WebSockets - no need to refresh.
 
 ### Node Edit
 
 Click Edit on a node to manage its settings:
-- **Config selector** - which desired config file to use for this node.
-- **Config editor** - edit the desired kotekan config YAML. "Save & Push" saves to disk and pushes to the node. "Re-push Current" re-pushes without editing.
+- **Config selector** — which base config file to use for this node.
+- **Config editor** — edit the base config YAML. Save queues a base-config change (write to disk + restart). "Re-push Current" queues a forced re-push.
+- **Updatable config** — edit individual updatable blocks. Changes are queued and pushed to kotekan's updatable endpoints without a restart.
+
+### JSON API
+
+Config changes can also be submitted programmatically:
+
+- `POST /update/<group>` — queue a change for all nodes in a group
+- `POST /update/<group>/<node>` — queue a change for a single node
+
+Both accept JSON with `{"action": "base_config", "config_content": "..."}` or `{"action": "updatable_config", "endpoint": "...", "values": {...}}`.
 
 ## How Sync Works
 
-A background process runs continuously:
+Changes flow through a two-tier queue system:
 
-1. Every 5 seconds, it polls each registered kotekan instance via `GET /status`
-2. It fetches the running config via `GET /config` and compares it against the desired config
-3. If the configs differ, the node is marked as drifted
-4. If kotekan is unreachable, the node is marked as down
-5. Any status change is pushed to all connected browsers via WebSocket
+```
+Producers (web UI, API, file watcher, poll timer)
+    → Input Queue (serialized — one submission at a time)
+        → Node Queues (FIFO, each Node holds its own)
+            → Worker Pool (locks a node's queue, drains items, syncs to remote)
+```
 
-Config pushes (triggered by drift detection, the web UI, or file changes on disk) kill kotekan and restart it with the desired config via `POST /start`. Stored updatable config values are merged into the config before sending, so kotekan boots with the correct values.
+**Input queue** — a single serialized entry point. Accepts changes for individual nodes or entire groups (fan-out). Submissions block each other so only one caller modifies the queues at a time.
 
-The config directory is watched for file changes:
-- **YAML/J2 files** - triggers a config reload and auto-push (kill + restart) to all affected nodes
-- **`.updatable/` JSON files** - triggers an immediate push of updatable values to the running kotekan instance (no restart)
+**Node queues** — each Node holds a FIFO change queue. A pool of worker greenlets scans nodes for unlocked, non-empty queues. A worker locks a node's queue, drains all pending items (writing base config or updatable values to disk), then syncs to the remote kotekan instance:
+- **Base config changes** — kill kotekan, wait for idle, start with new config via `POST /start`
+- **Updatable-only changes** — POST new values directly to updatable endpoints (no restart)
+- **Poll (no changes)** — compare desired config vs. running config; push if drift is detected
+
+**Periodic polling** — every 5 seconds, a poll item is submitted for every node. This detects drift and unreachable nodes even when no local changes are made. Status changes are pushed to browsers via WebSocket.
+
+**File watcher** — the config directory is watched for changes:
+- **YAML/J2 files** — reloads the affected node's config and queues a poll for it (``vars.yaml`` changes re-render all nodes)
+- **`.updatable/` JSON files** — reloads the affected node's updatable store and queues a poll
 
 ## Tests
 
@@ -221,10 +240,9 @@ pytest tests/ -v
 choco/
 ├── app.py          # Flask app factory, SocketIO setup, entry point
 ├── auth.py         # LDAP authentication (Flask-Login + Flask-LDAP3-Login)
-├── web.py          # Flask routes: dashboard, node edit, login/logout
-├── kotekan.py      # HTTP client for kotekan's REST API
-├── state.py        # Node registry, config store, config overrides, runtime state tracking
-├── sync.py         # Background sync loop + file watcher
+├── web.py          # Flask routes: dashboard, node edit, login/logout, /update/* JSON API
+├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
+├── sync.py         # Queue-based sync: ChangeItem, InputQueue, Orchestrator worker pool
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Static assets
 ```
