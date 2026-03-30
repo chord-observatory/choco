@@ -39,7 +39,7 @@ The install script also:
 - Installs and enables a systemd service that starts on boot and restarts on failure
 - Seeds `/etc/choco/configs/` from the repo's `configs/` directory on first install
 
-Re-running `sudo ./choco.sh install` is safe - it won't overwrite existing config files, and iptables rules are deduplicated.
+Re-running `sudo ./choco.sh install` is safe — it always syncs `config.yaml` from the local copy (with `configs_dir` rewritten to `/etc/choco/configs`), iptables rules are deduplicated, and kotekan configs are only seeded on first install.
 
 ### Service management
 

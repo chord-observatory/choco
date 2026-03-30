@@ -213,6 +213,32 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
+    # Deduplicate repeated /partials/ polling requests in access logs.
+    # Logs the first request per path, then suppresses repeats for 60s.
+    import re
+    import time
+
+    class _PartialsDedup(logging.Filter):
+        _partials_re = re.compile(r'"GET /partials/(\S+)')
+        _cooldown = 60
+
+        def __init__(self):
+            super().__init__()
+            self._last_logged: dict[str, float] = {}
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            m = self._partials_re.search(record.getMessage())
+            if not m:
+                return True
+            path = m.group(1)
+            now = time.monotonic()
+            if now - self._last_logged.get(path, 0) >= self._cooldown:
+                self._last_logged[path] = now
+                return True
+            return False
+
+    logging.getLogger("geventwebsocket.handler").addFilter(_PartialsDedup())
+
     app = create_app(config=config)
     host = config["server"]["host"]
     port = config["server"]["port"]
@@ -231,7 +257,10 @@ def main():
         hub = gevent.get_hub()
         hub.NOT_ERROR = hub.NOT_ERROR + (ssl.SSLError,)
 
-    logger.info(f"Starting choco on {host}:{port} ({'https' if ssl_context else 'http'})")
+    scheme = "https" if ssl_context else "http"
+    import socket
+    display_host = socket.getfqdn() if host in ("0.0.0.0", "::") else host
+    logger.info(f"Listening on {host}:{port} — access at {scheme}://{display_host}")
     socketio.run(app, host=host, port=port, debug=False, ssl_context=ssl_context)
 
 

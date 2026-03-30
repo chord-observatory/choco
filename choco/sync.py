@@ -243,16 +243,15 @@ class Orchestrator:
         while self._running:
             found_work = False
             for node in self.registry.nodes.values():
-                if not node.queue_try_lock():
-                    continue
-                if node.queue_empty:
-                    node.queue_unlock()
-                    continue
-                try:
-                    self._process_node(node)
-                    found_work = True
-                finally:
-                    node.queue_unlock()
+                if node.queue_try_lock():
+                    if node.queue_empty:
+                        node.queue_unlock()
+                        continue
+                    try:
+                        self._process_node(node)
+                        found_work = True
+                    finally:
+                        node.queue_unlock()
             if not found_work:
                 gevent.sleep(0.1)
 
