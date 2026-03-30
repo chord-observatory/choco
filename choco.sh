@@ -101,8 +101,10 @@ cmd_install() {
     # Config
     mkdir -p "$CONFIG_DIR/configs"
     if [ -f "$SCRIPT_DIR/config.yaml" ]; then
+        echo "Found local config.yaml, copying..."
         cp "$SCRIPT_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
     else
+        echo "No local config.yaml, copying template..."
         cp "$SCRIPT_DIR/config.yaml.template" "$CONFIG_DIR/config.yaml"
     fi
     sed -i "s|^configs_dir:.*|configs_dir: $CONFIG_DIR/configs|" "$CONFIG_DIR/config.yaml"

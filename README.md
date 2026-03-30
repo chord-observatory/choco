@@ -20,7 +20,9 @@ Requires root (uses sudo internally):
 git clone <this repo>
 cd choco
 
-sudo ./choco.sh install            # install system + local dev venv, configure iptables, start service
+sudo ./choco.sh install                   # install; prompts to overwrite existing configs
+sudo ./choco.sh install --overwrite-configs  # overwrite configs without prompting
+sudo ./choco.sh install --keep-configs       # keep existing configs without prompting
 sudo $EDITOR /etc/choco/config.yaml  # edit LDAP settings + secret_key
 sudo systemctl restart choco
 ```
@@ -37,9 +39,9 @@ The install script also:
 - Creates a local `.venv` in the repo directory (editable install, owned by invoking user) for development
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
-- Seeds `/etc/choco/configs/` from the repo's `configs/` directory on first install
+- Seeds `/etc/choco/configs/` from the repo's `configs/` directory on first install; on subsequent installs, prompts whether to overwrite (use `--overwrite-configs` or `--keep-configs` to skip the prompt)
 
-Re-running `sudo ./choco.sh install` is safe — it always syncs `config.yaml` from the local copy (with `configs_dir` rewritten to `/etc/choco/configs`), iptables rules are deduplicated, and kotekan configs are only seeded on first install.
+Re-running `sudo ./choco.sh install` is safe — it always syncs `config.yaml` from the local copy (with `configs_dir` rewritten to `/etc/choco/configs`), and iptables rules are deduplicated. If configs already exist you'll be prompted before overwriting.
 
 ### Service management
 
@@ -52,18 +54,15 @@ sudo journalctl -u choco -f        # follow logs
 ### Running manually
 
 ```bash
-./choco.sh run                     # run from system install (/opt/choco)
-./choco.sh run local               # run from local repo code (for development)
+./choco.sh run                     # run locally for development (extra args forwarded)
 ```
-
-Both will warn if the systemd service is already running.
 
 ### Development
 
 The install script creates a local `.venv` with an editable install, so code changes in the repo are picked up immediately:
 
 ```bash
-./choco.sh run local               # run local code against /etc/choco/config.yaml
+./choco.sh run                     # run local code against config.yaml
 ./choco.sh test                    # run tests (extra args forwarded to pytest)
 ./choco.sh test -k test_kotekan   # run specific tests
 ```
