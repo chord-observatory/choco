@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Generate an EOP table and push it to choco as an updatable config.
+"""
+Generate an EOP table and push it to choco as an updatable config. The EOP
+table values are tabulated at each midnight (sets snap_to_grid=True in
+eop_utils.)
 
-Builds a new EOP table from IERS data using eop_utils (vendored from kotekan).
+If no table exists yet, this script builds a new EOP table from eop_utils and
+stores the result to STATE_FILENAME.
 
-Merges with previously pushed state to preserve continuity: entries at or before
-the next midnight boundary are kept from the stored table, new entries are only
-ever *appended* after that point. This ensures currently-used EOP values will
-never change, only future values are updated.
+If a table exists, then entries at or before the next midnight boundary are
+used from the stored table. New entries are only ever *appended* after that
+point, so currently-used EOP values should never change.
 
-State is kept in a single file (eop-state.json) so all nodes get a consistent
-table regardless of individual node state.
+The state is kept in a single file (STATE_FILENAME) so all nodes should receive
+an identical table regardless of individual node state.
 
 Reads fpga_master, server, and node settings from choco's config.yaml.
 """
