@@ -1,8 +1,8 @@
 [Unit]
-Description=EOP table broadcast (3x daily)
+Description=EOP table broadcast (daily)
 
 [Timer]
-OnCalendar=*-*-* 06,14,22:00:00
+OnCalendar=*-*-* 12:00:00
 Persistent=true
 
 [Install]
