@@ -36,22 +36,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 astropy.utils.iers.conf.auto_download = True
 astropy.utils.iers.conf.auto_max_age = 10.0
 
-N_INTERVALS_BEFORE = 2
-N_INTERVALS_AFTER = 3
 INTERVAL_LENGTH_DAYS = 1.0
-EOP_ENDPOINT = "earth_rotation_data"
-STATE_FILENAME = "eop-state.json"
+EOP_REQUIRED_KEYS = [
+    "fpga_master_host", "fpga_master_port",
+    "intervals_before", "intervals_after",
+    "endpoint", "state_file",
+]
 
 
-def build_fresh_table(frame0_ns: int) -> list[dict]:
+def build_fresh_table(frame0_ns: int, n_before: int, n_after: int) -> list[dict]:
     """Build a fresh EOP table from IERS data."""
     t_ref = Time.now()
     t_ref.precision = 9
     print(f"Reference time: {t_ref.utc.isot} (UTC)")
 
     times = eop_utils.build_time_array(
-        t_ref, N_INTERVALS_BEFORE, N_INTERVALS_AFTER,
-        INTERVAL_LENGTH_DAYS, snap_to_grid=True,
+        t_ref, n_before, n_after, INTERVAL_LENGTH_DAYS, snap_to_grid=True,
     )
     print(f"Fresh table: {times[0].isot} to {times[-1].isot} ({len(times)} entries)")
 
@@ -117,11 +117,11 @@ def wait_for_choco(choco_url: str, timeout: int = 30):
 
 
 def push_to_choco(choco_url: str, groups: list[str],
-                  eop_table: list[dict]) -> bool:
+                  eop_table: list[dict], endpoint: str) -> bool:
     """POST the EOP table to choco. Returns True if all groups succeeded."""
     payload = {
         "action": "updatable_config",
-        "endpoint": EOP_ENDPOINT,
+        "endpoint": endpoint,
         "values": {"earth_orientation_parameter_table": eop_table},
     }
     failures = 0
@@ -154,26 +154,40 @@ def main():
         config = yaml.safe_load(f) or {}
     print(f"Config: {config_path}")
 
+    # EOP settings (all required)
+    eop_cfg = config.get("eop") or {}
+    missing = [k for k in EOP_REQUIRED_KEYS if k not in eop_cfg]
+    if missing:
+        print(f"Error: missing eop config keys: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+    fpga_host = eop_cfg["fpga_master_host"]
+    fpga_port = int(eop_cfg["fpga_master_port"])
+    n_before = int(eop_cfg["intervals_before"])
+    n_after = int(eop_cfg["intervals_after"])
+    endpoint = eop_cfg["endpoint"]
+    state_filename = eop_cfg["state_file"]
+
     # Resolve paths
     configs_dir = Path(config.get("configs_dir", "configs"))
     if not configs_dir.is_absolute():
         configs_dir = Path(config_path).parent / configs_dir
-    state_file = configs_dir / STATE_FILENAME
+    state_file = configs_dir / state_filename
 
     # Frame0
-    fpga_cfg = config.get("fpga_master") or {}
-    fpga_host = fpga_cfg.get("host")
-    fpga_port = int(fpga_cfg.get("port", 54321))
     if not fpga_host:
-        print("Error: fpga_master.host not set in config", file=sys.stderr)
+        print("Error: eop.fpga_master_host not set in config", file=sys.stderr)
         sys.exit(1)
     print(f"Reading frame0 from fpga_master at {fpga_host}:{fpga_port} ...")
-    frame0_ns = eop_utils.read_fpga_master_frame0_ns(fpga_host, fpga_port, 30.0)
+    try:
+        frame0_ns = eop_utils.read_fpga_master_frame0_ns(fpga_host, fpga_port, 30.0)
+    except Exception as e:
+        print(f"fpga_master not reachable: {e}", file=sys.stderr)
+        sys.exit(1)
     t0 = eop_utils.calc_astropy_time_from_unix_ns(frame0_ns)
     print(f"frame0: {frame0_ns} ns  ({t0.utc.isot} UTC)")
 
     # Build fresh table
-    fresh_table = build_fresh_table(frame0_ns)
+    fresh_table = build_fresh_table(frame0_ns, n_before, n_after)
 
     # Merge with stored state if it exists
     if state_file.exists():
@@ -201,7 +215,7 @@ def main():
 
     wait_for_choco(choco_url)
     print(f"Pushing to {len(groups)} group(s) ...")
-    success = push_to_choco(choco_url, groups, final_table)
+    success = push_to_choco(choco_url, groups, final_table, endpoint)
 
     if success:
         state_file.parent.mkdir(parents=True, exist_ok=True)

@@ -84,6 +84,14 @@ server:
 
 configs_dir: configs
 
+eop:
+  fpga_master_host: chive.site.chord-observatory.ca
+  fpga_master_port: 54321
+  intervals_before: 2             # Days of past entries to include
+  intervals_after: 3              # Days of future entries to generate
+  endpoint: earth_rotation_data   # Kotekan updatable config endpoint name
+  state_file: eop-state.json     # State file name (stored in configs_dir)
+
 ldap:
   host:                           # e.g. ldaps://ipa1.auth.chord-observatory.ca
   port: 636

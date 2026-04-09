@@ -23,20 +23,24 @@ sync:
   restart_timeout: 10               # Seconds to wait for kotekan to restart after /kill
   num_workers: 4                    # Number of worker greenlets processing node queues
 
-# fpga_master connection (source of frame0 time for EOP updates).
-fpga_master:
-  host: chive.site.chord-observatory.ca
-  port: 54321
+# Earth Orientation Parameter service settings.
+eop:
+  fpga_master_host: chive.site.chord-observatory.ca
+  fpga_master_port: 54321
+  intervals_before: 2               # Days of past entries to include
+  intervals_after: 3                # Days of future entries to generate
+  endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
+  state_file: eop-state.json        # State file name (stored in configs_dir)
 
 # FreeIPA LDAP authentication.
 # All routes require login. Leave host empty to disable (dev/testing only).
 ldap:
-  host:                           # e.g. ldaps://ipa1.auth.chord-observatory.ca
+  host:                             # e.g. ldaps://ipa1.auth.chord-observatory.ca
   port: 636
   use_ssl: true
-  base_dn:                       # e.g. dc=auth,dc=chord-observatory,dc=ca
+  base_dn:                          # e.g. dc=auth,dc=chord-observatory,dc=ca
   user_dn: cn=users,cn=accounts
   user_login_attr: uid
   user_object_filter: "(objectclass=posixaccount)"
-  bind_dn:                       # e.g. uid=choco,cn=users,cn=accounts,dc=auth,dc=chord-observatory,dc=ca
+  bind_dn:                          # e.g. uid=choco,cn=users,cn=accounts,dc=auth,dc=chord-observatory,dc=ca
   bind_password:
