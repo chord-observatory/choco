@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Generate an EOP table and push it to choco as an updatable config.
 
-Builds a fresh EOP table from IERS data using eop_utils (vendored from kotekan).
+Builds a new EOP table from IERS data using eop_utils (vendored from kotekan).
+
 Merges with previously pushed state to preserve continuity: entries at or before
-the next midnight boundary are kept from the stored table, fresh entries are
-appended after that point. This ensures currently-interpolated EOP values never
-change, only future values are updated.
+the next midnight boundary are kept from the stored table, new entries are only
+ever *appended* after that point. This ensures currently-used EOP values will
+never change, only future values are updated.
 
 State is kept in a single file (eop-state.json) so all nodes get a consistent
 table regardless of individual node state.
@@ -98,7 +99,7 @@ def merge_tables(stored: list[dict], fresh: list[dict], frame0_ns: int) -> list[
 
 
 def wait_for_choco(choco_url: str, timeout: int = 30):
-    """Wait for choco to be ready (handles startup race with choco.service)."""
+    """Wait for choco to be ready (handles startup with choco.service)."""
     print(f"Waiting for choco at {choco_url} ...", end="", flush=True)
     for i in range(timeout):
         try:

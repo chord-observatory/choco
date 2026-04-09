@@ -245,8 +245,12 @@ choco/
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Static assets
 jobs/
-├── choco.service   # Main systemd service (Type=notify)
-├── choco-*.service # Oneshot units for scheduled jobs
-├── choco-*.timer   # Systemd timers for scheduled jobs
-└── *.sh / *.py     # Job scripts (hit choco API endpoints)
+├── choco.service               # Main systemd service (Type=notify)
+├── choco-eop-broadcast.service # EOP update job (runs on choco start + daily timer)
+├── choco-eop-broadcast.timer   # Daily at 12:00 UTC
+├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
+├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
+└── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
 ```
+
+`eop_utils.py` is vendored from [kotekan](https://github.com/kotekan/kotekan/) (`tools/earth_orientation/eop_utils.py`). It should not be modified in this repo.
