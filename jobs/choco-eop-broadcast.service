@@ -1,0 +1,8 @@
+[Unit]
+Description=choco job: EOP table broadcast
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/choco/jobs/eop-broadcast.sh /etc/choco/config.yaml

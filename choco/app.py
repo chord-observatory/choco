@@ -203,6 +203,23 @@ def _make_ssl_context(server_config: dict) -> ssl.SSLContext | None:
     return ctx
 
 
+def _sd_notify_ready():
+    """Send READY=1 to systemd if running under Type=notify. No-op otherwise."""
+    import os
+    import socket as _socket
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr[0] == "@":
+        addr = "\0" + addr[1:]
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
+    try:
+        sock.sendto(b"READY=1", addr)
+    finally:
+        sock.close()
+    logger.info("Notified systemd: READY=1")
+
+
 def main():
     """Entry point for the choco command."""
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
@@ -261,6 +278,7 @@ def main():
     import socket
     display_host = socket.getfqdn() if host in ("0.0.0.0", "::") else host
     logger.info(f"Listening on {host}:{port} — access at {scheme}://{display_host}")
+    _sd_notify_ready()
     socketio.run(app, host=host, port=port, debug=False, ssl_context=ssl_context)
 
 

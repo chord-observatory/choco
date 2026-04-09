@@ -23,6 +23,11 @@ sync:
   restart_timeout: 10               # Seconds to wait for kotekan to restart after /kill
   num_workers: 4                    # Number of worker greenlets processing node queues
 
+# fpga_master connection (source of frame0 time for EOP updates).
+fpga_master:
+  host: chive.site.chord-observatory.ca
+  port: 54321
+
 # FreeIPA LDAP authentication.
 # All routes require login. Leave host empty to disable (dev/testing only).
 ldap:

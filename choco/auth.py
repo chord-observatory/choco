@@ -1,9 +1,10 @@
 """LDAP authentication for choco."""
 
 import logging
+from functools import wraps
 
-from flask import Flask
-from flask_login import LoginManager, UserMixin
+from flask import Flask, request
+from flask_login import LoginManager, UserMixin, current_user
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,19 @@ def save_user(dn: str, username: str, data: dict | None = None) -> User:
     user = User(dn, username, data)
     _users[dn] = user
     return user
+
+
+def localhost_or_login_required(f):
+    """Like @login_required, but skip auth for requests from localhost."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if request.remote_addr in ("127.0.0.1", "::1"):
+            return f(*args, **kwargs)
+        if not current_user.is_authenticated:
+            from flask import current_app
+            return current_app.login_manager.unauthorized()
+        return f(*args, **kwargs)
+    return decorated
 
 
 def init_auth(app: Flask, config: dict):

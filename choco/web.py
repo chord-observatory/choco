@@ -11,7 +11,7 @@ from flask import (
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
-from .auth import save_user
+from .auth import save_user, localhost_or_login_required
 from .state import NodeStatus, find_updatable_blocks
 
 logger = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ def partial_dashboard_table():
 # --- JSON API endpoints for queue-based updates ---
 
 @bp.route("/update/<group>", methods=["POST"])
-@login_required
+@localhost_or_login_required
 def update_group(group):
     """Queue a config change for all nodes in a group."""
     registry = _registry()
@@ -226,7 +226,7 @@ def update_group(group):
 
 
 @bp.route("/update/<group>/<node>", methods=["POST"])
-@login_required
+@localhost_or_login_required
 def update_node(group, node):
     """Queue a config change for a single node."""
     registry = _registry()

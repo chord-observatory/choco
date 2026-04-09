@@ -18,6 +18,8 @@ dependencies = [
     "cryptography>=42.0",
     "pyyaml>=6.0",
     "watchdog>=4.0",
+    "astropy>=6.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

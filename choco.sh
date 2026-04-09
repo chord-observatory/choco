@@ -98,6 +98,10 @@ cmd_install() {
     "$INSTALL_DIR/.venv/bin/pip" install "$tmp_src"
     rm -rf "$tmp_src"
 
+    # Job scripts (timers, wrapper scripts, Python helpers)
+    rsync -a "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
+    chmod +x "$INSTALL_DIR"/jobs/*.sh 2>/dev/null || true
+
     # Config
     mkdir -p "$CONFIG_DIR/configs"
     if [ -f "$SCRIPT_DIR/config.yaml" ]; then
@@ -139,10 +143,15 @@ cmd_install() {
     netfilter-persistent save
 
     # systemd service
-    cp "$SCRIPT_DIR/choco.service" /etc/systemd/system/choco.service
+    # systemd units: main service + any job timers
+    cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/
+    cp "$SCRIPT_DIR"/jobs/choco-*.{service,timer} /etc/systemd/system/ 2>/dev/null || true
     systemctl daemon-reload
     systemctl enable choco
     systemctl restart choco
+    for timer in "$SCRIPT_DIR"/jobs/choco-*.timer; do
+        [ -f "$timer" ] && systemctl enable --now "$(basename "$timer")"
+    done
 
     echo ""
     echo "choco installed and running."
@@ -163,7 +172,11 @@ cmd_uninstall() {
         systemctl stop choco
     fi
     systemctl disable choco 2>/dev/null || true
+    for timer in /etc/systemd/system/choco-*.timer; do
+        [ -f "$timer" ] && systemctl disable --now "$(basename "$timer")" 2>/dev/null || true
+    done
     rm -f /etc/systemd/system/choco.service
+    rm -f /etc/systemd/system/choco-*.{service,timer}
     systemctl daemon-reload
 
     # iptables

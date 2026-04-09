@@ -244,4 +244,9 @@ choco/
 ├── sync.py         # Queue-based sync: ChangeItem, InputQueue, Orchestrator worker pool
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Static assets
+jobs/
+├── choco.service   # Main systemd service (Type=notify)
+├── choco-*.service # Oneshot units for scheduled jobs
+├── choco-*.timer   # Systemd timers for scheduled jobs
+└── *.sh / *.py     # Job scripts (hit choco API endpoints)
 ```
