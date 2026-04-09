@@ -86,7 +86,7 @@ export PYTHONPATH="$SCRIPT_DIR"
     --frame0-src fpga_master \
     --fpga-master-host "$FPGA_HOST" \
     --fpga-master-port "$FPGA_PORT" \
-    --enforce-continuity no \
+    --enforce-continuity yes \
     -o "$TMPFILE" \
     "$@"
 
@@ -95,9 +95,23 @@ export PYTHONPATH="$SCRIPT_DIR"
 CHOCO_URL="https://localhost:${PORT}"
 EOP_ENDPOINT="earth_rotation_data"
 
+# Wait for choco to be ready (handles startup race with choco.service)
+echo -n "Waiting for choco at $CHOCO_URL ..."
+for i in $(seq 1 30); do
+    if curl -s -o /dev/null --insecure "$CHOCO_URL/login" 2>/dev/null; then
+        echo " ready"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo " timed out" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 FAILURES=0
 
-echo "Pushing to choco at $CHOCO_URL ..."
+echo "Pushing to choco ..."
 for group in $GROUPS; do
     URL="${CHOCO_URL}/update/${group}"
     echo -n "  POST $URL ..."

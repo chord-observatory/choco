@@ -149,8 +149,8 @@ cmd_install() {
     systemctl daemon-reload
     systemctl enable choco
     systemctl restart choco
-    for timer in "$SCRIPT_DIR"/jobs/choco-*.timer; do
-        [ -f "$timer" ] && systemctl enable --now "$(basename "$timer")"
+    for unit in "$SCRIPT_DIR"/jobs/choco-*.{service,timer}; do
+        [ -f "$unit" ] && systemctl enable --now "$(basename "$unit")"
     done
 
     echo ""
@@ -172,8 +172,8 @@ cmd_uninstall() {
         systemctl stop choco
     fi
     systemctl disable choco 2>/dev/null || true
-    for timer in /etc/systemd/system/choco-*.timer; do
-        [ -f "$timer" ] && systemctl disable --now "$(basename "$timer")" 2>/dev/null || true
+    for unit in /etc/systemd/system/choco-*.{service,timer}; do
+        [ -f "$unit" ] && systemctl disable --now "$(basename "$unit")" 2>/dev/null || true
     done
     rm -f /etc/systemd/system/choco.service
     rm -f /etc/systemd/system/choco-*.{service,timer}
