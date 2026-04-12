@@ -21,12 +21,12 @@ class TestGetStatus:
     @responses.activate
     def test_running(self, node):
         responses.get(f"{BASE}/status", json={"running": True})
-        assert node.get_status() == NodeStatus.UP
+        assert node.get_status() == NodeStatus.STARTED
 
     @responses.activate
     def test_not_running(self, node):
         responses.get(f"{BASE}/status", json={"running": False})
-        assert node.get_status() == NodeStatus.IDLE
+        assert node.get_status() == NodeStatus.STOPPED
 
     @responses.activate
     def test_unreachable(self, node):
@@ -65,11 +65,6 @@ class TestLifecycle:
     def test_start(self, node):
         responses.post(f"{BASE}/start", json={"status": "ok"})
         assert node.start({"config": "data"}) is True
-
-    @responses.activate
-    def test_stop(self, node):
-        responses.get(f"{BASE}/stop", json={"status": "ok"})
-        assert node.stop() is True
 
     @responses.activate
     def test_version(self, node):

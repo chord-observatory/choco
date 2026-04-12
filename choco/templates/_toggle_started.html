@@ -1,0 +1,5 @@
+<label class="toggle-switch" hx-post="/toggle-started/{{ key }}" hx-swap="outerHTML"
+       hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>
+    <input type="checkbox" {{ "checked" if node.started }}>
+    <span class="toggle-slider {{ 'started' if node.started else 'stopped' }}"></span>
+</label>

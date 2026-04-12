@@ -72,8 +72,8 @@ def find_updatable_blocks(config: dict, _prefix: str = "") -> dict[str, dict]:
 class NodeStatus(Enum):
     UNKNOWN = "unknown"
     DOWN = "down"       # Unreachable
-    IDLE = "idle"       # Reachable but kotekan not running (ready for /start)
-    UP = "up"           # Running with correct config
+    STOPPED = "stopped" # Reachable but kotekan not running (ready for /start)
+    STARTED = "started" # Running with correct config
     SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
 
@@ -101,6 +101,7 @@ class Node:
 
     def __init__(self, name: str, group: str, host: str,
                  port: int = 12048, timeout: int = 10, *,
+                 started: bool = False,
                  configs_dir: Path | None = None,
                  template_vars: dict | None = None):
         # Identity
@@ -109,6 +110,7 @@ class Node:
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.started = started
         self._base_url = f"http://{host}:{port}"
 
         # Config state (loaded from disk by load_config / load_updatable)
@@ -284,7 +286,7 @@ class Node:
             return NodeStatus.DOWN
         try:
             data = resp.json()
-            return NodeStatus.UP if data.get("running", False) else NodeStatus.IDLE
+            return NodeStatus.STARTED if data.get("running", False) else NodeStatus.STOPPED
         except Exception:
             return NodeStatus.UNKNOWN
 
@@ -307,12 +309,12 @@ class Node:
         """Start kotekan with the desired config via POST /start."""
         return self._request("POST", "/start", json=desired_config) is not None
 
-    def stop(self) -> bool:
-        """Stop the running kotekan config."""
-        return self._request("GET", "/stop") is not None
-
     def kill(self) -> bool:
-        """Kill the kotekan process. The daemon will restart it."""
+        """Kill the kotekan process. The daemon restarts it into a stopped state.
+
+        This is the reliable way to stop a running config — the ``/stop``
+        endpoint is unreliable, so we always use ``/kill`` instead.
+        """
         return self._request("GET", "/kill") is not None
 
     def get_version(self) -> str | None:
@@ -365,9 +367,11 @@ class Registry:
                 key = f"{group_name}/{node_name}"
                 host = node_info.get("host", node_name)
                 port = node_info.get("port", 12048)
+                started = node_info.get("started", False)
                 node = Node(
                     node_name, group_name, host, port,
                     timeout=self.kotekan_timeout,
+                    started=started,
                     configs_dir=self.configs_dir,
                     template_vars=template_vars,
                 )

@@ -1,0 +1,8 @@
+<span style="display: inline-flex; gap: 0.3em;">
+    <button class="outline" title="Start all nodes" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #2ecc40; color: white; border-color: #2ecc40;"
+            hx-post="/set-started-all/start" hx-target="#dashboard-table" hx-swap="innerHTML"
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>&#x25B2;</button>
+    <button class="outline" title="Stop all nodes" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #ffdc00; color: #333; border-color: #ffdc00;"
+            hx-post="/set-started-all/stop" hx-target="#dashboard-table" hx-swap="innerHTML"
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>&#x25BC;</button>
+</span>

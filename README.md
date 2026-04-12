@@ -135,9 +135,12 @@ Defines the kotekan instances choco should monitor, organized into groups. Each 
 groups:
   cx:
     cx27: {host: cx27.site.chord-observatory.ca, port: 12048}
+    cx42: {host: cx42.site.chord-observatory.ca, port: 12048, started: true}
   recv:
     recv1: {host: recv1.site.chord-observatory.ca, port: 12048}
 ```
+
+The optional `started` field controls whether choco should keep kotekan running on that node. Defaults to `false` — on startup, all nodes begin stopped unless explicitly set to `started: true`. The started state can also be toggled at runtime via the dashboard toggle switches or the JSON API. Runtime toggles are ephemeral (reset on choco restart).
 
 #### Per-Node Config Files
 
@@ -180,11 +183,13 @@ sudo systemctl stop choco
 The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and an Edit link.
 
 Status indicators:
-- **Green (up)** — kotekan is running and config matches the desired state
-- **Yellow (idle)** — kotekan is reachable but not running (ready for `/start`)
+- **Green (started)** — kotekan is running and config matches the desired state
+- **Yellow (stopped)** — kotekan is reachable but not running (ready for `/start`)
 - **Blue (syncing)** — config push in progress (kill → restart → start)
 - **Red (down)** — kotekan is unreachable
 - **Grey (unknown)** — not yet polled or state indeterminate
+
+Each node also has a **started/stopped toggle** (green/yellow) that controls whether choco should keep kotekan running. A master toggle in the column header controls all nodes at once. Nodes default to stopped on startup.
 
 Status updates are pushed to the browser in real time via WebSockets - no need to refresh.
 
@@ -202,7 +207,10 @@ Config changes can also be submitted programmatically:
 - `POST /update/<group>` — queue a change for all nodes in a group
 - `POST /update/<group>/<node>` — queue a change for a single node
 
-Both accept JSON with `{"action": "base_config", "config_content": "..."}` or `{"action": "updatable_config", "endpoint": "...", "values": {...}}`.
+Both accept JSON with:
+- `{"action": "base_config", "config_content": "..."}`
+- `{"action": "updatable_config", "endpoint": "...", "values": {...}}`
+- `{"action": "set_started", "started": true}` — set the started/stopped state
 
 ## How Sync Works
 
@@ -218,7 +226,7 @@ Producers (web UI, API, file watcher, poll timer)
 **Input queue** — a single serialized entry point. Accepts changes for individual nodes or entire groups (fan-out). Submissions block each other so only one caller modifies the queues at a time.
 
 **Node queues** — each Node holds a FIFO change queue. A pool of worker greenlets scans nodes for unlocked, non-empty queues. A worker locks a node's queue, drains all pending items (writing base config or updatable values to disk), then syncs to the remote kotekan instance:
-- **Base config changes** — kill kotekan, wait for idle, start with new config via `POST /start`
+- **Base config changes** — kill kotekan, wait for stopped, start with new config via `POST /start`
 - **Updatable-only changes** — POST new values directly to updatable endpoints (no restart)
 - **Poll (no changes)** — compare desired config vs. running config; push if drift is detected
 

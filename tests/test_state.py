@@ -60,6 +60,26 @@ class TestRegistry:
         node = registry.get_node("cx/cx1")
         assert node.status == NodeStatus.UNKNOWN
 
+    def test_default_started_is_false(self, configs_dir):
+        registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node.started is False
+
+    def test_started_from_nodes_yaml(self, tmp_path):
+        nodes = {
+            "groups": {
+                "cx": {
+                    "cx1": {"host": "cx1.chord.ca", "port": 12048, "started": True},
+                    "cx2": {"host": "cx2.chord.ca", "port": 12048},
+                },
+            }
+        }
+        with open(tmp_path / "nodes.yaml", "w") as f:
+            yaml.dump(nodes, f)
+        registry = Registry(tmp_path)
+        assert registry.get_node("cx/cx1").started is True
+        assert registry.get_node("cx/cx2").started is False
+
     def test_missing_node(self, configs_dir):
         registry = Registry(configs_dir)
         assert registry.get_node("nonexistent/node") is None

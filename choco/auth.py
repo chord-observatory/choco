@@ -3,7 +3,7 @@
 import logging
 from functools import wraps
 
-from flask import Flask, request
+from flask import Flask, Response, request, url_for
 from flask_login import LoginManager, UserMixin, current_user
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,15 @@ def init_auth(app: Flask, config: dict):
     @login_manager.user_loader
     def load_user(user_id):
         return _users.get(user_id)
+
+    @login_manager.unauthorized_handler
+    def unauthorized():
+        """Redirect to login; for htmx requests use HX-Redirect for a
+        full-page navigation instead of swapping login HTML into a partial."""
+        login_url = url_for("web.login")
+        if request.headers.get("HX-Request"):
+            return Response(status=200, headers={"HX-Redirect": login_url})
+        return Response(status=302, headers={"Location": login_url})
 
     # Flask-LDAP3-Login setup
     ldap = config.get("ldap", {}) or {}

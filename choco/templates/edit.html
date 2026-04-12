@@ -7,6 +7,9 @@
 <table>
     <tbody>
         <tr><th>Host</th><td>{{ node.host }}:{{ node.port }}</td></tr>
+        <tr><th>Desired State</th>
+            <td>{% with key=node_key %}{% include "_toggle_started.html" %}{% endwith %}</td>
+        </tr>
         <tbody id="node-status"
                hx-get="/partials/node-status/{{ node_key }}"
                hx-trigger="load, every 0.5s"

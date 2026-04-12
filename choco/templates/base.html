@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}choco{% endblock %}</title>
+    <title>{% block title %}CHOCO{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     {% if current_user.is_authenticated %}
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -17,27 +17,63 @@
             font-size: 0.85em;
             font-weight: 600;
         }
-        .status-up { background: #2ecc40; color: white; }
+        .status-started { background: #2ecc40; color: white; }
         .status-down { background: #ff4136; color: white; }
-        .status-idle { background: #ffdc00; color: #333; }
+        .status-stopped { background: #ffdc00; color: #333; }
         .status-syncing { background: #0074d9; color: white; }
         .status-unknown { background: #aaa; color: white; }
         table { margin-top: 1em; }
         .flash-success { color: #2ecc40; }
         .flash-error { color: #ff4136; }
         nav { margin-bottom: 1em; }
+        .logout-icon { text-decoration: none; }
+        label.toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 40px;
+            height: 22px;
+            min-height: 0;
+            margin: 0;
+            padding: 0;
+            cursor: pointer;
+        }
+        .toggle-switch input[type="checkbox"] { display: none !important; }
+        .toggle-switch .toggle-slider {
+            position: absolute;
+            inset: 0;
+            display: block;
+            width: 40px;
+            height: 22px;
+            border-radius: 22px;
+            transition: background 0.2s;
+        }
+        .toggle-switch .toggle-slider::before {
+            content: "";
+            position: absolute;
+            left: 3px;
+            top: 3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: white;
+            transition: transform 0.2s;
+        }
+        .toggle-slider.started { background: #2ecc40; }
+        .toggle-slider.started::before { transform: translateX(18px); }
+        .toggle-slider.stopped { background: #ffdc00; }
+        .htmx-request .toggle-slider { background: #aaa !important; }
         {% block styles %}{% endblock %}
     </style>
 </head>
 <body>
     <nav class="container">
         <ul>
-            <li><strong><a href="/">choco</a></strong></li>
+            <li><strong><a href="/">CHOCO</a></strong></li>
         </ul>
         <ul>
             {% if current_user.is_authenticated %}
             <li><small>{{ current_user.username }}</small></li>
-            <li><a href="/logout">Logout</a></li>
+            <li><a href="/logout" title="Logout" class="logout-icon"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -0.1em;"><path d="M6 2H3v12h3"/><path d="M10 5l3 3-3 3"/><path d="M13 8H6"/></svg></a></li>
             {% endif %}
         </ul>
     </nav>

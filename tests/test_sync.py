@@ -196,6 +196,7 @@ class TestProcessNode:
     def test_poll_node_down(self, orchestrator):
         """POLL item for an unreachable node sets status to DOWN."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
         node.get_status = MagicMock(return_value=NodeStatus.DOWN)
 
         node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
@@ -207,26 +208,28 @@ class TestProcessNode:
     def test_poll_node_up_no_drift(self, orchestrator):
         """POLL item for a node with matching config sets status to UP."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
         rendered = node.rendered_config
 
-        node.get_status = MagicMock(return_value=NodeStatus.UP)
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_config = MagicMock(return_value=rendered)
         node.get_version = MagicMock(return_value="2024.11")
 
         node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
         orchestrator._process_node(node)
 
-        assert node.status == NodeStatus.UP
+        assert node.status == NodeStatus.STARTED
 
     def test_poll_node_drift_triggers_push(self, orchestrator):
         """POLL detects drift and pushes config (kill -> start)."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.UP,      # _sync_node probe
-            NodeStatus.UP,      # _push_config probe (not idle, so kill)
-            NodeStatus.IDLE,    # wait loop
-            NodeStatus.IDLE,    # post-loop check
+            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
+            NodeStatus.STOPPED,    # wait loop
+            NodeStatus.STOPPED,    # post-loop check
         ])
         node.get_config = MagicMock(return_value={"wrong": "config"})
         node.get_version = MagicMock(return_value="2024.11")
@@ -238,18 +241,19 @@ class TestProcessNode:
 
         node.kill.assert_called_once()
         node.start.assert_called_once()
-        assert node.status == NodeStatus.UP
+        assert node.status == NodeStatus.STARTED
 
     def test_base_config_change_forces_restart(self, orchestrator):
         """BASE_CONFIG item writes to disk and triggers restart."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
         desired_after = {"num_elements": 512}
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.UP,      # _sync_node probe
-            NodeStatus.UP,      # _push_config probe (not idle, so kill)
-            NodeStatus.IDLE,    # wait loop check
-            NodeStatus.IDLE,    # post-loop check
+            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
+            NodeStatus.STOPPED,    # wait loop check
+            NodeStatus.STOPPED,    # post-loop check
         ])
         node.get_config = MagicMock(return_value=desired_after)
         node.get_version = MagicMock(return_value="2024.11")
@@ -272,9 +276,10 @@ class TestProcessNode:
     def test_updatable_only_no_restart(self, orchestrator):
         """UPDATABLE_CONFIG item saves to store and syncs without restart."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
         rendered = node.rendered_config
 
-        node.get_status = MagicMock(return_value=NodeStatus.UP)
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_config = MagicMock(return_value=rendered)
         node.get_version = MagicMock(return_value="2024.11")
         node.kill = MagicMock()
@@ -289,21 +294,41 @@ class TestProcessNode:
         orchestrator._process_node(node)
 
         node.kill.assert_not_called()
-        assert node.status == NodeStatus.UP
+        assert node.status == NodeStatus.STARTED
         assert node.updatable_config == {
             "updatable_config/gains": {"start_time": 100}
         }
 
+    def test_stale_updatable_not_pushed(self, orchestrator):
+        """Stored updatable endpoint removed from base config is not pushed."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        rendered = node.rendered_config
+
+        # Store an updatable override for an endpoint not in the base config.
+        node.save_updatable("updatable_config/removed", {"val": 1})
+
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_config = MagicMock(return_value=rendered)
+        node.get_version = MagicMock(return_value="2024.11")
+        node.push_updatable = MagicMock(return_value=True)
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.push_updatable.assert_not_called()
+
     def test_resync_forces_restart(self, orchestrator):
         """RESYNC item forces a restart even with no config changes."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
         rendered = node.rendered_config
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.UP,      # _sync_node probe
-            NodeStatus.UP,      # _push_config probe (not idle, so kill)
-            NodeStatus.IDLE,    # wait loop check
-            NodeStatus.IDLE,    # post-loop check
+            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
+            NodeStatus.STOPPED,    # wait loop check
+            NodeStatus.STOPPED,    # post-loop check
         ])
         node.get_config = MagicMock(return_value=rendered)
         node.get_version = MagicMock(return_value="2024.11")
@@ -319,10 +344,11 @@ class TestProcessNode:
     def test_idle_node_started_without_kill(self, orchestrator):
         """An idle node should receive /start directly, no /kill."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.IDLE,    # _sync_node probe
-            NodeStatus.IDLE,    # _push_config probe (already idle)
+            NodeStatus.STOPPED,    # _sync_node probe
+            NodeStatus.STOPPED,    # _push_config probe (already idle)
         ])
         node.get_config = MagicMock(return_value=None)
         node.get_version = MagicMock(return_value="2024.11")
@@ -334,17 +360,18 @@ class TestProcessNode:
 
         node.kill.assert_not_called()
         node.start.assert_called_once()
-        assert node.status == NodeStatus.UP
+        assert node.status == NodeStatus.STARTED
 
     def test_multiple_items_batched(self, orchestrator):
         """Multiple items are drained before a single sync."""
         node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.UP,      # _sync_node probe
-            NodeStatus.UP,      # _push_config probe (not idle, so kill)
-            NodeStatus.IDLE,    # wait loop check
-            NodeStatus.IDLE,    # post-loop check
+            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
+            NodeStatus.STOPPED,    # wait loop check
+            NodeStatus.STOPPED,    # post-loop check
         ])
         node.get_config = MagicMock(return_value={"wrong": "config"})
         node.get_version = MagicMock(return_value="2024.11")
@@ -363,3 +390,73 @@ class TestProcessNode:
         assert node.rendered_config == {"num_elements": 256}
         node.kill.assert_called_once()
         node.start.assert_called_once()
+
+    def test_stopped_node_kills_running_kotekan(self, orchestrator):
+        """A node with started=False kills kotekan if it is running."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_version = MagicMock(return_value="2024.11")
+        node.kill = MagicMock(return_value=True)
+        node.start = MagicMock()
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.kill.assert_called_once()
+        node.start.assert_not_called()
+        assert node.status == NodeStatus.STOPPED
+
+    def test_stopped_node_leaves_stopped_alone(self, orchestrator):
+        """A node with started=False does nothing if already stopped."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+
+        node.get_status = MagicMock(return_value=NodeStatus.STOPPED)
+        node.get_version = MagicMock(return_value="2024.11")
+        node.kill = MagicMock()
+        node.start = MagicMock()
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.kill.assert_not_called()
+        node.start.assert_not_called()
+        assert node.status == NodeStatus.STOPPED
+
+    def test_stopped_node_does_not_push_updatable(self, orchestrator):
+        """A node with started=False never pushes updatable config."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+        node.save_updatable("updatable_config/gains", {"start_time": 100})
+
+        node.get_status = MagicMock(return_value=NodeStatus.STOPPED)
+        node.get_version = MagicMock(return_value="2024.11")
+        node.push_updatable = MagicMock()
+
+        node.queue_put(ChangeItem(
+            type=ChangeType.UPDATABLE_CONFIG,
+            node_key="cx/cx1",
+            endpoint="updatable_config/gains",
+            values={"start_time": 200},
+        ))
+        orchestrator._process_node(node)
+
+        node.push_updatable.assert_not_called()
+
+    def test_stopped_node_down_stays_down(self, orchestrator):
+        """A node with started=False that is down stays down."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+
+        node.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        node.kill = MagicMock()
+        node.start = MagicMock()
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.kill.assert_not_called()
+        node.start.assert_not_called()
+        assert node.status == NodeStatus.DOWN

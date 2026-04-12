@@ -142,11 +142,14 @@ def node_edit(node_key):
 
     config_content = node.base_content or ""
 
-    # Extract updatable config blocks from the live config.
+    # Extract updatable config blocks from the desired config (rendered
+    # base + stored overrides). Using desired_config instead of the live
+    # kotekan config means the UI still shows fields when a node is down
+    # or when a newly added updatable block hasn't been pushed yet.
     # Pre-serialize to compact JSON strings so Jinja2 auto-escaping
     # safely handles quotes inside HTML attributes.
-    live_config = node.get_config()
-    updatable_blocks = find_updatable_blocks(live_config) if live_config else {}
+    desired = node.desired_config
+    updatable_blocks = find_updatable_blocks(desired) if desired else {}
     updatable_json = {
         endpoint: json.dumps(values, separators=(",", ": "))
         for endpoint, values in updatable_blocks.items()
@@ -162,6 +165,45 @@ def node_edit(node_key):
 
 
 # --- htmx partial endpoints for live updates ---
+
+@bp.route("/toggle-started/<path:node_key>", methods=["POST"])
+@login_required
+def toggle_started(node_key):
+    """Toggle the started/stopped desired state for a node."""
+    _check_csrf()
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    node.started = not node.started
+    orchestrator = _orchestrator()
+    orchestrator._emit("node_status_changed", {
+        "node": node_key,
+        "status": node.status.value,
+    })
+    if request.headers.get("HX-Request"):
+        return render_template("_toggle_started.html", node=node, key=node_key)
+    flash(f"{node_key} {'started' if node.started else 'stopped'}", "success")
+    return redirect(request.referrer or url_for("web.dashboard"))
+
+
+@bp.route("/set-started-all/<action>", methods=["POST"])
+@login_required
+def set_started_all(action):
+    """Set all nodes to started or stopped."""
+    _check_csrf()
+    if action not in ("start", "stop"):
+        abort(400)
+    registry = _registry()
+    started = action == "start"
+    for node in registry.nodes.values():
+        node.started = started
+    orchestrator = _orchestrator()
+    orchestrator._emit("node_status_changed", {})
+    if request.headers.get("HX-Request"):
+        return render_template("_dashboard_table.html", nodes=registry.nodes)
+    return redirect(url_for("web.dashboard"))
+
 
 @bp.route("/partials/node-status/<path:node_key>")
 @login_required
@@ -222,6 +264,15 @@ def update_group(group):
         orchestrator.submit_group_updatable_config(group, endpoint, values)
         return {"status": "queued", "group": group, "action": action}
 
+    if action == "set_started":
+        started = data.get("started")
+        if not isinstance(started, bool):
+            return {"error": "started must be a boolean"}, 400
+        for node in registry.nodes.values():
+            if node.group == group:
+                node.started = started
+        return {"status": "ok", "group": group, "started": started}
+
     return {"error": f"Unknown action '{action}'"}, 400
 
 
@@ -256,5 +307,12 @@ def update_node(group, node):
             return {"error": "endpoint and values are required"}, 400
         orchestrator.submit_updatable_config(node_key, endpoint, values)
         return {"status": "queued", "node": node_key, "action": action}
+
+    if action == "set_started":
+        started = data.get("started")
+        if not isinstance(started, bool):
+            return {"error": "started must be a boolean"}, 400
+        node_obj.started = started
+        return {"status": "ok", "node": node_key, "started": started}
 
     return {"error": f"Unknown action '{action}'"}, 400

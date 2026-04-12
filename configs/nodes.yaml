@@ -3,6 +3,9 @@ groups:
     cx27:
       host: cx27.site.chord-observatory.ca
       port: 12048
+    cx42:
+      host: cx42.site.chord-observatory.ca
+      port: 12048
   recv:
     recv1:
       host: recv1.site.chord-observatory.ca

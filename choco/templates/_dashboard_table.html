@@ -6,6 +6,7 @@
         <tr>
             <th>Node</th>
             <th>Group</th>
+            <th>Start {% include "_toggle_started_all.html" %}</th>
             <th>Status</th>
             <th>Version</th>
             <th>Config</th>
@@ -18,6 +19,7 @@
         <tr>
             <td>{{ node.name }}</td>
             <td>{{ node.group }}</td>
+            <td>{% include "_toggle_started.html" %}</td>
             <td>
                 <span class="status-badge status-{{ node.status.value }}">
                     {{ node.status.value }}
@@ -27,7 +29,7 @@
             <td>{{ node.version or "—" }}</td>
             <td>{{ node.config_filename }}</td>
             <td>
-                {% if node.status.value == "up" %}
+                {% if node.status.value == "started" %}
                     Yes
                 {% elif node.status.value == "syncing" %}
                     No

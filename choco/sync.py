@@ -311,6 +311,16 @@ class Orchestrator:
         node.last_seen = time.time()
         node.version = node.get_version()
 
+        # If the node's desired state is stopped, ensure kotekan is not running.
+        if not node.started:
+            if probe == NodeStatus.STARTED:
+                logger.info(f"Node {node.key} should be stopped; sending /kill")
+                node.kill()
+                node.status = NodeStatus.STOPPED
+            else:
+                node.status = probe
+            return
+
         desired = node.desired_config
         if desired is None:
             node.error = f"No config file ({node.config_filename})"
@@ -318,8 +328,8 @@ class Orchestrator:
 
         actual = node.get_config()
 
-        # Node idle with no config -> start it.
-        if probe == NodeStatus.IDLE and actual is None:
+        # Node stopped with no config -> start it.
+        if probe == NodeStatus.STOPPED and actual is None:
             self._push_config(node, desired)
             return
 
@@ -334,7 +344,7 @@ class Orchestrator:
         if had_base_change or base_drift:
             self._push_config(node, desired)
         else:
-            node.status = NodeStatus.UP
+            node.status = NodeStatus.STARTED
             self._sync_updatable(node, actual)
 
     def _push_config(self, node: Node, desired: dict) -> bool:
@@ -356,21 +366,21 @@ class Orchestrator:
             node.error = "Unreachable"
             return False
 
-        if probe != NodeStatus.IDLE:
+        if probe != NodeStatus.STOPPED:
             logger.info(f"Sending /kill to {key}")
             node.kill()
-            logger.info(f"Waiting for {key} to reach idle state")
+            logger.info(f"Waiting for {key} to reach stopped state")
             for _ in range(10):
                 gevent.sleep(self.restart_timeout // 10)
-                if node.get_status() == NodeStatus.IDLE:
+                if node.get_status() == NodeStatus.STOPPED:
                     break
             else:
                 logger.warning(
-                    f"Timed out waiting for {key} to become idle"
+                    f"Timed out waiting for {key} to become stopped"
                 )
 
             probe = node.get_status()
-            if probe != NodeStatus.IDLE:
+            if probe != NodeStatus.STOPPED:
                 node.status = probe
                 node.error = (f"Status is {probe.value}, "
                               f"failed to push config")
@@ -380,7 +390,7 @@ class Orchestrator:
         success = node.start(desired)
         if success:
             logger.info(f"Successfully pushed config to {key}")
-            node.status = NodeStatus.UP
+            node.status = NodeStatus.STARTED
             node.error = None
         else:
             logger.error(f"Failed to push config to {key}")
@@ -393,8 +403,12 @@ class Orchestrator:
         stored = node.updatable_config
         if not stored:
             return
+        # Only push endpoints that still exist in the rendered base config.
+        rendered_blocks = find_updatable_blocks(node.rendered_config) if node.rendered_config else {}
         live_blocks = find_updatable_blocks(live_config)
         for endpoint, values in stored.items():
+            if endpoint not in rendered_blocks:
+                continue
             if live_blocks.get(endpoint) != values:
                 logger.info(f"Updatable config drift on {node.key} "
                             f"at /{endpoint}")
