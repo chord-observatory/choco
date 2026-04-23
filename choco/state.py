@@ -72,7 +72,7 @@ def find_updatable_blocks(config: dict, _prefix: str = "") -> dict[str, dict]:
 class NodeStatus(Enum):
     UNKNOWN = "unknown"
     DOWN = "down"       # Unreachable
-    STOPPED = "stopped" # Reachable but kotekan not running (ready for /start)
+    IDLE = "idle"       # Reachable but kotekan not running (ready for /start)
     STARTED = "started" # Running with correct config
     SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
@@ -280,13 +280,13 @@ class Node:
         return None
 
     def get_status(self) -> NodeStatus:
-        """Probe kotekan: returns DOWN, IDLE, UP, or UNKNOWN."""
+        """Probe kotekan: returns DOWN, IDLE, STARTED, or UNKNOWN."""
         resp = self._request("GET", "/status")
         if resp is None:
             return NodeStatus.DOWN
         try:
             data = resp.json()
-            return NodeStatus.STARTED if data.get("running", False) else NodeStatus.STOPPED
+            return NodeStatus.STARTED if data.get("running", False) else NodeStatus.IDLE
         except Exception:
             return NodeStatus.UNKNOWN
 
@@ -310,7 +310,7 @@ class Node:
         return self._request("POST", "/start", json=desired_config) is not None
 
     def kill(self) -> bool:
-        """Kill the kotekan process. The daemon restarts it into a stopped state.
+        """Kill the kotekan process. The daemon restarts it into an idle state.
 
         This is the reliable way to stop a running config — the ``/stop``
         endpoint is unreliable, so we always use ``/kill`` instead.
@@ -340,7 +340,7 @@ class Registry:
         self.configs_dir = Path(configs_dir)
         self.kotekan_timeout = kotekan_timeout
         self.nodes: dict[str, Node] = {}
-        self._load_nodes()
+        self.reload()
 
     def _load_vars(self) -> dict:
         vars_file = self.configs_dir / "vars.yaml"
@@ -349,11 +349,19 @@ class Registry:
                 return yaml.safe_load(f) or {}
         return {}
 
-    def _load_nodes(self):
-        """Load node definitions from nodes.yaml and their configs from disk."""
+    def reload(self):
+        """Rebuild ``self.nodes`` from ``nodes.yaml`` on disk.
+
+        Clears and repopulates the registry; all existing :class:`Node`
+        objects are discarded along with any pending queue items or
+        runtime state.  Callers that need to synchronise with the sync
+        worker pool should hold the orchestrator's input-queue lock
+        around this call.
+        """
         nodes_file = self.configs_dir / "nodes.yaml"
         if not nodes_file.exists():
             logger.warning(f"No nodes.yaml found at {nodes_file}")
+            self.nodes.clear()
             return
 
         with open(nodes_file) as f:
@@ -363,7 +371,7 @@ class Registry:
 
         self.nodes.clear()
         for group_name, members in (data.get("groups") or {}).items():
-            for node_name, node_info in members.items():
+            for node_name, node_info in (members or {}).items():
                 key = f"{group_name}/{node_name}"
                 host = node_info.get("host", node_name)
                 port = node_info.get("port", 12048)
@@ -380,6 +388,15 @@ class Registry:
                 self.nodes[key] = node
 
         logger.info(f"Loaded {len(self.nodes)} nodes")
+
+    def save_nodes_yaml(self, data: dict):
+        """Write *data* to ``nodes.yaml`` atomically (temp file + rename)."""
+        nodes_file = self.configs_dir / "nodes.yaml"
+        nodes_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = nodes_file.with_name(nodes_file.name + ".tmp")
+        with open(tmp, "w") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        tmp.replace(nodes_file)
 
     def get_node(self, key: str) -> Node | None:
         return self.nodes.get(key)

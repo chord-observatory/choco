@@ -19,7 +19,7 @@
         }
         .status-started { background: #2ecc40; color: white; }
         .status-down { background: #ff4136; color: white; }
-        .status-stopped { background: #ffdc00; color: #333; }
+        .status-idle { background: #ffdc00; color: #333; }
         .status-syncing { background: #0074d9; color: white; }
         .status-unknown { background: #aaa; color: white; }
         table { margin-top: 1em; }
@@ -60,7 +60,7 @@
         }
         .toggle-slider.started { background: #2ecc40; }
         .toggle-slider.started::before { transform: translateX(18px); }
-        .toggle-slider.stopped { background: #ffdc00; }
+        .toggle-slider.idle { background: #ffdc00; }
         .htmx-request .toggle-slider { background: #aaa !important; }
         {% block styles %}{% endblock %}
     </style>

@@ -145,10 +145,13 @@ class Orchestrator:
         self._running = False
 
         self.input_queue = InputQueue(registry)
+        self._assign_queue_locks()
 
-        # Give each node a gevent-aware queue lock.
-        for node in registry.nodes.values():
-            node._queue_lock = BoundedSemaphore()
+    def _assign_queue_locks(self):
+        """Ensure every Node has a gevent-aware queue lock."""
+        for node in self.registry.nodes.values():
+            if node._queue_lock is None:
+                node._queue_lock = BoundedSemaphore()
 
     # --- File-watcher callbacks ---
 
@@ -170,11 +173,17 @@ class Orchestrator:
     def on_file_changed(self, path: str):
         """Reload the affected node's config from disk and queue a poll.
 
-        If vars.yaml changed, all nodes are re-rendered.
+        If vars.yaml changed, all nodes are re-rendered.  If nodes.yaml
+        changed, the registry is fully reloaded (clear and rebuild).
         """
         from pathlib import Path
         p = Path(path)
         configs_dir = self.registry.configs_dir
+
+        # nodes.yaml is a full registry reset — clear and rebuild.
+        if p.name == "nodes.yaml" and p.parent == configs_dir:
+            self.apply_nodes_update()
+            return
 
         # vars.yaml affects all nodes — reload template vars and re-render.
         if p.name == "vars.yaml":
@@ -242,7 +251,10 @@ class Orchestrator:
         """Continuously scan node queues for work."""
         while self._running:
             found_work = False
-            for node in self.registry.nodes.values():
+            # Snapshot the node list: a concurrent registry reload may
+            # replace ``self.registry.nodes`` in place, and iterating a
+            # dict that mutates mid-loop would raise RuntimeError.
+            for node in list(self.registry.nodes.values()):
                 if node.queue_try_lock():
                     if node.queue_empty:
                         node.queue_unlock()
@@ -311,12 +323,12 @@ class Orchestrator:
         node.last_seen = time.time()
         node.version = node.get_version()
 
-        # If the node's desired state is stopped, ensure kotekan is not running.
+        # If the node's desired state is not started, ensure kotekan is not running.
         if not node.started:
             if probe == NodeStatus.STARTED:
-                logger.info(f"Node {node.key} should be stopped; sending /kill")
+                logger.info(f"Node {node.key} should be idle; sending /kill")
                 node.kill()
-                node.status = NodeStatus.STOPPED
+                node.status = NodeStatus.IDLE
             else:
                 node.status = probe
             return
@@ -328,8 +340,8 @@ class Orchestrator:
 
         actual = node.get_config()
 
-        # Node stopped with no config -> start it.
-        if probe == NodeStatus.STOPPED and actual is None:
+        # Node idle with no config -> start it.
+        if probe == NodeStatus.IDLE and actual is None:
             self._push_config(node, desired)
             return
 
@@ -366,21 +378,21 @@ class Orchestrator:
             node.error = "Unreachable"
             return False
 
-        if probe != NodeStatus.STOPPED:
+        if probe != NodeStatus.IDLE:
             logger.info(f"Sending /kill to {key}")
             node.kill()
-            logger.info(f"Waiting for {key} to reach stopped state")
+            logger.info(f"Waiting for {key} to reach idle state")
             for _ in range(10):
                 gevent.sleep(self.restart_timeout // 10)
-                if node.get_status() == NodeStatus.STOPPED:
+                if node.get_status() == NodeStatus.IDLE:
                     break
             else:
                 logger.warning(
-                    f"Timed out waiting for {key} to become stopped"
+                    f"Timed out waiting for {key} to become idle"
                 )
 
             probe = node.get_status()
-            if probe != NodeStatus.STOPPED:
+            if probe != NodeStatus.IDLE:
                 node.status = probe
                 node.error = (f"Status is {probe.value}, "
                               f"failed to push config")
@@ -470,3 +482,20 @@ class Orchestrator:
                 values=values,
             ),
         )
+
+    def apply_nodes_update(self, new_data: dict | None = None):
+        """Replace the node registry.
+
+        If *new_data* is given, it is written to ``nodes.yaml`` first;
+        otherwise the current on-disk file is used (for file-watcher
+        reloads).  The registry is then rebuilt from scratch — all
+        existing :class:`Node` objects, pending queue items, and runtime
+        ``started`` toggles are discarded.  Held under the input-queue
+        lock so in-flight submissions don't race the rebuild.
+        """
+        with self.input_queue._lock:
+            if new_data is not None:
+                self.registry.save_nodes_yaml(new_data)
+            self.registry.reload()
+            self._assign_queue_locks()
+        self._emit("config_reloaded", {})

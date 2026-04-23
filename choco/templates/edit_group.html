@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}CHOCO - Edit group {{ group }}{% endblock %}
+
+{% block content %}
+<h2>Edit all configs in group <code>{{ group }}</code></h2>
+<p><small>This will queue a base-config change for every node in group
+<code>{{ group }}</code>. Each affected node's on-disk config file is
+overwritten and kotekan will be restarted with the new config.</small></p>
+
+<form method="post">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <textarea name="config_content" rows="24" autofocus
+              style="font-family: monospace; font-size: 0.9em; tab-size: 2;"
+              placeholder="# YAML (or Jinja2) config to push to every node in this group">{{ config_content }}</textarea>
+    <div style="display: flex; gap: 0.5em; align-items: center;">
+        <button type="submit" style="margin: 0;">Save &amp; Push</button>
+        <a href="/" role="button" class="outline" style="margin: 0;">Cancel</a>
+    </div>
+</form>
+{% endblock %}

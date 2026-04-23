@@ -31,6 +31,13 @@ def _check_csrf():
         abort(403)
 
 
+def _check_csrf_header():
+    """CSRF check for JSON POSTs: token comes in via an ``X-CSRF-Token`` header."""
+    token = request.headers.get("X-CSRF-Token", "")
+    if not token or token != session.get("_csrf_token"):
+        abort(403)
+
+
 @bp.app_context_processor
 def inject_csrf():
     return {"csrf_token": _csrf_token}
@@ -164,12 +171,113 @@ def node_edit(node_key):
     )
 
 
+# --- Nodes-registry editor (nodes.yaml) ---
+
+@bp.route("/nodes", methods=["GET"])
+@login_required
+def nodes_edit():
+    """Render the nodes.yaml editor with drag-and-drop groups."""
+    registry = _registry()
+    groups: dict[str, list] = {}
+    for node in registry.nodes.values():
+        groups.setdefault(node.group, []).append(node)
+    return render_template("nodes.html", groups=groups)
+
+
+@bp.route("/nodes", methods=["POST"])
+@login_required
+def nodes_save():
+    """Validate the posted JSON structure, save nodes.yaml, and reload."""
+    _check_csrf_header()
+
+    payload = request.get_json(silent=True) or {}
+    groups_in = payload.get("groups")
+    if not isinstance(groups_in, dict):
+        return {"error": "'groups' must be an object"}, 400
+
+    new_data: dict = {"groups": {}}
+    seen_keys: set[str] = set()
+
+    for group_name, items in groups_in.items():
+        if not isinstance(group_name, str):
+            return {"error": "Group name must be a string"}, 400
+        group_name = group_name.strip()
+        if not group_name or "/" in group_name or group_name.startswith("."):
+            return {"error": f"Invalid group name {group_name!r}"}, 400
+        if not isinstance(items, list):
+            return {"error": f"Group {group_name!r} must be a list"}, 400
+        if group_name in new_data["groups"]:
+            return {"error": f"Duplicate group {group_name!r}"}, 400
+
+        members: dict = {}
+        for item in items:
+            if not isinstance(item, dict):
+                return {"error": f"Entry in {group_name!r} must be an object"}, 400
+            name = str(item.get("name", "")).strip()
+            host = str(item.get("host", "")).strip()
+            if not name or "/" in name or name.startswith("."):
+                return {"error": f"Invalid node name {name!r} in {group_name!r}"}, 400
+            if not host:
+                return {"error": f"Node {group_name}/{name} missing host"}, 400
+            try:
+                port = int(item.get("port", 12048))
+            except (TypeError, ValueError):
+                return {"error": f"Node {group_name}/{name} invalid port"}, 400
+            key = f"{group_name}/{name}"
+            if key in seen_keys:
+                return {"error": f"Duplicate node {key!r}"}, 400
+            seen_keys.add(key)
+            members[name] = {"host": host, "port": port}
+
+        new_data["groups"][group_name] = members
+
+    try:
+        _orchestrator().apply_nodes_update(new_data)
+    except Exception as e:
+        logger.exception("Failed to apply nodes update")
+        return {"error": str(e)}, 500
+
+    flash("Node registry saved; all nodes reset to idle.", "success")
+    return {"status": "ok"}
+
+
+# --- Group config editor (push one config to every node in a group) ---
+
+@bp.route("/edit-group/<group>", methods=["GET", "POST"])
+@login_required
+def group_edit(group):
+    """Edit a single config to broadcast to every node in *group*."""
+    registry = _registry()
+    sample_node = next(
+        (n for n in registry.nodes.values() if n.group == group), None
+    )
+    if sample_node is None:
+        flash(f"Group {group!r} not found", "error")
+        return redirect(url_for("web.dashboard"))
+
+    if request.method == "POST":
+        _check_csrf()
+        content = request.form.get("config_content", "")
+        try:
+            sample_node.render(content)
+        except Exception as e:
+            flash(f"Invalid config: {e}", "error")
+            return render_template(
+                "edit_group.html", group=group, config_content=content,
+            )
+        _orchestrator().submit_group_base_config(group, content)
+        flash(f"Config change queued for group {group!r}.", "success")
+        return redirect(url_for("web.dashboard"))
+
+    return render_template("edit_group.html", group=group, config_content="")
+
+
 # --- htmx partial endpoints for live updates ---
 
 @bp.route("/toggle-started/<path:node_key>", methods=["POST"])
 @login_required
 def toggle_started(node_key):
-    """Toggle the started/stopped desired state for a node."""
+    """Toggle the started/idle desired state for a node."""
     _check_csrf()
     registry = _registry()
     node = registry.get_node(node_key)
@@ -197,6 +305,27 @@ def set_started_all(action):
     registry = _registry()
     started = action == "start"
     for node in registry.nodes.values():
+        node.started = started
+    orchestrator = _orchestrator()
+    orchestrator._emit("node_status_changed", {})
+    if request.headers.get("HX-Request"):
+        return render_template("_dashboard_table.html", nodes=registry.nodes)
+    return redirect(url_for("web.dashboard"))
+
+
+@bp.route("/set-started-group/<group>/<action>", methods=["POST"])
+@login_required
+def set_started_group(group, action):
+    """Set every node in *group* to started or stopped."""
+    _check_csrf()
+    if action not in ("start", "stop"):
+        abort(400)
+    registry = _registry()
+    group_nodes = [n for n in registry.nodes.values() if n.group == group]
+    if not group_nodes:
+        abort(404)
+    started = action == "start"
+    for node in group_nodes:
         node.started = started
     orchestrator = _orchestrator()
     orchestrator._emit("node_status_changed", {})

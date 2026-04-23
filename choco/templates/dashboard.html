@@ -1,8 +1,14 @@
 {% extends "base.html" %}
-{% block title %}CHOCO — Dashboard{% endblock %}
+{% block title %}CHOCO - Dashboard{% endblock %}
 
 {% block content %}
-<h2>Nodes</h2>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5em; margin-bottom: 1.5em;">
+    <h2 style="margin: 0;">Nodes</h2>
+    <div style="display: flex; gap: 0.5em; align-items: center;">
+        {% include "_toggle_started_all.html" %}
+        <a href="/nodes" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;">Edit nodes</a>
+    </div>
+</div>
 
 <div id="dashboard-table"
      hx-get="/partials/dashboard-table"

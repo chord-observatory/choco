@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}CHOCO - Edit Nodes{% endblock %}
+
+{% block styles %}
+    .warning-banner {
+        background: #fff5e1;
+        border: 1px solid #ffb74d;
+        border-left: 4px solid #ff9800;
+        padding: 0.75em 1em;
+        border-radius: 4px;
+        margin-bottom: 1em;
+    }
+    .warning-banner strong { color: #b26a00; }
+    #groups-container { margin-bottom: 1em; }
+    .group {
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 0.6em 0.75em;
+        margin-bottom: 0.6em;
+        background: #fafafa;
+    }
+    .group-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        margin-bottom: 0.5em;
+        cursor: move;
+    }
+    .group-header .group-name {
+        font-weight: 600;
+        width: auto;
+        min-width: 10em;
+        margin: 0;
+    }
+    .node-list {
+        list-style: none;
+        padding: 0.25em;
+        margin: 0;
+        min-height: 2.25em;
+        background: #f0f0f0;
+        border-radius: 4px;
+    }
+    .node {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        padding: 0.3em 0.4em;
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        margin-bottom: 0.25em;
+        cursor: move;
+    }
+    .node:last-child { margin-bottom: 0; }
+    .node input { margin: 0; }
+    .node .node-name { flex: 1 1 10em; }
+    .node .node-host { flex: 2 1 18em; }
+    .node .node-port { width: 6.5em; flex: 0 0 auto; }
+    .remove-btn {
+        background: transparent;
+        border: none;
+        color: #b00020;
+        cursor: pointer;
+        font-size: 1.2em;
+        line-height: 1;
+        margin: 0;
+        padding: 0 0.3em;
+        width: auto;
+    }
+    .add-node-btn {
+        margin: 0;
+        padding: 0.2em 0.6em;
+        font-size: 0.85em;
+        width: auto;
+    }
+    .sortable-ghost { opacity: 0.3; }
+    .sortable-drag { opacity: 0.9; }
+    .editor-actions {
+        display: flex;
+        gap: 0.5em;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    .editor-actions button,
+    .editor-actions a[role="button"] { margin: 0; }
+    #save-status { margin: 0 0 0 0.5em; }
+{% endblock %}
+
+{% block content %}
+<h2>Edit Nodes</h2>
+
+<div class="warning-banner">
+    <strong>Warning:</strong> Saving this page rewrites
+    <code>configs/nodes.yaml</code> and fully reloads the node registry -
+    it is effectively a service restart. Every node will be reset to
+    <em>idle</em>, any in-flight queued changes will be dropped,
+    and config files on disk are <em>not</em> moved when nodes change
+    groups. Use this page for deliberate setup changes, not for routine
+    edits.
+</div>
+
+<p><small>Drag the group header to reorder groups. Drag a node to
+reorder within a group or move it between groups.</small></p>
+
+<div id="groups-container">
+    {% for group_name, nodes in groups.items() %}
+    <div class="group">
+        <div class="group-header">
+            <input type="text" class="group-name" value="{{ group_name }}" placeholder="group name">
+            <button type="button" class="add-node-btn">Add node</button>
+            <button type="button" class="remove-btn remove-group-btn" title="Remove group">&times;</button>
+        </div>
+        <ul class="node-list">
+            {% for node in nodes %}
+            <li class="node">
+                <input type="text" class="node-name" value="{{ node.name }}" placeholder="name">
+                <input type="text" class="node-host" value="{{ node.host }}" placeholder="host">
+                <input type="number" class="node-port" value="{{ node.port }}" placeholder="port" min="1" max="65535">
+                <button type="button" class="remove-btn remove-node-btn" title="Remove node">&times;</button>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="editor-actions">
+    <button type="button" id="add-group-btn" class="outline">Add group</button>
+    <button type="button" id="save-btn">Save &amp; Reload</button>
+    <a href="/" role="button" class="outline">Cancel</a>
+    <span id="save-status"></span>
+</div>
+
+<template id="group-template">
+    <div class="group">
+        <div class="group-header">
+            <input type="text" class="group-name" value="" placeholder="group name">
+            <button type="button" class="add-node-btn">Add node</button>
+            <button type="button" class="remove-btn remove-group-btn" title="Remove group">&times;</button>
+        </div>
+        <ul class="node-list"></ul>
+    </div>
+</template>
+
+<template id="node-template">
+    <li class="node">
+        <input type="text" class="node-name" value="" placeholder="name">
+        <input type="text" class="node-host" value="" placeholder="host">
+        <input type="number" class="node-port" value="12048" placeholder="port" min="1" max="65535">
+        <button type="button" class="remove-btn remove-node-btn" title="Remove node">&times;</button>
+    </li>
+</template>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script>
+(function () {
+    const container = document.getElementById('groups-container');
+    const groupTpl = document.getElementById('group-template');
+    const nodeTpl = document.getElementById('node-template');
+    const status = document.getElementById('save-status');
+    const csrfToken = "{{ csrf_token() }}";
+
+    new Sortable(container, {
+        animation: 150,
+        handle: '.group-header',
+        draggable: '.group',
+        ghostClass: 'sortable-ghost',
+    });
+
+    function initNodeList(ul) {
+        new Sortable(ul, {
+            group: 'nodes',
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+        });
+    }
+    container.querySelectorAll('.node-list').forEach(initNodeList);
+
+    container.addEventListener('click', function (e) {
+        const t = e.target;
+        if (t.classList.contains('add-node-btn')) {
+            const ul = t.closest('.group').querySelector('.node-list');
+            ul.appendChild(nodeTpl.content.cloneNode(true));
+        } else if (t.classList.contains('remove-node-btn')) {
+            t.closest('.node').remove();
+        } else if (t.classList.contains('remove-group-btn')) {
+            const g = t.closest('.group');
+            if (g.querySelectorAll('.node').length &&
+                !confirm('Remove this group and all its nodes?')) return;
+            g.remove();
+        }
+    });
+
+    document.getElementById('add-group-btn').addEventListener('click', function () {
+        const frag = groupTpl.content.cloneNode(true);
+        container.appendChild(frag);
+        initNodeList(container.lastElementChild.querySelector('.node-list'));
+    });
+
+    function buildPayload() {
+        const groups = {};
+        const seen = new Set();
+        for (const g of container.querySelectorAll('.group')) {
+            const name = g.querySelector('.group-name').value.trim();
+            if (!name) throw new Error('Every group needs a name.');
+            if (groups[name]) throw new Error('Duplicate group: ' + name);
+            const items = [];
+            for (const n of g.querySelectorAll('.node')) {
+                const item = {
+                    name: n.querySelector('.node-name').value.trim(),
+                    host: n.querySelector('.node-host').value.trim(),
+                    port: parseInt(n.querySelector('.node-port').value, 10) || 12048,
+                };
+                if (!item.name) throw new Error('Every node needs a name.');
+                if (!item.host) throw new Error('Node ' + name + '/' + item.name + ' needs a host.');
+                const key = name + '/' + item.name;
+                if (seen.has(key)) throw new Error('Duplicate node: ' + key);
+                seen.add(key);
+                items.push(item);
+            }
+            groups[name] = items;
+        }
+        return { groups };
+    }
+
+    document.getElementById('save-btn').addEventListener('click', function () {
+        let payload;
+        try {
+            payload = buildPayload();
+        } catch (e) {
+            status.textContent = 'Error: ' + e.message;
+            status.className = 'flash-error';
+            return;
+        }
+        if (!confirm('Save and reload the node registry? All nodes will be reset to idle.')) {
+            return;
+        }
+        status.textContent = 'Saving…';
+        status.className = '';
+        fetch('/nodes', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken,
+            },
+            body: JSON.stringify(payload),
+        }).then(function (r) {
+            return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+        }).then(function (res) {
+            if (res.ok) {
+                window.location.href = '/';
+            } else {
+                status.textContent = 'Error: ' + (res.body.error || 'save failed');
+                status.className = 'flash-error';
+            }
+        }).catch(function (e) {
+            status.textContent = 'Network error: ' + e;
+            status.className = 'flash-error';
+        });
+    });
+})();
+</script>
+{% endblock %}

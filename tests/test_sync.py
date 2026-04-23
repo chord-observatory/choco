@@ -228,8 +228,8 @@ class TestProcessNode:
         node.get_status = MagicMock(side_effect=[
             NodeStatus.STARTED,      # _sync_node probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
-            NodeStatus.STOPPED,    # wait loop
-            NodeStatus.STOPPED,    # post-loop check
+            NodeStatus.IDLE,    # wait loop
+            NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value={"wrong": "config"})
         node.get_version = MagicMock(return_value="2024.11")
@@ -252,8 +252,8 @@ class TestProcessNode:
         node.get_status = MagicMock(side_effect=[
             NodeStatus.STARTED,      # _sync_node probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
-            NodeStatus.STOPPED,    # wait loop check
-            NodeStatus.STOPPED,    # post-loop check
+            NodeStatus.IDLE,    # wait loop check
+            NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value=desired_after)
         node.get_version = MagicMock(return_value="2024.11")
@@ -327,8 +327,8 @@ class TestProcessNode:
         node.get_status = MagicMock(side_effect=[
             NodeStatus.STARTED,      # _sync_node probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
-            NodeStatus.STOPPED,    # wait loop check
-            NodeStatus.STOPPED,    # post-loop check
+            NodeStatus.IDLE,    # wait loop check
+            NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value=rendered)
         node.get_version = MagicMock(return_value="2024.11")
@@ -347,8 +347,8 @@ class TestProcessNode:
         node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.STOPPED,    # _sync_node probe
-            NodeStatus.STOPPED,    # _push_config probe (already idle)
+            NodeStatus.IDLE,    # _sync_node probe
+            NodeStatus.IDLE,    # _push_config probe (already idle)
         ])
         node.get_config = MagicMock(return_value=None)
         node.get_version = MagicMock(return_value="2024.11")
@@ -370,8 +370,8 @@ class TestProcessNode:
         node.get_status = MagicMock(side_effect=[
             NodeStatus.STARTED,      # _sync_node probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
-            NodeStatus.STOPPED,    # wait loop check
-            NodeStatus.STOPPED,    # post-loop check
+            NodeStatus.IDLE,    # wait loop check
+            NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value={"wrong": "config"})
         node.get_version = MagicMock(return_value="2024.11")
@@ -406,14 +406,14 @@ class TestProcessNode:
 
         node.kill.assert_called_once()
         node.start.assert_not_called()
-        assert node.status == NodeStatus.STOPPED
+        assert node.status == NodeStatus.IDLE
 
-    def test_stopped_node_leaves_stopped_alone(self, orchestrator):
-        """A node with started=False does nothing if already stopped."""
+    def test_stopped_node_leaves_idle_alone(self, orchestrator):
+        """A node with started=False does nothing if already idle."""
         node = orchestrator.registry.get_node("cx/cx1")
         node.started = False
 
-        node.get_status = MagicMock(return_value=NodeStatus.STOPPED)
+        node.get_status = MagicMock(return_value=NodeStatus.IDLE)
         node.get_version = MagicMock(return_value="2024.11")
         node.kill = MagicMock()
         node.start = MagicMock()
@@ -423,7 +423,7 @@ class TestProcessNode:
 
         node.kill.assert_not_called()
         node.start.assert_not_called()
-        assert node.status == NodeStatus.STOPPED
+        assert node.status == NodeStatus.IDLE
 
     def test_stopped_node_does_not_push_updatable(self, orchestrator):
         """A node with started=False never pushes updatable config."""
@@ -431,7 +431,7 @@ class TestProcessNode:
         node.started = False
         node.save_updatable("updatable_config/gains", {"start_time": 100})
 
-        node.get_status = MagicMock(return_value=NodeStatus.STOPPED)
+        node.get_status = MagicMock(return_value=NodeStatus.IDLE)
         node.get_version = MagicMock(return_value="2024.11")
         node.push_updatable = MagicMock()
 

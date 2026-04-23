@@ -1,12 +1,19 @@
 {% if not nodes %}
 <p>No nodes configured. Edit <code>configs/nodes.yaml</code> to add kotekan instances.</p>
 {% else %}
-<table>
+{% for group, group_nodes in nodes.values() | groupby('group') %}
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5em; margin-top: 1.25em; background: #f1f3f5; padding: 0.5em 0.75em; border-radius: 4px;">
+    <h3 style="margin: 0;">group <code>{{ group }}</code></h3>
+    <div style="display: flex; gap: 0.5em; align-items: center;">
+        {% with group=group %}{% include "_toggle_started_all.html" %}{% endwith %}
+        <a href="/edit-group/{{ group }}" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;">Edit "{{ group }}" configs</a>
+    </div>
+</div>
+<table style="margin-top: 0.25em;">
     <thead>
         <tr>
             <th>Node</th>
-            <th>Group</th>
-            <th>Start {% include "_toggle_started_all.html" %}</th>
+            <th>Start</th>
             <th>Status</th>
             <th>Version</th>
             <th>Config</th>
@@ -15,10 +22,10 @@
         </tr>
     </thead>
     <tbody>
-        {% for key, node in nodes.items() %}
+        {% for node in group_nodes %}
+        {% set key = node.key %}
         <tr>
             <td>{{ node.name }}</td>
-            <td>{{ node.group }}</td>
             <td>{% include "_toggle_started.html" %}</td>
             <td>
                 <span class="status-badge status-{{ node.status.value }}">
@@ -42,4 +49,5 @@
         {% endfor %}
     </tbody>
 </table>
+{% endfor %}
 {% endif %}

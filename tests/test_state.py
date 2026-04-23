@@ -106,6 +106,76 @@ class TestRegistry:
         assert node.rendered_config == {"num_elements": 1024}
 
 
+class TestRegistryReload:
+    """Registry.reload() clears and rebuilds; save_nodes_yaml() persists edits."""
+
+    def _rewrite_nodes(self, configs_dir, data):
+        with open(configs_dir / "nodes.yaml", "w") as f:
+            yaml.dump(data, f)
+
+    def test_reload_picks_up_added_group(self, configs_dir):
+        registry = Registry(configs_dir)
+        assert "new/n1" not in registry.nodes
+        self._rewrite_nodes(configs_dir, {
+            "groups": {
+                "new": {"n1": {"host": "n1.example", "port": 12048}},
+            }
+        })
+        registry.reload()
+        assert set(registry.nodes.keys()) == {"new/n1"}
+
+    def test_reload_drops_removed_nodes(self, configs_dir):
+        registry = Registry(configs_dir)
+        assert "cx/cx1" in registry.nodes
+        self._rewrite_nodes(configs_dir, {"groups": {}})
+        registry.reload()
+        assert registry.nodes == {}
+
+    def test_reload_resets_runtime_state(self, configs_dir):
+        """Reload is a full reset — runtime ``started`` toggles are dropped."""
+        registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        node.started = True  # simulated runtime toggle
+        registry.reload()
+        # A fresh Node is constructed; started defaults to False.
+        assert registry.get_node("cx/cx1").started is False
+
+    def test_reload_handles_empty_group(self, tmp_path):
+        """A group with no members (YAML null) must not crash reload."""
+        (tmp_path / "nodes.yaml").write_text("groups:\n  empty_grp:\n")
+        registry = Registry(tmp_path)
+        assert registry.nodes == {}
+
+    def test_reload_missing_file_clears_registry(self, configs_dir):
+        registry = Registry(configs_dir)
+        assert registry.nodes  # populated
+        (configs_dir / "nodes.yaml").unlink()
+        registry.reload()
+        assert registry.nodes == {}
+
+    def test_save_nodes_yaml_roundtrip(self, configs_dir):
+        registry = Registry(configs_dir)
+        new_data = {
+            "groups": {
+                "g1": {"n1": {"host": "n1.example", "port": 12048}},
+                "g2": {"n2": {"host": "n2.example", "port": 9000}},
+            }
+        }
+        registry.save_nodes_yaml(new_data)
+        on_disk = yaml.safe_load((configs_dir / "nodes.yaml").read_text())
+        assert on_disk == new_data
+        registry.reload()
+        assert set(registry.nodes.keys()) == {"g1/n1", "g2/n2"}
+        assert registry.get_node("g2/n2").port == 9000
+
+    def test_save_nodes_yaml_is_atomic(self, configs_dir):
+        """save_nodes_yaml writes via temp+rename; no .tmp left behind."""
+        registry = Registry(configs_dir)
+        registry.save_nodes_yaml({"groups": {}})
+        leftovers = list(configs_dir.glob("nodes.yaml*"))
+        assert leftovers == [configs_dir / "nodes.yaml"]
+
+
 class TestNodeConfig:
     def test_base_content(self, configs_dir):
         registry = Registry(configs_dir)

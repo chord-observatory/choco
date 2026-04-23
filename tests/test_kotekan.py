@@ -26,7 +26,7 @@ class TestGetStatus:
     @responses.activate
     def test_not_running(self, node):
         responses.get(f"{BASE}/status", json={"running": False})
-        assert node.get_status() == NodeStatus.STOPPED
+        assert node.get_status() == NodeStatus.IDLE
 
     @responses.activate
     def test_unreachable(self, node):
