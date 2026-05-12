@@ -445,3 +445,52 @@ def update_node(group, node):
         return {"status": "ok", "node": node_key, "started": started}
 
     return {"error": f"Unknown action '{action}'"}, 400
+
+
+# --- JSON API endpoints for read-only status (localhost bypass) ---
+
+def _node_to_dict(node) -> dict:
+    return {
+        "key": node.key,
+        "group": node.group,
+        "name": node.name,
+        "host": node.host,
+        "port": node.port,
+        "started": node.started,
+        "status": node.status.value,
+        "last_seen": node.last_seen,
+        "last_seen_ago": node.last_seen_ago,
+        "version": node.version,
+        "error": node.error,
+        "queue_depth": len(node._queue),
+    }
+
+
+@bp.route("/api/status", methods=["GET"])
+@localhost_or_login_required
+def api_status():
+    """Per-node runtime status plus an aggregate summary."""
+    registry = _registry()
+    nodes = [_node_to_dict(n) for n in registry.nodes.values()]
+    summary = {s.value: 0 for s in NodeStatus}
+    summary["total"] = len(nodes)
+    summary["started_desired"] = sum(1 for n in registry.nodes.values() if n.started)
+    for n in nodes:
+        summary[n["status"]] += 1
+    return {"summary": summary, "nodes": nodes}
+
+
+@bp.route("/api/nodes", methods=["GET"])
+@localhost_or_login_required
+def api_nodes():
+    """Node registry (the nodes.yaml contents) as JSON."""
+    registry = _registry()
+    groups: dict[str, list] = {}
+    for node in registry.nodes.values():
+        groups.setdefault(node.group, []).append({
+            "name": node.name,
+            "host": node.host,
+            "port": node.port,
+            "started": node.started,
+        })
+    return {"groups": groups}

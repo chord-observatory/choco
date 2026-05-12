@@ -212,6 +212,29 @@ Both accept JSON with:
 - `{"action": "updatable_config", "endpoint": "...", "values": {...}}`
 - `{"action": "set_started", "started": true}` — set the started/stopped state
 
+Read-only status endpoints:
+- `GET /api/status` — per-node runtime status plus an aggregate summary
+- `GET /api/nodes` — the node registry (groups/hosts/ports) as JSON
+
+The `/update/*` and `/api/*` endpoints bypass auth when called from `localhost`, so from the choco host you can use curl directly (use `-k` since the cert is typically self-signed):
+
+```bash
+# Start a single node
+curl -ks -X POST https://localhost:5000/update/<group>/<node> -H 'Content-Type: application/json' -d '{"action":"set_started","started":true}'
+
+# Stop (idle) a single node
+curl -ks -X POST https://localhost:5000/update/<group>/<node> -H 'Content-Type: application/json' -d '{"action":"set_started","started":false}'
+
+# Start a whole group
+curl -ks -X POST https://localhost:5000/update/<group> -H 'Content-Type: application/json' -d '{"action":"set_started","started":true}'
+
+# Stop a whole group
+curl -ks -X POST https://localhost:5000/update/<group> -H 'Content-Type: application/json' -d '{"action":"set_started","started":false}'
+
+# Check status
+curl -ks https://localhost:5000/api/status | jq .
+```
+
 ## How Sync Works
 
 Changes flow through a two-tier queue system:
