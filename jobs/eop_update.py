@@ -73,10 +73,13 @@ def merge_tables(stored: list[dict], fresh: list[dict], frame0_ns: int) -> list[
     t_now = Time.now()
 
     # Next midnight in instrument time
+    # First get next midnight in astropy
     next_midnight_mjd = int(t_now.utc.mjd) + 1
     t_next_midnight = Time(next_midnight_mjd, format="mjd", scale="utc", precision=9)
+    # Now get the TAI difference between next midnight and frame0
     t0 = eop_utils.calc_astropy_time_from_unix_ns(frame0_ns)
     dt_ns = eop_utils.calc_tai_ns_from_dt(t_next_midnight - t0)
+    # This is the next UTC midnight in instrument time
     cutoff_inst_ns = frame0_ns + dt_ns
 
     print(f"Merge cutoff (next midnight): {t_next_midnight.isot} "
@@ -84,6 +87,8 @@ def merge_tables(stored: list[dict], fresh: list[dict], frame0_ns: int) -> list[
 
     # Keep stored entries up to and including the cutoff
     stored_times = np.array([e["t_inst_ns"] for e in stored])
+    # side="right" ensures `stored_times[keep_count]` is strictly greater than
+    # `cutoff_inst_ns`.
     keep_count = int(np.searchsorted(stored_times, cutoff_inst_ns, side="right"))
     kept = stored[:keep_count]
 
@@ -91,6 +96,8 @@ def merge_tables(stored: list[dict], fresh: list[dict], frame0_ns: int) -> list[
     if kept:
         last_kept_ns = kept[-1]["t_inst_ns"]
         fresh_times = np.array([e["t_inst_ns"] for e in fresh])
+        # side="right" ensures `fresh_times[start_idx]` is strictly greater than
+        # `last_kept_ns`.
         start_idx = int(np.searchsorted(fresh_times, last_kept_ns, side="right"))
         appended = fresh[start_idx:]
     else:
@@ -175,7 +182,10 @@ def main():
 
     # Frame0
     if not fpga_host:
-        print("Error: eop.fpga_master_host not set in config", file=sys.stderr)
+        print("error: eop.fpga_master_host not set in config", file=sys.stderr)
+        sys.exit(1)
+    if not fpga_port:
+        print("error: eop.fpga_master_port not set in config", file=sys.stderr)
         sys.exit(1)
     print(f"Reading frame0 from fpga_master at {fpga_host}:{fpga_port} ...")
     try:

@@ -2,7 +2,7 @@
 Description=EOP table broadcast (daily)
 
 [Timer]
-OnCalendar=*-*-* 12:00:00
+OnCalendar=*-*-* 12:00:00 UTC
 Persistent=true
 
 [Install]
