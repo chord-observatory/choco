@@ -13,6 +13,7 @@ from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
 from .state import NodeStatus, find_updatable_blocks
+from .sync import ChangeItem, ChangeType
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,9 @@ def toggle_started(node_key):
         abort(404)
     node.started = not node.started
     orchestrator = _orchestrator()
+    orchestrator.input_queue.submit_node(
+        ChangeItem(type=ChangeType.POLL, node_key=node_key)
+    )
     orchestrator._emit("node_status_changed", {
         "node": node_key,
         "status": node.status.value,
@@ -307,6 +311,9 @@ def set_started_all(action):
     for node in registry.nodes.values():
         node.started = started
     orchestrator = _orchestrator()
+    orchestrator.input_queue.submit_all(
+        lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
+    )
     orchestrator._emit("node_status_changed", {})
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=registry.nodes)
@@ -328,6 +335,9 @@ def set_started_group(group, action):
     for node in group_nodes:
         node.started = started
     orchestrator = _orchestrator()
+    orchestrator.input_queue.submit_group(
+        group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
+    )
     orchestrator._emit("node_status_changed", {})
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=registry.nodes)

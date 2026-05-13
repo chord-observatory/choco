@@ -39,7 +39,7 @@
                 {% set pop_id = "ver-pop-" ~ node.group ~ "-" ~ node.name %}
                 <button type="button" class="info-btn" popovertarget="{{ pop_id }}"
                         aria-label="Show build details" title="Show build details">i</button>
-                <div id="{{ pop_id }}" popover class="version-popover">
+                <div id="{{ pop_id }}" popover class="version-popover" hx-preserve="true">
                     {% with v=node.version_info %}{% include "_version_popover.html" %}{% endwith %}
                 </div>
                 {% endif %}

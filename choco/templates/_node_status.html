@@ -17,24 +17,16 @@
 </tr>
 {% endif %}
 {% if v.get("cmake_build_settings") or v.get("available_stages") %}
-<tr id="build-details-{{ node.key|replace('/', '-') }}" hx-preserve="true">
+{% set pop_id = "ver-pop-edit-" ~ (node.key|replace('/', '-')) %}
+<tr>
     <th>Build</th>
     <td>
-        <details>
-            <summary style="cursor: pointer;">Details</summary>
-            {% if v.get("cmake_build_settings") %}
-            <p style="margin: 0.5em 0 0.25em 0;"><strong>CMake build settings</strong></p>
-            <dl class="build-settings">
-                {% for k, val in v["cmake_build_settings"].items() %}
-                <dt><code>{{ k }}</code></dt><dd><code>{{ val }}</code></dd>
-                {% endfor %}
-            </dl>
-            {% endif %}
-            {% if v.get("available_stages") %}
-            <p style="margin: 0.5em 0 0.25em 0;"><strong>Available stages</strong> ({{ v["available_stages"]|length }})</p>
-            <div class="stage-list">{{ v["available_stages"]|join(", ") }}</div>
-            {% endif %}
-        </details>
+        <button type="button" class="secondary outline build-toggle" popovertarget="{{ pop_id }}">
+            Show build details
+        </button>
+        <div id="{{ pop_id }}" popover class="version-popover" hx-preserve="true">
+            {% with v=v %}{% include "_version_popover.html" %}{% endwith %}
+        </div>
     </td>
 </tr>
 {% endif %}
