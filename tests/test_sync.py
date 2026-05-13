@@ -213,7 +213,7 @@ class TestProcessNode:
 
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_config = MagicMock(return_value=rendered)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
 
         node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
         orchestrator._process_node(node)
@@ -232,7 +232,7 @@ class TestProcessNode:
             NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value={"wrong": "config"})
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock(return_value=True)
 
@@ -256,7 +256,7 @@ class TestProcessNode:
             NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value=desired_after)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock(return_value=True)
 
@@ -281,7 +281,7 @@ class TestProcessNode:
 
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_config = MagicMock(return_value=rendered)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock()
         node.push_updatable = MagicMock(return_value=True)
 
@@ -310,7 +310,7 @@ class TestProcessNode:
 
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_config = MagicMock(return_value=rendered)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.push_updatable = MagicMock(return_value=True)
 
         node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
@@ -331,7 +331,7 @@ class TestProcessNode:
             NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value=rendered)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock(return_value=True)
 
@@ -351,7 +351,7 @@ class TestProcessNode:
             NodeStatus.IDLE,    # _push_config probe (already idle)
         ])
         node.get_config = MagicMock(return_value=None)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock()
         node.start = MagicMock(return_value=True)
 
@@ -374,7 +374,7 @@ class TestProcessNode:
             NodeStatus.IDLE,    # post-loop check
         ])
         node.get_config = MagicMock(return_value={"wrong": "config"})
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock(return_value=True)
 
@@ -397,7 +397,7 @@ class TestProcessNode:
         node.started = False
 
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock()
 
@@ -414,7 +414,7 @@ class TestProcessNode:
         node.started = False
 
         node.get_status = MagicMock(return_value=NodeStatus.IDLE)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.kill = MagicMock()
         node.start = MagicMock()
 
@@ -432,7 +432,7 @@ class TestProcessNode:
         node.save_updatable("updatable_config/gains", {"start_time": 100})
 
         node.get_status = MagicMock(return_value=NodeStatus.IDLE)
-        node.get_version = MagicMock(return_value="2024.11")
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.push_updatable = MagicMock()
 
         node.queue_put(ChangeItem(

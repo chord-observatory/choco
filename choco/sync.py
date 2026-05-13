@@ -321,7 +321,8 @@ class Orchestrator:
             return
 
         node.last_seen = time.time()
-        node.version = node.get_version()
+        node.version_info = node.get_version_info()
+        node.version = (node.version_info or {}).get("kotekan_version")
 
         # If the node's desired state is not started, ensure kotekan is not running.
         if not node.started:

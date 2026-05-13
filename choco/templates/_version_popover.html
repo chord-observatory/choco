@@ -1,0 +1,21 @@
+<dl class="version-meta">
+    <dt>Version</dt><dd><code>{{ v.get("kotekan_version") or "—" }}</code></dd>
+    {% if v.get("branch") %}
+    <dt>Branch</dt><dd><code>{{ v["branch"] }}</code></dd>
+    {% endif %}
+    {% if v.get("git_commit_hash") %}
+    <dt>Commit</dt><dd><code title="{{ v['git_commit_hash'] }}">{{ v["git_commit_hash"][:10] }}</code></dd>
+    {% endif %}
+</dl>
+{% if v.get("cmake_build_settings") %}
+<p class="popover-section"><strong>CMake build settings</strong></p>
+<dl class="build-settings">
+    {% for k, val in v["cmake_build_settings"].items() %}
+    <dt><code>{{ k }}</code></dt><dd><code>{{ val }}</code></dd>
+    {% endfor %}
+</dl>
+{% endif %}
+{% if v.get("available_stages") %}
+<p class="popover-section"><strong>Available stages</strong> ({{ v["available_stages"]|length }})</p>
+<div class="stage-list">{{ v["available_stages"]|join(", ") }}</div>
+{% endif %}

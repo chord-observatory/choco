@@ -461,6 +461,7 @@ def _node_to_dict(node) -> dict:
         "last_seen": node.last_seen,
         "last_seen_ago": node.last_seen_ago,
         "version": node.version,
+        "version_info": node.version_info,
         "error": node.error,
         "queue_depth": len(node._queue),
     }

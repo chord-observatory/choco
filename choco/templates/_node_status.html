@@ -1,3 +1,4 @@
+{% set v = node.version_info or {} %}
 <tr><th>Status</th>
     <td>
         <span class="status-badge status-{{ node.status.value }}">
@@ -7,4 +8,34 @@
     </td>
 </tr>
 <tr><th>Version</th><td>{{ node.version or "—" }}</td></tr>
+{% if v.get("branch") %}
+<tr><th>Branch</th><td><code>{{ v["branch"] }}</code></td></tr>
+{% endif %}
+{% if v.get("git_commit_hash") %}
+<tr><th>Commit</th>
+    <td><code title="{{ v['git_commit_hash'] }}">{{ v["git_commit_hash"][:10] }}</code></td>
+</tr>
+{% endif %}
+{% if v.get("cmake_build_settings") or v.get("available_stages") %}
+<tr id="build-details-{{ node.key|replace('/', '-') }}" hx-preserve="true">
+    <th>Build</th>
+    <td>
+        <details>
+            <summary style="cursor: pointer;">Details</summary>
+            {% if v.get("cmake_build_settings") %}
+            <p style="margin: 0.5em 0 0.25em 0;"><strong>CMake build settings</strong></p>
+            <dl class="build-settings">
+                {% for k, val in v["cmake_build_settings"].items() %}
+                <dt><code>{{ k }}</code></dt><dd><code>{{ val }}</code></dd>
+                {% endfor %}
+            </dl>
+            {% endif %}
+            {% if v.get("available_stages") %}
+            <p style="margin: 0.5em 0 0.25em 0;"><strong>Available stages</strong> ({{ v["available_stages"]|length }})</p>
+            <div class="stage-list">{{ v["available_stages"]|join(", ") }}</div>
+            {% endif %}
+        </details>
+    </td>
+</tr>
+{% endif %}
 <tr><th>Last Seen</th><td>{{ node.last_seen_ago or "Never" }}</td></tr>

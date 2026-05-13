@@ -70,3 +70,29 @@ class TestLifecycle:
     def test_version(self, node):
         responses.get(f"{BASE}/version", json={"kotekan_version": "2024.11"})
         assert node.get_version() == "2024.11"
+
+    @responses.activate
+    def test_version_info_full(self, node):
+        payload = {
+            "kotekan_version": "2024.11",
+            "branch": "main",
+            "git_commit_hash": "abcdef1234567890",
+            "cmake_build_settings": {"CMAKE_BUILD_TYPE": "Release"},
+            "available_stages": ["stage_a", "stage_b"],
+        }
+        responses.get(f"{BASE}/version", json=payload)
+        assert node.get_version_info() == payload
+        assert node.get_version() == "2024.11"
+
+    @responses.activate
+    def test_version_info_unreachable(self, node):
+        responses.get(f"{BASE}/version", body=ConnectionError())
+        assert node.get_version_info() is None
+        assert node.get_version() is None
+
+    @responses.activate
+    def test_version_info_missing_fields(self, node):
+        responses.get(f"{BASE}/version", json={"kotekan_version": "2024.11"})
+        info = node.get_version_info()
+        assert info == {"kotekan_version": "2024.11"}
+        assert info.get("branch") is None

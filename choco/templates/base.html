@@ -62,6 +62,55 @@
         .toggle-slider.started::before { transform: translateX(18px); }
         .toggle-slider.idle { background: #ffdc00; }
         .htmx-request .toggle-slider { background: #aaa !important; }
+        .info-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.4em;
+            height: 1.4em;
+            margin: 0 0 0 0.35em;
+            padding: 0;
+            border: 1px solid #aaa;
+            border-radius: 50%;
+            background: white;
+            color: #555;
+            font-size: 0.75em;
+            font-style: italic;
+            font-weight: 700;
+            line-height: 1;
+            cursor: pointer;
+            vertical-align: middle;
+        }
+        .info-btn:hover { background: #f1f3f5; color: #222; }
+        .version-popover {
+            max-width: 30em;
+            max-height: 70vh;
+            overflow: auto;
+            padding: 0.75em 1em;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            font-size: 0.85em;
+        }
+        .version-popover .popover-section { margin: 0.75em 0 0.25em 0; }
+        dl.version-meta, dl.build-settings {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            gap: 0.1em 0.75em;
+            margin: 0;
+        }
+        dl.version-meta dt, dl.build-settings dt { font-weight: 600; }
+        dl.version-meta dd, dl.build-settings dd { margin: 0; }
+        dl.build-settings { font-size: 0.9em; }
+        .stage-list {
+            max-height: 8em;
+            overflow: auto;
+            padding: 0.4em 0.6em;
+            background: #f6f8fa;
+            border-radius: 4px;
+            font-size: 0.85em;
+            line-height: 1.4;
+        }
         {% block styles %}{% endblock %}
     </style>
 </head>

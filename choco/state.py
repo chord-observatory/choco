@@ -126,6 +126,7 @@ class Node:
         self.last_seen: float | None = None
         self.error: str | None = None
         self.version: str | None = None
+        self.version_info: dict | None = None
 
         # Change queue (used by the sync worker pool)
         self._queue: deque = deque()
@@ -319,13 +320,25 @@ class Node:
 
     def get_version(self) -> str | None:
         """Get the kotekan version string."""
+        info = self.get_version_info()
+        return info.get("kotekan_version") if info else None
+
+    def get_version_info(self) -> dict | None:
+        """Get the full kotekan version info dict.
+
+        Returns the parsed JSON from ``GET /version``: ``kotekan_version``,
+        ``branch``, ``git_commit_hash``, ``cmake_build_settings`` (dict),
+        ``available_stages`` (list). Older kotekan builds may only return
+        a subset of these fields.
+        """
         resp = self._request("GET", "/version")
         if resp is None:
             return None
         try:
-            return resp.json().get("kotekan_version")
+            data = resp.json()
         except Exception:
             return None
+        return data if isinstance(data, dict) else None
 
 
 class Registry:
