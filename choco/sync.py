@@ -336,7 +336,16 @@ class Orchestrator:
 
         desired = node.desired_config
         if desired is None:
-            node.error = f"No config file ({node.config_filename})"
+            node.error = (node.load_error
+                          or f"No config file ({node.config_filename})")
+            return
+
+        # Refuse to push anything while a config file failed to load — the
+        # in-memory desired_config is incomplete (e.g. updatable overrides
+        # are missing because the JSON store is corrupt) and pushing it
+        # would silently reset runtime state on the node.
+        if node.load_error:
+            node.error = node.load_error
             return
 
         actual = node.get_config()

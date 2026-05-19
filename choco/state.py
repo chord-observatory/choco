@@ -128,6 +128,12 @@ class Node:
         self.version: str | None = None
         self.version_info: dict | None = None
 
+        # Per-file config-load errors; combined into `load_error` for
+        # display.  Each method clears its own slot on a successful
+        # reload so fixing one file doesn't mask a problem with another.
+        self._base_load_error: str | None = None
+        self._updatable_load_error: str | None = None
+
         # Change queue (used by the sync worker pool)
         self._queue: deque = deque()
         self._queue_lock: object | None = None  # set by Orchestrator (gevent semaphore)
@@ -207,22 +213,53 @@ class Node:
                     target.update(values)
         return desired
 
+    @property
+    def load_error(self) -> str | None:
+        """Combined message for any config-load errors on this node."""
+        parts = [e for e in (self._base_load_error,
+                             self._updatable_load_error) if e]
+        return "; ".join(parts) if parts else None
+
     def load_config(self):
-        """Load (or reload) the base config from disk and render it."""
+        """Load (or reload) the base config from disk and render it.
+
+        Errors reading or rendering the file are logged (with the file
+        path) and recorded as ``load_error``; ``rendered_config`` is
+        left as ``None`` so the sync loop can surface the issue on the
+        dashboard rather than crashing service startup.
+        """
+        self._base_load_error = None
         if self.configs_dir is None:
             return
         for suffix in _CONFIG_SUFFIXES:
             path = self.configs_dir / self.group / f"{self.name}{suffix}"
             if path.exists():
                 self._file_suffix = suffix
-                self.base_content = path.read_text()
-                self.rendered_config = self.render(self.base_content)
+                try:
+                    self.base_content = path.read_text()
+                    self.rendered_config = self.render(self.base_content)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to load base config for {self.key} "
+                        f"from {path}: {e}"
+                    )
+                    self.base_content = None
+                    self.rendered_config = None
+                    self._base_load_error = (
+                        f"Bad base config ({path.name}): {e}"
+                    )
                 return
         self.base_content = None
         self.rendered_config = None
 
     def load_updatable(self):
-        """Load updatable overrides from the JSON store on disk."""
+        """Load updatable overrides from the JSON store on disk.
+
+        A corrupt file is logged (with the path) and skipped — the
+        node falls back to no updatable overrides so the rest of the
+        service can keep running.
+        """
+        self._updatable_load_error = None
         if self.configs_dir is None:
             self.updatable_config = None
             return
@@ -230,28 +267,59 @@ class Node:
         if not path.exists():
             self.updatable_config = None
             return
-        with open(path) as f:
-            self.updatable_config = json.load(f)
+        try:
+            with open(path) as f:
+                self.updatable_config = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(
+                f"Failed to load updatable config for {self.key} "
+                f"from {path}: {e}"
+            )
+            self.updatable_config = None
+            self._updatable_load_error = (
+                f"Bad updatable JSON ({path.name}): {e}"
+            )
 
     def save_base(self, base_content: str):
-        """Validate, write base config to disk, and update caches."""
+        """Validate, write base config to disk, and update caches.
+
+        A successful save also clears any previous base-config load
+        error — the file on disk is now valid by construction.
+        """
         rendered = self.render(base_content)
         path = self.configs_dir / self.group / f"{self.name}{self._file_suffix}"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(base_content)
         self.base_content = base_content
         self.rendered_config = rendered
+        self._base_load_error = None
 
     def save_updatable(self, endpoint: str, values: dict):
-        """Save updatable values for one endpoint to memory and disk."""
+        """Save updatable values for one endpoint to memory and disk.
+
+        Writes the merged store as well-formed JSON, replacing whatever
+        was there.  If the existing file was unreadable, those bytes
+        are overwritten — any endpoints we couldn't parse are not
+        recoverable afterwards.  This is intentional: the web UI shows
+        the load error to the operator on the edit page, so submitting
+        through it is a deliberate overwrite.  We log a WARNING with
+        the path on this branch so the journal records what was lost.
+        """
+        path = (self.configs_dir / ".updatable" / self.group
+                / f"{self.name}.json") if self.configs_dir else None
+        if self._updatable_load_error and path is not None:
+            logger.warning(
+                f"Overwriting previously-unreadable updatable file {path} "
+                f"on save for {self.key}: prior contents are not recoverable"
+            )
         if self.updatable_config is None:
             self.updatable_config = {}
         self.updatable_config[endpoint] = values
-        if self.configs_dir is not None:
-            path = self.configs_dir / ".updatable" / self.group / f"{self.name}.json"
+        if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w") as f:
                 json.dump(self.updatable_config, f, indent=2)
+        self._updatable_load_error = None
 
     def render(self, base_content: str) -> dict:
         """Render base config text through Jinja2 and parse as YAML.
@@ -357,10 +425,14 @@ class Registry:
 
     def _load_vars(self) -> dict:
         vars_file = self.configs_dir / "vars.yaml"
-        if vars_file.exists():
+        if not vars_file.exists():
+            return {}
+        try:
             with open(vars_file) as f:
                 return yaml.safe_load(f) or {}
-        return {}
+        except (OSError, yaml.YAMLError) as e:
+            logger.error(f"Failed to load {vars_file}: {e}; using empty vars")
+            return {}
 
     def reload(self):
         """Rebuild ``self.nodes`` from ``nodes.yaml`` on disk.
@@ -370,6 +442,10 @@ class Registry:
         runtime state.  Callers that need to synchronise with the sync
         worker pool should hold the orchestrator's input-queue lock
         around this call.
+
+        If ``nodes.yaml`` is missing or unparseable the registry is left
+        empty and the error is logged — the service comes up so it can
+        be reconfigured via the UI rather than crash-looping.
         """
         nodes_file = self.configs_dir / "nodes.yaml"
         if not nodes_file.exists():
@@ -377,8 +453,13 @@ class Registry:
             self.nodes.clear()
             return
 
-        with open(nodes_file) as f:
-            data = yaml.safe_load(f) or {}
+        try:
+            with open(nodes_file) as f:
+                data = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError) as e:
+            logger.error(f"Failed to parse {nodes_file}: {e}; registry empty")
+            self.nodes.clear()
+            return
 
         template_vars = self._load_vars()
 

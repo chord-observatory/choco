@@ -87,8 +87,8 @@ configs_dir: configs
 eop:
   fpga_master_host: chive.site.chord-observatory.ca
   fpga_master_port: 54321
-  intervals_before: 2             # Days of past entries to include
-  intervals_after: 3              # Days of future entries to generate
+  intervals_before: 2             # Days of past entries (older stored entries are truncated on merge)
+  intervals_after: 2              # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data   # Kotekan updatable config endpoint name
   state_file: eop-state.json     # State file name (stored in configs_dir)
 
@@ -258,6 +258,29 @@ Producers (web UI, API, file watcher, poll timer)
 **File watcher** — the config directory is watched for changes:
 - **YAML/J2 files** — reloads the affected node's config and queues a poll for it (``vars.yaml`` changes re-render all nodes)
 - **`.updatable/` JSON files** — reloads the affected node's updatable store and queues a poll
+
+**Load errors are surfaced, not fatal.** If a base config or updatable JSON file fails to parse, the affected node loads with a ``load_error`` and the service still starts. The dashboard shows the specific error (including the file name), and the sync loop **refuses to push any config to that node** until the error clears — pushing an incomplete `desired_config` could silently regress kotekan's runtime state. Errors clear automatically when the file becomes parseable again (file watcher reload) or when a fresh config is submitted via the UI / API (`save_base` / `save_updatable`). Stopped nodes (`started: false`) are still killed normally — load errors don't override the user's intent to stop a node.
+
+## EOP Broadcast
+
+A companion oneshot service generates an Earth Orientation Parameter (EOP) table from IERS data and pushes it to every group as `updatable_config` under the `earth_rotation_data` endpoint.
+
+**Schedule** — `choco-eop-broadcast.service` runs once on `choco.service` startup (`After=choco.service`, `WantedBy=choco.service`) and again daily at 12:00 UTC via `choco-eop-broadcast.timer` (`Persistent=true`, so a missed firing catches up on boot). One-off runs: `sudo systemctl start choco-eop-broadcast.service`.
+
+**Pipeline** (`jobs/eop_update.py`):
+1. Read `frame0_ns` from `fpga_master` over TCP.
+2. Build a fresh EOP table on the UTC-midnight grid using `astropy` + IERS auto-download, covering `(now − intervals_before, now + intervals_after)` days.
+3. If `configs_dir/eop-state.json` exists, merge with stored state (policy below).
+4. Wait for choco's web port, then `POST /update/<group>` for every group in `nodes.yaml`.
+5. If *all* groups succeed, write the merged table back to `eop-state.json`. On any failure, the state file is left alone so the next run merges from a known-good baseline.
+
+**Merge policy** — `eop-state.json` is the source of truth for what kotekan has been told; the merge protects continuity of any value that has already been pushed:
+
+- **No overwrite.** Stored entries are never replaced, even if IERS data has been refined since they were committed. Past *and* future values are immutable once stored.
+- **No gap filling, no prepending.** Fresh entries are added only when their timestamp is strictly greater than the latest surviving stored entry. We never insert between two existing stored entries — kotekan may be interpolating across that segment — and we never insert before the first stored entry.
+- **Conditional truncation.** Stored entries older than `intervals_before` days are dropped, but **only if** the surviving stored set still contains at least one entry on either side of "now". If truncation would leave the table without an anchor before or after now, no truncation happens — preserving kotekan's ability to interpolate at the current instant takes priority over tidy bookkeeping.
+
+The net effect is that the on-disk table grows forward over time (one new entry per day) and is trimmed from the past only when it's safe to do so.
 
 ## Tests
 

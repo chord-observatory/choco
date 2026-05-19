@@ -289,6 +289,115 @@ class TestNodeUpdatable:
         assert node.updatable_config["updatable_config/gains"]["start_time"] == 200
 
 
+class TestLoadResilience:
+    """Corrupt config files must not crash registry init/reload."""
+
+    def _write_bad_updatable(self, configs_dir):
+        path = configs_dir / ".updatable" / "cx" / "cx1.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"updatable_config/gains": {"start_time": 100}\n')
+        return path
+
+    def test_corrupt_updatable_does_not_raise(self, configs_dir, caplog):
+        self._write_bad_updatable(configs_dir)
+        with caplog.at_level("ERROR"):
+            registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node is not None
+        assert node.updatable_config is None
+        assert node.load_error is not None
+        assert "Bad updatable JSON" in node.load_error
+        # Path is logged so the user can find the bad file.
+        assert any("cx1.json" in r.message for r in caplog.records)
+
+    def test_corrupt_updatable_other_nodes_unaffected(self, configs_dir):
+        self._write_bad_updatable(configs_dir)
+        registry = Registry(configs_dir)
+        # cx2 has no updatable and a clean (missing) config; loads cleanly.
+        assert registry.get_node("cx/cx2") is not None
+        assert registry.get_node("cx/cx2").load_error is None
+
+    def test_corrupt_base_config_does_not_raise(self, configs_dir, caplog):
+        (configs_dir / "cx" / "cx1.yaml").write_text("not_a_mapping")
+        with caplog.at_level("ERROR"):
+            registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node.rendered_config is None
+        assert node.load_error is not None
+        assert "Bad base config" in node.load_error
+        assert any("cx1.yaml" in r.message for r in caplog.records)
+
+    def test_corrupt_j2_template_does_not_raise(self, configs_dir, caplog):
+        (configs_dir / "cx" / "cx1.yaml").unlink()
+        (configs_dir / "cx" / "cx1.j2").write_text("num_elements: {{ unterminated\n")
+        with caplog.at_level("ERROR"):
+            registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node.rendered_config is None
+        assert node.load_error is not None
+        assert "cx1.j2" in node.load_error
+
+    def test_corrupt_vars_yaml_does_not_raise(self, configs_dir, caplog):
+        (configs_dir / "vars.yaml").write_text("key: [unclosed\n")
+        with caplog.at_level("ERROR"):
+            registry = Registry(configs_dir)
+        # Registry still populated — vars just defaulted to empty.
+        assert "cx/cx1" in registry.nodes
+        assert any("vars.yaml" in r.message for r in caplog.records)
+
+    def test_corrupt_nodes_yaml_does_not_raise(self, configs_dir, caplog):
+        (configs_dir / "nodes.yaml").write_text("groups: [unclosed\n")
+        with caplog.at_level("ERROR"):
+            registry = Registry(configs_dir)
+        assert registry.nodes == {}
+        assert any("nodes.yaml" in r.message for r in caplog.records)
+
+    def test_reload_clears_load_error_on_success(self, configs_dir):
+        path = self._write_bad_updatable(configs_dir)
+        registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node.load_error is not None
+        # Fix the file and reload just this node.
+        path.write_text('{"updatable_config/gains": {"start_time": 100}}')
+        node.load_updatable()
+        # Note: load_updatable does not clear an error set by load_config.
+        # Here only load_updatable set the error, so a clean reload of
+        # the same file should leave the override populated.
+        assert node.updatable_config == {
+            "updatable_config/gains": {"start_time": 100}
+        }
+
+    def test_save_updatable_warns_when_overwriting_broken_file(
+        self, configs_dir, caplog,
+    ):
+        self._write_bad_updatable(configs_dir)
+        registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node.load_error is not None
+
+        with caplog.at_level("WARNING"):
+            node.save_updatable("updatable_config/gains", {"start_time": 5})
+
+        assert node.load_error is None
+        assert any(
+            "Overwriting previously-unreadable" in r.message
+            and "cx1.json" in r.message
+            for r in caplog.records
+        )
+
+    def test_save_updatable_no_warning_on_clean_save(self, configs_dir, caplog):
+        registry = Registry(configs_dir)
+        node = registry.get_node("cx/cx1")
+        assert node.load_error is None
+
+        with caplog.at_level("WARNING"):
+            node.save_updatable("updatable_config/gains", {"start_time": 5})
+
+        assert not any(
+            "Overwriting" in r.message for r in caplog.records
+        )
+
+
 class TestDesiredConfig:
     def test_no_updatable(self, configs_dir):
         """desired_config equals rendered_config when no updatable overrides."""

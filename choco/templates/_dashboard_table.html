@@ -32,6 +32,9 @@
                     {{ node.status.value }}
                 </span>
                 {% if node.error %}<br><small>{{ node.error }}</small>{% endif %}
+                {% if node.load_error and node.load_error != node.error %}
+                <br><small>{{ node.load_error }}</small>
+                {% endif %}
             </td>
             <td>
                 {{ node.version or "—" }}

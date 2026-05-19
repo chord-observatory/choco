@@ -21,7 +21,6 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import requests
 import urllib3
 import yaml
@@ -61,50 +60,88 @@ def build_fresh_table(frame0_ns: int, n_before: int, n_after: int) -> list[dict]
     return table
 
 
-def merge_tables(stored: list[dict], fresh: list[dict], frame0_ns: int) -> list[dict]:
-    """Merge stored and fresh tables at the next midnight boundary.
-
-    Entries are on a daily grid (snap_to_grid + 1-day intervals = UTC midnight).
-    The "current interval" is bounded by the two midnight entries surrounding now.
-    We keep all stored entries up through the END of the current interval (the next
-    midnight), ensuring currently-interpolated values are untouched. Fresh entries
-    after that point are appended.
-    """
-    t_now = Time.now()
-
-    # Next midnight in instrument time
-    # First get next midnight in astropy
-    next_midnight_mjd = int(t_now.utc.mjd) + 1
-    t_next_midnight = Time(next_midnight_mjd, format="mjd", scale="utc", precision=9)
-    # Now get the TAI difference between next midnight and frame0
+def _to_inst_ns(t: Time, frame0_ns: int) -> int:
+    """Convert an astropy ``Time`` to instrument-ns relative to ``frame0_ns``."""
     t0 = eop_utils.calc_astropy_time_from_unix_ns(frame0_ns)
-    dt_ns = eop_utils.calc_tai_ns_from_dt(t_next_midnight - t0)
-    # This is the next UTC midnight in instrument time
-    cutoff_inst_ns = frame0_ns + dt_ns
+    return frame0_ns + eop_utils.calc_tai_ns_from_dt(t - t0)
 
-    print(f"Merge cutoff (next midnight): {t_next_midnight.isot} "
-          f"(inst_ns: {cutoff_inst_ns})")
 
-    # Keep stored entries up to and including the cutoff
-    stored_times = np.array([e["t_inst_ns"] for e in stored])
-    # side="right" ensures `stored_times[keep_count]` is strictly greater than
-    # `cutoff_inst_ns`.
-    keep_count = int(np.searchsorted(stored_times, cutoff_inst_ns, side="right"))
-    kept = stored[:keep_count]
+def compute_lower_cutoff_ns(frame0_ns: int, n_before: int,
+                            t_now: Time | None = None) -> int:
+    """Instrument-ns timestamp of UTC midnight ``n_before`` days before ``t_now``.
 
-    # Append fresh entries strictly after the last kept entry
+    Stored entries with ``t_inst_ns`` strictly less than this value are
+    considered "too old" and are eligible for truncation by
+    :func:`merge_tables` — though the truncation may be skipped if it
+    would leave the stored table without entries on both sides of now.
+    ``t_now`` is parameterised mostly for tests; production callers let
+    it default to ``Time.now()``.
+    """
+    if t_now is None:
+        t_now = Time.now()
+    lower_mjd = int(t_now.utc.mjd) - n_before
+    t_lower = Time(lower_mjd, format="mjd", scale="utc", precision=9)
+    return _to_inst_ns(t_lower, frame0_ns)
+
+
+def compute_now_inst_ns(frame0_ns: int, t_now: Time | None = None) -> int:
+    """Instrument-ns timestamp for ``t_now`` (defaults to ``Time.now()``).
+
+    Used by :func:`merge_tables` to decide whether a candidate
+    truncation still leaves stored entries bracketing the current
+    instant.
+    """
+    if t_now is None:
+        t_now = Time.now()
+    return _to_inst_ns(t_now, frame0_ns)
+
+
+def merge_tables(stored: list[dict], fresh: list[dict],
+                 lower_inst_ns: int, now_inst_ns: int) -> list[dict]:
+    """Combine *stored* and *fresh* EOP tables under an append-only policy.
+
+    Rules:
+      * Stored entries are preserved verbatim — never overwritten and
+        never reordered.
+      * Truncation: stored entries with ``t_inst_ns < lower_inst_ns``
+        are dropped, **but only if** the surviving stored entries still
+        contain at least one timestamp ``<= now_inst_ns`` *and* one
+        ``>= now_inst_ns``.  If truncation would leave the table
+        without an anchor on either side of now, no truncation happens
+        — kotekan's interpolation at the current instant takes
+        precedence over tidy bookkeeping.
+      * Fresh entries are added only when their ``t_inst_ns`` is
+        strictly greater than the latest surviving stored entry.  Gaps
+        inside the stored range are never filled, and nothing is
+        inserted before the first stored entry: kotekan may already be
+        interpolating across those segments.
+
+    The result is sorted by ``t_inst_ns``.  Both inputs are assumed to
+    use the same ``frame0_ns`` so equal timestamps compare as integers.
+    """
+    kept_truncated = [e for e in stored if e["t_inst_ns"] >= lower_inst_ns]
+    has_before = any(e["t_inst_ns"] <= now_inst_ns for e in kept_truncated)
+    has_after = any(e["t_inst_ns"] >= now_inst_ns for e in kept_truncated)
+    truncated_ok = has_before and has_after
+    kept = kept_truncated if truncated_ok else list(stored)
+
     if kept:
-        last_kept_ns = kept[-1]["t_inst_ns"]
-        fresh_times = np.array([e["t_inst_ns"] for e in fresh])
-        # side="right" ensures `fresh_times[start_idx]` is strictly greater than
-        # `last_kept_ns`.
-        start_idx = int(np.searchsorted(fresh_times, last_kept_ns, side="right"))
-        appended = fresh[start_idx:]
+        last_kept_ns = max(e["t_inst_ns"] for e in kept)
+        added = [e for e in fresh if e["t_inst_ns"] > last_kept_ns]
     else:
-        appended = fresh
+        # Stored was empty to begin with; nothing to anchor against, so
+        # just take fresh whole.  Caller is expected to have built fresh
+        # for the desired window.
+        added = list(fresh)
 
-    merged = kept + appended
-    print(f"Merge result: {len(kept)} kept + {len(appended)} new = {len(merged)} total")
+    merged = sorted(kept + added, key=lambda e: e["t_inst_ns"])
+
+    truncated_count = len(stored) - len(kept)
+    print(f"Merge: {len(stored)} stored "
+          f"- {truncated_count} truncated "
+          f"+ {len(added)} appended fresh "
+          f"= {len(merged)} total "
+          f"({'truncation applied' if truncated_ok else 'truncation skipped'})")
     return merged
 
 
@@ -199,13 +236,18 @@ def main():
     # Build fresh table
     fresh_table = build_fresh_table(frame0_ns, n_before, n_after)
 
-    # Merge with stored state if it exists
+    # Merge with stored state if it exists.  Truncate stored entries older
+    # than n_before days; preserve everything else verbatim.
     if state_file.exists():
         print(f"Loading stored state from {state_file}")
         with open(state_file) as f:
             stored = json.load(f)
         stored_table = stored["earth_orientation_parameter_table"]
-        final_table = merge_tables(stored_table, fresh_table, frame0_ns)
+        t_now = Time.now()
+        lower_inst_ns = compute_lower_cutoff_ns(frame0_ns, n_before, t_now)
+        now_inst_ns = compute_now_inst_ns(frame0_ns, t_now)
+        final_table = merge_tables(stored_table, fresh_table,
+                                   lower_inst_ns, now_inst_ns)
     else:
         print("No stored state - using fresh table as-is")
         final_table = fresh_table

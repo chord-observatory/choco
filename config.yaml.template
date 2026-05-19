@@ -27,8 +27,8 @@ sync:
 eop:
   fpga_master_host: chive.site.chord-observatory.ca
   fpga_master_port: 54321
-  intervals_before: 2               # Days of past entries to include
-  intervals_after: 3                # Days of future entries to generate
+  intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
+  intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
   state_file: eop-state.json        # State file name (stored in configs_dir)
 
