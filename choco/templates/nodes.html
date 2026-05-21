@@ -91,12 +91,15 @@
 
 <div class="warning-banner">
     <strong>Warning:</strong> Saving this page rewrites
-    <code>configs/nodes.yaml</code> and fully reloads the node registry -
-    it is effectively a service restart. Every node will be reset to
-    <em>idle</em>, any in-flight queued changes will be dropped,
-    and config files on disk are <em>not</em> moved when nodes change
-    groups. Use this page for deliberate setup changes, not for routine
-    edits.
+    <code>configs/nodes.yaml</code> and rebuilds the node registry from
+    scratch. Any in-flight queued changes will be dropped, and config
+    files on disk are <em>not</em> moved when nodes change groups.
+    After the save every node is placed in
+    <em>maintenance mode</em> (choco will not push), and choco re-probes
+    each node to set its started / idle state from the live kotekan
+    runtime. Take nodes back out of maintenance once you're ready for
+    choco to resume reconciling drift. Use this page for deliberate
+    setup changes, not for routine edits.
 </div>
 
 <p><small>Drag the group header to reorder groups. Drag a node to
@@ -234,7 +237,7 @@ reorder within a group or move it between groups.</small></p>
             status.className = 'flash-error';
             return;
         }
-        if (!confirm('Save and reload the node registry? All nodes will be reset to idle.')) {
+        if (!confirm('Save and reload the node registry? All nodes will be placed in maintenance mode and re-probed for their started/idle state.')) {
             return;
         }
         status.textContent = 'Saving…';

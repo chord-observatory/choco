@@ -84,13 +84,17 @@ server:
 
 configs_dir: configs
 
+fpga_master:
+  host: chive.site.chord-observatory.ca
+  port: 54321
+  timeout: 5                     # HTTP request timeout (seconds)
+
 eop:
-  fpga_master_host: chive.site.chord-observatory.ca
-  fpga_master_port: 54321
   intervals_before: 2             # Days of past entries (older stored entries are truncated on merge)
   intervals_after: 2              # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data   # Kotekan updatable config endpoint name
   state_file: eop-state.json     # State file name (stored in configs_dir)
+  service_unit: choco-eop-broadcast.service  # systemd unit for last-run status
 
 ldap:
   host:                           # e.g. ldaps://ipa1.auth.chord-observatory.ca
@@ -140,7 +144,7 @@ groups:
     recv1: {host: recv1.site.chord-observatory.ca, port: 12048}
 ```
 
-The optional `started` field controls whether choco should keep kotekan running on that node. Defaults to `false` — on startup, all nodes begin stopped unless explicitly set to `started: true`. The started state can also be toggled at runtime via the dashboard toggle switches or the JSON API. Runtime toggles are ephemeral (reset on choco restart).
+The optional `started` field is a pre-discovery default for the desired runtime state. On startup, choco polls every node and **preserves whatever kotekan is actually doing** — reachable nodes that are running come up with `started=True`, idle ones with `started=False`, and unreachable nodes fall back to `started=False`. The `nodes.yaml` value is overwritten by this observation. The started state can also be toggled at runtime via the dashboard or the JSON API. Runtime toggles are ephemeral (reset on choco restart, at which point the discovery pass runs again).
 
 #### Per-Node Config Files
 
@@ -178,6 +182,15 @@ sudo systemctl stop choco
 
 ## Web UI
 
+### Service status strip
+
+Every page (for logged-in users) shows a thin strip above the nav with two pill badges:
+
+- **FPGA** — colour-coded readout from the `fpga_master` daemon. Green when `/status` responds and `/get-frame0-time` parses (timing is good); yellow when `/status` is reachable but timing can't be read; red when the daemon is unreachable; grey when no `fpga_master` block is configured. The tooltip carries the host, last-seen, error, and current `frame0_ns`.
+- **EOP** — health of the `choco-eop-broadcast.service` systemd unit. Green when its last run succeeded within the last ~25 hours, yellow when stale, red when the last result was a failure, grey when the unit has never run or systemd isn't reachable (in which case choco falls back to the `eop-state.json` mtime).
+
+The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
+
 ### Dashboard
 
 The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and an Edit link.
@@ -189,7 +202,12 @@ Status indicators:
 - **Red (down)** — kotekan is unreachable
 - **Grey (unknown)** — not yet polled or state indeterminate
 
-Each node also has a **started/stopped toggle** (green/yellow) that controls whether choco should keep kotekan running. A master toggle in the column header controls all nodes at once. Nodes default to stopped on startup.
+Each node also has two toggles:
+
+- **Started/stopped** (green/yellow) — desired runtime state. On startup choco discovers the actual state and sets this from what kotekan reports; the toggle then controls whether choco keeps kotekan running.
+- **Maintenance** (orange = on, blue = normal) — when on, choco observes the node but never writes to it (no `/start`, no `/kill`, no updatable POSTs). Useful when an operator is intervening on a node manually. **Every node starts in maintenance mode** after a choco restart; flip it off (per node, per group, or with the cluster-wide toggle) when you're ready for choco to reconcile drift.
+
+Each scope (group header, dashboard header) has paired ▲/▼ and M/N buttons that flip every node in scope at once.
 
 Status updates are pushed to the browser in real time via WebSockets - no need to refresh.
 
@@ -199,6 +217,10 @@ Click Edit on a node to manage its settings:
 - **Config selector** — which base config file to use for this node.
 - **Config editor** — edit the base config YAML. Save queues a base-config change (write to disk + restart). "Re-push Current" queues a forced re-push.
 - **Updatable config** — edit individual updatable blocks. Changes are queued and pushed to kotekan's updatable endpoints without a restart.
+
+### Edit Nodes (registry)
+
+The **Edit nodes** button on the dashboard opens `/nodes`, a drag-and-drop editor for `nodes.yaml`. Saving rewrites the YAML, rebuilds the in-memory registry from scratch (dropping queued changes), then automatically puts **every** node into maintenance mode and re-runs state discovery so each node's started/idle flag is set from the live kotekan runtime rather than a cold default. Take nodes back out of maintenance individually or via the cluster-wide toggle once you've reviewed the new layout. Config files on disk are *not* moved when nodes change groups — that's an operator task.
 
 ### JSON API
 
@@ -211,6 +233,7 @@ Both accept JSON with:
 - `{"action": "base_config", "config_content": "..."}`
 - `{"action": "updatable_config", "endpoint": "...", "values": {...}}`
 - `{"action": "set_started", "started": true}` — set the started/stopped state
+- `{"action": "set_maintenance", "maintenance": true}` — put the node(s) into or out of maintenance mode
 
 Read-only status endpoints:
 - `GET /api/status` — per-node runtime status plus an aggregate summary
@@ -260,6 +283,10 @@ Producers (web UI, API, file watcher, poll timer)
 - **`.updatable/` JSON files** — reloads the affected node's updatable store and queues a poll
 
 **Load errors are surfaced, not fatal.** If a base config or updatable JSON file fails to parse, the affected node loads with a ``load_error`` and the service still starts. The dashboard shows the specific error (including the file name), and the sync loop **refuses to push any config to that node** until the error clears — pushing an incomplete `desired_config` could silently regress kotekan's runtime state. Errors clear automatically when the file becomes parseable again (file watcher reload) or when a fresh config is submitted via the UI / API (`save_base` / `save_updatable`). Stopped nodes (`started: false`) are still killed normally — load errors don't override the user's intent to stop a node.
+
+**Startup state discovery.** When choco starts, `Orchestrator.discover_node_states()` probes every node in parallel and sets each `node.started` from the actual runtime state (STARTED → `True`, IDLE → `False`, unreachable → `False`). This happens before the regular poll loop and worker pool engage, so choco never "resets" a running node back to idle just because the local default was `False`.
+
+**Maintenance mode.** Every node has a `maintenance` flag that defaults to **on** at startup. When maintenance is on, all REST calls that mutate the node — `Node.push_updatable`, `Node.start`, and `Node.kill` — are no-ops (they log and return `False`), and `Orchestrator._sync_node` short-circuits before reaching them. Drift is still observed and the dashboard reflects the node's actual state, but choco never writes to a paused node, even to enforce `started=False`. Operators flip nodes out of maintenance once they're ready for choco to reconcile. Maintenance state is ephemeral; a choco restart puts everything back into maintenance and re-runs state discovery.
 
 ## EOP Broadcast
 

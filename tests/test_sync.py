@@ -46,7 +46,13 @@ def configs_dir(tmp_path):
 
 @pytest.fixture
 def registry(configs_dir):
-    return Registry(configs_dir)
+    reg = Registry(configs_dir)
+    # Registry constructs nodes in maintenance mode; flip back to normal
+    # for tests that exercise the push paths.  Maintenance-specific tests
+    # set ``node.maintenance = True`` explicitly.
+    for node in reg.nodes.values():
+        node.maintenance = False
+    return reg
 
 
 @pytest.fixture
@@ -471,12 +477,19 @@ class TestPushBlockedByLoadError:
         path.write_text("{not valid json")
         return path
 
+    def _build(self, configs_dir):
+        """Registry + Orchestrator with maintenance turned off everywhere."""
+        registry = Registry(configs_dir)
+        for node in registry.nodes.values():
+            node.maintenance = False
+        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
+                                    num_workers=2)
+        return registry, orchestrator
+
     def test_drift_does_not_push_when_updatable_broken(self, configs_dir):
         """A node whose updatable JSON failed to load is not /start'd on drift."""
         self._break_updatable(configs_dir, "cx", "cx1")
-        registry = Registry(configs_dir)
-        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
-                                    num_workers=2)
+        registry, orchestrator = self._build(configs_dir)
         node = registry.get_node("cx/cx1")
         node.started = True
         assert node.load_error  # precondition
@@ -499,9 +512,7 @@ class TestPushBlockedByLoadError:
     def test_idle_node_not_started_when_updatable_broken(self, configs_dir):
         """An idle node with a load_error doesn't get its (incomplete) config pushed."""
         self._break_updatable(configs_dir, "cx", "cx1")
-        registry = Registry(configs_dir)
-        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
-                                    num_workers=2)
+        registry, orchestrator = self._build(configs_dir)
         node = registry.get_node("cx/cx1")
         node.started = True
 
@@ -520,9 +531,7 @@ class TestPushBlockedByLoadError:
     def test_stopped_node_still_kills_with_load_error(self, configs_dir):
         """A load_error does not prevent enforcing started=False (kill is safe)."""
         self._break_updatable(configs_dir, "cx", "cx1")
-        registry = Registry(configs_dir)
-        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
-                                    num_workers=2)
+        registry, orchestrator = self._build(configs_dir)
         node = registry.get_node("cx/cx1")
         node.started = False  # user wants it stopped
 
@@ -540,9 +549,7 @@ class TestPushBlockedByLoadError:
     def test_save_updatable_clears_error_and_unblocks_push(self, configs_dir):
         """save_updatable produces a valid file -> load_error clears -> push resumes."""
         self._break_updatable(configs_dir, "cx", "cx1")
-        registry = Registry(configs_dir)
-        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
-                                    num_workers=2)
+        registry, orchestrator = self._build(configs_dir)
         node = registry.get_node("cx/cx1")
         node.started = True
         assert node.load_error
@@ -572,9 +579,7 @@ class TestPushBlockedByLoadError:
     def test_broken_base_config_blocks_push(self, configs_dir):
         """A broken base config (rendered_config None) blocks pushes via desired-None path."""
         (configs_dir / "cx" / "cx1.yaml").write_text("not_a_mapping")
-        registry = Registry(configs_dir)
-        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
-                                    num_workers=2)
+        registry, orchestrator = self._build(configs_dir)
         node = registry.get_node("cx/cx1")
         node.started = True
         assert node.load_error  # set by load_config
@@ -590,3 +595,127 @@ class TestPushBlockedByLoadError:
         node.start.assert_not_called()
         # The specific load_error is surfaced, not the generic "No config file".
         assert node.error == node.load_error
+
+
+class TestDiscoverNodeStates:
+    """On startup, choco preserves each node's actual running state."""
+
+    def test_running_node_marked_started(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False  # would be the pre-discovery default
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        orchestrator.discover_node_states()
+        assert node.started is True
+        assert node.status == NodeStatus.STARTED
+
+    def test_idle_node_marked_stopped(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        node.get_status = MagicMock(return_value=NodeStatus.IDLE)
+        orchestrator.discover_node_states()
+        assert node.started is False
+        assert node.status == NodeStatus.IDLE
+
+    def test_unreachable_node_defaults_to_stopped(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        node.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        orchestrator.discover_node_states()
+        assert node.started is False
+        # Discovery propagates the probe result to status, not just to
+        # started — so the dashboard reflects the real state immediately.
+        assert node.status == NodeStatus.DOWN
+
+    def test_discovery_independent_per_node(self, orchestrator):
+        cx1 = orchestrator.registry.get_node("cx/cx1")
+        cx2 = orchestrator.registry.get_node("cx/cx2")
+        recv1 = orchestrator.registry.get_node("recv/recv1")
+        cx1.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        cx2.get_status = MagicMock(return_value=NodeStatus.IDLE)
+        recv1.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        orchestrator.discover_node_states()
+        assert cx1.started is True
+        assert cx2.started is False
+        assert recv1.started is False
+
+
+class TestMaintenanceMode:
+    """In maintenance mode, push_updatable / start are no-ops and the
+    sync loop short-circuits before any push.  Kill is unaffected.
+    """
+
+    def test_node_push_updatable_noop_in_maintenance(self):
+        node = Node(name="t", group="t", host="example", port=12048,
+                    timeout=1, maintenance=True)
+        node._request = MagicMock(return_value=MagicMock())
+        assert node.push_updatable("foo/bar", {"v": 1}) is False
+        node._request.assert_not_called()
+
+    def test_node_start_noop_in_maintenance(self):
+        node = Node(name="t", group="t", host="example", port=12048,
+                    timeout=1, maintenance=True)
+        node._request = MagicMock(return_value=MagicMock())
+        assert node.start({"config": "x"}) is False
+        node._request.assert_not_called()
+
+    def test_node_kill_noop_in_maintenance(self):
+        node = Node(name="t", group="t", host="example", port=12048,
+                    timeout=1, maintenance=True)
+        node._request = MagicMock(return_value=MagicMock())
+        assert node.kill() is False
+        node._request.assert_not_called()
+
+    def test_node_push_paths_work_when_not_in_maintenance(self):
+        node = Node(name="t", group="t", host="example", port=12048,
+                    timeout=1, maintenance=False)
+        node._request = MagicMock(return_value=MagicMock())
+        assert node.push_updatable("foo/bar", {"v": 1}) is True
+        assert node.start({"config": "x"}) is True
+        assert node.kill() is True
+        assert node._request.call_count == 3
+
+    def test_sync_skips_push_in_maintenance(self, orchestrator):
+        """Drift detected but maintenance is on -> no /kill, no /start."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        node.maintenance = True
+
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_config = MagicMock(return_value={"wrong": "config"})
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
+        node.kill = MagicMock()
+        node.start = MagicMock()
+        node.push_updatable = MagicMock()
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.kill.assert_not_called()
+        node.start.assert_not_called()
+        node.push_updatable.assert_not_called()
+        assert node.status == NodeStatus.STARTED
+
+    def test_kill_skipped_in_maintenance(self, orchestrator):
+        """started=False + maintenance -> kill is skipped; status reflects probe."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+        node.maintenance = True
+
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
+        node.kill = MagicMock(return_value=True)
+        node.start = MagicMock()
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.kill.assert_not_called()
+        node.start.assert_not_called()
+        # Status reflects actual kotekan state, not the (unenforced) desired state.
+        assert node.status == NodeStatus.STARTED
+
+    def test_registry_constructs_nodes_in_maintenance(self, configs_dir):
+        """Production-level guarantee: a fresh Registry always starts maintenance-on."""
+        registry = Registry(configs_dir)
+        for node in registry.nodes.values():
+            assert node.maintenance is True

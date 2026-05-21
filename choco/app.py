@@ -14,6 +14,7 @@ from flask import Flask
 from flask_socketio import SocketIO
 
 from .auth import init_auth
+from .fpga import FpgaMonitor
 from .state import Registry
 from .sync import Orchestrator
 
@@ -37,6 +38,8 @@ _DEFAULT_CONFIG = {
         "restart_timeout": 10,
         "num_workers": 4,
     },
+    "fpga_master": {},
+    "eop": {},
     "ldap": {},
 }
 
@@ -66,6 +69,20 @@ def load_config(path: str | Path) -> dict:
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
     config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
+    config["fpga_master"] = raw.get("fpga_master") or {}
+    config["eop"] = raw.get("eop") or {}
+    # Backwards-compat: fpga_master_host/port used to live under eop:.
+    # If the new top-level block is missing them but the old keys are
+    # present, fold them in and warn so the operator can migrate.
+    eop_block = config["eop"]
+    legacy_host = eop_block.get("fpga_master_host")
+    legacy_port = eop_block.get("fpga_master_port")
+    if legacy_host and not config["fpga_master"].get("host"):
+        config["fpga_master"]["host"] = legacy_host
+        logger.warning("Config: eop.fpga_master_host is deprecated; "
+                       "move it to a top-level fpga_master.host block.")
+    if legacy_port and not config["fpga_master"].get("port"):
+        config["fpga_master"]["port"] = legacy_port
     config["ldap"] = raw.get("ldap") or {}
     return config
 
@@ -104,9 +121,21 @@ def create_app(
         num_workers=int(sync_cfg["num_workers"]),
     )
 
+    # FPGA-master service monitor: separate concern from kotekan polling,
+    # used by the service-status strip in the page header.
+    fpga_cfg = config.get("fpga_master") or {}
+    fpga_monitor = FpgaMonitor(
+        host=fpga_cfg.get("host") or None,
+        port=fpga_cfg.get("port") or None,
+        timeout=float(fpga_cfg.get("timeout") or 5.0),
+    )
+
     # Store on app for access in routes
     app.config["registry"] = registry
     app.config["orchestrator"] = orchestrator
+    app.config["fpga_monitor"] = fpga_monitor
+    app.config["eop_cfg"] = config.get("eop") or {}
+    app.config["configs_dir"] = configs_dir
     # Initialize authentication
     init_auth(app, config)
 
@@ -119,6 +148,8 @@ def create_app(
 
     # Start background sync loop immediately (not deferred to first request)
     socketio.start_background_task(orchestrator.run)
+    if fpga_monitor.configured:
+        socketio.start_background_task(fpga_monitor.run)
 
     return app
 

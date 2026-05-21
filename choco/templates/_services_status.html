@@ -1,0 +1,62 @@
+{% macro fpga_color(h) -%}
+{%- if h == 'ok' -%}#2ecc40
+{%- elif h == 'no_timing' -%}#ffdc00
+{%- elif h == 'unconfigured' -%}#aaa
+{%- else -%}#ff4136
+{%- endif -%}
+{%- endmacro %}
+{% macro eop_color(h) -%}
+{%- if h == 'ok' -%}#2ecc40
+{%- elif h == 'stale' -%}#ffdc00
+{%- elif h == 'never_run' -%}#aaa
+{%- elif h == 'unknown' -%}#aaa
+{%- else -%}#ff4136
+{%- endif -%}
+{%- endmacro %}
+{% macro fpga_label(h) -%}
+{%- if h == 'ok' -%}up
+{%- elif h == 'no_timing' -%}no timing
+{%- elif h == 'unconfigured' -%}not configured
+{%- elif h == 'down' -%}down
+{%- else -%}unknown
+{%- endif -%}
+{%- endmacro %}
+{% macro eop_label(h) -%}
+{%- if h == 'ok' -%}up
+{%- elif h == 'stale' -%}stale
+{%- elif h == 'failed' -%}down
+{%- elif h == 'never_run' -%}not run
+{%- else -%}unknown
+{%- endif -%}
+{%- endmacro %}
+{% macro since(ts) -%}
+{%- if ts -%}
+{%- set delta = (now - ts) | int -%}
+{%- if delta < 60 -%}{{ delta }}s ago
+{%- elif delta < 3600 -%}{{ (delta / 60) | int }}m ago
+{%- elif delta < 86400 -%}{{ (delta / 3600) | int }}h ago
+{%- else -%}{{ (delta / 86400) | int }}d ago
+{%- endif -%}
+{%- else -%}never
+{%- endif -%}
+{%- endmacro %}
+{% set now = now_ts %}
+{% set pill_style = 'display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1;' %}
+{% if fpga %}
+{% set tip = 'fpga_master at ' ~ (fpga.host or '?') ~ ':' ~ (fpga.port or '?')
+             ~ '\nhealth: ' ~ fpga.health
+             ~ ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else '')
+             ~ ('\nlast seen: ' ~ since(fpga.last_seen) if fpga.last_seen else '')
+             ~ ('\nerror: ' ~ fpga.error if fpga.error else '') %}
+<span title="{{ tip }}" style="{{ pill_style }} background: {{ fpga_color(fpga.health) }};">
+    <strong>FPGA</strong> <span>{{ fpga_label(fpga.health) }}</span>
+</span>
+{% endif %}
+{% set eop_tip = 'EOP service\nhealth: ' ~ eop.health
+                 ~ ('\nlast run: ' ~ since(eop.last_run_at) if eop.last_run_at else '')
+                 ~ ('\nresult: ' ~ eop.result if eop.get('result') else '')
+                 ~ ('\nsource: ' ~ eop.source if eop.get('source') else '')
+                 ~ ('\nerror: ' ~ eop.error if eop.get('error') else '') %}
+<span title="{{ eop_tip }}" style="{{ pill_style }} background: {{ eop_color(eop.health) }};">
+    <strong>EOP</strong> <span>{{ eop_label(eop.health) }}</span>
+</span>

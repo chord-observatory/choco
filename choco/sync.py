@@ -221,10 +221,46 @@ class Orchestrator:
 
     # --- Main loop ---
 
+    def _discover_one(self, node: Node):
+        """Probe ``node`` once and set its runtime state from the result."""
+        status = node.get_status()
+        node.started = (status == NodeStatus.STARTED)
+        node.status = status
+        if status in (NodeStatus.STARTED, NodeStatus.IDLE):
+            node.last_seen = time.time()
+
+    def discover_node_states(self):
+        """Probe every node once and set ``node.started`` from reality.
+
+        Called at startup so the runtime ``started`` desired state
+        reflects what kotekan is actually doing rather than overwriting
+        it with a default.  Probes happen in parallel via gevent
+        greenlets.  Unreachable / indeterminate nodes fall back to
+        ``started=False`` (idle).
+        """
+        if not self.registry.nodes:
+            return
+
+        greenlets = [gevent.spawn(self._discover_one, n)
+                     for n in list(self.registry.nodes.values())]
+        gevent.joinall(greenlets)
+
+        running = sum(1 for n in self.registry.nodes.values() if n.started)
+        logger.info(
+            f"State discovery: {running}/{len(self.registry.nodes)} "
+            f"nodes running"
+        )
+
     def run(self):
         """Start the worker pool and periodic polling.  Blocks."""
         self._running = True
         self.start_file_watcher()
+
+        # Set node.started from each node's actual runtime state before
+        # the poll loop kicks in.  All nodes default to maintenance=True
+        # so this is purely an observation pass; no pushes occur until
+        # the operator takes nodes out of maintenance.
+        self.discover_node_states()
 
         for _ in range(self.num_workers):
             gevent.spawn(self._worker_loop)
@@ -326,7 +362,7 @@ class Orchestrator:
 
         # If the node's desired state is not started, ensure kotekan is not running.
         if not node.started:
-            if probe == NodeStatus.STARTED:
+            if probe == NodeStatus.STARTED and not node.maintenance:
                 logger.info(f"Node {node.key} should be idle; sending /kill")
                 node.kill()
                 node.status = NodeStatus.IDLE
@@ -346,6 +382,13 @@ class Orchestrator:
         # would silently reset runtime state on the node.
         if node.load_error:
             node.error = node.load_error
+            return
+
+        # Maintenance mode: poll status but make no changes.  Push paths
+        # are skipped here and kill is skipped above so choco never
+        # mutates a node the operator has paused.
+        if node.maintenance:
+            node.status = probe
             return
 
         actual = node.get_config()
@@ -500,12 +543,20 @@ class Orchestrator:
         otherwise the current on-disk file is used (for file-watcher
         reloads).  The registry is then rebuilt from scratch — all
         existing :class:`Node` objects, pending queue items, and runtime
-        ``started`` toggles are discarded.  Held under the input-queue
-        lock so in-flight submissions don't race the rebuild.
+        toggles are discarded.  Held under the input-queue lock so
+        in-flight submissions don't race the rebuild.
+
+        Freshly-built nodes default to ``maintenance=True`` (set by
+        :meth:`Registry.reload`), so the registry edit acts as a pause:
+        choco won't push anything until the operator takes nodes back
+        out of maintenance.  After the rebuild we run state discovery
+        so each new :class:`Node`'s ``started`` flag matches the actual
+        kotekan runtime state rather than the cold default.
         """
         with self.input_queue._lock:
             if new_data is not None:
                 self.registry.save_nodes_yaml(new_data)
             self.registry.reload()
             self._assign_queue_locks()
+        self.discover_node_states()
         self._emit("config_reloaded", {})

@@ -102,6 +102,7 @@ class Node:
     def __init__(self, name: str, group: str, host: str,
                  port: int = 12048, timeout: int = 10, *,
                  started: bool = False,
+                 maintenance: bool = False,
                  configs_dir: Path | None = None,
                  template_vars: dict | None = None):
         # Identity
@@ -111,6 +112,14 @@ class Node:
         self.port = port
         self.timeout = timeout
         self.started = started
+        # Maintenance mode: when True, push_updatable() and start() are
+        # no-ops.  Ephemeral, never persisted to nodes.yaml.  The
+        # ``Registry`` always constructs nodes with ``maintenance=True``
+        # for production so a freshly-started choco never pushes before
+        # the operator has reviewed the cluster state; the default here
+        # is ``False`` so direct ``Node()`` construction in tests stays
+        # in "normal mode" unless explicitly set.
+        self.maintenance = maintenance
         self._base_url = f"http://{host}:{port}"
 
         # Config state (loaded from disk by load_config / load_updatable)
@@ -371,11 +380,25 @@ class Node:
             return None
 
     def push_updatable(self, path: str, values: dict) -> bool:
-        """Push values to an updatable config endpoint on kotekan."""
+        """Push values to an updatable config endpoint on kotekan.
+
+        A no-op (returns ``False``) when the node is in maintenance mode.
+        """
+        if self.maintenance:
+            logger.info(
+                f"Maintenance: skipping push_updatable to {self.key}{path}"
+            )
+            return False
         return self._request("POST", path, json=values) is not None
 
     def start(self, desired_config: dict) -> bool:
-        """Start kotekan with the desired config via POST /start."""
+        """Start kotekan with the desired config via POST /start.
+
+        A no-op (returns ``False``) when the node is in maintenance mode.
+        """
+        if self.maintenance:
+            logger.info(f"Maintenance: skipping /start of {self.key}")
+            return False
         return self._request("POST", "/start", json=desired_config) is not None
 
     def kill(self) -> bool:
@@ -383,7 +406,12 @@ class Node:
 
         This is the reliable way to stop a running config — the ``/stop``
         endpoint is unreliable, so we always use ``/kill`` instead.
+
+        A no-op (returns ``False``) when the node is in maintenance mode.
         """
+        if self.maintenance:
+            logger.info(f"Maintenance: skipping /kill of {self.key}")
+            return False
         return self._request("GET", "/kill") is not None
 
     def get_version(self) -> str | None:
@@ -474,6 +502,9 @@ class Registry:
                     node_name, group_name, host, port,
                     timeout=self.kotekan_timeout,
                     started=started,
+                    # Always start in maintenance mode at the registry
+                    # level — choco should observe before pushing.
+                    maintenance=True,
                     configs_dir=self.configs_dir,
                     template_vars=template_vars,
                 )

@@ -37,7 +37,6 @@ astropy.utils.iers.conf.auto_max_age = 10.0
 
 INTERVAL_LENGTH_DAYS = 1.0
 EOP_REQUIRED_KEYS = [
-    "fpga_master_host", "fpga_master_port",
     "intervals_before", "intervals_after",
     "endpoint", "state_file",
 ]
@@ -204,8 +203,19 @@ def main():
     if missing:
         print(f"Error: missing eop config keys: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
-    fpga_host = eop_cfg["fpga_master_host"]
-    fpga_port = int(eop_cfg["fpga_master_port"])
+    # fpga_master moved to its own top-level block; accept the legacy
+    # eop.fpga_master_* keys for now and warn.
+    fpga_cfg = config.get("fpga_master") or {}
+    fpga_host = fpga_cfg.get("host") or eop_cfg.get("fpga_master_host")
+    fpga_port = fpga_cfg.get("port") or eop_cfg.get("fpga_master_port")
+    if fpga_host is None or fpga_port is None:
+        print("Error: fpga_master.host / fpga_master.port not set in config",
+              file=sys.stderr)
+        sys.exit(1)
+    if "fpga_master_host" in eop_cfg or "fpga_master_port" in eop_cfg:
+        print("Warning: eop.fpga_master_host/port is deprecated; "
+              "move it to a top-level fpga_master block.", file=sys.stderr)
+    fpga_port = int(fpga_port)
     n_before = int(eop_cfg["intervals_before"])
     n_after = int(eop_cfg["intervals_after"])
     endpoint = eop_cfg["endpoint"]

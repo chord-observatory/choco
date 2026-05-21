@@ -4,6 +4,7 @@ import json
 import logging
 import secrets
 import time
+from pathlib import Path
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for, flash,
@@ -12,6 +13,7 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
+from .fpga import eop_status
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
 
@@ -238,7 +240,8 @@ def nodes_save():
         logger.exception("Failed to apply nodes update")
         return {"error": str(e)}, 500
 
-    flash("Node registry saved; all nodes reset to idle.", "success")
+    flash("Node registry saved; all nodes placed in maintenance mode.",
+          "success")
     return {"status": "ok"}
 
 
@@ -344,6 +347,77 @@ def set_started_group(group, action):
     return redirect(url_for("web.dashboard"))
 
 
+@bp.route("/toggle-maintenance/<path:node_key>", methods=["POST"])
+@login_required
+def toggle_maintenance(node_key):
+    """Toggle maintenance mode for a single node."""
+    _check_csrf()
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    node.maintenance = not node.maintenance
+    orchestrator = _orchestrator()
+    orchestrator.input_queue.submit_node(
+        ChangeItem(type=ChangeType.POLL, node_key=node_key)
+    )
+    orchestrator._emit("node_status_changed", {
+        "node": node_key,
+        "status": node.status.value,
+    })
+    if request.headers.get("HX-Request"):
+        return render_template("_toggle_maintenance.html",
+                               node=node, key=node_key)
+    flash(f"{node_key} maintenance "
+          f"{'on' if node.maintenance else 'off'}", "success")
+    return redirect(request.referrer or url_for("web.dashboard"))
+
+
+@bp.route("/set-maintenance-all/<action>", methods=["POST"])
+@login_required
+def set_maintenance_all(action):
+    """Put every node into or out of maintenance mode."""
+    _check_csrf()
+    if action not in ("on", "off"):
+        abort(400)
+    registry = _registry()
+    maintenance = action == "on"
+    for node in registry.nodes.values():
+        node.maintenance = maintenance
+    orchestrator = _orchestrator()
+    orchestrator.input_queue.submit_all(
+        lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
+    )
+    orchestrator._emit("node_status_changed", {})
+    if request.headers.get("HX-Request"):
+        return render_template("_dashboard_table.html", nodes=registry.nodes)
+    return redirect(url_for("web.dashboard"))
+
+
+@bp.route("/set-maintenance-group/<group>/<action>", methods=["POST"])
+@login_required
+def set_maintenance_group(group, action):
+    """Put every node in *group* into or out of maintenance mode."""
+    _check_csrf()
+    if action not in ("on", "off"):
+        abort(400)
+    registry = _registry()
+    group_nodes = [n for n in registry.nodes.values() if n.group == group]
+    if not group_nodes:
+        abort(404)
+    maintenance = action == "on"
+    for node in group_nodes:
+        node.maintenance = maintenance
+    orchestrator = _orchestrator()
+    orchestrator.input_queue.submit_group(
+        group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
+    )
+    orchestrator._emit("node_status_changed", {})
+    if request.headers.get("HX-Request"):
+        return render_template("_dashboard_table.html", nodes=registry.nodes)
+    return redirect(url_for("web.dashboard"))
+
+
 @bp.route("/partials/node-status/<path:node_key>")
 @login_required
 def partial_node_status(node_key):
@@ -365,6 +439,29 @@ def partial_node_status(node_key):
 def partial_dashboard_table():
     registry = _registry()
     return render_template("_dashboard_table.html", nodes=registry.nodes)
+
+
+@bp.route("/partials/services")
+@login_required
+def partial_services():
+    """Render the FPGA + EOP service status strip."""
+    from flask import current_app
+    monitor = current_app.config.get("fpga_monitor")
+    eop_cfg = current_app.config.get("eop_cfg") or {}
+    configs_dir = current_app.config.get("configs_dir")
+    state_file = None
+    if configs_dir and eop_cfg.get("state_file"):
+        state_file = Path(configs_dir) / eop_cfg["state_file"]
+    eop = eop_status(
+        state_file=state_file,
+        service_unit=eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
+    )
+    return render_template(
+        "_services_status.html",
+        fpga=monitor.to_dict() if monitor is not None else None,
+        eop=eop,
+        now_ts=time.time(),
+    )
 
 
 # --- JSON API endpoints for queue-based updates ---
@@ -412,6 +509,15 @@ def update_group(group):
                 node.started = started
         return {"status": "ok", "group": group, "started": started}
 
+    if action == "set_maintenance":
+        maintenance = data.get("maintenance")
+        if not isinstance(maintenance, bool):
+            return {"error": "maintenance must be a boolean"}, 400
+        for node in registry.nodes.values():
+            if node.group == group:
+                node.maintenance = maintenance
+        return {"status": "ok", "group": group, "maintenance": maintenance}
+
     return {"error": f"Unknown action '{action}'"}, 400
 
 
@@ -454,6 +560,13 @@ def update_node(group, node):
         node_obj.started = started
         return {"status": "ok", "node": node_key, "started": started}
 
+    if action == "set_maintenance":
+        maintenance = data.get("maintenance")
+        if not isinstance(maintenance, bool):
+            return {"error": "maintenance must be a boolean"}, 400
+        node_obj.maintenance = maintenance
+        return {"status": "ok", "node": node_key, "maintenance": maintenance}
+
     return {"error": f"Unknown action '{action}'"}, 400
 
 
@@ -467,6 +580,7 @@ def _node_to_dict(node) -> dict:
         "host": node.host,
         "port": node.port,
         "started": node.started,
+        "maintenance": node.maintenance,
         "status": node.status.value,
         "last_seen": node.last_seen,
         "last_seen_ago": node.last_seen_ago,

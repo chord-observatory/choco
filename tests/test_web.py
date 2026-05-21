@@ -84,7 +84,10 @@ class TestNodesEditGet:
         assert 'value="cx1"' in body
         assert 'value="cx1.example"' in body
         # Warning banner is present so the user knows this is disruptive.
-        assert "service reset" in body.lower() or "reset" in body.lower()
+        # New text mentions both the maintenance pause and the rediscovery.
+        body_lower = body.lower()
+        assert "maintenance" in body_lower
+        assert "rebuilds the node registry" in body_lower
 
 
 # --- POST /nodes ---
@@ -195,24 +198,43 @@ class TestNodesSave:
         assert set(registry.nodes.keys()) == {"only/n1"}
         assert registry.get_node("only/n1").port == 9000
 
-    def test_save_resets_runtime_started(self, client, app):
-        """Saving the registry drops any runtime ``started`` toggles."""
+    def test_save_forces_maintenance_and_rediscovers_started(self, client, app):
+        """After a save, every rebuilt node is in maintenance and
+        ``started`` reflects what discovery probed (not the prior
+        in-memory toggle).
+        """
+        from unittest.mock import patch
+        from choco.state import Node, NodeStatus
+
         _login(client)
         token = _csrf(client)
         registry = app.config["registry"]
-        registry.get_node("cx/cx1").started = True
+        # Pre-save: flip maintenance off and force a started value so
+        # we can prove neither leaks across the rebuild.
+        for n in registry.nodes.values():
+            n.maintenance = False
+        registry.get_node("cx/cx1").started = False
 
-        client.post(
-            "/nodes",
-            data=json.dumps({
-                "groups": {
-                    "cx": [{"name": "cx1", "host": "cx1.example", "port": 12048}],
-                }
-            }),
-            content_type="application/json",
-            headers={"X-CSRF-Token": token},
-        )
-        assert registry.get_node("cx/cx1").started is False
+        # Make discovery deterministic: pretend cx1 is currently running.
+        with patch.object(Node, "get_status", return_value=NodeStatus.STARTED):
+            resp = client.post(
+                "/nodes",
+                data=json.dumps({
+                    "groups": {
+                        "cx": [{"name": "cx1", "host": "cx1.example", "port": 12048}],
+                    }
+                }),
+                content_type="application/json",
+                headers={"X-CSRF-Token": token},
+            )
+        assert resp.status_code == 200
+
+        cx1 = registry.get_node("cx/cx1")
+        # Every rebuilt node lands in maintenance — the save is a pause.
+        assert cx1.maintenance is True
+        # And started follows reality (probe returned STARTED), not the
+        # cold default.
+        assert cx1.started is True
 
 
 # --- POST /set-started-group/<group>/<action> ---
@@ -263,6 +285,115 @@ class TestSetStartedGroup:
             data={"_csrf_token": "bogus"},
         )
         assert resp.status_code == 403
+
+
+class TestServicesPartial:
+    def test_requires_login(self, client):
+        resp = client.get("/partials/services", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_renders_strip_when_logged_in(self, client, app):
+        from unittest.mock import patch
+        _login(client)
+        # No fpga_master configured in the test app, so monitor is in
+        # 'unknown' / unconfigured state.  Stub eop_status so we don't
+        # depend on the host's systemd or fs state.
+        with patch("choco.web.eop_status",
+                   return_value={"health": "ok",
+                                 "last_run_at": None,
+                                 "source": "mtime"}):
+            resp = client.get("/partials/services")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "EOP" in body
+        # FPGA badge is only rendered if a monitor is set on app.config.
+        # The test app does install one (unconfigured), so it shows up.
+        assert "FPGA" in body
+
+
+class TestMaintenanceToggles:
+    def test_toggle_flips_per_node(self, client, app):
+        _login(client)
+        token = _csrf(client)
+        registry = app.config["registry"]
+        node = registry.get_node("cx/cx1")
+        node.maintenance = False
+
+        resp = client.post(
+            "/toggle-maintenance/cx/cx1",
+            data={"_csrf_token": token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert node.maintenance is True
+
+    def test_set_group_scopes_to_group(self, client, app):
+        _login(client)
+        token = _csrf(client)
+        registry = app.config["registry"]
+        for n in registry.nodes.values():
+            n.maintenance = False
+
+        resp = client.post(
+            "/set-maintenance-group/cx/on",
+            data={"_csrf_token": token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert registry.get_node("cx/cx1").maintenance is True
+        assert registry.get_node("cx/cx2").maintenance is True
+        # recv group untouched.
+        assert registry.get_node("recv/recv1").maintenance is False
+
+    def test_set_all_flips_every_node(self, client, app):
+        _login(client)
+        token = _csrf(client)
+        registry = app.config["registry"]
+        for n in registry.nodes.values():
+            n.maintenance = False
+
+        client.post(
+            "/set-maintenance-all/on",
+            data={"_csrf_token": token},
+        )
+        assert all(n.maintenance for n in registry.nodes.values())
+
+        client.post(
+            "/set-maintenance-all/off",
+            data={"_csrf_token": token},
+        )
+        assert not any(n.maintenance for n in registry.nodes.values())
+
+    def test_bad_action_400(self, client):
+        _login(client)
+        token = _csrf(client)
+        resp = client.post(
+            "/set-maintenance-all/frobnicate",
+            data={"_csrf_token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_json_api_set_maintenance_per_node(self, client, app):
+        _login(client)
+        registry = app.config["registry"]
+        node = registry.get_node("cx/cx1")
+        node.maintenance = False
+
+        resp = client.post(
+            "/update/cx/cx1",
+            json={"action": "set_maintenance", "maintenance": True},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["maintenance"] is True
+        assert node.maintenance is True
+
+    def test_json_api_rejects_non_bool(self, client):
+        _login(client)
+        resp = client.post(
+            "/update/cx/cx1",
+            json={"action": "set_maintenance", "maintenance": "yes"},
+        )
+        assert resp.status_code == 400
 
 
 # --- GET / POST /edit-group/<group> ---

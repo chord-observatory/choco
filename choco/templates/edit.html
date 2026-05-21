@@ -10,6 +10,9 @@
         <tr><th>Desired State</th>
             <td>{% with key=node_key %}{% include "_toggle_started.html" %}{% endwith %}</td>
         </tr>
+        <tr><th>Maintenance</th>
+            <td>{% with key=node_key %}{% include "_toggle_maintenance.html" %}{% endwith %}</td>
+        </tr>
         <tbody id="node-status"
                hx-ext="morph"
                hx-get="/partials/node-status/{{ node_key }}"

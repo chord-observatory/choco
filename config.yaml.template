@@ -23,14 +23,20 @@ sync:
   restart_timeout: 10               # Seconds to wait for kotekan to restart after /kill
   num_workers: 4                    # Number of worker greenlets processing node queues
 
+# FPGA master daemon — serves /status and /get-frame0-time over HTTP.
+# Used by choco's service-status strip and by the EOP broadcast job.
+fpga_master:
+  host: chive.site.chord-observatory.ca
+  port: 54321
+  timeout: 5                        # HTTP request timeout (seconds)
+
 # Earth Orientation Parameter service settings.
 eop:
-  fpga_master_host: chive.site.chord-observatory.ca
-  fpga_master_port: 54321
   intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
   intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
   state_file: eop-state.json        # State file name (stored in configs_dir)
+  service_unit: choco-eop-broadcast.service  # systemd unit to query for last-run status
 
 # FreeIPA LDAP authentication.
 # All routes require login. Leave host empty to disable (dev/testing only).

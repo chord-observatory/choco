@@ -61,6 +61,9 @@
         .toggle-slider.started { background: #2ecc40; }
         .toggle-slider.started::before { transform: translateX(18px); }
         .toggle-slider.idle { background: #ffdc00; }
+        .toggle-slider.maintenance { background: #ff851b; }
+        .toggle-slider.normal { background: #0074d9; }
+        .toggle-slider.normal::before { transform: translateX(18px); }
         .htmx-request .toggle-slider { background: #aaa !important; }
         .info-btn {
             display: inline-flex;
@@ -125,6 +128,13 @@
     <nav class="container">
         <ul>
             <li><strong><a href="/">CHOCO</a></strong></li>
+            {% if current_user.is_authenticated %}
+            <li id="services-status"
+                hx-get="/partials/services"
+                hx-trigger="load, every 30s"
+                hx-swap="innerHTML"
+                style="display: inline-flex; align-items: center; gap: 1.25em; font-size: 0.85em;"></li>
+            {% endif %}
         </ul>
         <ul>
             {% if current_user.is_authenticated %}
