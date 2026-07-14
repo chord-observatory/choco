@@ -102,6 +102,10 @@ cmd_install() {
     rsync -a "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
     chmod +x "$INSTALL_DIR"/jobs/*.sh 2>/dev/null || true
 
+    # bffs, the feed-flagging script (run by the choco-bffs-flag timer)
+    rsync -a --exclude='__pycache__' --exclude='.pytest_cache' \
+        "$SCRIPT_DIR/bffs/" "$INSTALL_DIR/bffs/"
+
     # Config
     mkdir -p "$CONFIG_DIR/configs"
     if [ -f "$SCRIPT_DIR/config.yaml" ]; then
@@ -114,6 +118,12 @@ cmd_install() {
     sed -i "s|^configs_dir:.*|configs_dir: $CONFIG_DIR/configs|" "$CONFIG_DIR/config.yaml"
     chmod 600 "$CONFIG_DIR/config.yaml"
     check_config "$CONFIG_DIR/config.yaml"
+
+    # Seed the bffs config on first install; never overwrite an edited one
+    if [ ! -f "$CONFIG_DIR/bffs.yaml" ]; then
+        cp "$SCRIPT_DIR/bffs/bffs.example.yaml" "$CONFIG_DIR/bffs.yaml"
+        echo "Seeded $CONFIG_DIR/bffs.yaml from bffs/bffs.example.yaml -- edit before use"
+    fi
 
     # Seed or overwrite kotekan configs from repo
     if [ -d "$SCRIPT_DIR/configs" ]; then
@@ -213,7 +223,9 @@ cmd_run() {
 
 cmd_test() {
     ensure_local_venv
-    exec "$SCRIPT_DIR/.venv/bin/pytest" "$SCRIPT_DIR/tests" -v "$@"
+    "$SCRIPT_DIR/.venv/bin/pytest" "$SCRIPT_DIR/tests" -v "$@"
+    # bffs has its own pytest.ini (pythonpath, testpaths)
+    (cd "$SCRIPT_DIR/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
 cmd_help() {

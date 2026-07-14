@@ -1,0 +1,14 @@
+[Unit]
+Description=choco job: bffs bad-feed flag broadcast
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/choco/jobs/bffs-flag.sh /etc/choco/bffs.yaml
+# No Restart: bffs sends only on change and records state after a successful
+# send, so a failed run (choco not up yet, N2 file missing) is simply retried
+# by the next timer tick.
+
+[Install]
+WantedBy=choco.service

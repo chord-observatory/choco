@@ -1,0 +1,9 @@
+spi_bus,board,chip,channel,amplifier,correlator_input
+0,0,A,0,AMP-0000,feed_0000
+0,0,A,1,AMP-0001,feed_0001
+0,0,B,0,AMP-0008,feed_0008
+0,7,A,0,AMP-0112,feed_0112
+0,7,B,0,AMP-0120,feed_0120
+0,7,B,1,AMP-0121,feed_0121
+0,15,A,0,AMP-0240,feed_0240
+0,15,B,7,AMP-0255,feed_0255

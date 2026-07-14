@@ -309,6 +309,33 @@ A companion oneshot service generates an Earth Orientation Parameter (EOP) table
 
 The net effect is that the on-disk table grows forward over time (one new entry per day) and is trimmed from the past only when it's safe to do so.
 
+## Bad-feed flag broadcast (bffs)
+
+A companion oneshot service runs [bffs](bffs/) — the feed-flagging script that
+lives in this repo's `bffs/` directory — every 30 seconds via
+`choco-bffs-flag.timer`. bffs reads the newest kotekan N² output file, decides
+which feeds are bad, and (only when the list changes) POSTs
+`{"action": "updatable_config", "endpoint": "updatable_config/bad_inputs",
+"values": {update_id, start_time, bad_inputs}}` to `POST /update/<group>` on
+localhost. choco then relays the values to every kotekan node in the group at
+`POST /updatable_config/bad_inputs`, where the `bufferBadInputs` stage turns
+them into the RFI-kernel feed mask.
+
+bffs runs from the choco venv (`jobs/bffs-flag.sh` finds `/opt/choco` or the
+local checkout) with its config at `/etc/choco/bffs.yaml`, seeded from
+`bffs/bffs.example.yaml` on first install — see [bffs/README.md](bffs/README.md)
+for the config format and flagging sources. The service runs once on choco
+startup and on every timer tick; bffs records its state only after a
+successful POST, so a run that fails while choco is still coming up is retried
+on the next tick. Note that nodes sitting in **maintenance mode** receive no
+pushes — choco stores the flags and reconciles them once maintenance is
+lifted.
+
+```bash
+sudo systemctl status choco-bffs-flag.timer   # cadence
+sudo journalctl -u choco-bffs-flag -f          # per-run logs
+```
+
 ## Tests
 
 ```bash
@@ -339,7 +366,15 @@ jobs/
 ├── choco-eop-broadcast.timer   # Daily at 12:00 UTC
 ├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
 ├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
-└── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
+├── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
+├── choco-bffs-flag.service     # bffs bad-feed flag job (runs on choco start + 30 s timer)
+├── choco-bffs-flag.timer       # Every 30 s
+└── bffs-flag.sh                # Wrapper: finds venv, calls bffs/bffs.py
+bffs/
+├── bffs.py                     # The feed-flagging script (see bffs/README.md)
+├── kotekan_io.py               # kotekan N² file reader
+├── sources/                    # Flagging sources (manual, power-outlier, power, fpga, rfi)
+└── tests/                      # bffs test suite (run by ./choco.sh test)
 ```
 
 `eop_utils.py` is vendored from [kotekan](https://github.com/kotekan/kotekan/) (`tools/earth_orientation/eop_utils.py`). It should not be modified in this repo.
