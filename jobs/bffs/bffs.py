@@ -253,8 +253,11 @@ def main(argv=None) -> int:
         # errors are OSError), a source misconfigured (ValueError) — get
         # one useful line instead of a traceback.  Still exit nonzero:
         # systemd records the failure and the next timer tick retries.
-        # Anything else is a bug and keeps its traceback.
+        # Anything else is a bug and keeps its traceback — and since a
+        # bug can also surface as ValueError/OSError, -vv shows the
+        # full traceback for these too.
         log.error("%s: %s", type(e).__name__, e)
+        log.debug("traceback:", exc_info=True)
         return 1
     if args.dry_run or not config.url:
         print(json.dumps(payload))

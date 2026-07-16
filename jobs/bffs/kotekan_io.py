@@ -11,6 +11,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+try:
+    # Registers HDF5 compression plugins with libhdf5 on import — kotekan
+    # writes vis/vis_weight bitshuffle-compressed (filter 32008).
+    import hdf5plugin  # noqa: F401
+except ImportError:  # uncompressed files remain readable without it
+    pass
+
 
 def input_labels(f: h5py.File) -> np.ndarray:
     """Return ordered feed labels from the kotekan file's index map.
@@ -109,9 +116,15 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         lo = max(0, ntime - int(chunk))
         nrows = ntime - lo
 
+        # CHIME keeps weights in a /flags GROUP; CHORD files instead have a
+        # root-level `flags` DATASET (kotekan's own per-input flag state —
+        # downstream of our flagging, so deliberately unused; see the README
+        # appendix on the latch problem) plus `vis_weight` at the root.  The
+        # isinstance check matters: `"x" in <Dataset>` iterates the data.
         weight_ds = None
-        if "flags" in f and "vis_weight" in f["flags"]:  # CHIME: under /flags
-            weight_ds = f["flags"]["vis_weight"]
+        flags = f.get("flags")
+        if isinstance(flags, h5py.Group) and "vis_weight" in flags:  # CHIME
+            weight_ds = flags["vis_weight"]
         elif "vis_weight" in f:  # CHORD: at the root
             weight_ds = f["vis_weight"]
 

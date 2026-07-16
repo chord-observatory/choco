@@ -68,6 +68,10 @@ def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=No
         im.create_dataset("prod", data=prod)
         f.create_dataset("vis", data=vis)
         f.create_dataset("vis_weight", data=np.ones(vis.shape, dtype="f4"))
+        # Real CHORD files carry a root-level `flags` DATASET (freq, input,
+        # time) — unlike CHIME, where /flags is a group.  Present here so
+        # the reader's group-vs-dataset detection is exercised.
+        f.create_dataset("flags", data=np.ones((nfreq, num_elements, ntime), dtype="f4"))
         f.create_dataset("frames_added", data=(np.ones((nfreq, ntime), dtype="u1")
                                                if frames_added is None else frames_added))
 

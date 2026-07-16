@@ -11,7 +11,7 @@ There is no daemon: one pass — read the data, combine, send — then exit. A s
 JSON file records the feed change history and lets it send to choco only when the
 bad list changes. It is a small package — a core (`bffs.py`), the kotekan reader
 (`kotekan_io.py`), and one module per source under `sources/` — on the standard
-library plus three packages (`numpy`, `h5py`, `PyYAML`).
+library plus four packages (`numpy`, `h5py`, `hdf5plugin`, `PyYAML`).
 
 `bffs` keeps the *source ideas* of CHIME's `ch_flag` (see the
 [prior-art appendix](#appendix-prior-art--chimes-ch_flag)) but shares none of its
@@ -22,7 +22,7 @@ stateless script.
 ## Run
 
 bffs lives in the [choco](../../README.md) repo and runs from choco's venv
-(numpy, h5py, and PyYAML come with it):
+(numpy, h5py, hdf5plugin, and PyYAML come with it):
 
 ```sh
 ../../.venv/bin/python bffs.py --config bffs.example.yaml  # read data, combine, POST to choco
