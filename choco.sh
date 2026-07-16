@@ -98,13 +98,10 @@ cmd_install() {
     "$INSTALL_DIR/.venv/bin/pip" install "$tmp_src"
     rm -rf "$tmp_src"
 
-    # Job scripts (timers, wrapper scripts, Python helpers)
-    rsync -a "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
-    chmod +x "$INSTALL_DIR"/jobs/*.sh 2>/dev/null || true
-
-    # bffs, the feed-flagging script (run by the choco-bffs-flag timer)
+    # Jobs (one subdir per job: units, wrapper script, Python code)
     rsync -a --exclude='__pycache__' --exclude='.pytest_cache' \
-        "$SCRIPT_DIR/bffs/" "$INSTALL_DIR/bffs/"
+        "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
+    find "$INSTALL_DIR/jobs" -name '*.sh' -exec chmod +x {} +
 
     # Config
     mkdir -p "$CONFIG_DIR/configs"
@@ -121,8 +118,8 @@ cmd_install() {
 
     # Seed the bffs config on first install; never overwrite an edited one
     if [ ! -f "$CONFIG_DIR/bffs.yaml" ]; then
-        cp "$SCRIPT_DIR/bffs/bffs.example.yaml" "$CONFIG_DIR/bffs.yaml"
-        echo "Seeded $CONFIG_DIR/bffs.yaml from bffs/bffs.example.yaml -- edit before use"
+        cp "$SCRIPT_DIR/jobs/bffs/bffs.example.yaml" "$CONFIG_DIR/bffs.yaml"
+        echo "Seeded $CONFIG_DIR/bffs.yaml from jobs/bffs/bffs.example.yaml -- edit before use"
     fi
 
     # Seed or overwrite kotekan configs from repo
@@ -152,14 +149,13 @@ cmd_install() {
     apt install -y iptables-persistent
     netfilter-persistent save
 
-    # systemd service
-    # systemd units: main service + any job timers
+    # systemd units: main service + any job units (jobs/<name>/choco-*.{service,timer})
     cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/
-    cp "$SCRIPT_DIR"/jobs/choco-*.{service,timer} /etc/systemd/system/ 2>/dev/null || true
+    cp "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer} /etc/systemd/system/ 2>/dev/null || true
     systemctl daemon-reload
     systemctl enable choco
     systemctl restart choco
-    for unit in "$SCRIPT_DIR"/jobs/choco-*.{service,timer}; do
+    for unit in "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer}; do
         [ -f "$unit" ] && systemctl enable --now "$(basename "$unit")"
     done
 
@@ -225,7 +221,7 @@ cmd_test() {
     ensure_local_venv
     "$SCRIPT_DIR/.venv/bin/pytest" "$SCRIPT_DIR/tests" -v "$@"
     # bffs has its own pytest.ini (pythonpath, testpaths)
-    (cd "$SCRIPT_DIR/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    (cd "$SCRIPT_DIR/jobs/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
 cmd_help() {

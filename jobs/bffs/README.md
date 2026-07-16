@@ -21,13 +21,13 @@ stateless script.
 
 ## Run
 
-bffs lives in the [choco](../README.md) repo and runs from choco's venv
+bffs lives in the [choco](../../README.md) repo and runs from choco's venv
 (numpy, h5py, and PyYAML come with it):
 
 ```sh
-../.venv/bin/python bffs.py --config bffs.example.yaml  # read data, combine, POST to choco
-../.venv/bin/python bffs.py -c bffs.example.yaml -n     # dry run: print the payload, send nothing
-../.venv/bin/pytest                                     # the tests (or: ../choco.sh test)
+../../.venv/bin/python bffs.py --config bffs.example.yaml  # read data, combine, POST to choco
+../../.venv/bin/python bffs.py -c bffs.example.yaml -n     # dry run: print the payload, send nothing
+../../.venv/bin/pytest                                  # the tests (or: ../../choco.sh test)
 ```
 
 `-v`/`-vv` raise the log level; `--kotekan-file` overrides the kotekan N² output
@@ -38,7 +38,7 @@ to stdout instead of sending it. See `bffs.example.yaml` for an annotated config
 
 choco ships the units: `choco-bffs-flag.service` (oneshot) paired with
 `choco-bffs-flag.timer` (every 30 s), installed and enabled by
-`choco.sh install`. The service runs `jobs/bffs-flag.sh` against
+`choco.sh install`. The service runs `jobs/bffs/bffs-flag.sh` against
 `/etc/choco/bffs.yaml` (seeded from `bffs.example.yaml` on first install).
 The timer interval is the flagging cadence — there is no internal scheduling.
 

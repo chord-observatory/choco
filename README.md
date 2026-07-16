@@ -295,7 +295,7 @@ A companion oneshot service generates an Earth Orientation Parameter (EOP) table
 
 **Schedule** — `choco-eop-broadcast.service` runs once on `choco.service` startup (`After=choco.service`, `WantedBy=choco.service`) and again daily at 12:00 UTC via `choco-eop-broadcast.timer` (`Persistent=true`, so a missed firing catches up on boot). One-off runs: `sudo systemctl start choco-eop-broadcast.service`.
 
-**Pipeline** (`jobs/eop_update.py`):
+**Pipeline** (`jobs/eop/eop_update.py`):
 1. Read `frame0_ns` from `fpga_master` over TCP.
 2. Build a fresh EOP table on the UTC-midnight grid using `astropy` + IERS auto-download, covering `(now − intervals_before, now + intervals_after)` days.
 3. If `configs_dir/eop-state.json` exists, merge with stored state (policy below).
@@ -312,8 +312,8 @@ The net effect is that the on-disk table grows forward over time (one new entry 
 
 ## Bad-feed flag broadcast (bffs)
 
-A companion oneshot service runs [bffs](bffs/) — the feed-flagging script that
-lives in this repo's `bffs/` directory — every 30 seconds via
+A companion oneshot service runs [bffs](jobs/bffs/) — the feed-flagging script
+that lives in this repo's `jobs/bffs/` directory — every 30 seconds via
 `choco-bffs-flag.timer`. bffs reads the newest kotekan N² output file, decides
 which feeds are bad, and (only when the list changes) POSTs
 `{"action": "updatable_config", "endpoint": "updatable_config/bad_inputs",
@@ -322,9 +322,10 @@ localhost. choco then relays the values to every kotekan node in the group at
 `POST /updatable_config/bad_inputs`, where the `bufferBadInputs` stage turns
 them into the RFI-kernel feed mask.
 
-bffs runs from the choco venv (`jobs/bffs-flag.sh` finds `/opt/choco` or the
-local checkout) with its config at `/etc/choco/bffs.yaml`, seeded from
-`bffs/bffs.example.yaml` on first install — see [bffs/README.md](bffs/README.md)
+bffs runs from the choco venv (`jobs/bffs/bffs-flag.sh` finds `/opt/choco` or
+the local checkout) with its config at `/etc/choco/bffs.yaml`, seeded from
+`jobs/bffs/bffs.example.yaml` on first install — see
+[jobs/bffs/README.md](jobs/bffs/README.md)
 for the config format and flagging sources. The service runs once on choco
 startup and on every timer tick; bffs records its state only after a
 successful POST, so a run that fails while choco is still coming up is retried
@@ -365,21 +366,22 @@ choco/
 ├── fpga.py         # FpgaMonitor (background poll) + job_status (systemd/mtime job health)
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Vendored assets: pico.min.css, htmx.min.js, idiomorph-ext.min.js, Sortable.min.js
-jobs/
+jobs/                               # One subdir per job: units, wrapper, code
 ├── choco.service               # Main systemd service (Type=notify)
-├── choco-eop-broadcast.service # EOP update job (runs on choco start + daily timer)
-├── choco-eop-broadcast.timer   # Daily at 12:00 UTC
-├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
-├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
-├── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
-├── choco-bffs-flag.service     # bffs bad-feed flag job (runs on choco start + 30 s timer)
-├── choco-bffs-flag.timer       # Every 30 s
-└── bffs-flag.sh                # Wrapper: finds venv, calls bffs/bffs.py
-bffs/
-├── bffs.py                     # The feed-flagging script (see bffs/README.md)
-├── kotekan_io.py               # kotekan N² file reader
-├── sources/                    # Flagging sources (manual, power-outlier, power, fpga, rfi)
-└── tests/                      # bffs test suite (run by ./choco.sh test)
+├── eop/                        # EOP broadcast job
+│   ├── choco-eop-broadcast.service # Runs on choco start + daily timer
+│   ├── choco-eop-broadcast.timer   # Daily at 12:00 UTC
+│   ├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
+│   ├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
+│   └── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
+└── bffs/                       # Feed-flagging job
+    ├── choco-bffs-flag.service     # Runs on choco start + 30 s timer
+    ├── choco-bffs-flag.timer       # Every 30 s
+    ├── bffs-flag.sh                # Wrapper: finds venv, calls bffs.py
+    ├── bffs.py                     # The feed-flagging script (see jobs/bffs/README.md)
+    ├── kotekan_io.py               # kotekan N² file reader
+    ├── sources/                    # Flagging sources (manual, power-outlier, power, fpga, rfi)
+    └── tests/                      # bffs test suite (run by ./choco.sh test)
 ```
 
 `eop_utils.py` is vendored from [kotekan](https://github.com/kotekan/kotekan/) (`tools/earth_orientation/eop_utils.py`). It should not be modified in this repo.

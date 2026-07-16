@@ -5,7 +5,7 @@ After=choco.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/choco/jobs/eop-broadcast.sh /etc/choco/config.yaml
+ExecStart=/opt/choco/jobs/eop/eop-broadcast.sh /etc/choco/config.yaml
 # Retry forever so the job self-recovers when the FPGA master comes back.
 Restart=on-failure
 RestartSec=60

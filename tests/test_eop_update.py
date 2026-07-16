@@ -1,4 +1,4 @@
-"""Tests for the EOP merge policy in jobs/eop_update.py.
+"""Tests for the EOP merge policy in jobs/eop/eop_update.py.
 
 The job script lives outside the ``choco`` package, so we put it on
 ``sys.path`` before importing.  Only the pure-policy parts are exercised
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "jobs"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "jobs" / "eop"))
 
 from astropy.time import Time  # noqa: E402
 
