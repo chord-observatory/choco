@@ -78,7 +78,9 @@ bffs reads both N² file flavours: CHIME-style (`index_map/input` labels,
 `vis[time, freq, prod]`) and CHORD `hdf5N2Write` output (`index_map/label`,
 `vis[freq, prod, time]`, compound freq, `frames_added` validity). Products
 beyond the labelled feeds (CHORD's phantom second-polarization elements) are
-ignored. `kotekan_file` may be a glob — each run reads the newest match.
+ignored. `kotekan_file` may be a glob, spanning directories if needed
+(e.g. `full/acq_*/*.h5`) — each run reads the newest match by mtime, i.e.
+the most recently written file of the current acquisition.
 
 ### Sources
 

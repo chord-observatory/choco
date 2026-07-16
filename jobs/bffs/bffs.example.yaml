@@ -7,9 +7,11 @@
 # The kotekan hdf5N2Write output. Its index map carries the ordered feed
 # labels (index_map/input, or index_map/label for CHORD files); the
 # autocorrelation data drives the power-outlier source. bad_inputs in the
-# payload are positions in that list. A glob is allowed — each run reads the
-# newest match, following kotekan's current output file.
-kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/*.h5
+# payload are positions in that list. A glob is allowed and may span
+# directories — each run reads the newest match by mtime, so with kotekan
+# writing one acquisition directory at a time this follows the most
+# recently written file of the current acquisition.
+kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/acq_*/*.h5
 
 choco:
   # choco's web API. Flags go to POST <url>/update/<group> as an

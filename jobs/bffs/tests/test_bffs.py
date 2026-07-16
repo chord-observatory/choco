@@ -285,3 +285,25 @@ def test_main_bad_config_fails_cleanly(tmp_path, caplog):
     rc = bffs.main(["--config", str(cfg_file)])
     assert rc == 1
     assert "bad config" in caplog.text
+
+
+def test_glob_across_acq_dirs_reads_newest(tmp_path):
+    """Wildcards may span directories (acq_*/*.h5 layouts): the most
+    recently written file wins across all acquisition dirs."""
+    import os
+    old_acq = tmp_path / "acq_20260101T000000"
+    new_acq = tmp_path / "acq_20260716T000000"
+    old_acq.mkdir()
+    new_acq.mkdir()
+    old = old_acq / "n2_000.h5"
+    mid = new_acq / "n2_000.h5"
+    new = new_acq / "n2_001.h5"
+    write_normalized(old, ["old0"], [400.0], np.ones((1, 1, 1), "f4"))
+    write_normalized(mid, ["mid0"], [400.0], np.ones((1, 1, 1), "f4"))
+    write_normalized(new, ["new0", "new1"], [400.0], np.ones((1, 1, 2), "f4"))
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(mid, (2_000_000, 2_000_000))
+    os.utime(new, (3_000_000, 3_000_000))
+    labels, good = bffs.combine_sources(
+        bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5")))
+    assert list(labels) == ["new0", "new1"]
