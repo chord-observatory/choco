@@ -153,11 +153,24 @@ cmd_install() {
     cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/
     cp "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer} /etc/systemd/system/ 2>/dev/null || true
     systemctl daemon-reload
-    systemctl enable choco
-    systemctl restart choco
-    for unit in "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer}; do
+
+    # Enable job services WITHOUT starting them (enable only creates their
+    # WantedBy=choco.service links): the jobs run when choco (re)starts
+    # below and on their timers.  Starting a oneshot here would block the
+    # install on a full job run — indefinitely, for a unit that combines
+    # Restart= with no start-rate limit (oneshot units have no start
+    # timeout) — and a job failing for environmental reasons (data file
+    # not there yet, FPGA master unreachable) must not abort an install.
+    for unit in "$SCRIPT_DIR"/jobs/*/choco-*.service; do
+        [ -f "$unit" ] && systemctl enable "$(basename "$unit")"
+    done
+    # Timers are safe to start: that only schedules the job.
+    for unit in "$SCRIPT_DIR"/jobs/*/choco-*.timer; do
         [ -f "$unit" ] && systemctl enable --now "$(basename "$unit")"
     done
+
+    systemctl enable choco
+    systemctl restart choco
 
     echo ""
     echo "choco installed and running."

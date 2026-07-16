@@ -319,7 +319,7 @@ Producers (web UI, API, config-file scan, poll timer)
 
 A companion oneshot service generates an Earth Orientation Parameter (EOP) table from IERS data and pushes it to every group as `updatable_config` under the `earth_rotation_data` endpoint.
 
-**Schedule** — `choco-eop-broadcast.service` runs once on `choco.service` startup (`After=choco.service`, `WantedBy=choco.service`) and again daily at 12:00 UTC via `choco-eop-broadcast.timer` (`Persistent=true`, so a missed firing catches up on boot). One-off runs: `sudo systemctl start choco-eop-broadcast.service`.
+**Schedule** — `choco-eop-broadcast.service` runs once on `choco.service` startup (`After=choco.service`, `WantedBy=choco.service`) and again daily at 12:00 UTC via `choco-eop-broadcast.timer` (`Persistent=true`, so a missed firing catches up on boot). One-off runs: `sudo systemctl start --no-block choco-eop-broadcast.service` (use `--no-block`: the unit retries forever on failure — deliberately, so it self-recovers when the FPGA master comes back — and a plain `start` would wait through those retries indefinitely).
 
 **Pipeline** (`jobs/eop/eop_update.py`):
 1. Read `frame0_ns` from `fpga_master` over TCP.
