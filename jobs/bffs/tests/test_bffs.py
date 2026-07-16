@@ -196,7 +196,7 @@ def test_glob_kotekan_file_reads_newest(tmp_path):
     write_normalized(new, ["new0", "new1"], [400.0], np.ones((1, 1, 2), "f4"))
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(new, (2_000_000, 2_000_000))
-    labels, good = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5")))
+    labels, good = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5"), max_age=0))
     assert list(labels) == ["new0", "new1"]
 
 
@@ -305,7 +305,7 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     os.utime(mid, (2_000_000, 2_000_000))
     os.utime(new, (3_000_000, 3_000_000))
     labels, good = bffs.combine_sources(
-        bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5")))
+        bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5"), max_age=0))
     assert list(labels) == ["new0", "new1"]
 
 
@@ -322,3 +322,31 @@ def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
     labels, good = bffs.combine_sources(cfg)
     assert seen == {"url": "https://localhost:5000", "group": "cx"}
     assert list(good) == [True]  # no nodes -> nothing polled -> all good
+
+
+def test_stale_kotekan_file_refused(tmp_path):
+    """Data older than max_age fails the run instead of flagging."""
+    import os
+    import time
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    old = time.time() - 7200
+    os.utime(n2, (old, old))
+    try:
+        bffs.combine_sources(bffs.Config(kotekan_file=str(n2), max_age=3600))
+    except ValueError as e:
+        assert "stale" in str(e)
+        return
+    raise AssertionError("expected ValueError for stale kotekan data")
+
+
+def test_max_age_zero_disables_staleness(tmp_path):
+    import os
+    import time
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    old = time.time() - 7200
+    os.utime(n2, (old, old))
+    labels, good = bffs.combine_sources(
+        bffs.Config(kotekan_file=str(n2), max_age=0))
+    assert list(labels) == ["f0"]

@@ -54,6 +54,7 @@ log = logging.getLogger("bffs")
 @dataclass
 class Config:
     kotekan_file: str              # the kotekan N² output (may be a glob; newest match wins)
+    max_age: float = 3600.0        # newest file older than this (s) -> fail, don't flag; 0 disables
     sources: list[dict] = field(default_factory=list)
     url: str | None = None         # choco base URL; unset -> payload printed, not sent
     group: str | None = None       # choco node group to broadcast to
@@ -73,7 +74,9 @@ def load_config(path: str | Path) -> Config:
         raise ValueError("config needs 'choco.group' (the choco node group) when choco.url is set")
     state = raw.get("state") or {}
     return Config(
-        kotekan_file=kotekan_file, sources=list(raw.get("sources") or []),
+        kotekan_file=kotekan_file,
+        max_age=float(raw.get("max_age", 3600)),
+        sources=list(raw.get("sources") or []),
         url=choco.get("url"), group=choco.get("group"),
         endpoint=str(choco.get("endpoint", "updatable_config/bad_inputs")),
         sync_delay=float(choco.get("sync_delay", 5.0)),
@@ -105,6 +108,15 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray]:
             raise FileNotFoundError(f"no kotekan file matches {path!r}")
         path = max(matches, key=os.path.getmtime)
         log.info("kotekan file: %s", path)
+    if config.max_age:
+        age = time.time() - os.path.getmtime(path)
+        if age > config.max_age:
+            # A stopped acquisition's tail rows are empty, so flagging
+            # from it would mark every feed dead. Refuse instead: the
+            # run fails (red badge) until fresh data appears.
+            raise ValueError(
+                f"kotekan data stale: {path} was last written "
+                f"{age / 3600:.1f} h ago (max_age {config.max_age:.0f} s)")
     labels = read_labels(path)
     good = np.ones(len(labels), dtype=bool)
     for src in config.sources:

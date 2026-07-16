@@ -13,6 +13,12 @@
 # recently written file of the current acquisition.
 kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/acq_*/*.h5
 
+# Refuse to flag when the newest kotekan file is older than this many
+# seconds (a stopped acquisition's empty tail rows would mark every feed
+# dead). The run fails — red BFFS badge — until fresh data appears.
+# 0 disables the check.
+max_age: 3600
+
 choco:
   # choco's web API. Flags go to POST <url>/update/<group> as an
   # updatable_config action; choco relays them to every kotekan node in the

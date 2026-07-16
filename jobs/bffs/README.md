@@ -80,7 +80,10 @@ bffs reads both N² file flavours: CHIME-style (`index_map/input` labels,
 beyond the labelled feeds (CHORD's phantom second-polarization elements) are
 ignored. `kotekan_file` may be a glob, spanning directories if needed
 (e.g. `full/acq_*/*.h5`) — each run reads the newest match by mtime, i.e.
-the most recently written file of the current acquisition.
+the most recently written file of the current acquisition. If that newest
+file is older than `max_age` seconds (default 3600; 0 disables), the run
+fails instead of flagging: a stopped acquisition's empty tail rows would
+otherwise mark every feed dead.
 
 ### Sources
 
