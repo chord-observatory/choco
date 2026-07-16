@@ -265,12 +265,12 @@ Changes flow through a two-tier queue system:
 
 ```
 Producers (web UI, API, config-file scan, poll timer)
-    → Input Queue (serialized — one submission at a time)
+    → Serialized submit (one lock — one submission at a time)
         → Node Queues (FIFO, each Node holds its own)
             → Worker Pool (locks a node's queue, drains items, syncs to remote)
 ```
 
-**Input queue** — a single serialized entry point. Accepts changes for individual nodes or entire groups (fan-out). Submissions block each other so only one caller modifies the queues at a time.
+**Serialized submit** — the orchestrator's `submit_node` / `submit_group` / `submit_all` methods all share a single lock, so only one caller modifies the queues at a time (and a registry rebuild can pause submissions by holding the same lock). Group and all submissions fan one change out to every matching node.
 
 **Node queues** — each Node holds a FIFO change queue. A pool of worker greenlets scans nodes for unlocked, non-empty queues. A worker locks a node's queue, drains all pending items (writing base config or updatable values to disk), then syncs to the remote kotekan instance:
 - **Base config changes** — kill kotekan, wait for stopped, start with new config via `POST /start`
@@ -361,7 +361,7 @@ choco/
 ├── auth.py         # LDAP authentication (Flask-Login + Flask-LDAP3-Login)
 ├── web.py          # Flask routes: dashboard, node edit, login/logout, /update/* JSON API
 ├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
-├── sync.py         # Queue-based sync: ChangeItem, InputQueue, Orchestrator worker pool
+├── sync.py         # Queue-based sync: ChangeItem, Orchestrator (serialized submit + worker pool)
 ├── fpga.py         # FpgaMonitor (background poll) + job_status (systemd/mtime job health)
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Vendored assets: pico.min.css, htmx.min.js, idiomorph-ext.min.js, Sortable.min.js

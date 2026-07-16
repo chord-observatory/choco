@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Single-process Flask app with three concerns:
 - **Flask** — web UI with live updates (htmx polling of partial templates; no WebSockets), LDAP auth, JSON API, served by gevent's WSGIServer
-- **Queue-based sync system** — serialized input queue fans out to per-node FIFO output queues, processed by a worker pool; workers apply file changes then sync to remote (full restart for base config changes, endpoint POSTs for updatable-only changes)
+- **Queue-based sync system** — a serialized submit path (one lock on the Orchestrator) fans changes out to per-node FIFO queues, processed by a worker pool; workers apply file changes then sync to remote (full restart for base config changes, endpoint POSTs for updatable-only changes)
 - **Config directory** — YAML files on disk as source of truth for desired state
 
 Kotekan is deployed and managed on nodes by Ansible. choco only handles monitoring and config management via kotekan's own REST API (port 12048): `/status`, `/config`, `/start`, `/kill`, updatable config endpoints.
@@ -34,7 +34,7 @@ choco/
 ├── app.py          # Flask app factory, gevent WSGI server, SSL, entry point
 ├── web.py          # Flask routes (blueprint): dashboard, node edit, /update/* JSON API
 ├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
-├── sync.py         # Queue-based sync: ChangeItem, InputQueue, Orchestrator worker pool
+├── sync.py         # Queue-based sync: ChangeItem, Orchestrator (serialized submit + worker pool)
 ├── fpga.py         # FpgaMonitor (background poll) + job_status (systemd/mtime job health)
 ├── auth.py         # LDAP auth (Flask-Login + Flask-LDAP3-Login, in-memory user store)
 ├── templates/      # Jinja2 templates (base, dashboard, edit, login)

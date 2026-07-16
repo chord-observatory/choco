@@ -124,7 +124,9 @@ def node_edit(node_key):
         action = request.form.get("action", "push_config")
 
         if action == "push_config":
-            orchestrator.submit_resync(node_key)
+            orchestrator.submit_node(ChangeItem(
+                type=ChangeType.RESYNC, node_key=node_key,
+            ))
             flash(f"Config re-push queued for {node_key}", "success")
 
         elif action == "save_config":
@@ -134,7 +136,10 @@ def node_edit(node_key):
             except Exception as e:
                 flash(f"Invalid config: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            orchestrator.submit_base_config(node_key, content)
+            orchestrator.submit_node(ChangeItem(
+                type=ChangeType.BASE_CONFIG, node_key=node_key,
+                config_content=content,
+            ))
             flash(f"Config change queued for {node_key}.", "success")
 
         elif action == "update_config":  # updatable_config change
@@ -145,7 +150,10 @@ def node_edit(node_key):
             except json.JSONDecodeError as e:
                 flash(f"Invalid JSON: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            orchestrator.submit_updatable_config(node_key, endpoint, values)
+            orchestrator.submit_node(ChangeItem(
+                type=ChangeType.UPDATABLE_CONFIG, node_key=node_key,
+                endpoint=endpoint, values=values,
+            ))
             flash(f"Update queued for /{endpoint}", "success")
 
         return redirect(url_for("web.node_edit", node_key=node_key))
@@ -269,7 +277,10 @@ def group_edit(group):
             return render_template(
                 "edit_group.html", group=group, config_content=content,
             )
-        _orchestrator().submit_group_base_config(group, content)
+        _orchestrator().submit_group(group, lambda key: ChangeItem(
+            type=ChangeType.BASE_CONFIG, node_key=key,
+            config_content=content,
+        ))
         flash(f"Config change queued for group {group!r}.", "success")
         return redirect(url_for("web.dashboard"))
 
@@ -288,7 +299,7 @@ def toggle_started(node_key):
     if node is None:
         abort(404)
     node.started = not node.started
-    _orchestrator().input_queue.submit_node(
+    _orchestrator().submit_node(
         ChangeItem(type=ChangeType.POLL, node_key=node_key)
     )
     if request.headers.get("HX-Request"):
@@ -308,7 +319,7 @@ def set_started_all(action):
     started = action == "start"
     for node in registry.nodes.values():
         node.started = started
-    _orchestrator().input_queue.submit_all(
+    _orchestrator().submit_all(
         lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
     if request.headers.get("HX-Request"):
@@ -330,7 +341,7 @@ def set_started_group(group, action):
     started = action == "start"
     for node in group_nodes:
         node.started = started
-    _orchestrator().input_queue.submit_group(
+    _orchestrator().submit_group(
         group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
     if request.headers.get("HX-Request"):
@@ -348,7 +359,7 @@ def toggle_maintenance(node_key):
     if node is None:
         abort(404)
     node.maintenance = not node.maintenance
-    _orchestrator().input_queue.submit_node(
+    _orchestrator().submit_node(
         ChangeItem(type=ChangeType.POLL, node_key=node_key)
     )
     if request.headers.get("HX-Request"):
@@ -370,7 +381,7 @@ def set_maintenance_all(action):
     maintenance = action == "on"
     for node in registry.nodes.values():
         node.maintenance = maintenance
-    _orchestrator().input_queue.submit_all(
+    _orchestrator().submit_all(
         lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
     if request.headers.get("HX-Request"):
@@ -392,7 +403,7 @@ def set_maintenance_group(group, action):
     maintenance = action == "on"
     for node in group_nodes:
         node.maintenance = maintenance
-    _orchestrator().input_queue.submit_group(
+    _orchestrator().submit_group(
         group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
     if request.headers.get("HX-Request"):
@@ -486,7 +497,10 @@ def update_group(group):
             sample_node.render(content)
         except Exception as e:
             return {"error": f"Invalid config: {e}"}, 400
-        orchestrator.submit_group_base_config(group, content)
+        orchestrator.submit_group(group, lambda key: ChangeItem(
+            type=ChangeType.BASE_CONFIG, node_key=key,
+            config_content=content,
+        ))
         return {"status": "queued", "group": group, "action": action}
 
     if action == "updatable_config":
@@ -494,7 +508,10 @@ def update_group(group):
         values = data.get("values")
         if not endpoint or values is None:
             return {"error": "endpoint and values are required"}, 400
-        orchestrator.submit_group_updatable_config(group, endpoint, values)
+        orchestrator.submit_group(group, lambda key: ChangeItem(
+            type=ChangeType.UPDATABLE_CONFIG, node_key=key,
+            endpoint=endpoint, values=values,
+        ))
         return {"status": "queued", "group": group, "action": action}
 
     if action == "set_started":
@@ -539,7 +556,10 @@ def update_node(group, node):
             node_obj.render(content)
         except Exception as e:
             return {"error": f"Invalid config: {e}"}, 400
-        orchestrator.submit_base_config(node_key, content)
+        orchestrator.submit_node(ChangeItem(
+            type=ChangeType.BASE_CONFIG, node_key=node_key,
+            config_content=content,
+        ))
         return {"status": "queued", "node": node_key, "action": action}
 
     if action == "updatable_config":
@@ -547,7 +567,10 @@ def update_node(group, node):
         values = data.get("values")
         if not endpoint or values is None:
             return {"error": "endpoint and values are required"}, 400
-        orchestrator.submit_updatable_config(node_key, endpoint, values)
+        orchestrator.submit_node(ChangeItem(
+            type=ChangeType.UPDATABLE_CONFIG, node_key=node_key,
+            endpoint=endpoint, values=values,
+        ))
         return {"status": "queued", "node": node_key, "action": action}
 
     if action == "set_started":

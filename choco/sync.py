@@ -2,10 +2,11 @@
 
 Architecture:
 
-    Input Queue (serialized) --> Per-Node Queues (FIFO, on Node) --> Worker Pool
+    Serialized submit --> Per-Node Queues (FIFO, on Node) --> Worker Pool
 
-Changes enter through the single serialized input queue, which fans them out
-to per-node queues (each Node holds its own).  A pool of worker greenlets
+Changes enter through the orchestrator's ``submit_*`` methods, which share
+one lock (so only one caller submits at a time) and fan items out to
+per-node queues (each Node holds its own).  A pool of worker greenlets
 scans nodes; when a worker finds an unlocked, non-empty queue it locks it,
 drains all pending changes (writing base configs to YAML files and updatable
 configs to the JSON store), then syncs the result to the remote kotekan
@@ -57,55 +58,17 @@ class ChangeItem:
     values: dict | None = None         # UPDATABLE_CONFIG: JSON payload
 
 
-# --- Serialized input queue ---
-
-class InputQueue:
-    """Single serialized entry point that distributes items to node queues.
-
-    Every public method acquires the same lock, so only one caller submits
-    at a time.
-    """
-
-    def __init__(self, registry: Registry):
-        self._lock = BoundedSemaphore()
-        self.registry = registry
-
-    def submit_node(self, item: ChangeItem):
-        """Submit a change for one node."""
-        with self._lock:
-            node = self.registry.get_node(item.node_key)
-            if node is not None:
-                node.queue_put(item)
-            else:
-                logger.warning(f"No node for key {item.node_key}")
-
-    def submit_group(self, group: str, make_item):
-        """Submit a change for every node in *group*.
-
-        *make_item(node_key)* is called once per matching node to create the
-        ChangeItem.
-        """
-        with self._lock:
-            for key, node in self.registry.nodes.items():
-                if node.group == group:
-                    node.queue_put(make_item(key))
-
-    def submit_all(self, make_item):
-        """Submit a change for every registered node."""
-        with self._lock:
-            for key, node in self.registry.nodes.items():
-                node.queue_put(make_item(key))
-
-
 # --- Sync loop (orchestrator) ---
 
 class Orchestrator:
-    """Manages the input queue and worker pool.
+    """Manages change submission and the worker pool.
 
     Each :class:`Node` holds its own change queue.  Call :meth:`run` to
     start the worker pool and periodic polling (blocks until :meth:`stop`
-    is called).  Use the ``submit_*`` helpers to feed changes from web
-    routes or other callers.
+    is called).  Feed changes in from web routes or other callers with
+    the ``submit_*`` methods, which construct nothing themselves — they
+    take :class:`ChangeItem` objects (or a ``make_item`` factory for
+    fan-out) and distribute them to node queues under one shared lock.
     """
 
     def __init__(self, registry: Registry,
@@ -118,7 +81,9 @@ class Orchestrator:
         self._running = False
         self._file_mtimes: dict[Path, float] = {}
 
-        self.input_queue = InputQueue(registry)
+        # Serializes all submissions (and pauses them during a registry
+        # rebuild in apply_nodes_update).
+        self._submit_lock = BoundedSemaphore()
         self._assign_queue_locks()
 
     def _assign_queue_locks(self):
@@ -126,6 +91,34 @@ class Orchestrator:
         for node in self.registry.nodes.values():
             if node._queue_lock is None:
                 node._queue_lock = BoundedSemaphore()
+
+    # --- Submissions (serialized entry point) ---
+
+    def submit_node(self, item: ChangeItem):
+        """Submit a change for one node."""
+        with self._submit_lock:
+            node = self.registry.get_node(item.node_key)
+            if node is not None:
+                node.queue_put(item)
+            else:
+                logger.warning(f"No node for key {item.node_key}")
+
+    def submit_group(self, group: str, make_item):
+        """Submit a change for every node in *group*.
+
+        *make_item(node_key)* is called once per matching node to create the
+        ChangeItem.
+        """
+        with self._submit_lock:
+            for key, node in self.registry.nodes.items():
+                if node.group == group:
+                    node.queue_put(make_item(key))
+
+    def submit_all(self, make_item):
+        """Submit a change for every registered node."""
+        with self._submit_lock:
+            for key, node in self.registry.nodes.items():
+                node.queue_put(make_item(key))
 
     # --- Config-directory change detection ---
 
@@ -187,7 +180,7 @@ class Orchestrator:
             for node in self.registry.nodes.values():
                 node.template_vars = template_vars
                 node.load_config()
-            self.input_queue.submit_all(
+            self.submit_all(
                 lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
             )
             return
@@ -209,7 +202,7 @@ class Orchestrator:
 
         node.load_config()
         node.load_updatable()
-        self.input_queue.submit_node(
+        self.submit_node(
             ChangeItem(type=ChangeType.POLL, node_key=node_key)
         )
 
@@ -271,7 +264,7 @@ class Orchestrator:
         while self._running:
             gevent.sleep(self.poll_interval)
             self.check_config_files()
-            self.input_queue.submit_all(
+            self.submit_all(
                 lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
             )
 
@@ -468,57 +461,6 @@ class Orchestrator:
                     logger.warning(f"Failed to sync updatable "
                                    f"/{endpoint} to {node.key}")
 
-    # --- Public API (called by web routes) ---
-
-    def submit_base_config(self, node_key: str, config_content: str):
-        """Queue a base-config file change for one node."""
-        self.input_queue.submit_node(ChangeItem(
-            type=ChangeType.BASE_CONFIG,
-            node_key=node_key,
-            config_content=config_content,
-        ))
-
-    def submit_updatable_config(self, node_key: str, endpoint: str,
-                                values: dict):
-        """Queue an updatable-config change for one node."""
-        self.input_queue.submit_node(ChangeItem(
-            type=ChangeType.UPDATABLE_CONFIG,
-            node_key=node_key,
-            endpoint=endpoint,
-            values=values,
-        ))
-
-    def submit_resync(self, node_key: str):
-        """Queue a forced full config re-push for one node."""
-        self.input_queue.submit_node(ChangeItem(
-            type=ChangeType.RESYNC,
-            node_key=node_key,
-        ))
-
-    def submit_group_base_config(self, group: str, config_content: str):
-        """Queue a base-config file change for every node in *group*."""
-        self.input_queue.submit_group(
-            group,
-            lambda key: ChangeItem(
-                type=ChangeType.BASE_CONFIG,
-                node_key=key,
-                config_content=config_content,
-            ),
-        )
-
-    def submit_group_updatable_config(self, group: str, endpoint: str,
-                                      values: dict):
-        """Queue an updatable-config change for every node in *group*."""
-        self.input_queue.submit_group(
-            group,
-            lambda key: ChangeItem(
-                type=ChangeType.UPDATABLE_CONFIG,
-                node_key=key,
-                endpoint=endpoint,
-                values=values,
-            ),
-        )
-
     def apply_nodes_update(self, new_data: dict | None = None):
         """Replace the node registry.
 
@@ -526,8 +468,8 @@ class Orchestrator:
         otherwise the current on-disk file is used (for file-watcher
         reloads).  The registry is then rebuilt from scratch — all
         existing :class:`Node` objects, pending queue items, and runtime
-        toggles are discarded.  Held under the input-queue lock so
-        in-flight submissions don't race the rebuild.
+        toggles are discarded.  Held under the submit lock so in-flight
+        submissions don't race the rebuild.
 
         Freshly-built nodes default to ``maintenance=True`` (set by
         :meth:`Registry.reload`), so the registry edit acts as a pause:
@@ -536,7 +478,7 @@ class Orchestrator:
         so each new :class:`Node`'s ``started`` flag matches the actual
         kotekan runtime state rather than the cold default.
         """
-        with self.input_queue._lock:
+        with self._submit_lock:
             if new_data is not None:
                 self.registry.save_nodes_yaml(new_data)
             self.registry.reload()

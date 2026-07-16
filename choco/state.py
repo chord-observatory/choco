@@ -468,8 +468,8 @@ class Registry:
         Clears and repopulates the registry; all existing :class:`Node`
         objects are discarded along with any pending queue items or
         runtime state.  Callers that need to synchronise with the sync
-        worker pool should hold the orchestrator's input-queue lock
-        around this call.
+        worker pool should hold the orchestrator's submit lock around
+        this call.
 
         If ``nodes.yaml`` is missing or unparseable the registry is left
         empty and the error is logged — the service comes up so it can

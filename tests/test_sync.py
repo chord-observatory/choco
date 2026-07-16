@@ -10,7 +10,7 @@ import yaml
 
 from choco.state import Registry, Node, NodeStatus
 from choco.sync import (
-    ChangeType, ChangeItem, InputQueue, Orchestrator,
+    ChangeType, ChangeItem, Orchestrator,
 )
 
 
@@ -97,41 +97,55 @@ class TestNodeQueue:
         node.queue_unlock()
 
 
-class TestInputQueue:
+class TestSubmissions:
+    """The orchestrator's serialized submit entry point."""
+
     def test_submit_node(self, orchestrator):
-        iq = orchestrator.input_queue
         item = ChangeItem(type=ChangeType.POLL, node_key="cx/cx1")
-        iq.submit_node(item)
+        orchestrator.submit_node(item)
 
         cx1 = orchestrator.registry.get_node("cx/cx1")
         cx2 = orchestrator.registry.get_node("cx/cx2")
         recv1 = orchestrator.registry.get_node("recv/recv1")
-        assert not cx1.queue_empty
+        assert cx1.queue_pop() is item
         assert cx2.queue_empty
         assert recv1.queue_empty
 
     def test_submit_node_unknown_key(self, orchestrator):
-        iq = orchestrator.input_queue
         item = ChangeItem(type=ChangeType.POLL, node_key="nonexistent/node")
-        iq.submit_node(item)  # should not raise
+        orchestrator.submit_node(item)  # should not raise
+
+    def test_submit_node_preserves_payload(self, orchestrator):
+        orchestrator.submit_node(ChangeItem(
+            type=ChangeType.UPDATABLE_CONFIG, node_key="cx/cx1",
+            endpoint="updatable_config/gains", values={"start_time": 100},
+        ))
+        item = orchestrator.registry.get_node("cx/cx1").queue_pop()
+        assert item.type == ChangeType.UPDATABLE_CONFIG
+        assert item.endpoint == "updatable_config/gains"
+        assert item.values == {"start_time": 100}
 
     def test_submit_group(self, orchestrator):
-        iq = orchestrator.input_queue
-        iq.submit_group(
+        orchestrator.submit_group(
             "cx",
-            lambda key: ChangeItem(type=ChangeType.POLL, node_key=key),
+            lambda key: ChangeItem(
+                type=ChangeType.BASE_CONFIG, node_key=key,
+                config_content="num_elements: 512\n",
+            ),
         )
 
         cx1 = orchestrator.registry.get_node("cx/cx1")
         cx2 = orchestrator.registry.get_node("cx/cx2")
         recv1 = orchestrator.registry.get_node("recv/recv1")
-        assert not cx1.queue_empty
-        assert not cx2.queue_empty
+        for node in (cx1, cx2):
+            item = node.queue_pop()
+            assert item.type == ChangeType.BASE_CONFIG
+            assert item.node_key == node.key
+            assert item.config_content == "num_elements: 512\n"
         assert recv1.queue_empty
 
     def test_submit_group_nonexistent(self, orchestrator):
-        iq = orchestrator.input_queue
-        iq.submit_group(
+        orchestrator.submit_group(
             "nonexistent",
             lambda key: ChangeItem(type=ChangeType.POLL, node_key=key),
         )
@@ -139,66 +153,11 @@ class TestInputQueue:
             assert node.queue_empty
 
     def test_submit_all(self, orchestrator):
-        iq = orchestrator.input_queue
-        iq.submit_all(
+        orchestrator.submit_all(
             lambda key: ChangeItem(type=ChangeType.POLL, node_key=key),
         )
         for node in orchestrator.registry.nodes.values():
             assert not node.queue_empty
-
-
-class TestOrchestratorQueues:
-    def test_submit_base_config(self, orchestrator):
-        orchestrator.submit_base_config("cx/cx1", "num_elements: 1024\n")
-        node = orchestrator.registry.get_node("cx/cx1")
-        item = node.queue_pop()
-        assert item.type == ChangeType.BASE_CONFIG
-        assert item.node_key == "cx/cx1"
-        assert item.config_content == "num_elements: 1024\n"
-
-    def test_submit_updatable_config(self, orchestrator):
-        orchestrator.submit_updatable_config(
-            "cx/cx1", "updatable_config/gains", {"start_time": 100},
-        )
-        node = orchestrator.registry.get_node("cx/cx1")
-        item = node.queue_pop()
-        assert item.type == ChangeType.UPDATABLE_CONFIG
-        assert item.endpoint == "updatable_config/gains"
-        assert item.values == {"start_time": 100}
-
-    def test_submit_resync(self, orchestrator):
-        orchestrator.submit_resync("cx/cx1")
-        node = orchestrator.registry.get_node("cx/cx1")
-        item = node.queue_pop()
-        assert item.type == ChangeType.RESYNC
-
-    def test_submit_group_base_config(self, orchestrator):
-        orchestrator.submit_group_base_config("cx", "num_elements: 512\n")
-        cx1 = orchestrator.registry.get_node("cx/cx1")
-        cx2 = orchestrator.registry.get_node("cx/cx2")
-        recv1 = orchestrator.registry.get_node("recv/recv1")
-        assert not cx1.queue_empty
-        assert not cx2.queue_empty
-        assert recv1.queue_empty
-
-        for node in (cx1, cx2):
-            item = node.queue_pop()
-            assert item.type == ChangeType.BASE_CONFIG
-            assert item.config_content == "num_elements: 512\n"
-
-    def test_submit_group_updatable_config(self, orchestrator):
-        orchestrator.submit_group_updatable_config(
-            "cx", "updatable_config/gains", {"start_time": 200},
-        )
-        cx1 = orchestrator.registry.get_node("cx/cx1")
-        cx2 = orchestrator.registry.get_node("cx/cx2")
-        recv1 = orchestrator.registry.get_node("recv/recv1")
-        for node in (cx1, cx2):
-            item = node.queue_pop()
-            assert item.type == ChangeType.UPDATABLE_CONFIG
-            assert item.endpoint == "updatable_config/gains"
-            assert item.values == {"start_time": 200}
-        assert recv1.queue_empty
 
 
 class TestProcessNode:
