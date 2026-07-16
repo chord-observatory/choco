@@ -9,15 +9,12 @@ description = "CHORD Config Orchestrator — manages kotekan instances on a clus
 requires-python = ">=3.10"
 dependencies = [
     "flask>=3.0",
-    "flask-socketio>=5.3",
     "flask-login>=0.6",
     "flask-ldap3-login>=0.9",
     "gevent>=24.0",
-    "gevent-websocket>=0.10",
     "requests>=2.31",
     "cryptography>=42.0",
     "pyyaml>=6.0",
-    "watchdog>=4.0",
     "astropy>=6.0",
     "numpy>=1.26",
     "h5py>=3.6",

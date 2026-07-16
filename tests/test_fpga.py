@@ -1,5 +1,6 @@
-"""Tests for the FPGA monitor and EOP-status helpers."""
+"""Tests for the FPGA monitor and job-status helpers."""
 
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -7,7 +8,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import responses
 
-from choco.fpga import FpgaMonitor, eop_status
+from choco.fpga import FpgaMonitor, job_status, EOP_STALE_AFTER_S
 
 
 HOST = "fpga.example"
@@ -71,83 +72,131 @@ class TestFpgaMonitorPollOnce:
         assert mon.configured is False
 
 
-class TestEopStatusViaSystemctl:
-    """When systemctl is reachable, use its output verbatim."""
+UNIT = "choco-test-job.service"
 
-    def _props(self, **overrides) -> str:
-        base = {
-            "Result": "success",
-            "ActiveState": "inactive",
-            "SubState": "dead",
-            "ExecMainStatus": "0",
-            # systemctl emits human-readable timestamps; the parser
-            # accepts a few common formats.
-            "ExecMainExitTimestamp": "Mon 2026-05-19 16:29:18 UTC",
-        }
-        base.update(overrides)
-        return "\n".join(f"{k}={v}" for k, v in base.items())
 
-    def _patch_systemctl(self, stdout: str, returncode: int = 0):
-        completed = MagicMock(returncode=returncode, stdout=stdout, stderr="")
-        return patch("choco.fpga.subprocess.run", return_value=completed)
+def _props(**overrides) -> str:
+    base = {
+        "Result": "success",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ExecMainStatus": "0",
+        # Only tested for emptiness ("has the unit ever run") — the
+        # value itself is never parsed.
+        "ExecMainExitTimestamp": "Mon 2026-05-19 16:29:18 UTC",
+    }
+    base.update(overrides)
+    return "\n".join(f"{k}={v}" for k, v in base.items())
 
-    def test_healthy_recent_run(self, tmp_path):
-        recent = time.strftime("%a %Y-%m-%d %H:%M:%S UTC",
-                               time.gmtime(time.time() - 60))
-        with patch("choco.fpga.shutil.which", return_value="/usr/bin/systemctl"), \
-             self._patch_systemctl(self._props(ExecMainExitTimestamp=recent)):
-            out = eop_status(state_file=tmp_path / "missing.json")
+
+def _patch_systemctl(stdout: str, returncode: int = 0):
+    completed = MagicMock(returncode=returncode, stdout=stdout, stderr="")
+    return patch("choco.fpga.subprocess.run", return_value=completed)
+
+
+def _no_systemctl():
+    return patch("choco.fpga.shutil.which", return_value=None)
+
+
+def _with_systemctl():
+    return patch("choco.fpga.shutil.which", return_value="/usr/bin/systemctl")
+
+
+def _backdate(path: Path, age_s: float):
+    old = time.time() - age_s
+    os.utime(path, (old, old))
+
+
+class TestJobStatusViaSystemctl:
+    """systemd's Result is the failure signal; mtime carries staleness."""
+
+    def test_success_and_fresh_state_ok(self, tmp_path):
+        p = tmp_path / "state.json"
+        p.write_text("{}")
+        with _with_systemctl(), _patch_systemctl(_props()):
+            out = job_status(UNIT, state_file=p,
+                             stale_after_s=EOP_STALE_AFTER_S)
         assert out["health"] == "ok"
-        assert out["source"] == "systemd"
         assert out["result"] == "success"
-        assert out["last_run_at"] is not None
+        assert out["systemd"] is True
+        assert out["state_mtime"] is not None
+
+    def test_success_without_state_file_ok(self, tmp_path):
+        with _with_systemctl(), _patch_systemctl(_props()):
+            out = job_status(UNIT, state_file=tmp_path / "missing.json",
+                             stale_after_s=EOP_STALE_AFTER_S)
+        assert out["health"] == "ok"
 
     def test_failed_run(self, tmp_path):
-        with patch("choco.fpga.shutil.which", return_value="/usr/bin/systemctl"), \
-             self._patch_systemctl(self._props(Result="exit-code",
-                                               ExecMainStatus="1")):
-            out = eop_status(state_file=tmp_path / "missing.json")
+        with _with_systemctl(), \
+             _patch_systemctl(_props(Result="exit-code", ExecMainStatus="1")):
+            out = job_status(UNIT, state_file=tmp_path / "missing.json")
         assert out["health"] == "failed"
         assert out["result"] == "exit-code"
 
-    def test_stale_run(self, tmp_path):
-        old = time.strftime("%a %Y-%m-%d %H:%M:%S UTC",
-                            time.gmtime(time.time() - 48 * 3600))
-        with patch("choco.fpga.shutil.which", return_value="/usr/bin/systemctl"), \
-             self._patch_systemctl(self._props(ExecMainExitTimestamp=old)):
-            out = eop_status(state_file=tmp_path / "missing.json")
+    def test_stale_state_beats_systemd_success(self, tmp_path):
+        p = tmp_path / "state.json"
+        p.write_text("{}")
+        _backdate(p, 30 * 3600)  # past the 25h EOP threshold
+        with _with_systemctl(), _patch_systemctl(_props()):
+            out = job_status(UNIT, state_file=p,
+                             stale_after_s=EOP_STALE_AFTER_S)
         assert out["health"] == "stale"
 
+    def test_never_run(self, tmp_path):
+        with _with_systemctl(), \
+             _patch_systemctl(_props(ExecMainExitTimestamp="")):
+            out = job_status(UNIT, state_file=tmp_path / "missing.json")
+        assert out["health"] == "never_run"
 
-class TestEopStatusFallbackToMtime:
+    def test_no_stale_threshold_old_state_still_ok(self, tmp_path):
+        # bffs-style: state file only changes when the flag list changes,
+        # so an old mtime must not degrade a succeeding job.
+        p = tmp_path / "state.json"
+        p.write_text("{}")
+        _backdate(p, 90 * 86400)
+        with _with_systemctl(), _patch_systemctl(_props()):
+            out = job_status(UNIT, state_file=p)
+        assert out["health"] == "ok"
+
+
+class TestJobStatusWithoutSystemctl:
     """When systemctl isn't available, derive from the state file's mtime."""
 
     def test_missing_state_file(self, tmp_path):
-        with patch("choco.fpga.shutil.which", return_value=None):
-            out = eop_status(state_file=tmp_path / "eop-state.json")
+        with _no_systemctl():
+            out = job_status(UNIT, state_file=tmp_path / "state.json",
+                             stale_after_s=EOP_STALE_AFTER_S)
         assert out["health"] == "never_run"
-        assert out["source"] == "mtime"
+        assert out["systemd"] is False
 
     def test_recent_state_file(self, tmp_path):
-        p = tmp_path / "eop-state.json"
+        p = tmp_path / "state.json"
         p.write_text("{}")
-        with patch("choco.fpga.shutil.which", return_value=None):
-            out = eop_status(state_file=p)
+        with _no_systemctl():
+            out = job_status(UNIT, state_file=p,
+                             stale_after_s=EOP_STALE_AFTER_S)
         assert out["health"] == "ok"
-        assert out["source"] == "mtime"
 
     def test_stale_state_file(self, tmp_path):
-        p = tmp_path / "eop-state.json"
+        p = tmp_path / "state.json"
         p.write_text("{}")
-        # Backdate to 30h ago — well past the 25h stale threshold.
-        old = time.time() - 30 * 3600
-        import os
-        os.utime(p, (old, old))
-        with patch("choco.fpga.shutil.which", return_value=None):
-            out = eop_status(state_file=p)
+        _backdate(p, 30 * 3600)
+        with _no_systemctl():
+            out = job_status(UNIT, state_file=p,
+                             stale_after_s=EOP_STALE_AFTER_S)
         assert out["health"] == "stale"
 
+    def test_no_threshold_state_alone_is_inconclusive(self, tmp_path):
+        # Without systemd and without a staleness rule there is no
+        # success signal — report unknown rather than guessing ok.
+        p = tmp_path / "state.json"
+        p.write_text("{}")
+        with _no_systemctl():
+            out = job_status(UNIT, state_file=p)
+        assert out["health"] == "unknown"
+
     def test_unknown_without_state_file(self):
-        with patch("choco.fpga.shutil.which", return_value=None):
-            out = eop_status(state_file=None)
+        with _no_systemctl():
+            out = job_status(UNIT, state_file=None)
         assert out["health"] == "unknown"

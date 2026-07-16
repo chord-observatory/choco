@@ -228,12 +228,6 @@ def main():
     state_file = configs_dir / state_filename
 
     # Frame0
-    if not fpga_host:
-        print("error: eop.fpga_master_host not set in config", file=sys.stderr)
-        sys.exit(1)
-    if not fpga_port:
-        print("error: eop.fpga_master_port not set in config", file=sys.stderr)
-        sys.exit(1)
     print(f"Reading frame0 from fpga_master at {fpga_host}:{fpga_port} ...")
     try:
         frame0_ns = eop_utils.read_fpga_master_frame0_ns(fpga_host, fpga_port, 30.0)

@@ -156,7 +156,7 @@ reorder within a group or move it between groups.</small></p>
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="{{ url_for('static', filename='Sortable.min.js') }}"></script>
 <script>
 (function () {
     const container = document.getElementById('groups-container');

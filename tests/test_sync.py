@@ -1,5 +1,8 @@
 """Tests for the queue-based sync system."""
 
+import os
+import time
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -57,7 +60,7 @@ def registry(configs_dir):
 
 @pytest.fixture
 def orchestrator(registry):
-    return Orchestrator(registry, socketio=None, poll_interval=1, num_workers=2)
+    return Orchestrator(registry, poll_interval=1, num_workers=2)
 
 
 class TestNodeQueue:
@@ -482,8 +485,7 @@ class TestPushBlockedByLoadError:
         registry = Registry(configs_dir)
         for node in registry.nodes.values():
             node.maintenance = False
-        orchestrator = Orchestrator(registry, socketio=None, poll_interval=1,
-                                    num_workers=2)
+        orchestrator = Orchestrator(registry, poll_interval=1, num_workers=2)
         return registry, orchestrator
 
     def test_drift_does_not_push_when_updatable_broken(self, configs_dir):
@@ -719,3 +721,75 @@ class TestMaintenanceMode:
         registry = Registry(configs_dir)
         for node in registry.nodes.values():
             assert node.maintenance is True
+
+
+class TestConfigFileScan:
+    """mtime-based detection of local config-directory edits.
+
+    check_config_files() runs once per poll tick and replaces the old
+    inotify watcher: changed / created / deleted config files are fed
+    to on_file_changed exactly as before.
+    """
+
+    def _baseline(self, orchestrator):
+        orchestrator._file_mtimes = orchestrator._config_file_mtimes()
+
+    def _bump(self, path):
+        """Push a file's mtime clearly past the recorded baseline."""
+        future = time.time() + 10
+        os.utime(path, (future, future))
+
+    def test_modified_base_config_reloads_node(self, configs_dir, orchestrator):
+        self._baseline(orchestrator)
+        node = orchestrator.registry.get_node("cx/cx1")
+        path = configs_dir / "cx" / "cx1.yaml"
+        path.write_text("num_elements: 4096\n")
+        self._bump(path)
+
+        orchestrator.check_config_files()
+
+        assert node.rendered_config == {"num_elements": 4096}
+        item = node.queue_pop()
+        assert item is not None and item.type == ChangeType.POLL
+
+    def test_new_updatable_json_detected(self, configs_dir, orchestrator):
+        self._baseline(orchestrator)
+        node = orchestrator.registry.get_node("cx/cx1")
+        upd = configs_dir / ".updatable" / "cx"
+        upd.mkdir(parents=True)
+        (upd / "cx1.json").write_text(
+            '{"updatable_config/gains": {"coeff": 2.0}}'
+        )
+
+        orchestrator.check_config_files()
+
+        assert node.updatable_config == {
+            "updatable_config/gains": {"coeff": 2.0}
+        }
+
+    def test_deleted_config_detected(self, configs_dir, orchestrator):
+        self._baseline(orchestrator)
+        node = orchestrator.registry.get_node("recv/recv1")
+        assert node.rendered_config is not None
+        (configs_dir / "recv" / "recv1.yaml").unlink()
+
+        orchestrator.check_config_files()
+
+        assert node.rendered_config is None
+
+    def test_unrelated_files_ignored(self, configs_dir, orchestrator):
+        self._baseline(orchestrator)
+        (configs_dir / "notes.txt").write_text("hello")
+        # JSON outside .updatable/ is not config either.
+        (configs_dir / "data.json").write_text("{}")
+
+        orchestrator.check_config_files()
+
+        for node in orchestrator.registry.nodes.values():
+            assert node.queue_empty
+
+    def test_unchanged_scan_is_quiet(self, configs_dir, orchestrator):
+        self._baseline(orchestrator)
+        orchestrator.check_config_files()
+        for node in orchestrator.registry.nodes.values():
+            assert node.queue_empty

@@ -157,7 +157,7 @@ num_elements: {{ n_elem }}
 log_level: info
 ```
 
-These files can be edited directly on disk - choco watches for changes and picks them up automatically.
+These files can be edited directly on disk - choco compares file mtimes on every sync tick and picks up edits within one poll interval (5 seconds by default).
 
 #### Updatable Config Overrides
 
@@ -167,7 +167,7 @@ Kotekan configs can contain updatable blocks - sections marked with `kotekan_upd
 {"updatable_config/gains": {"start_time": 1234, "coeff": 1.0}}
 ```
 
-When a config is pushed, stored updatable values are merged into the rendered config to produce the desired config, which is sent to kotekan so it boots with the correct values immediately. These files are also watched - editing them on disk triggers an immediate push of the updatable values to the running kotekan instance (without a restart).
+When a config is pushed, stored updatable values are merged into the rendered config to produce the desired config, which is sent to kotekan so it boots with the correct values immediately. These files are also picked up when edited on disk, triggering a push of the updatable values to the running kotekan instance (without a restart).
 
 ## Running
 
@@ -184,12 +184,13 @@ sudo systemctl stop choco
 
 ### Service status strip
 
-Every page (for logged-in users) shows a thin strip above the nav with two pill badges:
+Every page (for logged-in users) shows a thin strip above the nav with pill badges:
 
 - **FPGA** — colour-coded readout from the `fpga_master` daemon. Green when `/status` responds and `/get-frame0-time` parses (timing is good); yellow when `/status` is reachable but timing can't be read; red when the daemon is unreachable; grey when no `fpga_master` block is configured. The tooltip carries the host, last-seen, error, and current `frame0_ns`.
-- **EOP** — health of the `choco-eop-broadcast.service` systemd unit. Green when its last run succeeded within the last ~25 hours, yellow when stale, red when the last result was a failure, grey when the unit has never run or systemd isn't reachable (in which case choco falls back to the `eop-state.json` mtime).
+- **EOP** — health of the EOP broadcast job. Red when `systemctl show choco-eop-broadcast.service` reports the last run failed; yellow when the `eop-state.json` mtime is older than ~25 hours (the job rewrites it on every successful daily run); green when the last run succeeded and the state file is fresh; grey when the unit has never run or health can't be determined.
+- **BFFS** — health of the bffs feed-flagging job (`choco-bffs-flag.service`), from the same generic helper. Green/red from the last run's systemd result; the state-file mtime is shown in the tooltip as "last change" but doesn't age the badge, since bffs only rewrites its state when the bad-feed list changes.
 
-The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
+Job health combines two cheap signals — the unit's `Result` from `systemctl show` and the job state file's mtime — with no timestamp parsing. The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
 
 ### Dashboard
 
@@ -209,7 +210,7 @@ Each node also has two toggles:
 
 Each scope (group header, dashboard header) has paired ▲/▼ and M/N buttons that flip every node in scope at once.
 
-Status updates are pushed to the browser in real time via WebSockets - no need to refresh.
+The dashboard table refreshes itself every 2 seconds via htmx polling - no need to refresh the page.
 
 ### Node Edit
 
@@ -263,7 +264,7 @@ curl -ks https://localhost:5000/api/status | jq .
 Changes flow through a two-tier queue system:
 
 ```
-Producers (web UI, API, file watcher, poll timer)
+Producers (web UI, API, config-file scan, poll timer)
     → Input Queue (serialized — one submission at a time)
         → Node Queues (FIFO, each Node holds its own)
             → Worker Pool (locks a node's queue, drains items, syncs to remote)
@@ -276,10 +277,10 @@ Producers (web UI, API, file watcher, poll timer)
 - **Updatable-only changes** — POST new values directly to updatable endpoints (no restart)
 - **Poll (no changes)** — compare desired config vs. running config; push if drift is detected
 
-**Periodic polling** — every 5 seconds, a poll item is submitted for every node. This detects drift and unreachable nodes even when no local changes are made. Status changes are pushed to browsers via WebSocket.
+**Periodic polling** — every 5 seconds, a poll item is submitted for every node. This detects drift and unreachable nodes even when no local changes are made.
 
-**File watcher** — the config directory is watched for changes:
-- **YAML/J2 files** — reloads the affected node's config and queues a poll for it (``vars.yaml`` changes re-render all nodes)
+**Config-file scan** — the same 5-second tick compares the mtime of every config file against the previous scan (a plain stat sweep — no inotify, works on NFS). Changed, created, or deleted files are handled by type:
+- **YAML/J2 files** — reloads the affected node's config and queues a poll for it (``vars.yaml`` changes re-render all nodes; ``nodes.yaml`` changes rebuild the registry)
 - **`.updatable/` JSON files** — reloads the affected node's updatable store and queues a poll
 
 **Load errors are surfaced, not fatal.** If a base config or updatable JSON file fails to parse, the affected node loads with a ``load_error`` and the service still starts. The dashboard shows the specific error (including the file name), and the sync loop **refuses to push any config to that node** until the error clears — pushing an incomplete `desired_config` could silently regress kotekan's runtime state. Errors clear automatically when the file becomes parseable again (file watcher reload) or when a fresh config is submitted via the UI / API (`save_base` / `save_updatable`). Stopped nodes (`started: false`) are still killed normally — load errors don't override the user's intent to stop a node.
@@ -336,6 +337,9 @@ sudo systemctl status choco-bffs-flag.timer   # cadence
 sudo journalctl -u choco-bffs-flag -f          # per-run logs
 ```
 
+The header's **BFFS** badge tracks this job; its `bffs:` block in choco's
+`config.yaml` (`service_unit`, `state_file`) tells choco where to look.
+
 ## Tests
 
 ```bash
@@ -353,13 +357,14 @@ pytest tests/ -v
 
 ```
 choco/
-├── app.py          # Flask app factory, SocketIO setup, entry point
+├── app.py          # Flask app factory, gevent WSGI server, entry point
 ├── auth.py         # LDAP authentication (Flask-Login + Flask-LDAP3-Login)
 ├── web.py          # Flask routes: dashboard, node edit, login/logout, /update/* JSON API
 ├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
 ├── sync.py         # Queue-based sync: ChangeItem, InputQueue, Orchestrator worker pool
+├── fpga.py         # FpgaMonitor (background poll) + job_status (systemd/mtime job health)
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
-└── static/         # Static assets
+└── static/         # Vendored assets: pico.min.css, htmx.min.js, idiomorph-ext.min.js, Sortable.min.js
 jobs/
 ├── choco.service               # Main systemd service (Type=notify)
 ├── choco-eop-broadcast.service # EOP update job (runs on choco start + daily timer)

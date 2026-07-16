@@ -13,7 +13,7 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
-from .fpga import eop_status
+from .fpga import job_status, EOP_STALE_AFTER_S
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
 
@@ -288,14 +288,9 @@ def toggle_started(node_key):
     if node is None:
         abort(404)
     node.started = not node.started
-    orchestrator = _orchestrator()
-    orchestrator.input_queue.submit_node(
+    _orchestrator().input_queue.submit_node(
         ChangeItem(type=ChangeType.POLL, node_key=node_key)
     )
-    orchestrator._emit("node_status_changed", {
-        "node": node_key,
-        "status": node.status.value,
-    })
     if request.headers.get("HX-Request"):
         return render_template("_toggle_started.html", node=node, key=node_key)
     flash(f"{node_key} {'started' if node.started else 'stopped'}", "success")
@@ -313,11 +308,9 @@ def set_started_all(action):
     started = action == "start"
     for node in registry.nodes.values():
         node.started = started
-    orchestrator = _orchestrator()
-    orchestrator.input_queue.submit_all(
+    _orchestrator().input_queue.submit_all(
         lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
-    orchestrator._emit("node_status_changed", {})
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=registry.nodes)
     return redirect(url_for("web.dashboard"))
@@ -337,11 +330,9 @@ def set_started_group(group, action):
     started = action == "start"
     for node in group_nodes:
         node.started = started
-    orchestrator = _orchestrator()
-    orchestrator.input_queue.submit_group(
+    _orchestrator().input_queue.submit_group(
         group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
-    orchestrator._emit("node_status_changed", {})
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=registry.nodes)
     return redirect(url_for("web.dashboard"))
@@ -357,14 +348,9 @@ def toggle_maintenance(node_key):
     if node is None:
         abort(404)
     node.maintenance = not node.maintenance
-    orchestrator = _orchestrator()
-    orchestrator.input_queue.submit_node(
+    _orchestrator().input_queue.submit_node(
         ChangeItem(type=ChangeType.POLL, node_key=node_key)
     )
-    orchestrator._emit("node_status_changed", {
-        "node": node_key,
-        "status": node.status.value,
-    })
     if request.headers.get("HX-Request"):
         return render_template("_toggle_maintenance.html",
                                node=node, key=node_key)
@@ -384,11 +370,9 @@ def set_maintenance_all(action):
     maintenance = action == "on"
     for node in registry.nodes.values():
         node.maintenance = maintenance
-    orchestrator = _orchestrator()
-    orchestrator.input_queue.submit_all(
+    _orchestrator().input_queue.submit_all(
         lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
-    orchestrator._emit("node_status_changed", {})
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=registry.nodes)
     return redirect(url_for("web.dashboard"))
@@ -408,11 +392,9 @@ def set_maintenance_group(group, action):
     maintenance = action == "on"
     for node in group_nodes:
         node.maintenance = maintenance
-    orchestrator = _orchestrator()
-    orchestrator.input_queue.submit_group(
+    _orchestrator().input_queue.submit_group(
         group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
     )
-    orchestrator._emit("node_status_changed", {})
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=registry.nodes)
     return redirect(url_for("web.dashboard"))
@@ -444,22 +426,37 @@ def partial_dashboard_table():
 @bp.route("/partials/services")
 @login_required
 def partial_services():
-    """Render the FPGA + EOP service status strip."""
-    from flask import current_app
+    """Render the FPGA + job (EOP, bffs) status strip."""
     monitor = current_app.config.get("fpga_monitor")
     eop_cfg = current_app.config.get("eop_cfg") or {}
+    bffs_cfg = current_app.config.get("bffs_cfg") or {}
     configs_dir = current_app.config.get("configs_dir")
-    state_file = None
+
+    # EOP rewrites its state file on every successful (daily) run, so
+    # the mtime doubles as "last successful run" and goes stale.
+    eop_state = None
     if configs_dir and eop_cfg.get("state_file"):
-        state_file = Path(configs_dir) / eop_cfg["state_file"]
-    eop = eop_status(
-        state_file=state_file,
-        service_unit=eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
+        eop_state = Path(configs_dir) / eop_cfg["state_file"]
+    eop = job_status(
+        eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
+        state_file=eop_state,
+        stale_after_s=EOP_STALE_AFTER_S,
     )
+
+    # bffs rewrites its state file only when the bad-feed list changes,
+    # so no staleness threshold — the mtime is just "last change".
+    bffs_state = (Path(bffs_cfg["state_file"])
+                  if bffs_cfg.get("state_file") else None)
+    bffs = job_status(
+        bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
+        state_file=bffs_state,
+    )
+
     return render_template(
         "_services_status.html",
         fpga=monitor.to_dict() if monitor is not None else None,
         eop=eop,
+        bffs=bffs,
         now_ts=time.time(),
     )
 

@@ -9,9 +9,9 @@ import stat
 import sys
 from pathlib import Path
 
+import gevent
 import yaml
 from flask import Flask
-from flask_socketio import SocketIO
 
 from .auth import init_auth
 from .fpga import FpgaMonitor
@@ -19,8 +19,6 @@ from .state import Registry
 from .sync import Orchestrator
 
 logger = logging.getLogger(__name__)
-
-socketio = SocketIO()
 
 _DEFAULT_CONFIG = {
     "server": {
@@ -40,6 +38,7 @@ _DEFAULT_CONFIG = {
     },
     "fpga_master": {},
     "eop": {},
+    "bffs": {},
     "ldap": {},
 }
 
@@ -83,6 +82,7 @@ def load_config(path: str | Path) -> dict:
                        "move it to a top-level fpga_master.host block.")
     if legacy_port and not config["fpga_master"].get("port"):
         config["fpga_master"]["port"] = legacy_port
+    config["bffs"] = raw.get("bffs") or {}
     config["ldap"] = raw.get("ldap") or {}
     return config
 
@@ -115,7 +115,7 @@ def create_app(
 
     sync_cfg = config["sync"]
     orchestrator = Orchestrator(
-        registry, socketio=socketio,
+        registry,
         poll_interval=int(sync_cfg["poll_interval"]),
         restart_timeout=int(sync_cfg["restart_timeout"]),
         num_workers=int(sync_cfg["num_workers"]),
@@ -135,6 +135,7 @@ def create_app(
     app.config["orchestrator"] = orchestrator
     app.config["fpga_monitor"] = fpga_monitor
     app.config["eop_cfg"] = config.get("eop") or {}
+    app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["configs_dir"] = configs_dir
     # Initialize authentication
     init_auth(app, config)
@@ -143,13 +144,10 @@ def create_app(
     from .web import bp
     app.register_blueprint(bp)
 
-    # Initialize SocketIO
-    socketio.init_app(app)
-
     # Start background sync loop immediately (not deferred to first request)
-    socketio.start_background_task(orchestrator.run)
+    gevent.spawn(orchestrator.run)
     if fpga_monitor.configured:
-        socketio.start_background_task(fpga_monitor.run)
+        gevent.spawn(fpga_monitor.run)
 
     return app
 
@@ -157,7 +155,6 @@ def create_app(
 def _start_http_redirect(host: str, http_port: int, https_port: int):
     """Start a background HTTP server that redirects all requests to HTTPS."""
     from flask import Flask as _Flask, redirect, request
-    import gevent
     from gevent.pywsgi import WSGIServer
 
     redirect_app = _Flask("choco-redirect")
@@ -285,7 +282,8 @@ def main():
                 return True
             return False
 
-    logging.getLogger("geventwebsocket.handler").addFilter(_PartialsDedup())
+    access_logger = logging.getLogger("choco.access")
+    access_logger.addFilter(_PartialsDedup())
 
     app = create_app(config=config)
     host = config["server"]["host"]
@@ -301,7 +299,6 @@ def main():
 
     # Suppress noisy SSL handshake tracebacks (e.g. clients rejecting self-signed certs)
     if ssl_context:
-        import gevent
         hub = gevent.get_hub()
         hub.NOT_ERROR = hub.NOT_ERROR + (ssl.SSLError,)
 
@@ -310,7 +307,13 @@ def main():
     display_host = socket.getfqdn() if host in ("0.0.0.0", "::") else host
     logger.info(f"Listening on {host}:{port} — access at {scheme}://{display_host}")
     _sd_notify_ready()
-    socketio.run(app, host=host, port=port, debug=False, ssl_context=ssl_context)
+
+    from gevent.pywsgi import WSGIServer, LoggingLogAdapter
+    server_kwargs = {"log": LoggingLogAdapter(access_logger)}
+    if ssl_context is not None:
+        server_kwargs["ssl_context"] = ssl_context
+    server = WSGIServer((host, port), app, **server_kwargs)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

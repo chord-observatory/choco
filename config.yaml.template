@@ -38,6 +38,11 @@ eop:
   state_file: eop-state.json        # State file name (stored in configs_dir)
   service_unit: choco-eop-broadcast.service  # systemd unit to query for last-run status
 
+# bffs feed-flagging job (BFFS badge in the web UI header).
+bffs:
+  service_unit: choco-bffs-flag.service  # systemd unit to query for last-run status
+  state_file: /var/lib/bffs/state.json   # bffs state.path (absolute; "last change" in the badge tooltip)
+
 # FreeIPA LDAP authentication.
 # All routes require login. Leave host empty to disable (dev/testing only).
 ldap:

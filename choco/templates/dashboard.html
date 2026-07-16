@@ -14,14 +14,12 @@
 <div id="dashboard-table"
      hx-ext="morph"
      hx-get="/partials/dashboard-table"
-     hx-trigger="refresh"
+     hx-trigger="every 2s"
      hx-swap="morph:innerHTML">
     {% include "_dashboard_table.html" %}
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="https://unpkg.com/idiomorph@0.7.4/dist/idiomorph-ext.min.js"
-        integrity="sha384-SsScJKzATF/w6suEEdLbgYGsYFLzeKfOA6PY+/C5ZPxOSuA+ARquqtz/BZz9JWU8"
-        crossorigin="anonymous"></script>
+<script src="{{ url_for('static', filename='idiomorph-ext.min.js') }}"></script>
 {% endblock %}

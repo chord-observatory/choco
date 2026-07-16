@@ -13,23 +13,25 @@ instance: a full restart (kill -> start) if any base-config changes were
 applied, or just updatable-endpoint POSTs otherwise.
 
 Periodic polling adds POLL items for every node so remote drift is detected
-even when no local changes are made.
+even when no local changes are made.  The same tick also compares config
+file mtimes against the last scan, so local edits to the config directory
+are picked up within one poll interval (no inotify machinery; a stat scan
+also works on NFS).
 """
 
 import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 import gevent
 from gevent.lock import BoundedSemaphore
 
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
 from .state import (
     Node, Registry, NodeStatus,
     strip_updatable_values, find_updatable_blocks,
+    _CONFIG_SUFFIXES,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,33 +97,6 @@ class InputQueue:
                 node.queue_put(make_item(key))
 
 
-# --- File-system watcher ---
-
-class ConfigFileHandler(FileSystemEventHandler):
-    """Detect on-disk config changes and feed them into the queue."""
-
-    def __init__(self, orchestrator: "Orchestrator"):
-        self._orchestrator = orchestrator
-
-    def _handle(self, event, action):
-        path = event.src_path
-        if path.endswith((".yaml", ".yml", ".j2")):
-            logger.info(f"Config file {action}: {path}")
-            self._orchestrator.on_file_changed(path)
-        elif path.endswith(".json") and "/.updatable/" in path:
-            logger.info(f"Updatable config file {action}: {path}")
-            self._orchestrator.on_file_changed(path)
-
-    def on_modified(self, event):
-        self._handle(event, "changed")
-
-    def on_created(self, event):
-        self._handle(event, "created")
-
-    def on_deleted(self, event):
-        self._handle(event, "deleted")
-
-
 # --- Sync loop (orchestrator) ---
 
 class Orchestrator:
@@ -133,16 +108,15 @@ class Orchestrator:
     routes or other callers.
     """
 
-    def __init__(self, registry: Registry, socketio=None,
+    def __init__(self, registry: Registry,
                  poll_interval: int = 5, restart_timeout: int = 10,
                  num_workers: int = 4):
         self.registry = registry
-        self.socketio = socketio
         self.poll_interval = poll_interval
         self.restart_timeout = restart_timeout
         self.num_workers = num_workers
-        self._observer: Observer | None = None
         self._running = False
+        self._file_mtimes: dict[Path, float] = {}
 
         self.input_queue = InputQueue(registry)
         self._assign_queue_locks()
@@ -153,22 +127,45 @@ class Orchestrator:
             if node._queue_lock is None:
                 node._queue_lock = BoundedSemaphore()
 
-    # --- File-watcher callbacks ---
+    # --- Config-directory change detection ---
 
-    def start_file_watcher(self):
-        handler = ConfigFileHandler(self)
-        self._observer = Observer()
-        self._observer.schedule(
-            handler, str(self.registry.configs_dir), recursive=True,
-        )
-        self._observer.daemon = True
-        self._observer.start()
-        logger.info(f"Watching config directory: {self.registry.configs_dir}")
+    def _config_file_mtimes(self) -> dict[Path, float]:
+        """Snapshot mtimes of every config file under configs_dir.
 
-    def stop_file_watcher(self):
-        if self._observer:
-            self._observer.stop()
-            self._observer.join()
+        Covers base configs (``.yaml`` / ``.yml`` / ``.j2`` anywhere,
+        which includes ``nodes.yaml`` and ``vars.yaml``) and the
+        ``.updatable/`` JSON store.
+        """
+        mtimes: dict[Path, float] = {}
+        root = self.registry.configs_dir
+        if not root.is_dir():
+            return mtimes
+        for path in root.rglob("*"):
+            if not (path.suffix in _CONFIG_SUFFIXES
+                    or (path.suffix == ".json" and ".updatable" in path.parts)):
+                continue
+            try:
+                if path.is_file():
+                    mtimes[path] = path.stat().st_mtime
+            except OSError:
+                continue
+        return mtimes
+
+    def check_config_files(self):
+        """Detect changed / created / deleted config files by mtime.
+
+        Called once per poll tick.  Each detected path is handed to
+        :meth:`on_file_changed`, exactly as the old inotify watcher did.
+        """
+        current = self._config_file_mtimes()
+        changed = [p for p, m in current.items()
+                   if self._file_mtimes.get(p) != m]
+        deleted = [p for p in self._file_mtimes if p not in current]
+        self._file_mtimes = current
+        for path in changed + deleted:
+            action = "deleted" if path in deleted else "changed"
+            logger.info(f"Config file {action}: {path}")
+            self.on_file_changed(str(path))
 
     def on_file_changed(self, path: str):
         """Reload the affected node's config from disk and queue a poll.
@@ -176,7 +173,6 @@ class Orchestrator:
         If vars.yaml changed, all nodes are re-rendered.  If nodes.yaml
         changed, the registry is fully reloaded (clear and rebuild).
         """
-        from pathlib import Path
         p = Path(path)
         configs_dir = self.registry.configs_dir
 
@@ -191,7 +187,6 @@ class Orchestrator:
             for node in self.registry.nodes.values():
                 node.template_vars = template_vars
                 node.load_config()
-            self._emit("config_reloaded", {})
             self.input_queue.submit_all(
                 lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
             )
@@ -214,7 +209,6 @@ class Orchestrator:
 
         node.load_config()
         node.load_updatable()
-        self._emit("config_reloaded", {})
         self.input_queue.submit_node(
             ChangeItem(type=ChangeType.POLL, node_key=node_key)
         )
@@ -254,7 +248,10 @@ class Orchestrator:
     def run(self):
         """Start the worker pool and periodic polling.  Blocks."""
         self._running = True
-        self.start_file_watcher()
+
+        # Baseline the config-file mtimes: the registry already loaded
+        # the current on-disk state, so only *subsequent* edits count.
+        self._file_mtimes = self._config_file_mtimes()
 
         # Set node.started from each node's actual runtime state before
         # the poll loop kicks in.  All nodes default to maintenance=True
@@ -273,13 +270,13 @@ class Orchestrator:
 
         while self._running:
             gevent.sleep(self.poll_interval)
+            self.check_config_files()
             self.input_queue.submit_all(
                 lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
             )
 
     def stop(self):
         self._running = False
-        self.stop_file_watcher()
 
     # --- Worker pool ---
 
@@ -327,14 +324,7 @@ class Orchestrator:
             # POLL: no file changes
 
         # 2. Sync to remote kotekan instance.
-        prev_status = node.status
         self._sync_node(node, had_base_change)
-        if node.status != prev_status:
-            self._emit("node_status_changed", {
-                "node": node.key,
-                "status": node.status.value,
-                "last_seen": node.last_seen_ago,
-            })
 
     # --- Remote sync ---
 
@@ -420,9 +410,6 @@ class Orchestrator:
         """
         key = node.key
         node.status = NodeStatus.SYNCING
-        self._emit("node_status_changed", {
-            "node": key, "status": node.status.value,
-        })
 
         probe = node.get_status()
         if probe == NodeStatus.DOWN:
@@ -480,10 +467,6 @@ class Orchestrator:
                 if not node.push_updatable(f"/{endpoint}", values):
                     logger.warning(f"Failed to sync updatable "
                                    f"/{endpoint} to {node.key}")
-
-    def _emit(self, event: str, data: dict):
-        if self.socketio:
-            self.socketio.emit(event, data, namespace="/")
 
     # --- Public API (called by web routes) ---
 
@@ -559,4 +542,3 @@ class Orchestrator:
             self.registry.reload()
             self._assign_queue_locks()
         self.discover_node_states()
-        self._emit("config_reloaded", {})

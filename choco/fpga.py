@@ -1,16 +1,16 @@
-"""FPGA-master poller and EOP-job status helpers.
+"""FPGA-master poller and job-status helpers.
 
-choco exposes two service-status badges in the page header:
+choco exposes service-status badges in the page header:
 
 * **FPGA** — derived from a slow background poll of the fpga_master
   daemon's ``/status`` and ``/get-frame0-time`` HTTP endpoints.
-* **EOP** — derived on demand from the ``choco-eop-broadcast.service``
-  systemd unit (queried via ``systemctl show``), falling back to the
-  mtime of the EOP state file if systemd is unavailable.
+* **Jobs** (EOP broadcast, bffs, ...) — derived on demand by
+  :func:`job_status` from the job's systemd unit (``systemctl show``)
+  and/or the mtime of the job's state file.
 
 Neither poller blocks the request path; the FPGA poller runs in its own
-gevent greenlet and the EOP query is a single ``systemctl`` subprocess
-(or one ``stat()`` call in the fallback path).
+gevent greenlet and a job query is one ``systemctl`` subprocess plus one
+``stat()`` call.
 """
 
 import logging
@@ -123,10 +123,12 @@ class FpgaMonitor:
         }
 
 
-# --- EOP broadcast service ---------------------------------------------
+# --- Job status (EOP broadcast, bffs, ...) -------------------------------
 
-# A oneshot service's last-run state is exposed by ``systemctl show``.
-# We only consume a handful of properties; the rest are ignored.
+# The handful of ``systemctl show`` properties consumed by job_status.
+# ``Result`` is the only health signal; ``ExecMainExitTimestamp`` is used
+# purely as an emptiness test ("has this unit ever run") — its value is
+# never parsed.  The rest are carried into the result for tooltips.
 _SYSTEMCTL_PROPS = (
     "Result",
     "ActiveState",
@@ -138,7 +140,7 @@ _SYSTEMCTL_PROPS = (
 # How old the EOP state file can be before we call it "stale".  The
 # job runs daily, so anything more than a day plus a little slop is a
 # signal that the last run didn't update the state.
-_EOP_STALE_AFTER_S = 25 * 3600
+EOP_STALE_AFTER_S = 25 * 3600
 
 
 def _systemctl_show(unit: str, timeout: float = 5.0) -> dict[str, str] | None:
@@ -165,90 +167,66 @@ def _systemctl_show(unit: str, timeout: float = 5.0) -> dict[str, str] | None:
     return props
 
 
-def _parse_systemd_timestamp(raw: str) -> float | None:
-    """Convert systemd's ExecMainExitTimestamp string to a Unix epoch float.
+def job_status(service_unit: str, state_file: Path | None = None,
+               stale_after_s: float | None = None) -> dict:
+    """Best-effort health snapshot of a oneshot job.
 
-    The format is locale-dependent text like ``Mon 2026-05-19 16:29:18 UTC``;
-    rather than parsing it we use ``systemctl show ... --property=
-    ExecMainExitTimestampMonotonic`` style timestamps when available.
-    Empty / "n/a" inputs return None.
-    """
-    raw = (raw or "").strip()
-    if not raw or raw == "n/a":
-        return None
-    # systemd accepts and emits Unix timestamps for *Timestamp* with
-    # ``--property=…TimestampMonotonic``, but we ask for the plain
-    # variant which is human-readable.  Try a handful of common formats.
-    import datetime
-    for fmt in (
-        "%a %Y-%m-%d %H:%M:%S %Z",
-        "%Y-%m-%d %H:%M:%S %Z",
-        "%a %Y-%m-%d %H:%M:%S",
-    ):
-        try:
-            dt = datetime.datetime.strptime(raw, fmt)
-            return dt.timestamp()
-        except ValueError:
-            continue
-    return None
+    Combines two cheap signals, either of which may be unavailable:
 
+    * ``systemctl show <service_unit>`` — ``Result`` says whether the
+      last run failed; an empty ``ExecMainExitTimestamp`` says the unit
+      has never run.  No timestamp values are parsed.
+    * ``state_file`` mtime — for a job that rewrites its state file on
+      every successful run (EOP), the mtime is "last successful run"
+      and ``stale_after_s`` turns an old mtime into ``stale`` health.
+      Without ``stale_after_s`` the mtime is informational only (bffs
+      rewrites state only when the bad-feed list *changes*, so its age
+      says nothing about job health).
 
-def eop_status(state_file: Path | None = None,
-               service_unit: str = "choco-eop-broadcast.service") -> dict:
-    """Best-effort health snapshot of the EOP broadcast job.
-
-    Prefers ``systemctl show`` against the configured unit.  Falls back
-    to the mtime of ``state_file`` when systemd is unreachable (e.g.,
-    dev runs outside the unit).
-
-    Returns a dict with: ``health`` (one of ``ok``, ``stale``,
-    ``failed``, ``never_run``, ``unknown``), ``last_run_at`` (epoch or
-    ``None``), ``source`` (``systemd`` / ``mtime`` / ``none``), plus
-    raw details for the tooltip.
+    Returns a dict with ``health`` (``ok`` / ``stale`` / ``failed`` /
+    ``never_run`` / ``unknown``), ``state_mtime`` (epoch or ``None``),
+    and raw systemd fields for the tooltip.
     """
     now = time.time()
     props = _systemctl_show(service_unit)
-    if props is not None:
-        result = props.get("Result", "")
-        last_run = _parse_systemd_timestamp(
-            props.get("ExecMainExitTimestamp", "")
-        )
-        if result == "" or result == "n/a":
-            health = "unknown"
-        elif result != "success":
-            health = "failed"
-        elif last_run is None:
-            health = "never_run"
-        elif now - last_run > _EOP_STALE_AFTER_S:
-            health = "stale"
-        else:
-            health = "ok"
-        return {
-            "health": health,
-            "last_run_at": last_run,
-            "result": result or None,
-            "active_state": props.get("ActiveState") or None,
-            "sub_state": props.get("SubState") or None,
-            "exit_status": props.get("ExecMainStatus") or None,
-            "source": "systemd",
-            "unit": service_unit,
-        }
 
-    # systemctl unavailable — fall back to state-file mtime.
-    if state_file is None:
-        return {"health": "unknown", "source": "none"}
-    try:
-        mtime = state_file.stat().st_mtime
-    except FileNotFoundError:
-        return {"health": "never_run", "source": "mtime",
-                "state_file": str(state_file)}
-    except OSError as e:
-        return {"health": "unknown", "source": "mtime",
-                "error": f"stat: {e}"}
-    health = "stale" if now - mtime > _EOP_STALE_AFTER_S else "ok"
+    mtime = None
+    if state_file is not None:
+        try:
+            mtime = state_file.stat().st_mtime
+        except OSError:
+            mtime = None
+
+    result = (props or {}).get("Result", "").strip()
+    ran = (props or {}).get("ExecMainExitTimestamp", "").strip() not in ("", "n/a")
+
+    failed = props is not None and result not in ("", "n/a", "success")
+    stale = (stale_after_s is not None and mtime is not None
+             and now - mtime > stale_after_s)
+    ran_ok = props is not None and result == "success" and ran
+    fresh = mtime is not None and stale_after_s is not None and not stale
+
+    if failed:
+        health = "failed"
+    elif stale:
+        health = "stale"
+    elif ran_ok or fresh:
+        health = "ok"
+    elif mtime is not None:
+        health = "unknown"  # state exists, but nothing confirms success
+    elif props is not None or state_file is not None:
+        health = "never_run"
+    else:
+        health = "unknown"
+
     return {
         "health": health,
-        "last_run_at": mtime,
-        "source": "mtime",
-        "state_file": str(state_file),
+        "state_mtime": mtime,
+        "result": result or None,
+        "active_state": (props or {}).get("ActiveState") or None,
+        "sub_state": (props or {}).get("SubState") or None,
+        "exit_status": (props or {}).get("ExecMainStatus") or None,
+        "systemd": props is not None,
+        "unit": service_unit,
+        "state_file": str(state_file) if state_file else None,
     }

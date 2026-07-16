@@ -296,16 +296,19 @@ class TestServicesPartial:
         from unittest.mock import patch
         _login(client)
         # No fpga_master configured in the test app, so monitor is in
-        # 'unknown' / unconfigured state.  Stub eop_status so we don't
+        # 'unknown' / unconfigured state.  Stub job_status so we don't
         # depend on the host's systemd or fs state.
-        with patch("choco.web.eop_status",
-                   return_value={"health": "ok",
-                                 "last_run_at": None,
-                                 "source": "mtime"}):
+        with patch("choco.web.job_status",
+                   return_value={"health": "ok", "state_mtime": None,
+                                 "result": "success", "systemd": True,
+                                 "active_state": None, "sub_state": None,
+                                 "exit_status": None, "state_file": None,
+                                 "unit": "test.service"}):
             resp = client.get("/partials/services")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "EOP" in body
+        assert "BFFS" in body
         # FPGA badge is only rendered if a monitor is set on app.config.
         # The test app does install one (unconfigured), so it shows up.
         assert "FPGA" in body
