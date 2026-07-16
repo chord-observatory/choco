@@ -63,8 +63,9 @@ sources:
   #   # With no urls, the endpoints are derived from choco's node registry:
   #   # every *started* node of the broadcast group above (override with
   #   # group:) is polled at each sk_paths entry, so new nodes are picked
-  #   # up automatically. sk_paths must match the kotekan config's
-  #   # RfiSKMetrics instances (default: sk_metrics_0 and sk_metrics_1).
+  #   # up automatically. No started nodes -> the run fails (red badge).
+  #   # sk_paths must match the kotekan config's RfiSKMetrics instances
+  #   # (default: sk_metrics_0 and sk_metrics_1).
   #   # sk_paths:
   #   #   - rfi_sk_metrics/sk_metrics_0/sk
   #   #   - rfi_sk_metrics/sk_metrics_1/sk

@@ -313,15 +313,17 @@ def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
     """combine_sources merges choco url/group into each source's config."""
     from sources import rfi
     seen = {}
+    node = {"name": "cx1", "host": "cx1.example", "port": 12048, "started": True}
     monkeypatch.setattr(rfi, "choco_group_nodes",
-                        lambda url, group: seen.update(url=url, group=group) or [])
+                        lambda url, group: seen.update(url=url, group=group) or [node])
+    monkeypatch.setattr(rfi, "read_sk", lambda url: {})
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx", sources=[{"kind": "rfi"}])
     labels, good = bffs.combine_sources(cfg)
     assert seen == {"url": "https://localhost:5000", "group": "cx"}
-    assert list(good) == [True]  # no nodes -> nothing polled -> all good
+    assert list(good) == [True]
 
 
 def test_stale_kotekan_file_refused(tmp_path):

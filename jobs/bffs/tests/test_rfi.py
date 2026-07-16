@@ -159,3 +159,26 @@ def test_all_endpoints_unreachable_raises(monkeypatch):
     except OSError:
         return
     raise AssertionError("expected OSError when every endpoint fails")
+
+
+def test_no_started_nodes_raises(monkeypatch):
+    """A whole group of stopped nodes means nothing measurable: fail the
+    run (red badge), consistent with every endpoint being unreachable."""
+    stopped = [dict(n, started=False) for n in _NODES]
+    monkeypatch.setattr(rfi, "choco_group_nodes", lambda url, group: stopped)
+    src = {"kind": "rfi", "choco_url": "https://localhost:5000",
+           "choco_group": "cx"}
+    try:
+        rfi.resolve_urls(src)
+    except OSError as e:
+        assert "no started nodes" in str(e)
+        return
+    raise AssertionError("expected OSError with no started nodes")
+
+
+def test_empty_explicit_urls_raises():
+    try:
+        rfi.resolve_urls({"kind": "rfi", "urls": []})
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for empty 'urls'")

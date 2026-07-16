@@ -51,7 +51,10 @@ def resolve_urls(src: dict) -> list[str]:
     the RfiSKMetrics instances in the kotekan config.
     """
     if "urls" in src:
-        return list(src["urls"])
+        urls = list(src["urls"])
+        if not urls:
+            raise ValueError("rfi source: 'urls' is empty")
+        return urls
     if "url" in src:
         return [src["url"]]
     choco_url = src.get("choco_url")
@@ -65,8 +68,11 @@ def resolve_urls(src: dict) -> list[str]:
     nodes = [n for n in choco_group_nodes(choco_url, group)
              if n.get("started")]
     if not nodes:
-        log.info("rfi: no started nodes in choco group %r; nothing to poll",
-                 group)
+        # Nothing measurable is a failed run (red badge), the same as
+        # every endpoint being unreachable — not a silent all-good.
+        raise OSError(
+            f"rfi: no started nodes in choco group {group!r} — "
+            f"nothing to measure")
     return [f"http://{n['host']}:{n.get('port', 12048)}/{p}"
             for n in nodes for p in paths]
 
