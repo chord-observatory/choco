@@ -307,3 +307,18 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     labels, good = bffs.combine_sources(
         bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5")))
     assert list(labels) == ["new0", "new1"]
+
+
+def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
+    """combine_sources merges choco url/group into each source's config."""
+    from sources import rfi
+    seen = {}
+    monkeypatch.setattr(rfi, "choco_group_nodes",
+                        lambda url, group: seen.update(url=url, group=group) or [])
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx", sources=[{"kind": "rfi"}])
+    labels, good = bffs.combine_sources(cfg)
+    assert seen == {"url": "https://localhost:5000", "group": "cx"}
+    assert list(good) == [True]  # no nodes -> nothing polled -> all good

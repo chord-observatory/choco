@@ -25,9 +25,50 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import urllib.request
 
-from .common import project
+from .common import choco_group_nodes, project
+
+log = logging.getLogger("bffs.rfi")
+
+# One path per RfiSKMetrics instance in the kotekan config (each GPU's
+# instance covers its frequency band); override with ``sk_paths``.
+_DEFAULT_SK_PATHS = (
+    "rfi_sk_metrics/sk_metrics_0/sk",
+    "rfi_sk_metrics/sk_metrics_1/sk",
+)
+
+
+def resolve_urls(src: dict) -> list[str]:
+    """The ``/sk`` endpoints to poll.
+
+    Explicit ``urls`` (or a single ``url``) win.  Otherwise the node list
+    comes from choco's registry: every *started* node of ``group``
+    (defaulting to the group bffs broadcasts to, via the injected choco
+    context) is polled at each ``sk_paths`` entry — so new nodes are
+    picked up without touching the bffs config.  ``sk_paths`` must match
+    the RfiSKMetrics instances in the kotekan config.
+    """
+    if "urls" in src:
+        return list(src["urls"])
+    if "url" in src:
+        return [src["url"]]
+    choco_url = src.get("choco_url")
+    group = src.get("group") or src.get("choco_group")
+    if not choco_url or not group:
+        raise ValueError(
+            "rfi source needs explicit 'urls', or choco url + group "
+            "(from the config's choco block) to derive them from")
+    paths = [str(p).lstrip("/")
+             for p in (src.get("sk_paths") or _DEFAULT_SK_PATHS)]
+    nodes = [n for n in choco_group_nodes(choco_url, group)
+             if n.get("started")]
+    if not nodes:
+        log.info("rfi: no started nodes in choco group %r; nothing to poll",
+                 group)
+    return [f"http://{n['host']}:{n.get('port', 12048)}/{p}"
+            for n in nodes for p in paths]
 
 
 def read_sk(url: str) -> dict[int, tuple[float | None, float]]:
@@ -45,19 +86,32 @@ def mask(src: dict, labels, kotekan_file: str):
     """Good-mask over ``labels``: a feed whose SK is out of bounds is bad.
 
     A feed is bad if any polled endpoint with at least ``min_valid_frac``
-    valid cells puts its SK outside ``[sk_lo, sk_hi]``.
+    valid cells puts its SK outside ``[sk_lo, sk_hi]``.  An unreachable
+    endpoint is skipped with a warning (this source only flags what it
+    can measure — one down node must not stall flagging for the rest),
+    but if *every* endpoint failed the run errors: that's a systematic
+    problem worth a red badge, not silence.
     """
-    urls = src["urls"] if "urls" in src else [src["url"]]
+    urls = resolve_urls(src)
     sk_lo = float(src.get("sk_lo", 0.7))
     sk_hi = float(src.get("sk_hi", 1.5))
     min_valid = float(src.get("min_valid_frac", 0.25))
     input_good: dict[str, bool] = {}
+    failures = 0
     for url in urls:
-        for element, (sk, valid_frac) in read_sk(url).items():
+        try:
+            readings = read_sk(url)
+        except (OSError, ValueError) as e:
+            log.warning("rfi: skipping %s: %s", url, e)
+            failures += 1
+            continue
+        for element, (sk, valid_frac) in readings.items():
             if element >= len(labels) or sk is None:
                 continue
             if valid_frac >= min_valid and not (sk_lo <= sk <= sk_hi):
                 input_good[str(labels[element])] = False
+    if urls and failures == len(urls):
+        raise OSError(f"rfi: all {len(urls)} /sk endpoints unreachable")
     return project(input_good, labels)
 
 

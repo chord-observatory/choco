@@ -105,7 +105,12 @@ labels through a channel→input map: `fpga`'s map is the real rack wiring table
 `power`'s map is still a placeholder — **pending the hardware database
 (padloper)**. `rfi` needs no map: kotekan's `RfiSKMetrics` stage serves a JSON
 `/sk` endpoint whose arrays are indexed by element — the feed's position in the
-label list. kotekan computes the single-feed SK for every feed regardless of the
+label list. By default `rfi` derives its endpoints from choco's node registry
+(`GET /api/nodes`): every *started* node of the broadcast group, polled at each
+`sk_paths` entry (which must match the kotekan config's RfiSKMetrics
+instances); explicit `urls` override. An unreachable node is skipped with a
+warning — one down node doesn't stall flagging — but if every endpoint fails
+the run errors. kotekan computes the single-feed SK for every feed regardless of the
 current bad-feed mask, so an `rfi`-flagged feed keeps being measured and heals
 on recovery. All three are built and tested (and runnable standalone, e.g.
 `python -m sources.power`) but not yet wired into a live config.

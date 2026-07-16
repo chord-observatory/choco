@@ -91,6 +91,12 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray]:
     returns a mask in that same order, and a feed is bad if any flags it.
     ``kotekan_file`` may be a glob pattern — the newest match (by mtime) is
     read, so a timer-driven bffs follows kotekan's current output file.
+
+    Each source's config dict is passed with the choco context merged in
+    as defaults (``choco_url`` / ``choco_group``; explicit keys win), so
+    a source can derive per-node endpoints from choco's node registry —
+    the rfi source polls every started node of the broadcast group unless
+    given explicit ``urls``.
     """
     path = config.kotekan_file
     if any(c in path for c in "*?["):
@@ -105,6 +111,7 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray]:
         source = sources.get(src["kind"])
         if source is None:
             raise ValueError(f"unknown source kind {src['kind']!r}")
+        src = {"choco_url": config.url, "choco_group": config.group, **src}
         good &= source.mask(src, labels, path)
     return labels, good
 

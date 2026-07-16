@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
+import ssl
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +33,27 @@ def load_map(path: str | Path, key) -> dict:
     """
     with open(path, newline="") as f:
         return {key(row): row["correlator_input"].strip() for row in csv.DictReader(f)}
+
+
+def choco_group_nodes(choco_url: str, group: str,
+                      timeout: float = 10.0) -> list[dict]:
+    """Node entries (``{name, host, port, started}``) of one choco group.
+
+    Read-only GET of choco's ``/api/nodes`` registry endpoint, so choco's
+    ``nodes.yaml`` stays the single source of truth for which kotekan
+    instances exist. Auth is bypassed for localhost callers and choco's
+    self-signed certificate goes unverified — same rules as the flag send
+    in ``bffs.py``.
+    """
+    url = choco_url.rstrip("/") + "/api/nodes"
+    ctx = None
+    if url.startswith("https:"):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:
+        data = json.loads(resp.read())
+    return list((data.get("groups") or {}).get(group) or [])
 
 
 def project(input_good: dict[str, bool], labels: np.ndarray) -> np.ndarray:

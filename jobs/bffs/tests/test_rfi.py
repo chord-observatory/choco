@@ -74,3 +74,88 @@ def test_mask_polls_every_url(monkeypatch):
     good = rfi.mask({"kind": "rfi", "urls": ["u0", "u1"]}, labels, "n2.h5")
     assert seen == ["u0", "u1"]
     np.testing.assert_array_equal(good, [True])
+
+
+# -- choco-derived endpoints ------------------------------------------------
+
+_NODES = [
+    {"name": "cx1", "host": "cx1.example", "port": 12048, "started": True},
+    {"name": "cx2", "host": "cx2.example", "port": 12048, "started": False},
+    {"name": "cx3", "host": "cx3.example", "port": 12000, "started": True},
+]
+
+
+def test_urls_derived_from_choco_group(monkeypatch):
+    asked = {}
+
+    def fake_nodes(url, group):
+        asked.update(url=url, group=group)
+        return _NODES
+
+    monkeypatch.setattr(rfi, "choco_group_nodes", fake_nodes)
+    src = {"kind": "rfi", "choco_url": "https://localhost:5000",
+           "choco_group": "cx"}
+    urls = rfi.resolve_urls(src)
+    assert asked == {"url": "https://localhost:5000", "group": "cx"}
+    # Started nodes only, each polled at every default sk path.
+    assert urls == [
+        "http://cx1.example:12048/rfi_sk_metrics/sk_metrics_0/sk",
+        "http://cx1.example:12048/rfi_sk_metrics/sk_metrics_1/sk",
+        "http://cx3.example:12000/rfi_sk_metrics/sk_metrics_0/sk",
+        "http://cx3.example:12000/rfi_sk_metrics/sk_metrics_1/sk",
+    ]
+
+
+def test_explicit_group_and_paths_override(monkeypatch):
+    asked = {}
+    monkeypatch.setattr(rfi, "choco_group_nodes",
+                        lambda url, group: asked.update(group=group) or _NODES[:1])
+    src = {"kind": "rfi", "choco_url": "https://localhost:5000",
+           "choco_group": "cx", "group": "recv", "sk_paths": ["custom/sk"]}
+    urls = rfi.resolve_urls(src)
+    assert asked["group"] == "recv"
+    assert urls == ["http://cx1.example:12048/custom/sk"]
+
+
+def test_explicit_urls_win(monkeypatch):
+    monkeypatch.setattr(rfi, "choco_group_nodes",
+                        lambda url, group: (_ for _ in ()).throw(AssertionError))
+    src = {"kind": "rfi", "urls": ["u0"], "choco_url": "x", "choco_group": "g"}
+    assert rfi.resolve_urls(src) == ["u0"]
+
+
+def test_no_urls_and_no_choco_context_raises():
+    try:
+        rfi.resolve_urls({"kind": "rfi"})
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError without urls or choco context")
+
+
+def test_unreachable_endpoint_skipped(monkeypatch):
+    payloads = {"u1": _SK_0}
+
+    def read(url):
+        if url not in payloads:
+            raise OSError("connection refused")
+        data = payloads[url]
+        return {e: (sk, vf) for e, (sk, vf) in enumerate(zip(data["sk"], data["valid_frac"]))}
+
+    monkeypatch.setattr(rfi, "read_sk", read)
+    labels = np.array(["A1X", "A2X"])
+    good = rfi.mask({"kind": "rfi", "urls": ["u0", "u1"]}, labels, "n2.h5")
+    # u0 down -> skipped; u1's readings still flag element 1.
+    np.testing.assert_array_equal(good, [True, False])
+
+
+def test_all_endpoints_unreachable_raises(monkeypatch):
+    def read(url):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(rfi, "read_sk", read)
+    labels = np.array(["A1X"])
+    try:
+        rfi.mask({"kind": "rfi", "urls": ["u0", "u1"]}, labels, "n2.h5")
+    except OSError:
+        return
+    raise AssertionError("expected OSError when every endpoint fails")
