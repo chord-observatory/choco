@@ -463,3 +463,104 @@ class TestGroupEdit:
             data={"config_content": "num_elements: 1\n", "_csrf_token": "bogus"},
         )
         assert resp.status_code == 403
+
+
+# --- Service logs partial ---
+
+_JOB_OK = {"health": "ok", "state_mtime": None, "result": "success",
+           "systemd": True, "active_state": None, "sub_state": None,
+           "exit_status": None, "state_file": None, "unit": "test.service"}
+
+
+class TestServiceLogs:
+    def test_requires_login(self, client):
+        resp = client.get("/partials/service-logs/eop", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_name_is_404(self, client):
+        _login(client)
+        resp = client.get("/partials/service-logs/not-a-service")
+        assert resp.status_code == 404
+
+    def test_renders_journal_lines(self, client):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_logs",
+                   return_value=["alpha entry", "beta entry"]) as jl:
+            resp = client.get("/partials/service-logs/eop")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "alpha entry" in body
+        assert "beta entry" in body
+        jl.assert_called_once_with("choco-eop-broadcast.service", lines=50)
+
+    def test_journal_unavailable_message(self, client):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_logs", return_value=None):
+            resp = client.get("/partials/service-logs/bffs")
+        assert resp.status_code == 200
+        assert b"Journal unavailable" in resp.data
+
+    def test_choco_unit_viewable(self, client):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_logs", return_value=["choco line"]) as jl:
+            resp = client.get("/partials/service-logs/choco")
+        assert resp.status_code == 200
+        jl.assert_called_once_with("choco.service", lines=50)
+
+
+# --- Status API + metrics ---
+# The test client's requests come from 127.0.0.1, so the JSON API's
+# localhost bypass applies (no login needed).
+
+class TestStatusApi:
+    def test_api_status_is_a_summary(self, client):
+        from unittest.mock import patch
+        with patch("choco.web.job_status", return_value=dict(_JOB_OK)):
+            resp = client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["up"] is True
+        assert data["services"]["eop"] == "ok"
+        assert data["services"]["bffs"] == "ok"
+        assert "fpga" in data["services"]
+        assert data["nodes"]["total"] == 3
+        # Fresh Registry constructs every node in maintenance mode.
+        assert data["nodes"]["maintenance"] == 3
+        # No per-node detail here — that moved to /api/nodes/status.
+        assert "nodes" not in data.get("summary", {})
+
+    def test_api_nodes_status_is_detailed(self, client):
+        resp = client.get("/api/nodes/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["summary"]["total"] == 3
+        assert len(data["nodes"]) == 3
+        keys = {n["key"] for n in data["nodes"]}
+        assert keys == {"cx/cx1", "cx/cx2", "recv/recv1"}
+
+
+class TestMetrics:
+    def test_no_auth_required(self, client):
+        from unittest.mock import patch
+        with patch("choco.web.job_status", return_value=dict(_JOB_OK)):
+            resp = client.get("/metrics")
+        assert resp.status_code == 200
+        assert resp.mimetype == "text/plain"
+
+    def test_exposition_content(self, client):
+        from unittest.mock import patch
+        failed = dict(_JOB_OK, health="failed")
+        with patch("choco.web.job_status", return_value=failed):
+            resp = client.get("/metrics")
+        body = resp.data.decode()
+        assert "choco_up 1" in body
+        assert "choco_start_time_seconds" in body
+        assert 'choco_service_state{service="eop",state="failed"} 1' in body
+        assert 'choco_service_state{service="eop",state="ok"} 0' in body
+        assert "choco_nodes_total 3" in body
+        assert "choco_nodes_maintenance 3" in body
+        # One-hot node counts by status are present for every status.
+        assert 'choco_nodes{status="unknown"} 3' in body

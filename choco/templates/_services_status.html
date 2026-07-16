@@ -42,13 +42,16 @@
 {%- endmacro %}
 {% set now = now_ts %}
 {% set pill_style = 'display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1;' %}
-{% macro job_pill(name, job, mtime_label) -%}
+{% macro job_pill(name, log_name, job, mtime_label) -%}
 {% set tip = name ~ ' job (' ~ job.unit ~ ')'
              ~ '\nhealth: ' ~ job.health
              ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime) if job.state_mtime else '')
              ~ ('\nresult: ' ~ job.result if job.result else '')
-             ~ ('' if job.systemd else '\nsystemd not reachable') %}
-<span title="{{ tip }}" style="{{ pill_style }} background: {{ job_color(job.health) }};">
+             ~ ('' if job.systemd else '\nsystemd not reachable')
+             ~ '\n\nclick for recent logs' %}
+<span title="{{ tip }}" style="{{ pill_style }} background: {{ job_color(job.health) }}; cursor: pointer;"
+      hx-get="/partials/service-logs/{{ log_name }}"
+      hx-target="#service-logs" hx-swap="innerHTML">
     <strong>{{ name }}</strong> <span>{{ job_label(job.health) }}</span>
 </span>
 {%- endmacro %}
@@ -62,5 +65,5 @@
     <strong>FPGA</strong> <span>{{ fpga_label(fpga.health) }}</span>
 </span>
 {% endif %}
-{{ job_pill('EOP', eop, 'last run') }}
-{{ job_pill('BFFS', bffs, 'last change') }}
+{{ job_pill('EOP', 'eop', eop, 'last run') }}
+{{ job_pill('BFFS', 'bffs', bffs, 'last change') }}

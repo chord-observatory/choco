@@ -48,7 +48,9 @@ class FpgaMonitor:
         self.host = host
         self.port = int(port) if port else None
         self.timeout = float(timeout)
-        self.health: str = "unknown"
+        # Unconfigured monitors never poll, so reflect that up front
+        # instead of sitting on "unknown" forever.
+        self.health: str = "unknown" if self.configured else "unconfigured"
         self.frame0_ns: int | None = None
         self.last_polled: float | None = None
         self.last_seen: float | None = None
@@ -165,6 +167,32 @@ def _systemctl_show(unit: str, timeout: float = 5.0) -> dict[str, str] | None:
             k, v = line.split("=", 1)
             props[k] = v
     return props
+
+
+def job_logs(service_unit: str, lines: int = 50,
+             timeout: float = 5.0) -> list[str] | None:
+    """Recent journal lines for a unit, newest last.
+
+    Returns ``None`` when the journal can't be read (no journalctl on
+    the host, or the call failed) — the caller distinguishes "no log
+    access" from "unit has no entries" (an empty-ish but valid list).
+    """
+    if shutil.which("journalctl") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", service_unit, "-n", str(int(lines)),
+             "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug(f"journalctl -u {service_unit} failed: {e}")
+        return None
+    if result.returncode != 0:
+        logger.debug(f"journalctl -u {service_unit} rc={result.returncode}: "
+                     f"{result.stderr.strip()}")
+        return None
+    return result.stdout.splitlines()
 
 
 def job_status(service_unit: str, state_file: Path | None = None,

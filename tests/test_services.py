@@ -200,3 +200,26 @@ class TestJobStatusWithoutSystemctl:
         with _no_systemctl():
             out = job_status(UNIT, state_file=None)
         assert out["health"] == "unknown"
+
+
+class TestJobLogs:
+    def _patch_journalctl(self, stdout: str, returncode: int = 0):
+        completed = MagicMock(returncode=returncode, stdout=stdout, stderr="")
+        return patch("choco.services.subprocess.run", return_value=completed)
+
+    def test_returns_lines(self):
+        from choco.services import job_logs
+        with _with_systemctl(), \
+             self._patch_journalctl("line one\nline two\n"):
+            out = job_logs(UNIT)
+        assert out == ["line one", "line two"]
+
+    def test_none_without_journalctl(self):
+        from choco.services import job_logs
+        with _no_systemctl():
+            assert job_logs(UNIT) is None
+
+    def test_none_on_failure(self):
+        from choco.services import job_logs
+        with _with_systemctl(), self._patch_journalctl("", returncode=1):
+            assert job_logs(UNIT) is None

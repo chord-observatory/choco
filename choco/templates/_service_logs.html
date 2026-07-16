@@ -1,0 +1,22 @@
+<article style="margin: 0 0 1em 0; padding: 0.75em 1em;">
+    <header style="display: flex; align-items: center; gap: 0.75em; margin: 0 0 0.5em 0; padding: 0;">
+        <strong style="text-transform: uppercase;">{{ name }}</strong>
+        <small style="font-family: monospace;">journalctl -u {{ unit }}</small>
+        <button hx-get="/partials/service-logs/{{ name }}"
+                hx-target="#service-logs" hx-swap="innerHTML"
+                title="Refresh"
+                style="width: auto; margin: 0 0 0 auto; padding: 0.1em 0.6em; font-size: 0.9em;">&#x21bb;</button>
+        <button onclick="document.getElementById('service-logs').innerHTML = ''"
+                title="Close"
+                class="secondary"
+                style="width: auto; margin: 0; padding: 0.1em 0.6em; font-size: 0.9em;">&times;</button>
+    </header>
+    {% if lines is none %}
+    <p style="margin: 0;"><em>Journal unavailable — no journalctl on this host
+    (or reading unit {{ unit }} failed).</em></p>
+    {% elif not lines %}
+    <p style="margin: 0;"><em>No journal entries for {{ unit }}.</em></p>
+    {% else %}
+    <pre style="max-height: 22em; overflow: auto; margin: 0; padding: 0.5em 0.75em; font-size: 0.8em; line-height: 1.35;">{{ lines | join('\n') }}</pre>
+    {% endif %}
+</article>

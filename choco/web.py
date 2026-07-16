@@ -7,19 +7,24 @@ import time
 from pathlib import Path
 
 from flask import (
-    Blueprint, render_template, request, redirect, url_for, flash,
+    Blueprint, Response, render_template, request, redirect, url_for, flash,
     current_app, session, abort,
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
-from .services import job_status, EOP_STALE_AFTER_S
+from .services import job_status, job_logs, EOP_STALE_AFTER_S
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
 
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("web", __name__)
+
+# Module import happens once at startup, so this doubles as the process
+# start time (surfaced via /api/status and /metrics — a restart implies
+# maintenance mode was re-engaged cluster-wide).
+_STARTED_AT = time.time()
 
 
 def _csrf_token() -> str:
@@ -434,41 +439,76 @@ def partial_dashboard_table():
     return render_template("_dashboard_table.html", nodes=registry.nodes)
 
 
-@bp.route("/partials/services")
-@login_required
-def partial_services():
-    """Render the FPGA + job (EOP, bffs) status strip."""
+def _service_units() -> dict[str, str]:
+    """Name -> systemd unit for the units whose journals may be viewed.
+
+    Doubles as the allowlist for the log viewer: only these units can
+    be read through the web UI.
+    """
+    eop_cfg = current_app.config.get("eop_cfg") or {}
+    bffs_cfg = current_app.config.get("bffs_cfg") or {}
+    return {
+        "choco": "choco.service",
+        "eop": eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
+        "bffs": bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
+    }
+
+
+def _services_health() -> dict:
+    """Health snapshots for the FPGA master and the oneshot jobs.
+
+    Shared by the header strip, /api/status, and /metrics.
+    """
     monitor = current_app.config.get("fpga_monitor")
     eop_cfg = current_app.config.get("eop_cfg") or {}
     bffs_cfg = current_app.config.get("bffs_cfg") or {}
     configs_dir = current_app.config.get("configs_dir")
+    units = _service_units()
 
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
     eop_state = None
     if configs_dir and eop_cfg.get("state_file"):
         eop_state = Path(configs_dir) / eop_cfg["state_file"]
-    eop = job_status(
-        eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
-        state_file=eop_state,
-        stale_after_s=EOP_STALE_AFTER_S,
-    )
 
     # bffs rewrites its state file only when the bad-feed list changes,
     # so no staleness threshold — the mtime is just "last change".
     bffs_state = (Path(bffs_cfg["state_file"])
                   if bffs_cfg.get("state_file") else None)
-    bffs = job_status(
-        bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
-        state_file=bffs_state,
-    )
 
+    return {
+        "fpga": monitor.to_dict() if monitor is not None else None,
+        "eop": job_status(units["eop"], state_file=eop_state,
+                          stale_after_s=EOP_STALE_AFTER_S),
+        "bffs": job_status(units["bffs"], state_file=bffs_state),
+    }
+
+
+@bp.route("/partials/services")
+@login_required
+def partial_services():
+    """Render the FPGA + job (EOP, bffs) status strip."""
+    services = _services_health()
     return render_template(
         "_services_status.html",
-        fpga=monitor.to_dict() if monitor is not None else None,
-        eop=eop,
-        bffs=bffs,
+        fpga=services["fpga"],
+        eop=services["eop"],
+        bffs=services["bffs"],
         now_ts=time.time(),
+    )
+
+
+@bp.route("/partials/service-logs/<name>")
+@login_required
+def partial_service_logs(name):
+    """Recent journal lines for one of the known service units."""
+    unit = _service_units().get(name)
+    if unit is None:
+        abort(404)
+    lines = job_logs(unit, lines=50)
+    return render_template(
+        "_service_logs.html",
+        name=name, unit=unit, lines=lines, now_ts=time.time(),
     )
 
 
@@ -611,9 +651,102 @@ def _node_to_dict(node) -> dict:
     }
 
 
+def _status_summary() -> dict:
+    """Aggregate choco health: services plus node counts.
+
+    Shared by /api/status (JSON) and /metrics (Prometheus text).
+    """
+    registry = _registry()
+    services = _services_health()
+    counts = {s.value: 0 for s in NodeStatus}
+    for node in registry.nodes.values():
+        counts[node.status.value] += 1
+    return {
+        "up": True,
+        "started_at": _STARTED_AT,
+        "services": {
+            name: (health or {}).get("health", "unknown")
+            for name, health in services.items()
+        },
+        "nodes": {
+            "total": len(registry.nodes),
+            "started_desired": sum(
+                1 for n in registry.nodes.values() if n.started),
+            "maintenance": sum(
+                1 for n in registry.nodes.values() if n.maintenance),
+            **counts,
+        },
+    }
+
+
 @bp.route("/api/status", methods=["GET"])
 @localhost_or_login_required
 def api_status():
+    """Simple overall health: choco itself, services, and node counts.
+
+    The detailed per-node dump lives at /api/nodes/status.
+    """
+    return _status_summary()
+
+
+# Health states each service can report, for one-hot /metrics gauges.
+_FPGA_STATES = ("ok", "no_timing", "down", "unconfigured", "unknown")
+_JOB_STATES = ("ok", "stale", "failed", "never_run", "unknown")
+
+
+@bp.route("/metrics", methods=["GET"])
+def metrics():
+    """Prometheus metrics.
+
+    Deliberately unauthenticated (Prometheus scrapes from another
+    host and speaks neither LDAP sessions nor our CSRF); it exposes
+    only aggregate health — no node names, hosts, or configs.
+    """
+    summary = _status_summary()
+    nodes = summary["nodes"]
+    lines = [
+        "# HELP choco_up 1 while choco is serving requests.",
+        "# TYPE choco_up gauge",
+        "choco_up 1",
+        "# HELP choco_start_time_seconds Unix time the choco process "
+        "started (a restart re-engages cluster-wide maintenance mode).",
+        "# TYPE choco_start_time_seconds gauge",
+        f"choco_start_time_seconds {_STARTED_AT:.3f}",
+        "# HELP choco_service_state Service health, one-hot per state.",
+        "# TYPE choco_service_state gauge",
+    ]
+    for name, health in summary["services"].items():
+        states = _FPGA_STATES if name == "fpga" else _JOB_STATES
+        for state in states:
+            value = 1 if health == state else 0
+            lines.append(
+                f'choco_service_state{{service="{name}",state="{state}"}} '
+                f"{value}")
+    lines += [
+        "# HELP choco_nodes Node count by kotekan runtime status.",
+        "# TYPE choco_nodes gauge",
+    ]
+    for status in NodeStatus:
+        lines.append(
+            f'choco_nodes{{status="{status.value}"}} {nodes[status.value]}')
+    lines += [
+        "# HELP choco_nodes_total Number of registered nodes.",
+        "# TYPE choco_nodes_total gauge",
+        f"choco_nodes_total {nodes['total']}",
+        "# HELP choco_nodes_started_desired Nodes whose desired state is started.",
+        "# TYPE choco_nodes_started_desired gauge",
+        f"choco_nodes_started_desired {nodes['started_desired']}",
+        "# HELP choco_nodes_maintenance Nodes currently in maintenance mode.",
+        "# TYPE choco_nodes_maintenance gauge",
+        f"choco_nodes_maintenance {nodes['maintenance']}",
+    ]
+    return Response("\n".join(lines) + "\n",
+                    mimetype="text/plain; version=0.0.4")
+
+
+@bp.route("/api/nodes/status", methods=["GET"])
+@localhost_or_login_required
+def api_nodes_status():
     """Per-node runtime status plus an aggregate summary."""
     registry = _registry()
     nodes = [_node_to_dict(n) for n in registry.nodes.values()]

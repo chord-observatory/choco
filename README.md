@@ -192,6 +192,8 @@ Every page (for logged-in users) shows a thin strip above the nav with pill badg
 
 Job health combines two cheap signals — the unit's `Result` from `systemctl show` and the job state file's mtime — with no timestamp parsing. The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
 
+**Clicking a job badge** (EOP, BFFS) opens a log panel under the header with the unit's 50 most recent journal lines (`journalctl -u <unit>`), so a red badge can be diagnosed without leaving the browser. The panel has refresh/close buttons; only the known service units can be viewed (`choco`, `eop`, `bffs` — an allowlist, not arbitrary units).
+
 ### Dashboard
 
 The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and an Edit link.
@@ -237,8 +239,10 @@ Both accept JSON with:
 - `{"action": "set_maintenance", "maintenance": true}` — put the node(s) into or out of maintenance mode
 
 Read-only status endpoints:
-- `GET /api/status` — per-node runtime status plus an aggregate summary
+- `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `eop`, `bffs`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
+- `GET /api/nodes/status` — per-node runtime status plus an aggregate summary
 - `GET /api/nodes` — the node registry (groups/hosts/ports) as JSON
+- `GET /metrics` — the same overall health in Prometheus exposition format (see below)
 
 The `/update/*` and `/api/*` endpoints bypass auth when called from `localhost`, so from the choco host you can use curl directly (use `-k` since the cert is typically self-signed):
 
@@ -256,8 +260,30 @@ curl -ks -X POST https://localhost:5000/update/<group> -H 'Content-Type: applica
 curl -ks -X POST https://localhost:5000/update/<group> -H 'Content-Type: application/json' -d '{"action":"set_started","started":false}'
 
 # Check status
-curl -ks https://localhost:5000/api/status | jq .
+curl -ks https://localhost:5000/api/status | jq .        # overall health
+curl -ks https://localhost:5000/api/nodes/status | jq .  # per-node detail
 ```
+
+### Prometheus metrics
+
+`GET /metrics` serves Prometheus exposition text and is the one **unauthenticated**
+endpoint (Prometheus scrapes from another host and speaks neither LDAP sessions
+nor CSRF tokens). It deliberately exposes only aggregate health — no node names,
+hosts, or configs:
+
+- `choco_up` — 1 while choco is serving requests (Prometheus's own `up` metric
+  covers total outage)
+- `choco_start_time_seconds` — process start time; an increase means choco
+  restarted, which also means **the whole cluster re-entered maintenance mode**
+  (worth alerting on)
+- `choco_service_state{service,state}` — one-hot health per service (`fpga`:
+  ok / no_timing / down / unconfigured / unknown; `eop`, `bffs`: ok / stale /
+  failed / never_run / unknown)
+- `choco_nodes{status}`, `choco_nodes_total`, `choco_nodes_started_desired`,
+  `choco_nodes_maintenance` — node counts
+
+Example alerts: `choco_service_state{service="eop",state="ok"} != 1` for a
+day, `choco_nodes{status="down"} > 0`, or `changes(choco_start_time_seconds[1h]) > 0`.
 
 ## How Sync Works
 
