@@ -286,4 +286,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        # Expected environmental failures — IERS download unreachable,
+        # unreadable state/nodes files (JSONDecodeError is a ValueError;
+        # requests and urllib errors are OSError) — get one useful line
+        # instead of a traceback.  Still exit nonzero so systemd records
+        # the failure and retries.  Anything else is a bug and keeps its
+        # traceback.
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)

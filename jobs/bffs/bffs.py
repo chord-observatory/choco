@@ -233,7 +233,11 @@ def main(argv=None) -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        log.error("bad config %s: %s", args.config, e)
+        return 1
     if args.kotekan_file:
         config.kotekan_file = args.kotekan_file
 
@@ -241,7 +245,17 @@ def main(argv=None) -> int:
     if not args.dry_run and config.url:
         sender = lambda payload: send_to_choco(config, payload)  # noqa: E731
 
-    payload, send = run(config, force=args.force, write=not args.dry_run, sender=sender)
+    try:
+        payload, send = run(config, force=args.force, write=not args.dry_run, sender=sender)
+    except (OSError, ValueError) as e:
+        # Expected environmental failures — no kotekan N² file (yet), an
+        # unreadable HDF5 (h5py raises OSError), choco not up (urllib
+        # errors are OSError), a source misconfigured (ValueError) — get
+        # one useful line instead of a traceback.  Still exit nonzero:
+        # systemd records the failure and the next timer tick retries.
+        # Anything else is a bug and keeps its traceback.
+        log.error("%s: %s", type(e).__name__, e)
+        return 1
     if args.dry_run or not config.url:
         print(json.dumps(payload))
         log.info("not sent (%s)", "dry run" if args.dry_run else "no choco url")

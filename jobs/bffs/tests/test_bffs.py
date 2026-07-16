@@ -265,3 +265,23 @@ def test_send_to_choco_posts_group_update(monkeypatch):
         "values": payload,
     }
     assert captured["context"] is not None  # self-signed TLS goes unverified
+
+
+def test_main_missing_kotekan_file_fails_cleanly(tmp_path, caplog):
+    """An expected environmental failure exits 1 with one log line, no traceback."""
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": str(tmp_path / "nope_*.h5"),
+        "sources": [],
+    }))
+    rc = bffs.main(["--config", str(cfg_file)])
+    assert rc == 1
+    assert "no kotekan file matches" in caplog.text
+
+
+def test_main_bad_config_fails_cleanly(tmp_path, caplog):
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({"sources": []}))  # no kotekan_file
+    rc = bffs.main(["--config", str(cfg_file)])
+    assert rc == 1
+    assert "bad config" in caplog.text
