@@ -13,7 +13,7 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
-from .fpga import job_status, EOP_STALE_AFTER_S
+from .services import job_status, EOP_STALE_AFTER_S
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
 

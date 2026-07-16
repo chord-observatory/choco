@@ -14,7 +14,7 @@ import yaml
 from flask import Flask
 
 from .auth import init_auth
-from .fpga import FpgaMonitor
+from .services import FpgaMonitor
 from .state import Registry
 from .sync import Orchestrator
 

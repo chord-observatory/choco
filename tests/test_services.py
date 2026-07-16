@@ -1,4 +1,4 @@
-"""Tests for the FPGA monitor and job-status helpers."""
+"""Tests for choco/services.py: the FPGA monitor and job-status helpers."""
 
 import os
 import time
@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import responses
 
-from choco.fpga import FpgaMonitor, job_status, EOP_STALE_AFTER_S
+from choco.services import FpgaMonitor, job_status, EOP_STALE_AFTER_S
 
 
 HOST = "fpga.example"
@@ -91,15 +91,15 @@ def _props(**overrides) -> str:
 
 def _patch_systemctl(stdout: str, returncode: int = 0):
     completed = MagicMock(returncode=returncode, stdout=stdout, stderr="")
-    return patch("choco.fpga.subprocess.run", return_value=completed)
+    return patch("choco.services.subprocess.run", return_value=completed)
 
 
 def _no_systemctl():
-    return patch("choco.fpga.shutil.which", return_value=None)
+    return patch("choco.services.shutil.which", return_value=None)
 
 
 def _with_systemctl():
-    return patch("choco.fpga.shutil.which", return_value="/usr/bin/systemctl")
+    return patch("choco.services.shutil.which", return_value="/usr/bin/systemctl")
 
 
 def _backdate(path: Path, age_s: float):

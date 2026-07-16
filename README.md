@@ -363,7 +363,7 @@ choco/
 ├── web.py          # Flask routes: dashboard, node edit, login/logout, /update/* JSON API
 ├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
 ├── sync.py         # Queue-based sync: ChangeItem, Orchestrator (serialized submit + worker pool)
-├── fpga.py         # FpgaMonitor (background poll) + job_status (systemd/mtime job health)
+├── services.py     # Service-status helpers: FpgaMonitor (background poll) + job_status (systemd/mtime job health)
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Vendored assets: pico.min.css, htmx.min.js, idiomorph-ext.min.js, Sortable.min.js
 jobs/                               # One subdir per job: units, wrapper, code
