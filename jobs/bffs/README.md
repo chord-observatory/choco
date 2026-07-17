@@ -83,6 +83,17 @@ within one poll interval without bffs re-sending. If choco itself is
 unreachable, the run fails (red badge) and, because the state file is
 written only after a successful send, the next timer tick retries.
 
+**Feed labels** come from the kotekan config's `dish_inputs` table, fetched
+through choco (`GET /api/config/<group>`): bffs rebuilds the same element
+table kotekan does — every slot `Fake` by default, each `dish_inputs` entry's
+`label` at its `dish_idx` — so the labels shown (`A1X`, `RFI01`, ...) name
+exactly the elements the `bad_inputs` indices address. The N² file's own
+index map is the fallback (dry runs, choco down); when both are available
+the file fixes the axis length and must agree with the config — a mismatch
+(the file predates the running config) fails the run rather than sending
+ambiguous indices. Duplicate placeholder labels are made per-element
+(`Fake[7]`) so label-keyed state stays exact.
+
 bffs reads both N² file flavours: CHIME-style (`index_map/input` labels,
 `vis[time, freq, prod]`) and CHORD `hdf5N2Write` output (`index_map/label`,
 `vis[freq, prod, time]`, compound freq, `frames_added` validity). Products
@@ -90,9 +101,12 @@ beyond the labelled feeds (CHORD's phantom second-polarization elements) are
 ignored. `kotekan_file` may be a glob, spanning directories if needed
 (e.g. `full/acq_*/*.h5`) — each run reads the newest match by mtime, i.e.
 the most recently written file of the current acquisition. If that newest
-file is older than `max_age` seconds (default 3600; 0 disables), the run
-fails instead of flagging: a stopped acquisition's empty tail rows would
-otherwise mark every feed dead.
+file is missing or older than `max_age` seconds (default 3600; 0 disables),
+it is treated as unusable — a stopped acquisition's empty tail rows would
+mark every feed dead — and the **file-based sources (power-outlier) are
+skipped with a warning while the rest still flag**. Only when *every*
+configured source ends up skipped does the run fail (red badge): nothing
+measurable is a systematic problem, not an all-good.
 
 ### Sources
 
@@ -146,12 +160,18 @@ holds the current bad list (by stable feed *label*, not index) and an append-onl
 {
   "updated": 1700000077.7,
   "update_id": "bffs-1700000077750",
-  "bad_inputs": ["f1"],
+  "bad_inputs": ["A1X"],
+  "flagged_by": {"A1X": ["power-outlier", "manual"]},
   "history": [
-    {"time": 1700000077.4, "update_id": "bffs-...", "became_bad": ["f1"], "became_good": [], "bad_inputs": ["f1"]}
+    {"time": 1700000077.4, "update_id": "bffs-...", "became_bad": ["A1X"], "became_good": [], "bad_inputs": ["A1X"]}
   ]
 }
 ```
+
+`flagged_by` records which source(s) flagged each currently-bad feed (as of
+the last change) — display bookkeeping for choco's BFFS page. The payload
+sent to kotekan is unchanged: exactly `{update_id, start_time, bad_inputs}`
+with integer element indices.
 
 Each run diffs the current bad set against the file: a change POSTs to choco and
 then appends one history entry, rewriting the file (atomically); an unchanged

@@ -275,6 +275,7 @@ Read-only status endpoints:
 - `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `psu`, `eop`, `bffs`, `eigencal`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
 - `GET /api/nodes/status` — per-node runtime status plus an aggregate summary
 - `GET /api/nodes` — the node registry (groups/hosts/ports) as JSON
+- `GET /api/config/<group>` — a sample node's desired kotekan config for the group (jobs use this to learn the `dish_inputs` element layout)
 - `GET /metrics` — the same overall health in Prometheus exposition format (see below)
 
 The `/update/*` and `/api/*` endpoints bypass auth when called from `localhost`, so from the choco host you can use curl directly (use `-k` since the cert is typically self-signed):

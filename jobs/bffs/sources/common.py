@@ -45,15 +45,31 @@ def choco_group_nodes(choco_url: str, group: str,
     self-signed certificate goes unverified — same rules as the flag send
     in ``bffs.py``.
     """
-    url = choco_url.rstrip("/") + "/api/nodes"
+    data = _choco_get(choco_url, "/api/nodes", timeout)
+    return list((data.get("groups") or {}).get(group) or [])
+
+
+def choco_group_config(choco_url: str, group: str,
+                       timeout: float = 10.0) -> dict:
+    """A sample node's desired kotekan config for one choco group.
+
+    Read-only GET of choco's ``/api/config/<group>``.  The config's
+    ``dish_inputs`` table is what kotekan's bad-input mask is indexed
+    against, so it is the naming authority for feed labels.
+    """
+    return _choco_get(choco_url, f"/api/config/{group}", timeout)
+
+
+def _choco_get(choco_url: str, path: str, timeout: float) -> dict:
+    """GET a choco JSON endpoint (localhost auth bypass, unverified TLS)."""
+    url = choco_url.rstrip("/") + path
     ctx = None
     if url.startswith("https:"):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:
-        data = json.loads(resp.read())
-    return list((data.get("groups") or {}).get(group) or [])
+        return json.loads(resp.read())
 
 
 def project(input_good: dict[str, bool], labels: np.ndarray) -> np.ndarray:

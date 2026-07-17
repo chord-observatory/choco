@@ -14,6 +14,10 @@ from kotekan_io import Frame, read_autocorr
 
 log = logging.getLogger("bffs.sources.power_outlier")
 
+# This source measures the N² file itself; with no usable file the core
+# skips it (and the other sources still flag).
+NEEDS_FILE = True
+
 _MAD_TO_SIGMA = 1.4826  # turns a median-absolute-deviation into a standard deviation
 _KEYS = ("freq_lo", "freq_hi", "nsigma", "abs_lo", "abs_hi", "min_valid_frac")
 

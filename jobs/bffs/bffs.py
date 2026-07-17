@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """bffs - a minimal feed-flagging script.
 
-Run once per invocation (e.g. by a systemd timer or oneshot service): read the
-kotekan N² output's feed labels (``index_map/input``), ask each configured
-source which feeds are bad, and POST the bad-input list to choco.
+Run once per invocation (e.g. by a systemd timer or oneshot service): resolve
+the feed labels, ask each configured source which feeds are bad, and POST the
+bad-input list to choco.
+
+Labels come from the kotekan config's ``dish_inputs`` table (fetched through
+choco's ``/api/config/<group>``) — the same table kotekan indexes its bad-input
+mask with — falling back to the N² file's own index map when choco isn't
+available (dry runs).  The N² data file feeds the file-based sources
+(power-outlier); when it is missing or stale those sources are skipped with a
+warning and the rest still flag.
 
 A small JSON file (``state.path`` in the config) records the change history of
-the feeds — every transition, by stable feed label — and lets the script send to
-choco only when the bad list actually changes. Without it, the script is
-stateless and sends every run.
+the feeds — every transition, by stable feed label, with the flagging source(s)
+per feed — and lets the script send to choco only when the bad list actually
+changes. Without it, the script is stateless and sends every run.
 
     python bffs.py --config bffs.example.yaml
 
@@ -16,7 +23,7 @@ A feed is bad if *any* source flags it (the per-source good masks are AND-ed).
 Each source is one module under ``sources/`` exposing
 ``mask(src, labels, kotekan_file)``; ``combine_sources`` dispatches via
 ``sources.get(kind)``. Built-in kinds: ``manual``, ``power-outlier``, ``power``,
-``fpga`` (see ``sources/`` and REVIEW.md).
+``fpga``, ``rfi`` (see ``sources/``).
 
 The flag values are ``{update_id, start_time, bad_inputs}``; ``start_time`` is
 ``now + sync_delay`` (a few seconds ahead) so every consumer switches flags at
@@ -44,6 +51,7 @@ import yaml
 
 import sources
 from kotekan_io import read_labels
+from sources.common import choco_group_config
 
 log = logging.getLogger("bffs")
 
@@ -84,16 +92,145 @@ def load_config(path: str | Path) -> Config:
     )
 
 
+# -- feed labels ----------------------------------------------------------
+
+
+def find_dish_inputs(config) -> list | None:
+    """The ``dish_inputs`` table from a rendered kotekan config, or None.
+
+    Searched recursively — the table's nesting spot varies between
+    config generations.
+    """
+    if isinstance(config, dict):
+        value = config.get("dish_inputs")
+        if isinstance(value, list) and value:
+            return value
+        for child in config.values():
+            found = find_dish_inputs(child)
+            if found is not None:
+                return found
+    return None
+
+
+def dish_input_labels(config: dict, n_elements: int | None = None) -> list[str] | None:
+    """Element labels from a kotekan config's ``dish_inputs`` table.
+
+    Mirrors kotekan's ``CHORDTelescope``: an ``n_elements``-slot table,
+    all ``Fake``, with each ``dish_inputs`` entry's ``label`` placed at
+    its ``dish_idx`` — that table's positions are the indices kotekan's
+    bad-input mask consumes.  Without ``n_elements`` the table is just
+    big enough for the highest ``dish_idx``; a ``dish_idx`` beyond
+    ``n_elements`` raises (the config and the data disagree about the
+    element axis, so indexing would be ambiguous).  Returns None when
+    the config has no usable ``dish_inputs``.
+    """
+    table = find_dish_inputs(config)
+    if not table or not all(isinstance(e, dict) for e in table):
+        return None
+    by_idx = {}
+    for i, entry in enumerate(table):
+        idx = int(entry.get("dish_idx", i))
+        by_idx[idx] = str(entry.get("label", f"dish{idx}"))
+    n = max(by_idx) + 1 if n_elements is None else int(n_elements)
+    if max(by_idx) >= n:
+        raise ValueError(
+            f"dish_idx {max(by_idx)} in the kotekan config exceeds the "
+            f"{n}-element axis — config and data disagree; refusing to "
+            f"flag with ambiguous indexing")
+    return [by_idx.get(i, "Fake") for i in range(n)]
+
+
+def uniquify_labels(labels) -> np.ndarray:
+    """Suffix repeated labels with their element index (Fake -> Fake[7]).
+
+    Placeholder elements share the label ``Fake``; state diffing and
+    per-source projection key by label, so duplicates must be made
+    per-element.  Unique labels pass through untouched.
+    """
+    from collections import Counter
+    strs = [str(label) for label in labels]
+    counts = Counter(strs)
+    return np.array([f"{s}[{i}]" if counts[s] > 1 else s
+                     for i, s in enumerate(strs)])
+
+
+def resolve_kotekan_file(config: Config) -> str | None:
+    """The newest usable N² file, or None (no match / too old).
+
+    ``kotekan_file`` may be a glob spanning directories; the newest
+    match by mtime wins.  A file older than ``max_age`` is unusable —
+    a stopped acquisition's empty tail rows would mark every feed dead —
+    but that only sidelines the file-based sources, not the run.
+    """
+    path = config.kotekan_file
+    if path and any(c in path for c in "*?["):
+        matches = glob.glob(path)
+        path = max(matches, key=os.path.getmtime) if matches else None
+    if path and not os.path.exists(path):
+        path = None
+    if path is None:
+        log.warning("no kotekan file matches %r", config.kotekan_file)
+        return None
+    if config.max_age:
+        age = time.time() - os.path.getmtime(path)
+        if age > config.max_age:
+            log.warning(
+                "kotekan data stale: %s was last written %.1f h ago "
+                "(max_age %.0f s); file-based sources skipped",
+                path, age / 3600, config.max_age)
+            return None
+    log.info("kotekan file: %s", path)
+    return path
+
+
+def resolve_labels(config: Config, path: str | None) -> np.ndarray:
+    """The element labels (and axis) every source masks against.
+
+    The kotekan config's ``dish_inputs`` (fetched through choco) is the
+    naming authority — it is the same table kotekan indexes its bad-input
+    mask with, and its labels (``A1X``...) are the ones operators know.
+    The file's own index map is the fallback (dry runs, choco down).
+    When both are available the file fixes the axis length (implicit
+    ``Fake`` dishes beyond the listed entries) and must agree with the
+    config — a mismatch means the file predates the running config and
+    positions would be ambiguous.
+    """
+    cfg = None
+    if config.url and config.group:
+        try:
+            cfg = choco_group_config(config.url, config.group)
+        except (OSError, ValueError) as e:
+            log.warning("no kotekan config from choco: %s", e)
+    file_labels = read_labels(path) if path else None
+    if cfg is not None:
+        n = len(file_labels) if file_labels is not None else None
+        cfg_labels = dish_input_labels(cfg, n_elements=n)
+        if cfg_labels is not None:
+            return uniquify_labels(cfg_labels)
+        log.warning("kotekan config has no dish_inputs; using file labels")
+    if file_labels is not None:
+        return uniquify_labels(file_labels)
+    raise OSError(
+        "no feed labels: no usable kotekan file and no dish_inputs "
+        "from choco — nothing to index flags against")
+
+
 # -- combine sources ------------------------------------------------------
 
 
-def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray]:
-    """AND together each source's good-mask. Returns ``(labels, good)``.
+def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict]:
+    """AND together each source's good-mask.
 
-    Feed labels and order come from the kotekan file's index map; each source
-    returns a mask in that same order, and a feed is bad if any flags it.
-    ``kotekan_file`` may be a glob pattern — the newest match (by mtime) is
-    read, so a timer-driven bffs follows kotekan's current output file.
+    Returns ``(labels, good, flagged_by)``; ``flagged_by`` maps each bad
+    feed's label to the source kinds that flagged it (the wire payload
+    stays indices-only — attribution is bookkeeping for the state file
+    and the web UI).
+
+    A missing or stale kotekan file sidelines only the sources that need
+    it (``NEEDS_FILE``, e.g. power-outlier) — the rest still flag, so a
+    data outage doesn't take feed flagging down with it.  If *every*
+    configured source is sidelined the run fails (red badge): nothing
+    measurable is a systematic problem, not an all-good.
 
     Each source's config dict is passed with the choco context merged in
     as defaults (``choco_url`` / ``choco_group``; explicit keys win), so
@@ -101,31 +238,30 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray]:
     the rfi source polls every started node of the broadcast group unless
     given explicit ``urls``.
     """
-    path = config.kotekan_file
-    if any(c in path for c in "*?["):
-        matches = glob.glob(path)
-        if not matches:
-            raise FileNotFoundError(f"no kotekan file matches {path!r}")
-        path = max(matches, key=os.path.getmtime)
-        log.info("kotekan file: %s", path)
-    if config.max_age:
-        age = time.time() - os.path.getmtime(path)
-        if age > config.max_age:
-            # A stopped acquisition's tail rows are empty, so flagging
-            # from it would mark every feed dead. Refuse instead: the
-            # run fails (red badge) until fresh data appears.
-            raise ValueError(
-                f"kotekan data stale: {path} was last written "
-                f"{age / 3600:.1f} h ago (max_age {config.max_age:.0f} s)")
-    labels = read_labels(path)
+    path = resolve_kotekan_file(config)
+    labels = resolve_labels(config, path)
     good = np.ones(len(labels), dtype=bool)
+    flagged_by: dict[str, list[str]] = {}
+    skipped = 0
     for src in config.sources:
-        source = sources.get(src["kind"])
+        kind = src["kind"]
+        source = sources.get(kind)
         if source is None:
-            raise ValueError(f"unknown source kind {src['kind']!r}")
+            raise ValueError(f"unknown source kind {kind!r}")
+        if path is None and getattr(source, "NEEDS_FILE", False):
+            log.warning("%s: no usable kotekan file; source skipped", kind)
+            skipped += 1
+            continue
         src = {"choco_url": config.url, "choco_group": config.group, **src}
-        good &= source.mask(src, labels, path)
-    return labels, good
+        mask = np.asarray(source.mask(src, labels, path), dtype=bool)
+        for i in np.nonzero(~mask)[0]:
+            flagged_by.setdefault(str(labels[i]), []).append(kind)
+        good &= mask
+    if config.sources and skipped == len(config.sources):
+        raise OSError(
+            f"all {skipped} sources skipped (no usable kotekan file) — "
+            f"nothing to measure")
+    return labels, good, flagged_by
 
 
 # -- state / change history ----------------------------------------------
@@ -149,7 +285,7 @@ def run(
     untouched, so the next run sees the change again and retries.
     """
     now = time.time() if now is None else now
-    labels, good = combine_sources(config)
+    labels, good, flagged_by = combine_sources(config)
     bad_idx = np.nonzero(~good)[0]
     payload = {
         "update_id": f"bffs-{int(now * 1000)}",
@@ -188,6 +324,10 @@ def run(
         state["updated"] = now
         state["update_id"] = payload["update_id"]
         state["bad_inputs"] = bad_labels
+        # which source(s) flagged each feed, as of this change — display
+        # bookkeeping only, never part of the payload sent to kotekan
+        state["flagged_by"] = {label: flagged_by.get(label, [])
+                               for label in bad_labels}
         history = state.get("history", [])
         history.append({
             "time": now,

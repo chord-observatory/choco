@@ -4,19 +4,21 @@
 # reads the feed labels and autocorrelation data from one kotekan N² output file,
 # combines each source's mask, and POSTs the bad-input list to choco.
 
-# The kotekan hdf5N2Write output. Its index map carries the ordered feed
-# labels (index_map/input, or index_map/label for CHORD files); the
-# autocorrelation data drives the power-outlier source. bad_inputs in the
-# payload are positions in that list. A glob is allowed and may span
-# directories — each run reads the newest match by mtime, so with kotekan
-# writing one acquisition directory at a time this follows the most
-# recently written file of the current acquisition.
+# The kotekan hdf5N2Write output; its autocorrelation data drives the
+# power-outlier source. Feed labels (and the element axis bad_inputs
+# indices address) come from the kotekan config's dish_inputs table via
+# choco; the file's own index map is the fallback when choco is down.
+# A glob is allowed and may span directories — each run reads the newest
+# match by mtime, so with kotekan writing one acquisition directory at a
+# time this follows the most recently written file of the current
+# acquisition.
 kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/acq_*/*.h5
 
-# Refuse to flag when the newest kotekan file is older than this many
-# seconds (a stopped acquisition's empty tail rows would mark every feed
-# dead). The run fails — red BFFS badge — until fresh data appears.
-# 0 disables the check.
+# A newest kotekan file older than this many seconds is unusable (a
+# stopped acquisition's empty tail rows would mark every feed dead):
+# file-based sources (power-outlier) are skipped with a warning and the
+# other sources still flag. The run only fails (red BFFS badge) when
+# every configured source ends up skipped. 0 disables the check.
 max_age: 3600
 
 choco:

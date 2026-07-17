@@ -615,10 +615,16 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
     if name == "bffs":
         history = [h for h in (state.get("history") or [])
                    if isinstance(h, dict)]
+        flagged_by = state.get("flagged_by") or {}
         return {
             "updated": _fmt_utc(state.get("updated")),
             "update_id": state.get("update_id"),
             "bad_inputs": list(state.get("bad_inputs") or []),
+            # which source(s) flagged each feed (absent for state files
+            # written before attribution existed)
+            "flagged_by": {str(label): ", ".join(map(str, kinds or []))
+                           for label, kinds in flagged_by.items()}
+            if isinstance(flagged_by, dict) else {},
             # pre-shape everything the template touches, so a malformed
             # entry fails here (-> detail None) and not mid-render
             "history": [{
@@ -1028,3 +1034,26 @@ def api_nodes():
             "started": node.started,
         })
     return {"groups": groups}
+
+
+@bp.route("/api/config/<group>", methods=["GET"])
+@localhost_or_login_required
+def api_group_config(group):
+    """A sample node's desired kotekan config for *group*, as JSON.
+
+    Group configs are broadcast together, so any member represents the
+    group.  Jobs use this to learn the element layout (``dish_inputs``)
+    that kotekan's bad-input mask is indexed against, without touching
+    data files.
+    """
+    registry = _registry()
+    sample = next(
+        (n for n in registry.nodes.values() if n.group == group), None
+    )
+    if sample is None:
+        return {"error": f"Group '{group}' not found"}, 404
+    desired = sample.desired_config
+    if desired is None:
+        return {"error": sample.load_error
+                or f"No config file ({sample.config_filename})"}, 503
+    return desired

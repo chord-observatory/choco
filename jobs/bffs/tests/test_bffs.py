@@ -196,16 +196,18 @@ def test_glob_kotekan_file_reads_newest(tmp_path):
     write_normalized(new, ["new0", "new1"], [400.0], np.ones((1, 1, 2), "f4"))
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(new, (2_000_000, 2_000_000))
-    labels, good = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5"), max_age=0))
+    labels, good, _ = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5"), max_age=0))
     assert list(labels) == ["new0", "new1"]
 
 
-def test_glob_kotekan_file_no_match_raises(tmp_path):
+def test_glob_no_match_and_no_choco_raises(tmp_path):
+    # No file and no choco context -> nothing to index flags against.
     try:
         bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "nope_*.h5")))
-    except FileNotFoundError:
+    except OSError as e:
+        assert "no feed labels" in str(e)
         return
-    raise AssertionError("expected FileNotFoundError for unmatched glob")
+    raise AssertionError("expected OSError with no labels source")
 
 
 def test_failed_send_leaves_state_unwritten(tmp_path):
@@ -304,7 +306,7 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(mid, (2_000_000, 2_000_000))
     os.utime(new, (3_000_000, 3_000_000))
-    labels, good = bffs.combine_sources(
+    labels, good, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5"), max_age=0))
     assert list(labels) == ["new0", "new1"]
 
@@ -317,17 +319,18 @@ def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(rfi, "choco_group_nodes",
                         lambda url, group: seen.update(url=url, group=group) or [node])
     monkeypatch.setattr(rfi, "read_sk", lambda url: {})
+    monkeypatch.setattr(bffs, "choco_group_config", lambda url, group: {})
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx", sources=[{"kind": "rfi"}])
-    labels, good = bffs.combine_sources(cfg)
+    labels, good, _ = bffs.combine_sources(cfg)
     assert seen == {"url": "https://localhost:5000", "group": "cx"}
     assert list(good) == [True]
 
 
-def test_stale_kotekan_file_refused(tmp_path):
-    """Data older than max_age fails the run instead of flagging."""
+def test_stale_file_with_no_other_labels_fails(tmp_path):
+    """A stale file is unusable; with no choco labels either, the run fails."""
     import os
     import time
     n2 = tmp_path / "n2.h5"
@@ -336,10 +339,10 @@ def test_stale_kotekan_file_refused(tmp_path):
     os.utime(n2, (old, old))
     try:
         bffs.combine_sources(bffs.Config(kotekan_file=str(n2), max_age=3600))
-    except ValueError as e:
-        assert "stale" in str(e)
+    except OSError as e:
+        assert "no feed labels" in str(e)
         return
-    raise AssertionError("expected ValueError for stale kotekan data")
+    raise AssertionError("expected OSError for stale data and no labels")
 
 
 def test_max_age_zero_disables_staleness(tmp_path):
@@ -349,6 +352,167 @@ def test_max_age_zero_disables_staleness(tmp_path):
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
     old = time.time() - 7200
     os.utime(n2, (old, old))
-    labels, good = bffs.combine_sources(
+    labels, good, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(n2), max_age=0))
     assert list(labels) == ["f0"]
+
+
+# -- labels from the kotekan config (dish_inputs) ---------------------------
+
+
+_DISH_CONFIG = {
+    "telescope": {
+        "dish_inputs": [
+            {"dish_idx": 0, "type": "ArrayDish", "label": "A1X"},
+            {"dish_idx": 2, "type": "Fake", "label": "A3X"},
+        ],
+    },
+}
+
+
+def test_dish_input_labels_builds_element_table():
+    # Slots without a dish_inputs entry are implicit Fake dishes.
+    assert bffs.dish_input_labels(_DISH_CONFIG) == ["A1X", "Fake", "A3X"]
+    assert bffs.dish_input_labels(_DISH_CONFIG, n_elements=5) == [
+        "A1X", "Fake", "A3X", "Fake", "Fake"]
+
+
+def test_dish_input_labels_out_of_range_raises():
+    try:
+        bffs.dish_input_labels(_DISH_CONFIG, n_elements=2)
+    except ValueError as e:
+        assert "ambiguous" in str(e)
+        return
+    raise AssertionError("expected ValueError for dish_idx beyond the axis")
+
+
+def test_dish_input_labels_absent_is_none():
+    assert bffs.dish_input_labels({"num_elements": 8}) is None
+
+
+def test_uniquify_labels_suffixes_duplicates():
+    out = list(bffs.uniquify_labels(["A1X", "Fake", "Fake", "B2Y"]))
+    assert out == ["A1X", "Fake[1]", "Fake[2]", "B2Y"]
+
+
+def test_labels_from_choco_config_win(tmp_path, monkeypatch):
+    """With choco available, dish_inputs names the elements; the file
+    fixes the axis length (implicit Fake dishes beyond the entries)."""
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _DISH_CONFIG)
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["x0", "x1", "x2", "x3"], [400.0],
+                     np.ones((1, 1, 4), "f4"))
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx")
+    labels, good, _ = bffs.combine_sources(cfg)
+    assert list(labels) == ["A1X", "Fake[1]", "A3X", "Fake[3]"]
+
+
+def test_config_file_element_mismatch_refuses(tmp_path, monkeypatch):
+    """A file shorter than the config's dish_idx range means the file
+    predates the running config — refuse rather than send wrong indices."""
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _DISH_CONFIG)
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["x0", "x1"], [400.0], np.ones((1, 1, 2), "f4"))
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx")
+    try:
+        bffs.combine_sources(cfg)
+    except ValueError as e:
+        assert "ambiguous" in str(e)
+        return
+    raise AssertionError("expected ValueError on element-count mismatch")
+
+
+def test_choco_config_fetch_failure_falls_back_to_file(tmp_path, monkeypatch):
+    def boom(url, group):
+        raise OSError("choco down")
+    monkeypatch.setattr(bffs, "choco_group_config", boom)
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx")
+    labels, good, _ = bffs.combine_sources(cfg)
+    assert list(labels) == ["f0", "f1"]
+
+
+# -- file-optional operation ------------------------------------------------
+
+
+def test_missing_file_skips_file_sources_but_still_flags(tmp_path, monkeypatch):
+    """No usable N² file: power-outlier is skipped, manual still flags,
+    labels come from the kotekan config via choco."""
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _DISH_CONFIG)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["A3X"])
+    cfg = bffs.Config(
+        kotekan_file=str(tmp_path / "nope_*.h5"),
+        url="https://localhost:5000", group="cx",
+        sources=[{"kind": "power-outlier"},
+                 {"kind": "manual", "path": str(manualf)}],
+    )
+    labels, good, flagged_by = bffs.combine_sources(cfg)
+    assert list(labels) == ["A1X", "Fake", "A3X"]
+    assert list(good) == [True, True, False]
+    assert flagged_by == {"A3X": ["manual"]}
+
+
+def test_all_sources_skipped_fails(tmp_path, monkeypatch):
+    """Only file-based sources configured and no usable file: red badge."""
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _DISH_CONFIG)
+    cfg = bffs.Config(
+        kotekan_file=str(tmp_path / "nope_*.h5"),
+        url="https://localhost:5000", group="cx",
+        sources=[{"kind": "power-outlier"}],
+    )
+    try:
+        bffs.combine_sources(cfg)
+    except OSError as e:
+        assert "nothing to measure" in str(e)
+        return
+    raise AssertionError("expected OSError when every source is skipped")
+
+
+# -- attribution --------------------------------------------------------------
+
+
+def test_flagged_by_names_every_flagging_source(tmp_path):
+    n2 = tmp_path / "n2.h5"
+    # f1 is dead in the data (power-outlier) and also manually flagged.
+    auto = np.ones((4, 1, 2), "f4")
+    auto[:, :, 1] = 0.0
+    write_normalized(n2, ["f0", "f1"], [400.0], auto)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1"])
+    cfg = bffs.Config(
+        kotekan_file=str(n2),
+        sources=[{"kind": "power-outlier"},
+                 {"kind": "manual", "path": str(manualf)}],
+    )
+    labels, good, flagged_by = bffs.combine_sources(cfg)
+    assert list(good) == [True, False]
+    assert flagged_by == {"f1": ["power-outlier", "manual"]}
+
+
+def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
+    """Attribution lands in the state file only — the payload keeps the
+    exact {update_id, start_time, bad_inputs} shape kotekan validates."""
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1"])
+    statef = tmp_path / "state.json"
+    cfg = bffs.Config(
+        kotekan_file=str(n2), state_path=str(statef),
+        sources=[{"kind": "manual", "path": str(manualf)}],
+    )
+    payload, send = bffs.run(cfg, now=1000.0)
+    assert set(payload) == {"update_id", "start_time", "bad_inputs"}
+    assert payload["bad_inputs"] == [1]
+    assert all(isinstance(i, int) for i in payload["bad_inputs"])
+    state = json.loads(statef.read_text())
+    assert state["flagged_by"] == {"f1": ["manual"]}

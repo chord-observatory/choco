@@ -81,7 +81,16 @@ dl.service-facts dd { margin: 0; }
     <dt>Bad feeds</dt>
     <dd>
         {{ detail.bad_inputs | length }}
-        {%- if detail.bad_inputs %}: <code>{{ detail.bad_inputs | join(', ') }}</code>{% endif %}
+        {%- if detail.bad_inputs %}:
+        {% if detail.flagged_by %}
+        {% for label in detail.bad_inputs -%}
+        <code>{{ label }}</code>{% if detail.flagged_by.get(label) %} <small>({{ detail.flagged_by[label] }})</small>{% endif %}
+        {{- ", " if not loop.last }}
+        {% endfor %}
+        {% else %}
+        <code>{{ detail.bad_inputs | join(', ') }}</code>
+        {% endif %}
+        {%- endif %}
     </dd>
     {% if detail.updated %}
     <dt>Last change</dt>

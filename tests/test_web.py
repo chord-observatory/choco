@@ -628,6 +628,25 @@ class TestServicePage:
         assert "bffs-1700000077750" in body
         assert "Recent transitions" in body
 
+    def test_bffs_detail_shows_flag_attribution(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state = {
+            "updated": 1700000077.7,
+            "bad_inputs": ["A1X", "A3X"],
+            "flagged_by": {"A1X": ["power-outlier", "manual"],
+                           "A3X": ["rfi"]},
+        }
+        state_file = tmp_path / "bffs-state.json"
+        state_file.write_text(json.dumps(state))
+        app.config["bffs_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/bffs")
+        body = resp.data.decode()
+        assert "power-outlier, manual" in body
+        assert "rfi" in body
+
     def test_eigencal_detail_from_state_file(self, client, app, tmp_path):
         from unittest.mock import patch
         _login(client)
@@ -928,6 +947,25 @@ class TestStatusApi:
         assert len(data["nodes"]) == 3
         keys = {n["key"] for n in data["nodes"]}
         assert keys == {"cx/cx1", "cx/cx2", "recv/recv1"}
+
+    def test_api_group_config_returns_desired_config(self, client):
+        resp = client.get("/api/config/cx")
+        assert resp.status_code == 200
+        # The fixture's cx configs carry num_elements; a sample node's
+        # rendered config represents the whole group.
+        assert resp.get_json()["num_elements"] == 2048
+
+    def test_api_group_config_unknown_group_404(self, client):
+        resp = client.get("/api/config/nope")
+        assert resp.status_code == 404
+
+    def test_api_group_config_load_error_503(self, client, app):
+        node = app.config["registry"].get_node("cx/cx1")
+        node._base_load_error = "boom"
+        node.base_content = None
+        node.rendered_config = None
+        resp = client.get("/api/config/cx")
+        assert resp.status_code == 503
 
 
 class TestMetrics:
