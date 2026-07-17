@@ -22,8 +22,32 @@
         .status-syncing { background: #0074d9; color: white; }
         .status-unknown { background: #aaa; color: white; }
         table { margin-top: 1em; }
-        .flash-success { color: #2ecc40; }
-        .flash-error { color: #ff4136; }
+        /* Flash messages: one-shot notices (action results). Rendered as
+           dismissable banners so they read as transient, not page content. */
+        .flash {
+            display: flex;
+            align-items: baseline;
+            gap: 0.75em;
+            margin: 0 0 1em 0;
+            padding: 0.5em 0.9em;
+            border: 1px solid #aaa;
+            border-radius: 6px;
+            background: #aaaaaa1a;
+            font-size: 0.95em;
+        }
+        .flash-success { border-color: #2ecc40; background: #2ecc4017; }
+        .flash-error { border-color: #ff4136; background: #ff413617; }
+        .flash .flash-dismiss {
+            width: auto;
+            margin: 0 0 0 auto;
+            padding: 0 0.35em;
+            border: none;
+            background: none;
+            color: inherit;
+            font-size: 1.1em;
+            line-height: 1;
+            cursor: pointer;
+        }
         nav { margin-bottom: 1em; }
         .logout-icon { text-decoration: none; }
         label.toggle-switch {
@@ -145,11 +169,13 @@
 
     <main class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
         {% for category, message in messages %}
-        <p class="flash-{{ category }}">{{ message }}</p>
+        <div class="flash flash-{{ category }}" role="alert">
+            <span>{{ message }}</span>
+            <button class="flash-dismiss" title="Dismiss"
+                    onclick="this.closest('.flash').remove()">&times;</button>
+        </div>
         {% endfor %}
-        {% endif %}
         {% endwith %}
 
         {% block content %}{% endblock %}
