@@ -105,15 +105,28 @@ cmd_install() {
 
     # Config
     mkdir -p "$CONFIG_DIR/configs"
-    if [ -f "$SCRIPT_DIR/config.yaml" ]; then
-        echo "Found local config.yaml, copying..."
-        cp "$SCRIPT_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
+    # Deploy config.yaml: seed on first install, but NEVER silently
+    # overwrite a deployed one — it is the production config, edited in
+    # place (secrets, service blocks). When the incoming copy differs it
+    # is staged next to it as config.yaml.new for manual merging.
+    src_config="$SCRIPT_DIR/config.yaml"
+    [ -f "$src_config" ] || src_config="$SCRIPT_DIR/config.yaml.template"
+    if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
+        echo "Seeding $CONFIG_DIR/config.yaml from ${src_config##*/}..."
+        cp "$src_config" "$CONFIG_DIR/config.yaml"
+        sed -i "s|^configs_dir:.*|configs_dir: $CONFIG_DIR/configs|" "$CONFIG_DIR/config.yaml"
+        chmod 600 "$CONFIG_DIR/config.yaml"
     else
-        echo "No local config.yaml, copying template..."
-        cp "$SCRIPT_DIR/config.yaml.template" "$CONFIG_DIR/config.yaml"
+        cp "$src_config" "$CONFIG_DIR/config.yaml.new"
+        sed -i "s|^configs_dir:.*|configs_dir: $CONFIG_DIR/configs|" "$CONFIG_DIR/config.yaml.new"
+        chmod 600 "$CONFIG_DIR/config.yaml.new"
+        if cmp -s "$CONFIG_DIR/config.yaml" "$CONFIG_DIR/config.yaml.new"; then
+            rm -f "$CONFIG_DIR/config.yaml.new"
+        else
+            echo "Kept existing $CONFIG_DIR/config.yaml (differs from the repo copy);"
+            echo "  the incoming version is at $CONFIG_DIR/config.yaml.new -- merge by hand."
+        fi
     fi
-    sed -i "s|^configs_dir:.*|configs_dir: $CONFIG_DIR/configs|" "$CONFIG_DIR/config.yaml"
-    chmod 600 "$CONFIG_DIR/config.yaml"
     check_config "$CONFIG_DIR/config.yaml"
 
     # Seed the bffs config on first install; never overwrite an edited one
