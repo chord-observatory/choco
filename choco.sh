@@ -243,8 +243,9 @@ cmd_run() {
 cmd_test() {
     ensure_local_venv
     "$SCRIPT_DIR/.venv/bin/pytest" "$SCRIPT_DIR/tests" -v "$@"
-    # bffs has its own pytest.ini (pythonpath, testpaths)
+    # the jobs have their own pytest.ini (pythonpath, testpaths)
     (cd "$SCRIPT_DIR/jobs/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    (cd "$SCRIPT_DIR/jobs/eigencal" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
 cmd_help() {

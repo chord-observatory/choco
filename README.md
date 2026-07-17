@@ -6,6 +6,8 @@ choco provides a web UI that shows the live status of every kotekan instance, de
 
 Kotekan itself is deployed and managed on nodes by Ansible. choco only handles monitoring and config management.
 
+Around that core, choco also fronts the observatory's companion services: header badges and `/service/<name>` pages for the **fpga_master** daemon (with start/stop controls) and the **power_db** analog PSU controller (with per-channel power toggles), plus a family of timer-driven **jobs** that push through choco's API — EOP broadcast, bad-feed flagging (bffs), and point-source gain calibration (eigencal).
+
 ## Requirements
 
 - Python 3.10+
@@ -39,7 +41,8 @@ The install script also:
 - Creates a local `.venv` in the repo directory (editable install, owned by invoking user) for development
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
-- Seeds `/etc/choco/configs/` from the repo's `configs/` directory on first install; on subsequent installs, prompts whether to overwrite (use `--overwrite-configs` or `--keep-configs` to skip the prompt)
+- Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal), enabling the services and starting the timers
+- Seeds `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`bffs.yaml`, `eigencal.yaml`, `eigencal_feeds.yaml`) from its example file; on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and never overwrites edited job configs
 
 Re-running `sudo ./choco.sh install` is safe — it always syncs `config.yaml` from the local copy (with `configs_dir` rewritten to `/etc/choco/configs`), and iptables rules are deduplicated. If configs already exist you'll be prompted before overwriting.
 
@@ -81,30 +84,56 @@ server:
   port: 5000
   secret_key: change-me           # Change this in production!
   log_level: INFO
+  ssl_cert:                       # Leave empty to auto-generate a self-signed cert
+  ssl_key:
+  http_redirect_port: 8080        # HTTP listener that redirects to HTTPS
 
 configs_dir: configs
+
+kotekan:
+  timeout: 10                     # HTTP request timeout (seconds) for kotekan REST calls
+
+sync:
+  poll_interval: 5                # Seconds between polling all nodes for drift
+  restart_timeout: 10             # Seconds to wait for kotekan to restart after /kill
+  num_workers: 4                  # Worker greenlets processing node queues
 
 fpga_master:
   host: chive.site.chord-observatory.ca
   port: 54321
-  timeout: 5                     # HTTP request timeout (seconds)
+  timeout: 5                      # HTTP request timeout (seconds)
+  control: true                   # show Start/Stop controls on /service/fpga
+
+psu:                              # power_db analog PSU controller
+  host: 10.222.0.30
+  port: 5000
+  timeout: 5
+  control: true                   # allow channel toggles on /service/psu
 
 eop:
   intervals_before: 2             # Days of past entries (older stored entries are truncated on merge)
   intervals_after: 2              # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data   # Kotekan updatable config endpoint name
-  state_file: eop-state.json     # State file name (stored in configs_dir)
+  state_file: eop-state.json      # State file name (stored in configs_dir)
   service_unit: choco-eop-broadcast.service  # systemd unit for last-run status
+
+bffs:
+  service_unit: choco-bffs-flag.service
+  state_file: /var/lib/bffs/state.json
+
+eigencal:
+  service_unit: choco-eigencal.service
+  state_file: /var/lib/eigencal/state.json
 
 ldap:
   host:                           # e.g. ldaps://ipa1.auth.chord-observatory.ca
   port: 636
   use_ssl: true
-  base_dn:                       # e.g. dc=auth,dc=chord-observatory,dc=ca
+  base_dn:                        # e.g. dc=auth,dc=chord-observatory,dc=ca
   user_dn: cn=users,cn=accounts
   user_login_attr: uid
   user_object_filter: "(objectclass=posixaccount)"
-  bind_dn:                       # e.g. uid=choco,cn=users,cn=accounts,dc=auth,dc=chord-observatory,dc=ca
+  bind_dn:                        # e.g. uid=choco,cn=users,cn=accounts,dc=auth,dc=chord-observatory,dc=ca
   bind_password:
 ```
 
@@ -243,7 +272,7 @@ Both accept JSON with:
 - `{"action": "set_maintenance", "maintenance": true}` — put the node(s) into or out of maintenance mode
 
 Read-only status endpoints:
-- `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `eop`, `bffs`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
+- `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `psu`, `eop`, `bffs`, `eigencal`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
 - `GET /api/nodes/status` — per-node runtime status plus an aggregate summary
 - `GET /api/nodes` — the node registry (groups/hosts/ports) as JSON
 - `GET /metrics` — the same overall health in Prometheus exposition format (see below)
@@ -281,8 +310,9 @@ hosts, or configs:
   restarted, which also means **the whole cluster re-entered maintenance mode**
   (worth alerting on)
 - `choco_service_state{service,state}` — one-hot health per service (`fpga`:
-  ok / no_timing / down / unconfigured / unknown; `eop`, `bffs`: ok / stale /
-  failed / never_run / unknown)
+  ok / no_timing / down / unconfigured / unknown; `psu`: ok / no_states / down /
+  unconfigured / unknown; `eop`, `bffs`, `eigencal`: ok / stale / failed /
+  never_run / unknown)
 - `choco_nodes{status}`, `choco_nodes_total`, `choco_nodes_started_desired`,
   `choco_nodes_maintenance` — node counts
 
@@ -371,6 +401,29 @@ sudo journalctl -u choco-bffs-flag -f          # per-run logs
 The header's **BFFS** badge tracks this job; its `bffs:` block in choco's
 `config.yaml` (`service_unit`, `state_file`) tells choco where to look.
 
+## Point-source gain calibration (eigencal)
+
+A companion oneshot service runs [eigencal](jobs/eigencal/) every 10 minutes
+via `choco-eigencal.timer`. The script **self-gates**: it exits in seconds on
+all but one run per calibrator transit (Cyg A by default, at night), when it
+reads the transit from the kotekan N² output, fits a complex gain for every
+correlator input, archives one HDF5 file, and POSTs the gains to
+`POST /update/<group>` for relay to kotekan.
+
+Exit codes carry meaning: 0 is success *or* nothing-to-do, 2 means the
+solution failed the quality gate (archived but not sent), 1 is an error —
+so a red **EIGENCAL** badge means a real failure, not an idle daytime tick.
+Its config lives at `/etc/choco/eigencal.yaml` (plus the feed-layout file
+`eigencal_feeds.yaml`, which must be filled in before real use), seeded from
+the examples in `jobs/eigencal/` on first install — see
+[jobs/eigencal/README.md](jobs/eigencal/README.md) for the science and
+config details.
+
+```bash
+sudo systemctl status choco-eigencal.timer   # cadence
+sudo journalctl -u choco-eigencal -f          # per-run logs
+```
+
 ## Tests
 
 ```bash
@@ -390,10 +443,10 @@ pytest tests/ -v
 choco/
 ├── app.py          # Flask app factory, gevent WSGI server, entry point
 ├── auth.py         # LDAP authentication (Flask-Login + Flask-LDAP3-Login)
-├── web.py          # Flask routes: dashboard, node edit, login/logout, /update/* JSON API
+├── web.py          # Flask routes: dashboard, node edit, /service/* pages, /update/* JSON API
 ├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
 ├── sync.py         # Queue-based sync: ChangeItem, Orchestrator (serialized submit + worker pool)
-├── services.py     # Service-status helpers: FpgaMonitor (background poll) + job_status (systemd/mtime job health)
+├── services.py     # FpgaMonitor + PsuMonitor (polls, control wrappers) + job-status helpers
 ├── templates/      # Jinja2 templates (Pico CSS + htmx)
 └── static/         # Vendored assets: pico.min.css, htmx.min.js, idiomorph-ext.min.js, Sortable.min.js
 jobs/                               # One subdir per job: units, wrapper, code
@@ -404,14 +457,22 @@ jobs/                               # One subdir per job: units, wrapper, code
 │   ├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
 │   ├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
 │   └── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
-└── bffs/                       # Feed-flagging job
-    ├── choco-bffs-flag.service     # Runs on choco start + 30 s timer
-    ├── choco-bffs-flag.timer       # Every 30 s
-    ├── bffs-flag.sh                # Wrapper: finds venv, calls bffs.py
-    ├── bffs.py                     # The feed-flagging script (see jobs/bffs/README.md)
-    ├── kotekan_io.py               # kotekan N² file reader
-    ├── sources/                    # Flagging sources (manual, power-outlier, power, fpga, rfi)
-    └── tests/                      # bffs test suite (run by ./choco.sh test)
+├── bffs/                       # Feed-flagging job
+│   ├── choco-bffs-flag.service     # Runs on choco start + 30 s timer
+│   ├── choco-bffs-flag.timer       # Every 30 s
+│   ├── bffs-flag.sh                # Wrapper: finds venv, calls bffs.py
+│   ├── bffs.py                     # The feed-flagging script (see jobs/bffs/README.md)
+│   ├── kotekan_io.py               # kotekan N² file reader
+│   ├── sources/                    # Flagging sources (manual, power-outlier, power, fpga, rfi)
+│   └── tests/                      # bffs test suite (run by ./choco.sh test)
+└── eigencal/                   # Point-source gain calibration
+    ├── choco-eigencal.service      # Runs every 10 min; self-gates to one real run per transit
+    ├── choco-eigencal.timer
+    ├── eigencal.sh                 # Wrapper: finds venv, calls eigencal.py
+    ├── eigencal.py                 # Orchestration: gates, ephemeris, fit, send (see jobs/eigencal/README.md)
+    ├── n2_io.py                    # kotekan N² reader (full products)
+    ├── transit_fit.py              # The batched transit fit (pure numpy)
+    └── tests/                      # eigencal test suite (run by ./choco.sh test)
 ```
 
 `eop_utils.py` is vendored from [kotekan](https://github.com/kotekan/kotekan/) (`tools/earth_orientation/eop_utils.py`). It should not be modified in this repo.
