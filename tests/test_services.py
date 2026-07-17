@@ -164,22 +164,50 @@ class TestFpgaMonitorControls:
         assert "not configured" in message
 
     @responses.activate
-    def test_stop_master_waits_and_repolls(self, monitor):
-        responses.post(f"{BASE}/stop", json={"stopped": True})
+    def test_start_master_error_body_is_failure(self, monitor):
+        # wtl.rest reports handler exceptions as HTTP 200 + error body.
+        responses.post(f"{BASE}/start",
+                       json={"error": "RuntimeError('no config')"})
+        responses.get(f"{BASE}/status", json={"state": "off"})
+        responses.get(f"{BASE}/get-frame0-time", json={})
+        ok, message = monitor.start_master()
+        assert ok is False
+        assert "no config" in message
+
+    @responses.activate
+    def test_stop_master_uses_get_and_repolls(self, monitor):
+        # GET, not POST: wtl.rest serves argument-less endpoints for GET
+        # only (POST /stop is a 405 — the original silent-stop bug).
+        stop = responses.get(f"{BASE}/stop", json={})
         responses.get(f"{BASE}/status", json={"state": "off"})
         responses.get(f"{BASE}/get-frame0-time", json={})
         ok, message = monitor.stop_master()
         assert ok is True
+        assert stop.call_count == 1
         assert monitor.state == "off"
 
     @responses.activate
-    def test_stop_master_failure_still_repolls(self, monitor):
-        responses.post(f"{BASE}/stop", status=500)
+    def test_stop_master_http_failure_still_repolls(self, monitor):
+        responses.get(f"{BASE}/stop", status=500)
         responses.get(f"{BASE}/status", json={"state": "on"})
         responses.get(f"{BASE}/get-frame0-time", json={})
         ok, message = monitor.stop_master()
         assert ok is False
         assert monitor.state == "on"
+
+    @responses.activate
+    def test_stop_master_remote_crash_is_failure(self, monitor):
+        # The live failure mode: stop() raised remotely, wtl returned
+        # 200 with the exception in an error body, state wedged.
+        responses.get(f"{BASE}/stop", json={
+            "error": "AttributeError(\"'FPGAMaster' object has no "
+                     "attribute 'iceboard_cb'\")"})
+        responses.get(f"{BASE}/status", json={"state": "stopping"})
+        responses.get(f"{BASE}/get-frame0-time", json={})
+        ok, message = monitor.stop_master()
+        assert ok is False
+        assert "iceboard_cb" in message
+        assert monitor.state == "stopping"
 
 
 class TestFpgaMonitorPollIfStale:

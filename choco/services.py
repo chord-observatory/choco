@@ -48,6 +48,22 @@ def _get_with_retry(url: str, timeout: float) -> requests.Response:
         return resp
 
 
+def _wtl_result(resp: requests.Response) -> tuple[bool, str]:
+    """Interpret a wtl.rest control response.
+
+    fpga_master's server (wtl.rest) reports handler exceptions as HTTP
+    200 with an ``{"error": ...}`` JSON body — a status-code check alone
+    reads a crashed stop as success.  Returns ``(ok, message)``.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        return True, resp.text[:300]
+    if isinstance(data, dict) and "error" in data:
+        return False, str(data["error"])[:300]
+    return True, str(data)[:300]
+
+
 # --- FPGA master --------------------------------------------------------
 
 class FpgaMonitor:
@@ -192,33 +208,38 @@ class FpgaMonitor:
             resp = requests.post(f"{self.base_url}/start", json={},
                                  timeout=self.timeout)
             resp.raise_for_status()
-            message = str(resp.json())
-        except (requests.RequestException, ValueError) as e:
+        except requests.RequestException as e:
             return False, f"{type(e).__name__}: {e}"
+        ok, message = _wtl_result(resp)
         self.poll_once()
-        return True, message
+        return ok, message
 
     def stop_master(self) -> tuple[bool, str]:
-        """POST ``/stop`` and wait for the shutdown to complete.
+        """GET ``/stop`` and wait for the shutdown to complete.
 
-        Blocks up to ``STOP_TIMEOUT_S`` — run from a greenlet.  The
-        outcome is logged and the state re-polled either way, so the
-        page reflects reality on its next refresh.
+        GET, not POST: wtl.rest registers argument-less endpoints for
+        GET only (a POST gets 405 Method Not Allowed).  Blocks up to
+        ``STOP_TIMEOUT_S`` — run from a greenlet.  The outcome is
+        logged and the state re-polled either way, so the page reflects
+        reality on its next refresh.
         """
         if not self.configured:
             return False, "fpga_master is not configured"
         try:
-            resp = requests.post(f"{self.base_url}/stop", json={},
-                                 timeout=self.STOP_TIMEOUT_S)
+            resp = requests.get(f"{self.base_url}/stop",
+                                timeout=self.STOP_TIMEOUT_S)
             resp.raise_for_status()
-            message = resp.text[:300]
         except requests.RequestException as e:
             logger.error(f"fpga_master stop failed: {e}")
             self.poll_once()
             return False, f"{type(e).__name__}: {e}"
-        logger.info(f"fpga_master stop completed: {message}")
+        ok, message = _wtl_result(resp)
+        if ok:
+            logger.info(f"fpga_master stop completed: {message}")
+        else:
+            logger.error(f"fpga_master stop failed remotely: {message}")
         self.poll_once()
-        return True, message
+        return ok, message
 
     def run(self) -> None:
         """Poll forever on ``POLL_INTERVAL_S``.  Designed for gevent.spawn."""
