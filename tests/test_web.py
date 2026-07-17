@@ -555,6 +555,21 @@ class TestServicePage:
         assert resp.status_code == 200
         assert name.upper() in resp.data.decode()
 
+    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal"])
+    def test_status_partial_renders(self, client, name):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get(f"/partials/service-status/{name}")
+        assert resp.status_code == 200
+        assert "Unit" in resp.data.decode()
+
+    def test_status_partial_unknown_404(self, client):
+        _login(client)
+        resp = client.get("/partials/service-status/nope")
+        assert resp.status_code == 404
+
     def test_fpga_page_renders(self, client):
         _login(client)
         resp = client.get("/service/fpga")
@@ -848,7 +863,7 @@ class TestFpgaControl:
             resp = client.get("/partials/service-fpga")
         assert resp.status_code == 200
         assert "on" in resp.data.decode()
-        pis.assert_called_once_with(10)
+        pis.assert_called_once_with(5)
 
 
 class TestPsuControl:
@@ -942,6 +957,18 @@ class TestPsuControl:
         body = resp.data.decode()
         assert '/service/psu/set' not in body
         assert '<span class="chan' in body
+
+    def test_status_partial_renders_and_polls(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        with patch.object(monitor, "poll_if_stale") as pis:
+            resp = client.get("/partials/service-psu")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "SPI bus 0" in body
+        assert '/service/psu/set' in body  # toggles live inside the partial
+        pis.assert_called_once_with(5)
 
 
 # --- Status API + metrics ---

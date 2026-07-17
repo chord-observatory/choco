@@ -706,12 +706,51 @@ def partial_service_fpga():
     monitor = current_app.config.get("fpga_monitor")
     if monitor is None:
         abort(404)
-    monitor.poll_if_stale(10)
+    monitor.poll_if_stale(5)
     fpga = monitor.to_dict()
     return render_template(
         "_service_fpga_status.html", fpga=fpga,
         frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
         actions=monitor.actions,
+        now_ts=time.time(),
+    )
+
+
+@bp.route("/partials/service-psu")
+@login_required
+def partial_service_psu():
+    """Live status + channel grid for the PSU page (5s htmx poll).
+
+    poll_if_stale tightens the monitor's effective cadence only while
+    someone is actually watching.
+    """
+    monitor = current_app.config.get("psu_monitor")
+    if monitor is None:
+        abort(404)
+    monitor.poll_if_stale(5)
+    psu_cfg = current_app.config.get("psu_cfg") or {}
+    return render_template(
+        "_service_psu_status.html", psu=monitor.to_dict(),
+        channels=monitor.channels, boards=monitor.boards,
+        control=bool(psu_cfg.get("control", True)),
+        now_ts=time.time(),
+    )
+
+
+@bp.route("/partials/service-status/<name>")
+@login_required
+def partial_service_status(name):
+    """Live facts + state-file summary for a job page (5s htmx poll)."""
+    svc = _service_registry().get(name)
+    if svc is None:
+        abort(404)
+    job = job_status(svc["unit"], state_file=svc["state_file"],
+                     stale_after_s=svc["stale_after_s"])
+    timer = timer_status(svc["timer"]) if svc["timer"] else None
+    return render_template(
+        "_service_status.html",
+        name=name, svc=svc, job=job, timer=timer,
+        detail=_service_detail(name, svc),
         now_ts=time.time(),
     )
 

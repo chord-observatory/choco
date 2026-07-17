@@ -397,6 +397,18 @@ class PsuMonitor:
             self.health = "no_states"
             self.error = f"/channel_states: {type(e).__name__}: {e}"
 
+    def poll_if_stale(self, max_age_s: float = 10.0) -> None:
+        """Poll now if the last poll is older than ``max_age_s``.
+
+        Lets the /service/psu page tighten the effective cadence while
+        an operator is actually watching, without touching the 30s loop.
+        """
+        if not self.configured:
+            return
+        if (self.last_polled is None
+                or time.time() - self.last_polled > max_age_s):
+            self.poll_once()
+
     def set_channel(self, bus: int, board: int, chip: str, channel: int,
                     on: bool) -> tuple[bool, str]:
         """Power one channel on/off, read-modify-write on the chip's OUT byte.
