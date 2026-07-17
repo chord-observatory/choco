@@ -189,10 +189,13 @@ Every page (for logged-in users) shows a thin strip above the nav with pill badg
 - **FPGA** — colour-coded readout from the `fpga_master` daemon. Green when `/status` responds and `/get-frame0-time` parses (timing is good); yellow when `/status` is reachable but timing can't be read; red when the daemon is unreachable; grey when no `fpga_master` block is configured. The tooltip carries the host, last-seen, error, and current `frame0_ns`.
 - **EOP** — health of the EOP broadcast job. Red when `systemctl show choco-eop-broadcast.service` reports the last run failed; yellow when the `eop-state.json` mtime is older than ~25 hours (the job rewrites it on every successful daily run); green when the last run succeeded and the state file is fresh; grey when the unit has never run or health can't be determined.
 - **BFFS** — health of the bffs feed-flagging job (`choco-bffs-flag.service`), from the same generic helper. Green/red from the last run's systemd result; the state-file mtime is shown in the tooltip as "last change" but doesn't age the badge, since bffs only rewrites its state when the bad-feed list changes.
+- **EIGENCAL** — health of the eigencal gain-calibration job (`choco-eigencal.service`), same helper. Green/red from the last run's systemd result (an exit-2 quality-gate failure shows red); the state-file mtime is "last calibration" in the tooltip but doesn't age the badge, since daytime transits are skipped by design.
 
 Job health combines two cheap signals — the unit's `Result` from `systemctl show` and the job state file's mtime — with no timestamp parsing. The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
 
-**Clicking a job badge** (EOP, BFFS) opens a log panel under the header with the unit's 50 most recent journal lines (`journalctl -u <unit>`), so a red badge can be diagnosed without leaving the browser. The panel has refresh/close buttons; only the known service units can be viewed (`choco`, `eop`, `bffs` — an allowlist, not arbitrary units).
+### Service pages
+
+**Clicking a badge** opens that service's detail page at `/service/<name>` (`choco`, `eop`, `bffs`, `eigencal`, `fpga` — an allowlist, not arbitrary units). Each job page shows the unit's last result, the timer's last/next run, a summary from the job's state file — the current bad-feed list and recent transitions for bffs, the EOP table's time span, the last processed transit for eigencal — and the unit's recent journal lines (`journalctl -u <unit>`, auto-refreshed, 50–1000 lines), so a red badge can be diagnosed without leaving the browser. The FPGA page shows the monitor's live view of the `fpga_master` daemon (health, `frame0`, last seen).
 
 ### Dashboard
 

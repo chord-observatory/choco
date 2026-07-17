@@ -13,6 +13,7 @@ gevent greenlet and a job query is one ``systemctl`` subprocess plus one
 ``stat()`` call.
 """
 
+import json
 import logging
 import shutil
 import subprocess
@@ -145,14 +146,16 @@ _SYSTEMCTL_PROPS = (
 EOP_STALE_AFTER_S = 25 * 3600
 
 
-def _systemctl_show(unit: str, timeout: float = 5.0) -> dict[str, str] | None:
+def _systemctl_show(unit: str, timeout: float = 5.0,
+                    props: tuple[str, ...] = _SYSTEMCTL_PROPS,
+                    ) -> dict[str, str] | None:
     """Return ``systemctl show <unit>`` properties as a dict, or None on failure."""
     if shutil.which("systemctl") is None:
         return None
     try:
         result = subprocess.run(
             ["systemctl", "show", unit,
-             "--property=" + ",".join(_SYSTEMCTL_PROPS),
+             "--property=" + ",".join(props),
              "--no-pager"],
             capture_output=True, text=True, timeout=timeout,
         )
@@ -193,6 +196,50 @@ def job_logs(service_unit: str, lines: int = 50,
                      f"{result.stderr.strip()}")
         return None
     return result.stdout.splitlines()
+
+
+# Schedule facts for a job's timer.  The timestamp values are systemd's
+# own human-readable strings — displayed as-is, never parsed.
+_TIMER_PROPS = (
+    "LoadState",
+    "ActiveState",
+    "NextElapseUSecRealtime",
+    "LastTriggerUSec",
+)
+
+
+def timer_status(timer_unit: str) -> dict | None:
+    """Schedule facts for a job's systemd timer, for display only.
+
+    Returns None when the timer isn't known to systemd (no systemctl on
+    the host, or the unit isn't loaded).
+    """
+    props = _systemctl_show(timer_unit, props=_TIMER_PROPS)
+    if props is None or props.get("LoadState") != "loaded":
+        return None
+    return {
+        "unit": timer_unit,
+        "active_state": props.get("ActiveState") or None,
+        "next_elapse": props.get("NextElapseUSecRealtime") or None,
+        "last_trigger": props.get("LastTriggerUSec") or None,
+    }
+
+
+def read_state_json(path: Path | str | None) -> dict | None:
+    """A job's JSON state file as a dict, or None (missing/unreadable/invalid).
+
+    The service pages treat a missing state file the same as an empty
+    one — the job may simply never have run on this host.
+    """
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        logger.debug(f"state file {path}: {e}")
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def job_status(service_unit: str, state_file: Path | None = None,

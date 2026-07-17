@@ -309,9 +309,13 @@ class TestServicesPartial:
         body = resp.data.decode()
         assert "EOP" in body
         assert "BFFS" in body
+        assert "EIGENCAL" in body
         # FPGA badge is only rendered if a monitor is set on app.config.
         # The test app does install one (unconfigured), so it shows up.
         assert "FPGA" in body
+        # Badges link to the service pages.
+        assert '/service/eop' in body
+        assert '/service/fpga' in body
 
 
 class TestMaintenanceToggles:
@@ -492,7 +496,16 @@ class TestServiceLogs:
         body = resp.data.decode()
         assert "alpha entry" in body
         assert "beta entry" in body
-        jl.assert_called_once_with("choco-eop-broadcast.service", lines=50)
+        jl.assert_called_once_with("choco-eop-broadcast.service", lines=100)
+
+    def test_lines_query_param_clamped(self, client):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_logs", return_value=[]) as jl:
+            client.get("/partials/service-logs/eop?lines=500")
+            client.get("/partials/service-logs/eop?lines=999999")
+            client.get("/partials/service-logs/eop?lines=bogus")
+        assert [c.kwargs["lines"] for c in jl.call_args_list] == [500, 1000, 100]
 
     def test_journal_unavailable_message(self, client):
         from unittest.mock import patch
@@ -508,7 +521,124 @@ class TestServiceLogs:
         with patch("choco.web.job_logs", return_value=["choco line"]) as jl:
             resp = client.get("/partials/service-logs/choco")
         assert resp.status_code == 200
-        jl.assert_called_once_with("choco.service", lines=50)
+        jl.assert_called_once_with("choco.service", lines=100)
+
+
+# --- /service/<name> pages ---
+
+_JOB_STUB = {
+    "health": "ok", "state_mtime": None, "result": "success",
+    "systemd": True, "active_state": "inactive", "sub_state": "dead",
+    "exit_status": "0", "state_file": None, "unit": "test.service",
+}
+
+
+class TestServicePage:
+    def test_requires_login(self, client):
+        resp = client.get("/service/eop", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_name_is_404(self, client):
+        _login(client)
+        resp = client.get("/service/not-a-service")
+        assert resp.status_code == 404
+
+    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal"])
+    def test_job_pages_render(self, client, name):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get(f"/service/{name}")
+        assert resp.status_code == 200
+        assert name.upper() in resp.data.decode()
+
+    def test_fpga_page_renders(self, client):
+        _login(client)
+        resp = client.get("/service/fpga")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "FPGA" in body
+        assert "not configured" in body
+
+    def test_timer_facts_shown(self, client):
+        from unittest.mock import patch
+        _login(client)
+        timer = {"unit": "choco-eop-broadcast.timer", "active_state": "active",
+                 "next_elapse": "Fri 2026-07-17 12:00:00 UTC",
+                 "last_trigger": "Thu 2026-07-16 12:00:00 UTC"}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=timer) as ts:
+            resp = client.get("/service/eop")
+        body = resp.data.decode()
+        assert "Fri 2026-07-17 12:00:00 UTC" in body
+        assert "Thu 2026-07-16 12:00:00 UTC" in body
+        ts.assert_called_once_with("choco-eop-broadcast.timer")
+
+    def test_bffs_detail_from_state_file(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state = {
+            "updated": 1700000077.7,
+            "update_id": "bffs-1700000077750",
+            "bad_inputs": ["f1", "f9"],
+            "history": [
+                {"time": 1700000000.0, "update_id": "bffs-x",
+                 "became_bad": ["f1"], "became_good": [],
+                 "bad_inputs": ["f1"]},
+                {"time": 1700000077.4, "update_id": "bffs-1700000077750",
+                 "became_bad": ["f9"], "became_good": [],
+                 "bad_inputs": ["f1", "f9"]},
+            ],
+        }
+        state_file = tmp_path / "bffs-state.json"
+        state_file.write_text(json.dumps(state))
+        app.config["bffs_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/bffs")
+        body = resp.data.decode()
+        assert "f1, f9" in body
+        assert "bffs-1700000077750" in body
+        assert "Recent transitions" in body
+
+    def test_eigencal_detail_from_state_file(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state = {"updated": 1700000200.0, "transit_time": 1700000100.0,
+                 "source": "CYG_A", "good_frac": 0.87, "sent": True}
+        state_file = tmp_path / "eigencal-state.json"
+        state_file.write_text(json.dumps(state))
+        app.config["eigencal_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/eigencal")
+        body = resp.data.decode()
+        assert "CYG_A" in body
+        assert "87.0%" in body
+
+    def test_eop_detail_table_span(self, client, app, configs_dir):
+        from unittest.mock import patch
+        _login(client)
+        table = [{"t_inst_ns": 1700000000_000000000},
+                 {"t_inst_ns": 1700345600_000000000}]
+        (configs_dir / "eop-state.json").write_text(
+            json.dumps({"earth_orientation_parameter_table": table}))
+        app.config["eop_cfg"] = {"state_file": "eop-state.json"}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/eop")
+        body = resp.data.decode()
+        assert "2 entries" in body
+
+    def test_choco_detail_counts(self, client):
+        from unittest.mock import patch
+        _login(client)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)):
+            resp = client.get("/service/choco")
+        body = resp.data.decode()
+        assert "3 registered" in body
+        assert "3 in maintenance" in body
 
 
 # --- Status API + metrics ---

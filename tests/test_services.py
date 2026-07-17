@@ -8,7 +8,9 @@ from unittest.mock import patch, MagicMock
 import pytest
 import responses
 
-from choco.services import FpgaMonitor, job_status, EOP_STALE_AFTER_S
+from choco.services import (
+    FpgaMonitor, job_status, timer_status, read_state_json, EOP_STALE_AFTER_S,
+)
 
 
 HOST = "fpga.example"
@@ -223,3 +225,60 @@ class TestJobLogs:
         from choco.services import job_logs
         with _with_systemctl(), self._patch_journalctl("", returncode=1):
             assert job_logs(UNIT) is None
+
+
+TIMER = "choco-eop-broadcast.timer"
+
+
+def _timer_props(**overrides) -> str:
+    base = {
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "NextElapseUSecRealtime": "Fri 2026-07-17 12:00:00 UTC",
+        "LastTriggerUSec": "Thu 2026-07-16 12:00:00 UTC",
+    }
+    base.update(overrides)
+    return "\n".join(f"{k}={v}" for k, v in base.items())
+
+
+class TestTimerStatus:
+    def test_loaded_timer(self):
+        with _with_systemctl(), _patch_systemctl(_timer_props()):
+            out = timer_status(TIMER)
+        assert out["unit"] == TIMER
+        assert out["active_state"] == "active"
+        assert out["next_elapse"].startswith("Fri 2026-07-17")
+        assert out["last_trigger"].startswith("Thu 2026-07-16")
+
+    def test_unknown_timer_is_none(self):
+        # systemctl show of a nonexistent unit exits 0 with LoadState=not-found.
+        with _with_systemctl(), \
+             _patch_systemctl(_timer_props(LoadState="not-found")):
+            assert timer_status(TIMER) is None
+
+    def test_no_systemctl_is_none(self):
+        with _no_systemctl():
+            assert timer_status(TIMER) is None
+
+
+class TestReadStateJson:
+    def test_reads_dict(self, tmp_path):
+        p = tmp_path / "state.json"
+        p.write_text('{"bad_inputs": ["f1"], "updated": 1.0}')
+        assert read_state_json(p) == {"bad_inputs": ["f1"], "updated": 1.0}
+
+    def test_missing_file_is_none(self, tmp_path):
+        assert read_state_json(tmp_path / "missing.json") is None
+
+    def test_none_path_is_none(self):
+        assert read_state_json(None) is None
+
+    def test_invalid_json_is_none(self, tmp_path):
+        p = tmp_path / "state.json"
+        p.write_text("{not json")
+        assert read_state_json(p) is None
+
+    def test_non_dict_json_is_none(self, tmp_path):
+        p = tmp_path / "state.json"
+        p.write_text("[1, 2, 3]")
+        assert read_state_json(p) is None

@@ -39,6 +39,7 @@ _DEFAULT_CONFIG = {
     "fpga_master": {},
     "eop": {},
     "bffs": {},
+    "eigencal": {},
     "ldap": {},
 }
 
@@ -83,6 +84,7 @@ def load_config(path: str | Path) -> dict:
     if legacy_port and not config["fpga_master"].get("port"):
         config["fpga_master"]["port"] = legacy_port
     config["bffs"] = raw.get("bffs") or {}
+    config["eigencal"] = raw.get("eigencal") or {}
     config["ldap"] = raw.get("ldap") or {}
     return config
 
@@ -136,6 +138,7 @@ def create_app(
     app.config["fpga_monitor"] = fpga_monitor
     app.config["eop_cfg"] = config.get("eop") or {}
     app.config["bffs_cfg"] = config.get("bffs") or {}
+    app.config["eigencal_cfg"] = config.get("eigencal") or {}
     app.config["configs_dir"] = configs_dir
     # Initialize authentication
     init_auth(app, config)

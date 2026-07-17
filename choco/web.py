@@ -13,7 +13,9 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
-from .services import job_status, job_logs, EOP_STALE_AFTER_S
+from .services import (
+    job_status, job_logs, timer_status, read_state_json, EOP_STALE_AFTER_S,
+)
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
 
@@ -439,19 +441,60 @@ def partial_dashboard_table():
     return render_template("_dashboard_table.html", nodes=registry.nodes)
 
 
-def _service_units() -> dict[str, str]:
-    """Name -> systemd unit for the units whose journals may be viewed.
+def _service_registry() -> dict[str, dict]:
+    """Everything the services strip and /service/<name> pages know.
 
-    Doubles as the allowlist for the log viewer: only these units can
-    be read through the web UI.
+    Keyed by page slug.  ``unit`` doubles as the allowlist for the
+    journal viewer: only these units can be read through the web UI.
+    Jobs follow the choco-<name>.service / choco-<name>.timer naming,
+    so the timer unit is derived from the service unit.
     """
     eop_cfg = current_app.config.get("eop_cfg") or {}
     bffs_cfg = current_app.config.get("bffs_cfg") or {}
+    eigencal_cfg = current_app.config.get("eigencal_cfg") or {}
+    configs_dir = current_app.config.get("configs_dir")
+
+    # EOP rewrites its state file on every successful (daily) run, so
+    # the mtime doubles as "last successful run" and goes stale.
+    eop_state = None
+    if configs_dir and eop_cfg.get("state_file"):
+        eop_state = Path(configs_dir) / eop_cfg["state_file"]
+
+    def job(unit: str, state_file, stale_after_s=None,
+            mtime_label="last run") -> dict:
+        return {
+            "unit": unit,
+            "timer": unit.replace(".service", ".timer"),
+            "state_file": state_file,
+            "stale_after_s": stale_after_s,
+            "mtime_label": mtime_label,
+        }
+
     return {
-        "choco": "choco.service",
-        "eop": eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
-        "bffs": bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
+        "choco": {"unit": "choco.service", "timer": None, "state_file": None,
+                  "stale_after_s": None, "mtime_label": None},
+        "eop": job(eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
+                   eop_state, EOP_STALE_AFTER_S, "last run"),
+        # bffs rewrites its state file only when the bad-feed list
+        # changes, so no staleness threshold — the mtime is "last change".
+        "bffs": job(bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
+                    Path(bffs_cfg["state_file"])
+                    if bffs_cfg.get("state_file") else None,
+                    None, "last change"),
+        # eigencal rewrites its state file once per processed transit;
+        # transits skipped for daytime are silent by design, so an old
+        # mtime is informational, not a health downgrade.
+        "eigencal": job(eigencal_cfg.get("service_unit")
+                        or "choco-eigencal.service",
+                        Path(eigencal_cfg["state_file"])
+                        if eigencal_cfg.get("state_file") else None,
+                        None, "last calibration"),
     }
+
+
+def _service_units() -> dict[str, str]:
+    """Name -> systemd unit for the units whose journals may be viewed."""
+    return {name: s["unit"] for name, s in _service_registry().items()}
 
 
 def _services_health() -> dict:
@@ -460,42 +503,36 @@ def _services_health() -> dict:
     Shared by the header strip, /api/status, and /metrics.
     """
     monitor = current_app.config.get("fpga_monitor")
-    eop_cfg = current_app.config.get("eop_cfg") or {}
-    bffs_cfg = current_app.config.get("bffs_cfg") or {}
-    configs_dir = current_app.config.get("configs_dir")
-    units = _service_units()
-
-    # EOP rewrites its state file on every successful (daily) run, so
-    # the mtime doubles as "last successful run" and goes stale.
-    eop_state = None
-    if configs_dir and eop_cfg.get("state_file"):
-        eop_state = Path(configs_dir) / eop_cfg["state_file"]
-
-    # bffs rewrites its state file only when the bad-feed list changes,
-    # so no staleness threshold — the mtime is just "last change".
-    bffs_state = (Path(bffs_cfg["state_file"])
-                  if bffs_cfg.get("state_file") else None)
-
-    return {
-        "fpga": monitor.to_dict() if monitor is not None else None,
-        "eop": job_status(units["eop"], state_file=eop_state,
-                          stale_after_s=EOP_STALE_AFTER_S),
-        "bffs": job_status(units["bffs"], state_file=bffs_state),
-    }
+    registry = _service_registry()
+    health = {"fpga": monitor.to_dict() if monitor is not None else None}
+    for name in ("eop", "bffs", "eigencal"):
+        svc = registry[name]
+        health[name] = job_status(svc["unit"], state_file=svc["state_file"],
+                                  stale_after_s=svc["stale_after_s"])
+    return health
 
 
 @bp.route("/partials/services")
 @login_required
 def partial_services():
-    """Render the FPGA + job (EOP, bffs) status strip."""
+    """Render the FPGA + job (EOP, bffs, eigencal) status strip."""
     services = _services_health()
     return render_template(
         "_services_status.html",
         fpga=services["fpga"],
         eop=services["eop"],
         bffs=services["bffs"],
+        eigencal=services["eigencal"],
         now_ts=time.time(),
     )
+
+
+def _journal_lines_arg(default: int = 100) -> int:
+    try:
+        nlines = int(request.args.get("lines", default))
+    except (TypeError, ValueError):
+        nlines = default
+    return max(10, min(nlines, 1000))
 
 
 @bp.route("/partials/service-logs/<name>")
@@ -505,10 +542,107 @@ def partial_service_logs(name):
     unit = _service_units().get(name)
     if unit is None:
         abort(404)
-    lines = job_logs(unit, lines=50)
+    nlines = _journal_lines_arg()
+    lines = job_logs(unit, lines=nlines)
     return render_template(
         "_service_logs.html",
-        name=name, unit=unit, lines=lines, now_ts=time.time(),
+        name=name, unit=unit, lines=lines, nlines=nlines, now_ts=time.time(),
+    )
+
+
+def _fmt_utc(ts) -> str | None:
+    if not ts:
+        return None
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
+
+
+def _service_detail(name: str, svc: dict) -> dict | None:
+    """Per-service extras for the /service/<name> page.
+
+    Jobs are summarized from their JSON state file (missing or invalid
+    state -> None, and the page shows only the common facts); choco is
+    summarized from the live registry.
+    """
+    if name == "choco":
+        registry = _registry()
+        return {
+            "started_at": _fmt_utc(_STARTED_AT),
+            "nodes_total": len(registry.nodes),
+            "maintenance": sum(
+                1 for n in registry.nodes.values() if n.maintenance),
+            "started_desired": sum(
+                1 for n in registry.nodes.values() if n.started),
+            "queued": sum(len(n._queue) for n in registry.nodes.values()),
+            "configs_dir": str(current_app.config.get("configs_dir")),
+        }
+
+    state = read_state_json(svc.get("state_file"))
+    if state is None:
+        return None
+
+    if name == "eop":
+        table = state.get("earth_orientation_parameter_table") or []
+        stamps = sorted(e["t_inst_ns"] for e in table
+                        if isinstance(e, dict) and "t_inst_ns" in e)
+        if not stamps:
+            return None
+        # t_inst_ns is instrument time (frame0-anchored TAI ns), within
+        # leap-seconds of unix time — fine for a span display.
+        return {
+            "entries": len(table),
+            "first": _fmt_utc(stamps[0] / 1e9),
+            "last": _fmt_utc(stamps[-1] / 1e9),
+        }
+
+    if name == "bffs":
+        history = state.get("history") or []
+        return {
+            "updated": _fmt_utc(state.get("updated")),
+            "update_id": state.get("update_id"),
+            "bad_inputs": state.get("bad_inputs") or [],
+            "history": [dict(h, time_fmt=_fmt_utc(h.get("time")))
+                        for h in reversed(history[-10:])],
+            "history_total": len(history),
+        }
+
+    if name == "eigencal":
+        return {
+            "updated": _fmt_utc(state.get("updated")),
+            "transit_time": _fmt_utc(state.get("transit_time")),
+            "source": state.get("source"),
+            "good_frac": state.get("good_frac"),
+            "sent": state.get("sent"),
+        }
+
+    return None
+
+
+@bp.route("/service/<name>")
+@login_required
+def service_page(name):
+    """Detail page for one service badge: health, schedule, state, journal."""
+    if name == "fpga":
+        monitor = current_app.config.get("fpga_monitor")
+        if monitor is None:
+            abort(404)
+        fpga = monitor.to_dict()
+        return render_template(
+            "service_fpga.html", fpga=fpga,
+            frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+            now_ts=time.time(),
+        )
+    svc = _service_registry().get(name)
+    if svc is None:
+        abort(404)
+    job = job_status(svc["unit"], state_file=svc["state_file"],
+                     stale_after_s=svc["stale_after_s"])
+    timer = timer_status(svc["timer"]) if svc["timer"] else None
+    return render_template(
+        "service.html",
+        name=name, svc=svc, job=job, timer=timer,
+        detail=_service_detail(name, svc),
+        nlines=_journal_lines_arg(),
+        now_ts=time.time(),
     )
 
 

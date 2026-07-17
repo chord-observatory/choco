@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% from "_service_macros.html" import job_color, job_label, since, pill_style %}
+
+{% block title %}{{ name | upper }} — CHOCO{% endblock %}
+
+{% block styles %}
+dl.service-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.15em 1.25em;
+    margin: 0.5em 0 1.5em 0;
+    font-size: 0.95em;
+}
+dl.service-facts dt { font-weight: 600; }
+dl.service-facts dd { margin: 0; }
+.journal-header { display: flex; align-items: baseline; gap: 0.75em; }
+.journal-header .lines-picker { margin-left: auto; font-size: 0.85em; }
+{% endblock %}
+
+{% block content %}
+<hgroup style="margin-bottom: 0.75em;">
+    <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
+        {{ name | upper }}
+        <span style="{{ pill_style() }} background: {{ job_color(job.health) }}; font-size: 0.55em;">{{ job_label(job.health) }}</span>
+    </h2>
+    {% if name == 'choco' %}
+    <p>The config orchestrator itself.</p>
+    {% elif name == 'eop' %}
+    <p>Earth-orientation-parameter broadcast — merges IERS data and pushes the EOP table to kotekan daily.</p>
+    {% elif name == 'bffs' %}
+    <p>Feed flagging — combines per-feed health sources and pushes the bad-input list to kotekan on change.</p>
+    {% elif name == 'eigencal' %}
+    <p>Point-source gain calibration — fits per-input complex gains once per calibrator transit, at night.</p>
+    {% endif %}
+</hgroup>
+
+<dl class="service-facts">
+    <dt>Unit</dt>
+    <dd><code>{{ job.unit }}</code>{% if job.active_state %} ({{ job.active_state }}{% if job.sub_state %}/{{ job.sub_state }}{% endif %}){% endif %}</dd>
+    {% if job.result %}
+    <dt>Last result</dt>
+    <dd>{{ job.result }}{% if job.exit_status and job.exit_status != '0' %} (exit status {{ job.exit_status }}){% endif %}</dd>
+    {% endif %}
+    {% if not job.systemd %}
+    <dt>systemd</dt>
+    <dd><em>not reachable — unit state unknown</em></dd>
+    {% endif %}
+    {% if timer %}
+    <dt>Timer</dt>
+    <dd><code>{{ timer.unit }}</code>{% if timer.active_state %} ({{ timer.active_state }}){% endif %}</dd>
+    {% if timer.last_trigger %}
+    <dt>Last trigger</dt>
+    <dd>{{ timer.last_trigger }}</dd>
+    {% endif %}
+    {% if timer.next_elapse %}
+    <dt>Next run</dt>
+    <dd>{{ timer.next_elapse }}</dd>
+    {% endif %}
+    {% endif %}
+    {% if job.state_file %}
+    <dt>State file</dt>
+    <dd><code>{{ job.state_file }}</code>{% if job.state_mtime %} — {{ svc.mtime_label }} {{ since(job.state_mtime, now_ts) }}{% endif %}</dd>
+    {% endif %}
+</dl>
+
+{% if name == 'choco' and detail %}
+<dl class="service-facts">
+    <dt>Started</dt><dd>{{ detail.started_at }}</dd>
+    <dt>Nodes</dt>
+    <dd>{{ detail.nodes_total }} registered — {{ detail.started_desired }} desired started, {{ detail.maintenance }} in maintenance</dd>
+    <dt>Change queue</dt><dd>{{ detail.queued }} item{{ '' if detail.queued == 1 else 's' }} pending</dd>
+    <dt>Configs</dt><dd><code>{{ detail.configs_dir }}</code></dd>
+</dl>
+{% elif name == 'eop' and detail %}
+<dl class="service-facts">
+    <dt>EOP table</dt>
+    <dd>{{ detail.entries }} entries spanning {{ detail.first }} &rarr; {{ detail.last }}</dd>
+</dl>
+{% elif name == 'bffs' and detail %}
+<dl class="service-facts">
+    <dt>Bad feeds</dt>
+    <dd>
+        {{ detail.bad_inputs | length }}
+        {%- if detail.bad_inputs %}: <code>{{ detail.bad_inputs | join(', ') }}</code>{% endif %}
+    </dd>
+    {% if detail.updated %}
+    <dt>Last change</dt>
+    <dd>{{ detail.updated }}{% if detail.update_id %} (<code>{{ detail.update_id }}</code>){% endif %}</dd>
+    {% endif %}
+</dl>
+{% if detail.history %}
+<h4 style="margin-bottom: 0.25em;">Recent transitions</h4>
+<figure style="margin: 0 0 1.5em 0; overflow-x: auto;">
+<table style="margin: 0; font-size: 0.85em;">
+    <thead>
+        <tr><th>Time</th><th>Became bad</th><th>Became good</th><th>Bad after</th></tr>
+    </thead>
+    <tbody>
+        {% for h in detail.history %}
+        <tr>
+            <td style="white-space: nowrap;">{{ h.time_fmt or '?' }}</td>
+            <td><code>{{ h.became_bad | join(', ') if h.became_bad else '—' }}</code></td>
+            <td><code>{{ h.became_good | join(', ') if h.became_good else '—' }}</code></td>
+            <td>{{ h.bad_inputs | length if h.bad_inputs is defined else '?' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% if detail.history_total > detail.history | length %}
+<p style="font-size: 0.85em; margin-top: -1em;"><em>{{ detail.history_total }} transitions in total; showing the last {{ detail.history | length }}.</em></p>
+{% endif %}
+{% endif %}
+{% elif name == 'eigencal' and detail %}
+<dl class="service-facts">
+    {% if detail.source %}
+    <dt>Source</dt><dd>{{ detail.source }}</dd>
+    {% endif %}
+    {% if detail.transit_time %}
+    <dt>Last transit</dt><dd>{{ detail.transit_time }}</dd>
+    {% endif %}
+    {% if detail.good_frac is not none %}
+    <dt>Good fraction</dt><dd>{{ '%.1f' | format(detail.good_frac * 100) }}%</dd>
+    {% endif %}
+    <dt>Gains sent</dt>
+    <dd>{% if detail.sent %}yes{% else %}no — archived only (failed the quality gate, or a dry run){% endif %}</dd>
+    {% if detail.updated %}
+    <dt>Processed</dt><dd>{{ detail.updated }}</dd>
+    {% endif %}
+</dl>
+{% endif %}
+
+<section>
+    <div class="journal-header">
+        <h4 style="margin-bottom: 0.25em;">Journal</h4>
+        <span class="lines-picker">
+            {% for n in (50, 100, 500, 1000) %}
+            {% if n == nlines %}<strong>{{ n }}</strong>{% else %}<a href="/service/{{ name }}?lines={{ n }}">{{ n }}</a>{% endif %}
+            {%- if not loop.last %} · {% endif %}
+            {% endfor %}
+            lines
+        </span>
+    </div>
+    <div id="journal"
+         hx-get="/partials/service-logs/{{ name }}?lines={{ nlines }}"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML"></div>
+</section>
+{% endblock %}

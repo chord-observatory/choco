@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_service_macros.html" import fpga_color, fpga_label, since, pill_style %}
+
+{% block title %}FPGA — CHOCO{% endblock %}
+
+{% block styles %}
+dl.service-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.15em 1.25em;
+    margin: 0.5em 0 1.5em 0;
+    font-size: 0.95em;
+}
+dl.service-facts dt { font-weight: 600; }
+dl.service-facts dd { margin: 0; }
+{% endblock %}
+
+{% block content %}
+<hgroup style="margin-bottom: 0.75em;">
+    <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
+        FPGA
+        <span style="{{ pill_style() }} background: {{ fpga_color(fpga.health) }}; font-size: 0.55em;">{{ fpga_label(fpga.health) }}</span>
+    </h2>
+    <p>The fpga_master daemon — runs the F-engine (ICEBoards) and stamps frame0, the timing origin
+    kotekan and the EOP table are anchored to.</p>
+</hgroup>
+
+<dl class="service-facts">
+    <dt>Endpoint</dt>
+    <dd>{% if fpga.configured %}<code>http://{{ fpga.host }}:{{ fpga.port }}</code>{% else %}<em>not configured (fpga_master.host / port)</em>{% endif %}</dd>
+    <dt>Health</dt>
+    <dd>{{ fpga.health }}</dd>
+    {% if fpga.frame0_ns %}
+    <dt>frame0</dt>
+    <dd>{{ frame0_fmt }} (<code>{{ fpga.frame0_ns }}</code> ns)</dd>
+    {% endif %}
+    <dt>Last polled</dt>
+    <dd>{{ since(fpga.last_polled, now_ts) }}</dd>
+    <dt>Last seen up</dt>
+    <dd>{{ since(fpga.last_seen, now_ts) }}</dd>
+    {% if fpga.error %}
+    <dt>Error</dt>
+    <dd><code>{{ fpga.error }}</code></dd>
+    {% endif %}
+</dl>
+{% endblock %}

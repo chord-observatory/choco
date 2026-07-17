@@ -1,69 +1,27 @@
-{% macro fpga_color(h) -%}
-{%- if h == 'ok' -%}#2ecc40
-{%- elif h == 'no_timing' -%}#ffdc00
-{%- elif h == 'unconfigured' -%}#aaa
-{%- else -%}#ff4136
-{%- endif -%}
-{%- endmacro %}
-{% macro fpga_label(h) -%}
-{%- if h == 'ok' -%}up
-{%- elif h == 'no_timing' -%}no timing
-{%- elif h == 'unconfigured' -%}not configured
-{%- elif h == 'down' -%}down
-{%- else -%}unknown
-{%- endif -%}
-{%- endmacro %}
-{% macro job_color(h) -%}
-{%- if h == 'ok' -%}#2ecc40
-{%- elif h == 'stale' -%}#ffdc00
-{%- elif h == 'never_run' -%}#aaa
-{%- elif h == 'unknown' -%}#aaa
-{%- else -%}#ff4136
-{%- endif -%}
-{%- endmacro %}
-{% macro job_label(h) -%}
-{%- if h == 'ok' -%}up
-{%- elif h == 'stale' -%}stale
-{%- elif h == 'failed' -%}down
-{%- elif h == 'never_run' -%}not run
-{%- else -%}unknown
-{%- endif -%}
-{%- endmacro %}
-{% macro since(ts) -%}
-{%- if ts -%}
-{%- set delta = (now - ts) | int -%}
-{%- if delta < 60 -%}{{ delta }}s ago
-{%- elif delta < 3600 -%}{{ (delta / 60) | int }}m ago
-{%- elif delta < 86400 -%}{{ (delta / 3600) | int }}h ago
-{%- else -%}{{ (delta / 86400) | int }}d ago
-{%- endif -%}
-{%- else -%}never
-{%- endif -%}
-{%- endmacro %}
+{% from "_service_macros.html" import fpga_color, fpga_label, job_color, job_label, since, pill_style %}
 {% set now = now_ts %}
-{% set pill_style = 'display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1;' %}
-{% macro job_pill(name, log_name, job, mtime_label) -%}
-{% set tip = name ~ ' job (' ~ job.unit ~ ')'
+{% macro job_pill(label, name, job, mtime_label) -%}
+{% set tip = label ~ ' job (' ~ job.unit ~ ')'
              ~ '\nhealth: ' ~ job.health
-             ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime) if job.state_mtime else '')
+             ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
              ~ ('\nresult: ' ~ job.result if job.result else '')
              ~ ('' if job.systemd else '\nsystemd not reachable')
-             ~ '\n\nclick for recent logs' %}
-<span title="{{ tip }}" style="{{ pill_style }} background: {{ job_color(job.health) }}; cursor: pointer;"
-      hx-get="/partials/service-logs/{{ log_name }}"
-      hx-target="#service-logs" hx-swap="innerHTML">
-    <strong>{{ name }}</strong> <span>{{ job_label(job.health) }}</span>
-</span>
+             ~ '\n\nclick for details' %}
+<a href="/service/{{ name }}" title="{{ tip }}" style="{{ pill_style() }} background: {{ job_color(job.health) }};">
+    <strong>{{ label }}</strong> <span>{{ job_label(job.health) }}</span>
+</a>
 {%- endmacro %}
 {% if fpga %}
 {% set tip = 'fpga_master at ' ~ (fpga.host or '?') ~ ':' ~ (fpga.port or '?')
              ~ '\nhealth: ' ~ fpga.health
              ~ ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else '')
-             ~ ('\nlast seen: ' ~ since(fpga.last_seen) if fpga.last_seen else '')
-             ~ ('\nerror: ' ~ fpga.error if fpga.error else '') %}
-<span title="{{ tip }}" style="{{ pill_style }} background: {{ fpga_color(fpga.health) }};">
+             ~ ('\nlast seen: ' ~ since(fpga.last_seen, now) if fpga.last_seen else '')
+             ~ ('\nerror: ' ~ fpga.error if fpga.error else '')
+             ~ '\n\nclick for details' %}
+<a href="/service/fpga" title="{{ tip }}" style="{{ pill_style() }} background: {{ fpga_color(fpga.health) }};">
     <strong>FPGA</strong> <span>{{ fpga_label(fpga.health) }}</span>
-</span>
+</a>
 {% endif %}
 {{ job_pill('EOP', 'eop', eop, 'last run') }}
 {{ job_pill('BFFS', 'bffs', bffs, 'last change') }}
+{{ job_pill('EIGENCAL', 'eigencal', eigencal, 'last calibration') }}

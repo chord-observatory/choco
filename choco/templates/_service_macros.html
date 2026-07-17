@@ -1,0 +1,46 @@
+{# Shared macros for the services strip and the /service/<name> pages. #}
+{% macro fpga_color(h) -%}
+{%- if h == 'ok' -%}#2ecc40
+{%- elif h == 'no_timing' -%}#ffdc00
+{%- elif h == 'unconfigured' -%}#aaa
+{%- else -%}#ff4136
+{%- endif -%}
+{%- endmacro %}
+{% macro fpga_label(h) -%}
+{%- if h == 'ok' -%}up
+{%- elif h == 'no_timing' -%}no timing
+{%- elif h == 'unconfigured' -%}not configured
+{%- elif h == 'down' -%}down
+{%- else -%}unknown
+{%- endif -%}
+{%- endmacro %}
+{% macro job_color(h) -%}
+{%- if h == 'ok' -%}#2ecc40
+{%- elif h == 'stale' -%}#ffdc00
+{%- elif h == 'never_run' -%}#aaa
+{%- elif h == 'unknown' -%}#aaa
+{%- else -%}#ff4136
+{%- endif -%}
+{%- endmacro %}
+{% macro job_label(h) -%}
+{%- if h == 'ok' -%}up
+{%- elif h == 'stale' -%}stale
+{%- elif h == 'failed' -%}down
+{%- elif h == 'never_run' -%}not run
+{%- else -%}unknown
+{%- endif -%}
+{%- endmacro %}
+{% macro since(ts, now) -%}
+{%- if ts -%}
+{%- set delta = (now - ts) | int -%}
+{%- if delta < 60 -%}{{ delta }}s ago
+{%- elif delta < 3600 -%}{{ (delta / 60) | int }}m ago
+{%- elif delta < 86400 -%}{{ (delta / 3600) | int }}h ago
+{%- else -%}{{ (delta / 86400) | int }}d ago
+{%- endif -%}
+{%- else -%}never
+{%- endif -%}
+{%- endmacro %}
+{% macro pill_style() -%}
+display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1; text-decoration: none;
+{%- endmacro %}

@@ -143,10 +143,6 @@
         </ul>
     </nav>
 
-    {% if current_user.is_authenticated %}
-    <div id="service-logs" class="container"></div>
-    {% endif %}
-
     <main class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
