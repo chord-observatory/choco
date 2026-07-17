@@ -1,0 +1,15 @@
+[Unit]
+Description=choco job: eigencal point-source gain calibration
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/choco/jobs/eigencal/eigencal.sh /etc/choco/eigencal.yaml
+# No Restart: the script self-gates (it exits 0 in seconds unless a transit
+# just completed and is unprocessed), so a failed run — N² data missing,
+# choco not up, transit not yet covered — is simply retried by the next
+# timer tick.  Exit code 2 means the solution failed the quality gate.
+
+[Install]
+WantedBy=choco.service

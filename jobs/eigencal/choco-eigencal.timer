@@ -1,0 +1,10 @@
+[Unit]
+Description=eigencal point-source gain calibration (every 10 min; self-gating)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,77 @@
+# Example eigencal config.
+#
+# eigencal runs once per invocation (a systemd timer sets the cadence; the
+# script self-gates): if a calibrator transit just completed, it reads the
+# transit from the kotekan N² output, fits per-input complex gains, archives
+# one HDF5 file, and POSTs the gains to choco for relay to the kotekan group.
+# Every key below has the default shown; only kotekan_file, feed_layout, and
+# the choco block genuinely need editing.
+
+# The kotekan hdf5N2Write output (same files bffs reads).  A glob is allowed
+# and may span directories; the newest matches (by mtime, up to max_files)
+# whose time axes overlap the transit window are read and concatenated.
+kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/acq_*/*.h5
+max_files: 4
+
+observer:                        # telescope reference position (DRAO shown)
+  latitude_deg: 49.320
+  longitude_deg: -119.624
+  altitude_m: 545.0
+
+source:
+  name: CYG_A
+  ra_deg: 299.86815              # J2000; apparent place computed per transit
+  dec_deg: 40.73392
+  # log10(S/Jy) = sum_k c_k * log10(nu/GHz)**k  (Perley & Butler 2017 -- VERIFY)
+  flux_log10_coeff: [3.3498, -1.0022, -0.2246, 0.0227, 0.0425]
+
+daytime:
+  skip: true                     # skip transits with the sun above sun_alt_max_deg
+  sun_alt_max_deg: -10.0
+
+run:
+  max_age_s: 7200                # only process transits completed this recently
+  archive_dir: /var/lib/eigencal # one HDF5 per transit; doubles as "already done"
+  state_file: /var/lib/eigencal/state.json   # tiny JSON for the service badge
+  gate_freq_mhz: 300.0           # widest beam in the band (transit-complete gate)
+
+telescope:
+  # Feed layout YAML: maps the N² file's feed labels to polarisation and
+  # EW/NS position, and names the phase-reference feed per polarisation.
+  # This file replaces CHIME's layout database -- see eigencal_feeds.example.yaml.
+  feed_layout: /etc/choco/eigencal_feeds.yaml
+  dish_diameter_m: 6.0
+  beam_fwhm_factor: 1.2          # FWHM = factor * lambda / D
+  beam_peak_ha_deg: 0.0          # beam-peak hour angle; 0 = pointing at meridian
+  fringestop_sign: 1.0           # VERIFY: wrong sign -> phase winds vs HA
+
+analysis:
+  nfreq_per_block: 32            # memory ~ ntime * block * nfeed_per_pol^2 * 8 B
+  nsigma_fit: 2.0                # fit samples within this many beam sigma of peak
+  nsigma_off: 4.0                # off-source (noise floor) samples beyond this
+  n_off_max: 64
+  min_off_source_samples: 10     # fewer -> dynamic-range gate disabled (warning)
+  dyn_rng_threshold: 3.0         # on/off largest-eigenvalue ratio to enter the fit
+  fit:
+    poly_deg_amp: 5              # polynomial degrees for log-amp / phase vs HA
+    poly_deg_phi: 5
+    niter: 3                     # reweighting iterations
+    alpha: 0.32                  # 1-alpha confidence for the error bars
+    nsigma_window: 1.0           # moving fit window half-width (beam sigma)
+  chisq_per_dof_threshold: 100.0 # fits above this fall back to the raw transit
+  evaluate_gain_at: transit      # 'transit' (beam peak HA) or 'peak' (fitted peak)
+  interpolate:
+    enabled: true                # fill short flagged gaps over frequency
+    max_gap_channels: 8
+  min_good_frac: 0.5             # below this fraction of good cells: exit 2, no send
+
+choco:
+  # choco's web API.  Gains go to POST <url>/update/<group> as an
+  # updatable_config action; choco relays them to every kotekan node in the
+  # group at POST /<endpoint>.  Auth is bypassed for localhost callers, so
+  # run eigencal on the choco host.  Unset url -> dry run (archive only).
+  url: https://localhost:5000
+  group: cx
+  endpoint: updatable_config/gains   # kotekan updatable endpoint -- VERIFY name
+  sync_delay: 5.0                    # start_time = now + sync_delay
+  transition_interval: 0.0           # kotekan-side gain blend time (s), if supported

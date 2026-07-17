@@ -47,11 +47,18 @@ jobs/                               # One subdir per job: units, wrapper, code
 │   ├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
 │   ├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
 │   └── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
-└── bffs/                       # Feed-flagging job (runs on choco start + 30 s timer)
-    ├── choco-bffs-flag.service
-    ├── choco-bffs-flag.timer       # Every 30 s
-    ├── bffs-flag.sh                # Wrapper: finds venv, calls bffs.py
-    └── bffs.py, sources/, ...      # The feed-flagging script (see jobs/bffs/README.md)
+├── bffs/                       # Feed-flagging job (runs on choco start + 30 s timer)
+│   ├── choco-bffs-flag.service
+│   ├── choco-bffs-flag.timer       # Every 30 s
+│   ├── bffs-flag.sh                # Wrapper: finds venv, calls bffs.py
+│   └── bffs.py, sources/, ...      # The feed-flagging script (see jobs/bffs/README.md)
+└── eigencal/                   # Point-source gain calibration (10 min timer, self-gating)
+    ├── choco-eigencal.service
+    ├── choco-eigencal.timer        # Every 10 min; real work once per transit, at night
+    ├── eigencal.sh                 # Wrapper: finds venv, calls eigencal.py
+    ├── eigencal.py                 # Orchestration: gates, ephemeris (astropy), send to choco
+    ├── n2_io.py                    # kotekan N² reader (full products; both file flavours)
+    └── transit_fit.py              # The batched transit fit (pure numpy; see jobs/eigencal/README.md)
 configs/
 ├── nodes.yaml      # Node registry: groups → nodes → {host, port, started}
 ├── vars.yaml       # (optional) Shared Jinja2 template variables

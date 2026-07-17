@@ -1,0 +1,26 @@
+# Example eigencal feed layout.
+#
+# Maps the N² file's feed labels (index_map/label) to polarisation and
+# antenna position, and names one phase-reference feed per polarisation.
+# This file is eigencal's replacement for CHIME's layout database: label
+# order in the N² file is the correlator input axis, and this file supplies
+# everything else the fit needs (pol grouping for the per-polarisation
+# eigendecomposition, EW/NS positions for fringestopping).
+#
+# Feeds present in the file but missing here are simply not calibrated
+# (gain 0, weight 0).  Positions are metres East/North of any fixed local
+# origin; only differences matter (each polarisation is referenced to its
+# phase_reference feed).  Pick reference feeds that are reliably healthy --
+# a sample where the reference is flagged cannot be phase-referenced and is
+# dropped from the fit.
+
+phase_reference:
+  A: d0000_pA
+  B: d0000_pB
+
+feeds:
+  - {label: d0000_pA, pol: A, ew_m: 0.000, ns_m: 0.000}
+  - {label: d0000_pB, pol: B, ew_m: 0.000, ns_m: 0.000}
+  - {label: d0001_pA, pol: A, ew_m: 6.300, ns_m: 0.000}
+  - {label: d0001_pB, pol: B, ew_m: 6.300, ns_m: 0.000}
+  # ... one entry per cabled input, labels exactly as in the N² file ...

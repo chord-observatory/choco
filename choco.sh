@@ -122,6 +122,16 @@ cmd_install() {
         echo "Seeded $CONFIG_DIR/bffs.yaml from jobs/bffs/bffs.example.yaml -- edit before use"
     fi
 
+    # Seed the eigencal configs on first install; never overwrite edited ones
+    if [ ! -f "$CONFIG_DIR/eigencal.yaml" ]; then
+        cp "$SCRIPT_DIR/jobs/eigencal/eigencal.example.yaml" "$CONFIG_DIR/eigencal.yaml"
+        echo "Seeded $CONFIG_DIR/eigencal.yaml from jobs/eigencal/eigencal.example.yaml -- edit before use"
+    fi
+    if [ ! -f "$CONFIG_DIR/eigencal_feeds.yaml" ]; then
+        cp "$SCRIPT_DIR/jobs/eigencal/eigencal_feeds.example.yaml" "$CONFIG_DIR/eigencal_feeds.yaml"
+        echo "Seeded $CONFIG_DIR/eigencal_feeds.yaml -- fill in the real feed layout before use"
+    fi
+
     # Seed or overwrite kotekan configs from repo
     if [ -d "$SCRIPT_DIR/configs" ]; then
         if [ -z "$(ls -A "$CONFIG_DIR/configs" 2>/dev/null)" ]; then
