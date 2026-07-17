@@ -74,6 +74,15 @@ group (kotekan validates that all three value keys are present). choco
 bypasses auth for localhost callers and serves a self-signed certificate
 (bffs skips TLS verification), so run bffs on the choco host.
 
+Per-node delivery is choco's job, and it absorbs node outages: the group
+POST fans out to per-node queues, so a down node never blocks its peers;
+the flag values persist in choco's `.updatable/` store as that node's
+desired state; and choco's poll loop re-pushes them as updatable-config
+drift once the node is reachable again — a recovering node catches up
+within one poll interval without bffs re-sending. If choco itself is
+unreachable, the run fails (red badge) and, because the state file is
+written only after a successful send, the next timer tick retries.
+
 bffs reads both N² file flavours: CHIME-style (`index_map/input` labels,
 `vis[time, freq, prod]`) and CHORD `hdf5N2Write` output (`index_map/label`,
 `vis[freq, prod, time]`, compound freq, `frames_added` validity). Products

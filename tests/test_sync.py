@@ -430,6 +430,107 @@ class TestProcessNode:
         assert node.status == NodeStatus.DOWN
 
 
+# A base config with a bffs-style updatable block, as pushed by the
+# bad-feed-flagging job (jobs/bffs) through /update/<group>.
+_BFFS_STYLE_CONFIG = """\
+num_elements: 2048
+updatable_config:
+  bad_inputs:
+    kotekan_update_endpoint: updatable_config/bad_inputs
+    bad_inputs: []
+    update_id: initial
+    start_time: 0
+"""
+
+
+def _flag_item(key: str, bad: list) -> ChangeItem:
+    return ChangeItem(
+        type=ChangeType.UPDATABLE_CONFIG, node_key=key,
+        endpoint="updatable_config/bad_inputs",
+        values={"bad_inputs": bad, "update_id": "bffs-1",
+                "start_time": 100.0},
+    )
+
+
+class TestDownNodeFlagFanout:
+    """A bffs-style group flag update with a node down.
+
+    The down node must not affect its peers, its desired state must
+    persist, and it must catch up when it comes back — this is what
+    lets bffs POST once to /update/<group> and not care about
+    individual node availability.
+    """
+
+    def _prep(self, orchestrator, key):
+        node = orchestrator.registry.get_node(key)
+        node.started = True
+        node.save_base(_BFFS_STYLE_CONFIG)
+        return node
+
+    def test_down_node_does_not_block_peers(self, orchestrator):
+        cx1 = self._prep(orchestrator, "cx/cx1")
+        cx2 = self._prep(orchestrator, "cx/cx2")
+        cx1.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        cx2.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        # cx2's live config still carries the default (empty) bad list
+        cx2.get_config = MagicMock(return_value=cx2.rendered_config)
+        cx2.get_version_info = MagicMock(return_value={})
+        cx2.push_updatable = MagicMock(return_value=True)
+
+        orchestrator.submit_group("cx", lambda key: _flag_item(key, ["f9"]))
+        orchestrator._process_node(cx1)
+        orchestrator._process_node(cx2)
+
+        # The reachable peer got the flags...
+        cx2.push_updatable.assert_called_once()
+        endpoint, values = cx2.push_updatable.call_args[0]
+        assert endpoint == "/updatable_config/bad_inputs"
+        assert values["bad_inputs"] == ["f9"]
+        # ...and the down node kept the desired state on disk for later.
+        assert cx1.status == NodeStatus.DOWN
+        assert cx1.error == "Unreachable"
+        stored = cx1.updatable_config["updatable_config/bad_inputs"]
+        assert stored["bad_inputs"] == ["f9"]
+
+    def test_recovered_node_catches_up_on_poll(self, orchestrator):
+        """Flags stored while a node was down are pushed by the next
+        ordinary POLL once it is reachable again — no bffs re-send needed."""
+        node = self._prep(orchestrator, "cx/cx1")
+        node.save_updatable("updatable_config/bad_inputs",
+                            {"bad_inputs": ["f9"], "update_id": "bffs-1",
+                             "start_time": 100.0})
+        # Back up, still running the stale (empty) bad list.
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_config = MagicMock(return_value=node.rendered_config)
+        node.get_version_info = MagicMock(return_value={})
+        node.push_updatable = MagicMock(return_value=True)
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        orchestrator._process_node(node)
+
+        node.push_updatable.assert_called_once()
+        assert node.push_updatable.call_args[0][1]["bad_inputs"] == ["f9"]
+
+    def test_failed_push_retried_on_next_poll(self, orchestrator):
+        """A push that fails (node flapping) is retried by the next POLL,
+        because the desired values stay on disk and still read as drift."""
+        node = self._prep(orchestrator, "cx/cx1")
+        node.save_updatable("updatable_config/bad_inputs",
+                            {"bad_inputs": ["f9"], "update_id": "bffs-1",
+                             "start_time": 100.0})
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_config = MagicMock(return_value=node.rendered_config)
+        node.get_version_info = MagicMock(return_value={})
+        node.push_updatable = MagicMock(side_effect=[False, True])
+
+        for _ in range(2):
+            node.queue_put(ChangeItem(type=ChangeType.POLL,
+                                      node_key="cx/cx1"))
+            orchestrator._process_node(node)
+
+        assert node.push_updatable.call_count == 2
+
+
 class TestPushBlockedByLoadError:
     """A node with a load_error must never have its config pushed."""
 
