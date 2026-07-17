@@ -761,6 +761,99 @@ class TestFpgaControl:
         pis.assert_called_once_with(10)
 
 
+class TestPsuControl:
+    def _configure(self, app, control=True):
+        monitor = app.config["psu_monitor"]
+        monitor.host, monitor.port = "psu.example", 5000
+        monitor.channels = {0: [
+            {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
+            {"board": 0, "chip": "B", "channels": [False] * 8},
+        ]}
+        app.config["psu_cfg"] = {"host": monitor.host, "port": monitor.port,
+                                 "control": control}
+        return monitor
+
+    def _form(self, token, **overrides):
+        form = {"_csrf_token": token, "bus": "0", "board": "0",
+                "chip": "A", "channel": "3", "state": "on"}
+        form.update(overrides)
+        return form
+
+    def test_requires_login(self, client):
+        resp = client.post("/service/psu/set", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_requires_csrf(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.post("/service/psu/set", data={"bus": "0"})
+        assert resp.status_code == 403
+
+    def test_control_disabled_403(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app, control=False)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channel") as sc:
+            resp = client.post("/service/psu/set", data=self._form(token))
+        assert resp.status_code == 403
+        sc.assert_not_called()
+
+    @pytest.mark.parametrize("bad", [
+        {"chip": "C"}, {"channel": "8"}, {"channel": "-1"},
+        {"board": "-2"}, {"bus": "zero"},
+    ])
+    def test_bad_params_400(self, client, app, bad):
+        self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        resp = client.post("/service/psu/set", data=self._form(token, **bad))
+        assert resp.status_code == 400
+
+    def test_toggle_calls_set_channel(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channel",
+                          return_value=(True, "bus 0 board 0 chip A ch3 on")) as sc:
+            resp = client.post("/service/psu/set",
+                               data=self._form(token),
+                               follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/service/psu")
+        sc.assert_called_once_with(0, 0, "A", 3, True)
+
+    def test_verify_failure_flashes_error(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channel",
+                          return_value=(False, "verify failed")):
+            resp = client.post("/service/psu/set",
+                               data=self._form(token, state="off"),
+                               follow_redirects=True)
+        assert b"verify failed" in resp.data
+
+    def test_grid_buttons_when_control_enabled(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.get("/service/psu")
+        body = resp.data.decode()
+        assert '/service/psu/set' in body
+        assert body.count("<button") >= 16
+        assert 'name="channel"' in body
+
+    def test_grid_readonly_when_control_disabled(self, client, app):
+        self._configure(app, control=False)
+        _login(client)
+        resp = client.get("/service/psu")
+        body = resp.data.decode()
+        assert '/service/psu/set' not in body
+        assert '<span class="chan' in body
+
+
 # --- Status API + metrics ---
 # The test client's requests come from 127.0.0.1, so the JSON API's
 # localhost bypass applies (no login needed).

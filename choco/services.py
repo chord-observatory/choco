@@ -270,6 +270,22 @@ class PsuMonitor:
         return sum(sum(r["channels"]) for rows in self.channels.values()
                    for r in rows)
 
+    def _fetch_states(self) -> dict[int, list[int]]:
+        """GET /channel_states, decoded to per-chip OUT bytes per bus."""
+        resp = requests.get(f"{self.base_url}/channel_states",
+                            timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        return {int(bus): decode_out_bytes(raw)
+                for bus, raw in (data["channel_states"] or {}).items()}
+
+    @staticmethod
+    def _rows(out_bytes: list[int]) -> list[dict]:
+        return [{"board": k // 2,
+                 "chip": "A" if k % 2 == 0 else "B",
+                 "channels": [bool(out & (1 << c)) for c in range(8)]}
+                for k, out in enumerate(out_bytes)]
+
     def poll_once(self) -> None:
         """Probe both endpoints once and update in-memory state."""
         self.last_polled = time.time()
@@ -295,21 +311,9 @@ class PsuMonitor:
 
         # /channel_states: raw OUT-register bytes per bus
         try:
-            resp = requests.get(f"{self.base_url}/channel_states",
-                                timeout=self.timeout)
-            resp.raise_for_status()
-            data = resp.json()
-            channels: dict[int, list[dict]] = {}
-            for bus_str, raw in (data["channel_states"] or {}).items():
-                rows = []
-                for k, out in enumerate(decode_out_bytes(raw)):
-                    rows.append({
-                        "board": k // 2,
-                        "chip": "A" if k % 2 == 0 else "B",
-                        "channels": [bool(out & (1 << c)) for c in range(8)],
-                    })
-                channels[int(bus_str)] = rows
-            self.channels = channels
+            states = self._fetch_states()
+            self.channels = {bus: self._rows(outs)
+                             for bus, outs in states.items()}
             self.health = "ok"
             self.error = None
             self.last_seen = self.last_polled
@@ -317,6 +321,62 @@ class PsuMonitor:
                 TypeError) as e:
             self.health = "no_states"
             self.error = f"/channel_states: {type(e).__name__}: {e}"
+
+    def set_channel(self, bus: int, board: int, chip: str, channel: int,
+                    on: bool) -> tuple[bool, str]:
+        """Power one channel on/off, read-modify-write on the chip's OUT byte.
+
+        power_db has no per-channel endpoint — a chip's OUT register is
+        written whole — and other writers exist (power_db's own CLI), so
+        the current byte is read immediately before the write and the
+        result is confirmed by a fresh read afterwards: a mismatch is
+        reported, never silently retried.  The post-write read also
+        refreshes the monitor's grid, so the page shows the new truth.
+
+        The write itself doesn't depend on the read decode (the states
+        string goes straight to the chip register), so if the byte
+        framing assumed by :func:`decode_out_bytes` were ever wrong, the
+        first toggle would fail its verify loudly rather than flip the
+        wrong channel.
+        """
+        if not self.configured:
+            return False, "psu is not configured"
+        if chip not in ("A", "B") or not 0 <= channel < 8 or board < 0:
+            return False, f"invalid channel address: board {board} " \
+                          f"chip {chip} ch{channel}"
+        chip_num = board * 2 + (0 if chip == "A" else 1)
+        label = f"bus {bus} board {board} chip {chip} ch{channel}"
+        try:
+            outs = self._fetch_states().get(bus)
+            if outs is None or chip_num >= len(outs):
+                return False, f"{label}: not present on the controller"
+            current = outs[chip_num]
+            wanted = (current | (1 << channel) if on
+                      else current & ~(1 << channel))
+            if wanted != current:
+                resp = requests.post(
+                    f"{self.base_url}/write_command",
+                    json={"spi_bus": bus, "board_idx": board,
+                          "chip_letter": chip, "operation": "OUT",
+                          "states": format(wanted, "08b")},
+                    timeout=self.timeout)
+                resp.raise_for_status()
+            readback = self._fetch_states()
+            self.channels = {b: self._rows(o) for b, o in readback.items()}
+            self.last_seen = time.time()
+            got = readback[bus][chip_num]
+        except (requests.RequestException, ValueError, KeyError,
+                TypeError, IndexError) as e:
+            return False, f"{label}: {type(e).__name__}: {e}"
+        if got != wanted:
+            return False, (
+                f"verify failed on {label}: OUT reads {got:#04x}, expected "
+                f"{wanted:#04x} — state changed underneath us (another "
+                f"writer?); check the grid and retry")
+        if wanted == current:
+            return True, f"{label} was already {'on' if on else 'off'}"
+        logger.info(f"psu: {label} -> {'on' if on else 'off'}")
+        return True, f"{label} {'on' if on else 'off'}"
 
     def run(self) -> None:
         """Poll forever on ``POLL_INTERVAL_S``.  Designed for gevent.spawn."""

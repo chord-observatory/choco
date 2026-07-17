@@ -259,6 +259,94 @@ class TestPsuMonitorPollOnce:
         assert d["n_on"] == 16
 
 
+def _states(raw: list[int]) -> dict:
+    return {"channel_states": {"0": raw}}
+
+
+class TestPsuSetChannel:
+    """1 board = 2 chips = 4 raw bytes; chip0's OUT byte is raw[3],
+    chip1's is raw[1] (odd positions from the end)."""
+
+    @responses.activate
+    def test_turn_on(self, psu):
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))          # pre: all off
+        write = responses.post(f"{PSU_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 1]))          # post: ch0 on
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is True
+        assert "ch0 on" in message
+        import json as _json
+        payload = _json.loads(write.calls[0].request.body)
+        assert payload == {"spi_bus": 0, "board_idx": 0, "chip_letter": "A",
+                           "operation": "OUT", "states": "00000001"}
+        # the post-write read refreshed the grid
+        assert psu.channels[0][0]["channels"][0] is True
+
+    @responses.activate
+    def test_turn_off_keeps_other_bits(self, psu):
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0b11]))       # ch0+ch1 on
+        write = responses.post(f"{PSU_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0b10]))
+        ok, message = psu.set_channel(0, 0, "A", 0, False)
+        assert ok is True
+        import json as _json
+        assert _json.loads(write.calls[0].request.body)["states"] == "00000010"
+
+    @responses.activate
+    def test_already_on_skips_write(self, psu):
+        # No POST registered: a write attempt would raise ConnectionError.
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 1]))
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 1]))
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is True
+        assert "already on" in message
+
+    @responses.activate
+    def test_verify_mismatch_reported(self, psu):
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))
+        responses.post(f"{PSU_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))          # didn't take
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is False
+        assert "verify failed" in message
+        assert "state changed underneath us" in message
+
+    @responses.activate
+    def test_write_failure(self, psu):
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))
+        responses.post(f"{PSU_BASE}/write_command", status=500)
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is False
+
+    @responses.activate
+    def test_chip_not_present(self, psu):
+        responses.get(f"{PSU_BASE}/channel_states", json=_states([]))
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is False
+        assert "not present" in message
+
+    def test_invalid_address(self, psu):
+        ok, message = psu.set_channel(0, 0, "C", 0, True)
+        assert ok is False
+        ok, message = psu.set_channel(0, 0, "A", 8, True)
+        assert ok is False
+
+    def test_unconfigured(self):
+        ok, message = PsuMonitor(host=None, port=None).set_channel(
+            0, 0, "A", 0, True)
+        assert ok is False
+        assert "not configured" in message
+
+
 UNIT = "choco-test-job.service"
 
 

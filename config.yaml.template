@@ -37,6 +37,7 @@ psu:
   host: 10.222.0.30
   port: 5000
   timeout: 5                        # HTTP request timeout (seconds)
+  control: true                     # allow channel toggles on /service/psu
 
 # Earth Orientation Parameter service settings.
 eop:

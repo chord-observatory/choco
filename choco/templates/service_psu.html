@@ -16,7 +16,9 @@ dl.service-facts dd { margin: 0; }
 table.psu-grid { margin: 0 0 1.5em 0; font-size: 0.85em; }
 table.psu-grid th, table.psu-grid td { padding: 0.3em 0.6em; text-align: center; }
 table.psu-grid td.rowhead { text-align: left; white-space: nowrap; font-family: monospace; }
-.chan { display: inline-block; min-width: 2.4em; padding: 0.15em 0.3em; border-radius: 4px; color: white; }
+table.psu-grid form { margin: 0; display: inline; }
+.chan { display: inline-block; min-width: 2.4em; padding: 0.15em 0.3em; border-radius: 4px; border: none; color: white; font-size: inherit; line-height: inherit; }
+button.chan { cursor: pointer; }
 .chan.on { background: #2ecc40; }
 .chan.off { background: #aaa; }
 {% endblock %}
@@ -65,7 +67,23 @@ table.psu-grid td.rowhead { text-align: left; white-space: nowrap; font-family: 
         <tr>
             <td class="rowhead">board {{ row.board }} &middot; {{ row.chip }}</td>
             {% for on in row.channels %}
-            <td><span class="chan {{ 'on' if on else 'off' }}">{{ 'on' if on else 'off' }}</span></td>
+            <td>
+                {% if control %}
+                <form method="post" action="/service/psu/set"
+                      onsubmit="return confirm('Power {{ 'OFF' if on else 'ON' }}: bus {{ bus }}, board {{ row.board }}, chip {{ row.chip }}, channel {{ loop.index0 }}?')">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="bus" value="{{ bus }}">
+                    <input type="hidden" name="board" value="{{ row.board }}">
+                    <input type="hidden" name="chip" value="{{ row.chip }}">
+                    <input type="hidden" name="channel" value="{{ loop.index0 }}">
+                    <input type="hidden" name="state" value="{{ 'off' if on else 'on' }}">
+                    <button type="submit" class="chan {{ 'on' if on else 'off' }}"
+                            title="click to turn {{ 'off' if on else 'on' }}">{{ 'on' if on else 'off' }}</button>
+                </form>
+                {% else %}
+                <span class="chan {{ 'on' if on else 'off' }}">{{ 'on' if on else 'off' }}</span>
+                {% endif %}
+            </td>
             {% endfor %}
         </tr>
         {% endfor %}

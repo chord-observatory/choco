@@ -644,9 +644,11 @@ def service_page(name):
         monitor = current_app.config.get("psu_monitor")
         if monitor is None:
             abort(404)
+        psu_cfg = current_app.config.get("psu_cfg") or {}
         return render_template(
             "service_psu.html", psu=monitor.to_dict(),
             channels=monitor.channels, boards=monitor.boards,
+            control=bool(psu_cfg.get("control", True)),
             now_ts=time.time(),
         )
     svc = _service_registry().get(name)
@@ -711,6 +713,34 @@ def fpga_control(action):
         flash("FPGA stop requested — the state below follows the shutdown.",
               "success")
     return redirect(url_for("web.service_page", name="fpga"))
+
+
+@bp.route("/service/psu/set", methods=["POST"])
+@login_required
+def psu_control():
+    """Toggle one PSU channel from the /service/psu page."""
+    _check_csrf()
+    monitor = current_app.config.get("psu_monitor")
+    psu_cfg = current_app.config.get("psu_cfg") or {}
+    if monitor is None or not psu_cfg.get("control", True):
+        abort(403)
+    try:
+        bus = int(request.form["bus"])
+        board = int(request.form["board"])
+        chip = request.form["chip"]
+        channel = int(request.form["channel"])
+        on = request.form["state"] == "on"
+    except (KeyError, ValueError):
+        abort(400)
+    if chip not in ("A", "B") or not 0 <= channel < 8 or board < 0:
+        abort(400)
+    logger.warning(
+        f"psu: bus {bus} board {board} chip {chip} ch{channel} -> "
+        f"{'on' if on else 'off'} requested by "
+        f"{getattr(current_user, 'username', '?')}")
+    ok, message = monitor.set_channel(bus, board, chip, channel, on)
+    flash(f"PSU: {message}", "success" if ok else "error")
+    return redirect(url_for("web.service_page", name="psu"))
 
 
 # --- JSON API endpoints for queue-based updates ---
