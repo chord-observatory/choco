@@ -25,3 +25,23 @@
     <dd><code>{{ fpga.error }}</code></dd>
     {% endif %}
 </dl>
+{% if actions %}
+<h4 style="margin-bottom: 0.25em;">Recent actions</h4>
+<figure style="margin: 0 0 1.5em 0; overflow-x: auto;">
+<table style="margin: 0; font-size: 0.85em;">
+    <thead>
+        <tr><th>When</th><th>Action</th><th>By</th><th>Outcome</th></tr>
+    </thead>
+    <tbody>
+        {% for a in actions %}
+        <tr>
+            <td style="white-space: nowrap;">{{ since(a.time, now_ts) }}</td>
+            <td>{{ a.action }}</td>
+            <td>{{ a.user }}</td>
+            <td>{% if a.ok is none %}&#8987;{% elif a.ok %}&#10003;{% else %}&#10007;{% endif %} {{ a.message }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% endif %}

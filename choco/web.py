@@ -666,6 +666,7 @@ def service_page(name):
             "service_fpga.html", fpga=fpga,
             frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
             control=bool(fpga_cfg.get("control", True)),
+            actions=monitor.actions,
             now_ts=time.time(),
         )
     if name == "psu":
@@ -710,6 +711,7 @@ def partial_service_fpga():
     return render_template(
         "_service_fpga_status.html", fpga=fpga,
         frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+        actions=monitor.actions,
         now_ts=time.time(),
     )
 
@@ -731,13 +733,24 @@ def fpga_control(action):
     fpga_cfg = current_app.config.get("fpga_cfg") or {}
     if monitor is None or not fpga_cfg.get("control", True):
         abort(403)
-    logger.warning(f"fpga_master {action} requested by "
-                   f"{getattr(current_user, 'username', '?')}")
+    user = getattr(current_user, "username", "?")
+    logger.warning(f"fpga_master {action} requested by {user}")
     if action == "start":
         ok, message = monitor.start_master()
+        monitor.record_action("start", user, ok, message)
+        # fpga_master acknowledges a start before checking its state; a
+        # no-op start ("already started") only surfaces afterwards in
+        # the status block's "Last start result".
         flash(f"FPGA start: {message}", "success" if ok else "error")
     else:
-        gevent.spawn(monitor.stop_master)
+        monitor.record_action("stop", user, None,
+                              "requested — shutdown in progress")
+
+        def _stop_and_record():
+            ok, message = monitor.stop_master()
+            monitor.record_action("stop", user, ok, message)
+
+        gevent.spawn(_stop_and_record)
         flash("FPGA stop requested — the state below follows the shutdown.",
               "success")
     return redirect(url_for("web.service_page", name="fpga"))

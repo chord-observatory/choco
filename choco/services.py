@@ -87,6 +87,9 @@ class FpgaMonitor:
         self.last_polled: float | None = None
         self.last_seen: float | None = None
         self.error: str | None = None
+        # Recent control actions (newest first, ephemeral) — the page's
+        # visible trail of who started/stopped what and how it went.
+        self.actions: list[dict] = []
         self._running = False
 
     @property
@@ -154,6 +157,26 @@ class FpgaMonitor:
         if (self.last_polled is None
                 or time.time() - self.last_polled > max_age_s):
             self.poll_once()
+
+    MAX_ACTIONS = 10
+
+    def record_action(self, action: str, user: str, ok: bool | None,
+                      message: str) -> None:
+        """Prepend one control-action entry to the visible trail.
+
+        ``ok=None`` marks an action still in flight (an async stop);
+        its completion is recorded as a second entry.  The durable
+        audit trail is choco's own journal — this list is ephemeral
+        display state, like everything else on the monitor.
+        """
+        self.actions.insert(0, {
+            "time": time.time(),
+            "action": action,
+            "user": user,
+            "ok": ok,
+            "message": message,
+        })
+        del self.actions[self.MAX_ACTIONS:]
 
     def start_master(self) -> tuple[bool, str]:
         """POST ``/start`` with no config overrides.

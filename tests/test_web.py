@@ -779,6 +779,10 @@ class TestFpgaControl:
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/service/fpga")
         sm.assert_called_once_with()
+        # the action lands in the visible trail with user + outcome
+        assert monitor.actions[0]["action"] == "start"
+        assert monitor.actions[0]["user"] == "tester"
+        assert monitor.actions[0]["ok"] is True
 
     def test_stop_spawns_greenlet(self, client, app):
         from unittest.mock import patch
@@ -794,6 +798,30 @@ class TestFpgaControl:
             gevent.sleep(0)  # let the spawned greenlet run
         assert resp.status_code == 302
         sm.assert_called_once_with()
+        # two trail entries: the in-flight request, then its completion
+        assert [a["action"] for a in monitor.actions] == ["stop", "stop"]
+        assert monitor.actions[1]["ok"] is None
+        assert monitor.actions[0]["ok"] is True
+        assert monitor.actions[0]["message"] == "stopped"
+
+    def test_actions_rendered_in_status_partial(self, client, app):
+        monitor = self._configure(app)
+        monitor.record_action("start", "tester", True, "Initialization in progress")
+        _login(client)
+        from unittest.mock import patch
+        with patch.object(monitor, "poll_if_stale"):
+            resp = client.get("/partials/service-fpga")
+        body = resp.data.decode()
+        assert "Recent actions" in body
+        assert "tester" in body
+        assert "Initialization in progress" in body
+
+    def test_action_trail_is_capped(self, app):
+        monitor = app.config["fpga_monitor"]
+        for i in range(15):
+            monitor.record_action("start", "t", True, f"m{i}")
+        assert len(monitor.actions) == monitor.MAX_ACTIONS
+        assert monitor.actions[0]["message"] == "m14"  # newest first
 
     def test_controls_rendered_when_enabled(self, client, app):
         self._configure(app)
