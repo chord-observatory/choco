@@ -1014,6 +1014,7 @@ class TestMetrics:
         assert "choco_start_time_seconds" in body
         assert 'choco_service_state{service="eop",state="failed"} 1' in body
         assert 'choco_service_state{service="eop",state="ok"} 0' in body
+        assert 'choco_service_state{service="eop",state="degraded"} 0' in body
         assert 'choco_service_state{service="eigencal",state="failed"} 1' in body
         assert 'choco_service_state{service="psu",state="unconfigured"} 1' in body
         assert 'choco_service_state{service="psu",state="no_states"} 0' in body

@@ -9,7 +9,8 @@ ExecStart=/opt/choco/jobs/eigencal/eigencal.sh /etc/choco/eigencal.yaml
 # No Restart: the script self-gates (it exits 0 in seconds unless a transit
 # just completed and is unprocessed), so a failed run — N² data missing,
 # choco not up, transit not yet covered — is simply retried by the next
-# timer tick.  Exit code 2 means the solution failed the quality gate.
+# timer tick.  Exit code 2 = degraded (quality gate failed, or a
+# dependency was unavailable); 1 = config error / bug.
 
 [Install]
 WantedBy=choco.service

@@ -79,7 +79,7 @@ def test_flag_end_to_end(tmp_path):
             {"kind": "power-outlier", "nsigma": 5.0},
         ],
     )
-    payload, _ = bffs.run(cfg, now=1_700_000_000.0)
+    payload, _, _ = bffs.run(cfg, now=1_700_000_000.0)
     assert payload["bad_inputs"] == [1, 2]
     assert payload["start_time"] == 1_700_000_005.0
     assert set(payload) == {"update_id", "start_time", "bad_inputs"}
@@ -103,19 +103,19 @@ def test_state_records_change_history(tmp_path):
     write_manual(manualf, [])  # all good
 
     # run 1: all good -> first run sends and records a baseline entry.
-    _, send = bffs.run(cfg, now=1000.0)
+    _, send, _ = bffs.run(cfg, now=1000.0)
     assert send is True
     st = json.loads(statef.read_text())
     assert st["bad_inputs"] == [] and len(st["history"]) == 1
 
     # run 2: nothing changed -> no send, no new history.
-    _, send = bffs.run(cfg, now=1001.0)
+    _, send, _ = bffs.run(cfg, now=1001.0)
     assert send is False
     assert len(json.loads(statef.read_text())["history"]) == 1
 
     # feed 1 goes bad -> send, a new history entry naming the transition.
     write_manual(manualf, ["f1"])
-    payload, send = bffs.run(cfg, now=1002.0)
+    payload, send, _ = bffs.run(cfg, now=1002.0)
     assert send is True and payload["bad_inputs"] == [1]
     st = json.loads(statef.read_text())
     assert st["bad_inputs"] == ["f1"]
@@ -125,7 +125,7 @@ def test_state_records_change_history(tmp_path):
 
     # feed 1 recovers -> send, recorded as became_good.
     write_manual(manualf, [])
-    _, send = bffs.run(cfg, now=1003.0)
+    _, send, _ = bffs.run(cfg, now=1003.0)
     assert send is True
     st = json.loads(statef.read_text())
     assert st["bad_inputs"] == []
@@ -139,7 +139,7 @@ def test_force_sends_when_unchanged(tmp_path):
     cfg = _state_config(n2, statef, manualf)
 
     bffs.run(cfg, now=1000.0)                       # establish state
-    _, send = bffs.run(cfg, now=1001.0, force=True)  # unchanged, but forced
+    _, send, _ = bffs.run(cfg, now=1001.0, force=True)  # unchanged, but forced
     assert send is True
     assert len(json.loads(statef.read_text())["history"]) == 1  # force adds no entry
 
@@ -167,7 +167,7 @@ def test_corrupt_state_is_treated_as_first_run(tmp_path):
     n2, statef, manualf = tmp_path / "n2.h5", tmp_path / "state.json", tmp_path / "manual.yaml"
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
     statef.write_text("{ not json")  # corrupt -> recover, don't crash
-    _, send = bffs.run(_state_config(n2, statef, manualf), now=1000.0)
+    _, send, _ = bffs.run(_state_config(n2, statef, manualf), now=1000.0)
     assert send is True
     st = json.loads(statef.read_text())  # rewritten as valid JSON
     assert st["bad_inputs"] == [] and len(st["history"]) == 1
@@ -196,7 +196,7 @@ def test_glob_kotekan_file_reads_newest(tmp_path):
     write_normalized(new, ["new0", "new1"], [400.0], np.ones((1, 1, 2), "f4"))
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(new, (2_000_000, 2_000_000))
-    labels, good, _ = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5"), max_age=0))
+    labels, good, _, _ = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5"), max_age=0))
     assert list(labels) == ["new0", "new1"]
 
 
@@ -231,7 +231,7 @@ def test_failed_send_leaves_state_unwritten(tmp_path):
     assert not statef.exists()  # nothing recorded -> the next run retries
 
     sent = []
-    _, send = bffs.run(cfg, now=1001.0, sender=sent.append)
+    _, send, _ = bffs.run(cfg, now=1001.0, sender=sent.append)
     assert send is True and sent[0]["bad_inputs"] == [1]
     assert json.loads(statef.read_text())["bad_inputs"] == ["f1"]
 
@@ -269,16 +269,51 @@ def test_send_to_choco_posts_group_update(monkeypatch):
     assert captured["context"] is not None  # self-signed TLS goes unverified
 
 
-def test_main_missing_kotekan_file_fails_cleanly(tmp_path, caplog):
-    """An expected environmental failure exits 1 with one log line, no traceback."""
+def test_main_missing_kotekan_file_exits_degraded(tmp_path, caplog):
+    """An environmental failure exits 2 (degraded) with one log line:
+    the job is fine, its input wasn't — retries self-heal."""
     cfg_file = tmp_path / "cfg.yaml"
     cfg_file.write_text(json.dumps({
         "kotekan_file": str(tmp_path / "nope_*.h5"),
         "sources": [],
     }))
     rc = bffs.main(["--config", str(cfg_file)])
-    assert rc == 1
+    assert rc == 2
     assert "no kotekan file matches" in caplog.text
+
+
+def test_main_config_error_exits_failed(tmp_path, caplog):
+    """A config problem (unknown source kind) exits 1 — needs a human."""
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": str(n2),
+        "sources": [{"kind": "nope"}],
+    }))
+    rc = bffs.main(["--config", str(cfg_file)])
+    assert rc == 1
+    assert "unknown source kind" in caplog.text
+
+
+def test_main_partial_skip_exits_degraded(tmp_path, monkeypatch, caplog):
+    """File-based sources skipped but others still flagging: the run
+    completes (flags computed) yet exits 2 so the badge shows degraded."""
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _DISH_CONFIG)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["A3X"])
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": str(tmp_path / "nope_*.h5"),
+        "choco": {"url": "https://localhost:5000", "group": "cx"},
+        "sources": [{"kind": "power-outlier"},
+                    {"kind": "manual", "path": str(manualf)}],
+    }))
+    rc = bffs.main(["--config", str(cfg_file), "--dry-run"])
+    assert rc == 2
+    assert "degraded run" in caplog.text
+    assert "skipped: power-outlier" in caplog.text
 
 
 def test_main_bad_config_fails_cleanly(tmp_path, caplog):
@@ -306,7 +341,7 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(mid, (2_000_000, 2_000_000))
     os.utime(new, (3_000_000, 3_000_000))
-    labels, good, _ = bffs.combine_sources(
+    labels, good, _, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5"), max_age=0))
     assert list(labels) == ["new0", "new1"]
 
@@ -324,7 +359,7 @@ def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx", sources=[{"kind": "rfi"}])
-    labels, good, _ = bffs.combine_sources(cfg)
+    labels, good, _, _ = bffs.combine_sources(cfg)
     assert seen == {"url": "https://localhost:5000", "group": "cx"}
     assert list(good) == [True]
 
@@ -352,7 +387,7 @@ def test_max_age_zero_disables_staleness(tmp_path):
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
     old = time.time() - 7200
     os.utime(n2, (old, old))
-    labels, good, _ = bffs.combine_sources(
+    labels, good, _, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(n2), max_age=0))
     assert list(labels) == ["f0"]
 
@@ -405,7 +440,7 @@ def test_labels_from_choco_config_win(tmp_path, monkeypatch):
                      np.ones((1, 1, 4), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx")
-    labels, good, _ = bffs.combine_sources(cfg)
+    labels, good, _, _ = bffs.combine_sources(cfg)
     assert list(labels) == ["A1X", "Fake[1]", "A3X", "Fake[3]"]
 
 
@@ -434,7 +469,7 @@ def test_choco_config_fetch_failure_falls_back_to_file(tmp_path, monkeypatch):
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx")
-    labels, good, _ = bffs.combine_sources(cfg)
+    labels, good, _, _ = bffs.combine_sources(cfg)
     assert list(labels) == ["f0", "f1"]
 
 
@@ -454,7 +489,7 @@ def test_missing_file_skips_file_sources_but_still_flags(tmp_path, monkeypatch):
         sources=[{"kind": "power-outlier"},
                  {"kind": "manual", "path": str(manualf)}],
     )
-    labels, good, flagged_by = bffs.combine_sources(cfg)
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg)
     assert list(labels) == ["A1X", "Fake", "A3X"]
     assert list(good) == [True, True, False]
     assert flagged_by == {"A3X": ["manual"]}
@@ -493,7 +528,7 @@ def test_flagged_by_names_every_flagging_source(tmp_path):
         sources=[{"kind": "power-outlier"},
                  {"kind": "manual", "path": str(manualf)}],
     )
-    labels, good, flagged_by = bffs.combine_sources(cfg)
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg)
     assert list(good) == [True, False]
     assert flagged_by == {"f1": ["power-outlier", "manual"]}
 
@@ -510,7 +545,7 @@ def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
         kotekan_file=str(n2), state_path=str(statef),
         sources=[{"kind": "manual", "path": str(manualf)}],
     )
-    payload, send = bffs.run(cfg, now=1000.0)
+    payload, send, _ = bffs.run(cfg, now=1000.0)
     assert set(payload) == {"update_id", "start_time", "bad_inputs"}
     assert payload["bad_inputs"] == [1]
     assert all(isinstance(i, int) for i in payload["bad_inputs"])

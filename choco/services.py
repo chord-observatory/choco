@@ -613,9 +613,16 @@ def job_status(service_unit: str, state_file: Path | None = None,
       rewrites state only when the bad-feed list *changes*, so its age
       says nothing about job health).
 
-    Returns a dict with ``health`` (``ok`` / ``stale`` / ``failed`` /
-    ``never_run`` / ``unknown``), ``state_mtime`` (epoch or ``None``),
-    and raw systemd fields for the tooltip.
+    Jobs share an exit-code convention: 0 = ok, **2 = degraded** (the
+    job itself is fine but a dependency or input wasn't — fpga_master
+    unreachable, stale data, choco down; retries self-heal), anything
+    else = failed (config error or bug — needs a human).  A failing
+    unit whose last exit status is 2 therefore reports ``degraded``
+    rather than ``failed``.
+
+    Returns a dict with ``health`` (``ok`` / ``degraded`` / ``stale`` /
+    ``failed`` / ``never_run`` / ``unknown``), ``state_mtime`` (epoch or
+    ``None``), and raw systemd fields for the tooltip.
     """
     now = time.time()
     props = _systemctl_show(service_unit)
@@ -631,12 +638,15 @@ def job_status(service_unit: str, state_file: Path | None = None,
     ran = (props or {}).get("ExecMainExitTimestamp", "").strip() not in ("", "n/a")
 
     failed = props is not None and result not in ("", "n/a", "success")
+    degraded = failed and (props or {}).get("ExecMainStatus", "").strip() == "2"
     stale = (stale_after_s is not None and mtime is not None
              and now - mtime > stale_after_s)
     ran_ok = props is not None and result == "success" and ran
     fresh = mtime is not None and stale_after_s is not None and not stale
 
-    if failed:
+    if degraded:
+        health = "degraded"
+    elif failed:
         health = "failed"
     elif stale:
         health = "stale"

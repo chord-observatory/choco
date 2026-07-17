@@ -34,6 +34,12 @@ bffs lives in the [choco](../../README.md) repo and runs from choco's venv
 path. With no `choco.url` set (or `--dry-run`) the script prints the JSON payload
 to stdout instead of sending it. See `bffs.example.yaml` for an annotated config.
 
+Exit codes (the shared choco job convention): 0 = success, 2 = *degraded* —
+the script is fine but a dependency or input wasn't (no/stale kotekan data so
+file-based sources were skipped, choco or every node unreachable; the next
+timer tick retries), 1 = a config error or bug that needs a human. choco's
+BFFS badge renders these as green / yellow / red.
+
 ### As a systemd timer
 
 choco ships the units: `choco-bffs-flag.service` (oneshot) paired with

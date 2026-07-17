@@ -218,13 +218,15 @@ def resolve_labels(config: Config, path: str | None) -> np.ndarray:
 # -- combine sources ------------------------------------------------------
 
 
-def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict]:
+def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict, list]:
     """AND together each source's good-mask.
 
-    Returns ``(labels, good, flagged_by)``; ``flagged_by`` maps each bad
-    feed's label to the source kinds that flagged it (the wire payload
-    stays indices-only — attribution is bookkeeping for the state file
-    and the web UI).
+    Returns ``(labels, good, flagged_by, degraded)``; ``flagged_by``
+    maps each bad feed's label to the source kinds that flagged it (the
+    wire payload stays indices-only — attribution is bookkeeping for
+    the state file and the web UI), and ``degraded`` lists reasons the
+    run was incomplete (skipped sources) — the caller exits 2 so the
+    badge shows *degraded*, not ok and not failed.
 
     A missing or stale kotekan file sidelines only the sources that need
     it (``NEEDS_FILE``, e.g. power-outlier) — the rest still flag, so a
@@ -242,7 +244,7 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict]:
     labels = resolve_labels(config, path)
     good = np.ones(len(labels), dtype=bool)
     flagged_by: dict[str, list[str]] = {}
-    skipped = 0
+    skipped: list[str] = []
     for src in config.sources:
         kind = src["kind"]
         source = sources.get(kind)
@@ -250,18 +252,22 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict]:
             raise ValueError(f"unknown source kind {kind!r}")
         if path is None and getattr(source, "NEEDS_FILE", False):
             log.warning("%s: no usable kotekan file; source skipped", kind)
-            skipped += 1
+            skipped.append(kind)
             continue
         src = {"choco_url": config.url, "choco_group": config.group, **src}
         mask = np.asarray(source.mask(src, labels, path), dtype=bool)
         for i in np.nonzero(~mask)[0]:
             flagged_by.setdefault(str(labels[i]), []).append(kind)
         good &= mask
-    if config.sources and skipped == len(config.sources):
+    if config.sources and len(skipped) == len(config.sources):
         raise OSError(
-            f"all {skipped} sources skipped (no usable kotekan file) — "
-            f"nothing to measure")
-    return labels, good, flagged_by
+            f"all {len(skipped)} sources skipped (no usable kotekan "
+            f"file) — nothing to measure")
+    degraded = []
+    if skipped:
+        degraded.append("no usable kotekan file — skipped: "
+                        + ", ".join(skipped))
+    return labels, good, flagged_by, degraded
 
 
 # -- state / change history ----------------------------------------------
@@ -270,10 +276,12 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict]:
 def run(
     config: Config, *, now: float | None = None, force: bool = False, write: bool = True,
     sender=None,
-) -> tuple[dict, bool]:
+) -> tuple[dict, bool, list]:
     """Evaluate the sources, send if needed, and update the change-history state.
 
-    Returns ``(payload, send)``. With ``state.path`` set, the bad-feed set
+    Returns ``(payload, send, degraded)``; ``degraded`` lists reasons
+    the run was incomplete (see :func:`combine_sources`) for the caller
+    to turn into exit code 2.  With ``state.path`` set, the bad-feed set
     (tracked by stable feed *label*) is diffed against the last recorded run: a
     change makes ``send`` true and appends a history entry to the (re)written
     file; an unchanged run sends nothing unless ``force``. Without a state file
@@ -285,7 +293,7 @@ def run(
     untouched, so the next run sees the change again and retries.
     """
     now = time.time() if now is None else now
-    labels, good, flagged_by = combine_sources(config)
+    labels, good, flagged_by, degraded = combine_sources(config)
     bad_idx = np.nonzero(~good)[0]
     payload = {
         "update_id": f"bffs-{int(now * 1000)}",
@@ -295,7 +303,7 @@ def run(
     if not config.state_path:
         if sender is not None:
             sender(payload)
-        return payload, True
+        return payload, True, degraded
 
     # Load prior state; a missing or corrupt file is treated as a first run.
     state_file = Path(config.state_path)
@@ -345,7 +353,7 @@ def run(
         tmp.write_text(json.dumps(state, indent=2))
         tmp.replace(state_file)
 
-    return payload, send
+    return payload, send, degraded
 
 
 # -- send & CLI -----------------------------------------------------------
@@ -404,17 +412,23 @@ def main(argv=None) -> int:
     if not args.dry_run and config.url:
         sender = lambda payload: send_to_choco(config, payload)  # noqa: E731
 
+    # Exit codes (shared job convention, read by choco's badge):
+    #   0 ok; 2 degraded — the job is fine but a dependency or input
+    #   wasn't (no/stale data, choco or nodes unreachable; retries
+    #   self-heal); 1 failed — config error or bug, needs a human.
     try:
-        payload, send = run(config, force=args.force, write=not args.dry_run, sender=sender)
-    except (OSError, ValueError) as e:
-        # Expected environmental failures — no kotekan N² file (yet), an
-        # unreadable HDF5 (h5py raises OSError), choco not up (urllib
-        # errors are OSError), a source misconfigured (ValueError) — get
-        # one useful line instead of a traceback.  Still exit nonzero:
-        # systemd records the failure and the next timer tick retries.
-        # Anything else is a bug and keeps its traceback — and since a
-        # bug can also surface as ValueError/OSError, -vv shows the
-        # full traceback for these too.
+        payload, send, degraded = run(
+            config, force=args.force, write=not args.dry_run, sender=sender)
+    except OSError as e:
+        # Environmental: no usable kotekan file with nothing else to
+        # measure, unreadable HDF5, choco/nodes unreachable (urllib
+        # errors are OSError). One useful line; -vv adds the traceback.
+        log.error("%s: %s", type(e).__name__, e)
+        log.debug("traceback:", exc_info=True)
+        return 2
+    except (ValueError, yaml.YAMLError) as e:
+        # Config or consistency errors (unknown source kind, element
+        # count mismatch, a bad override file) — needs a human.
         log.error("%s: %s", type(e).__name__, e)
         log.debug("traceback:", exc_info=True)
         return 1
@@ -425,6 +439,9 @@ def main(argv=None) -> int:
         log.info("sent %s (%d bad)", payload["update_id"], len(payload["bad_inputs"]))
     else:
         log.info("unchanged; nothing sent")
+    if degraded:
+        log.warning("degraded run: %s", "; ".join(degraded))
+        return 2
     return 0
 
 

@@ -522,6 +522,26 @@ class TestJobStatusViaSystemctl:
         assert out["health"] == "failed"
         assert out["result"] == "exit-code"
 
+    def test_exit_2_is_degraded_not_failed(self, tmp_path):
+        # Shared job convention: exit 2 = the job is fine but a
+        # dependency/input wasn't (fpga_master down, stale data).
+        with _with_systemctl(), \
+             _patch_systemctl(_props(Result="exit-code", ExecMainStatus="2")):
+            out = job_status(UNIT, state_file=tmp_path / "missing.json")
+        assert out["health"] == "degraded"
+        assert out["exit_status"] == "2"
+
+    def test_degraded_beats_stale(self, tmp_path):
+        # A degraded run explains the staleness — show the cause.
+        p = tmp_path / "state.json"
+        p.write_text("{}")
+        _backdate(p, 2 * EOP_STALE_AFTER_S)
+        with _with_systemctl(), \
+             _patch_systemctl(_props(Result="exit-code", ExecMainStatus="2")):
+            out = job_status(UNIT, state_file=p,
+                             stale_after_s=EOP_STALE_AFTER_S)
+        assert out["health"] == "degraded"
+
     def test_stale_state_beats_systemd_success(self, tmp_path):
         p = tmp_path / "state.json"
         p.write_text("{}")

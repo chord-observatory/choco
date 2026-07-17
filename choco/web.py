@@ -962,7 +962,7 @@ def api_status():
 
 
 # Health states each service can report, for one-hot /metrics gauges.
-_JOB_STATES = ("ok", "stale", "failed", "never_run", "unknown")
+_JOB_STATES = ("ok", "degraded", "stale", "failed", "never_run", "unknown")
 _MONITOR_STATES = {
     "fpga": ("ok", "no_timing", "down", "unconfigured", "unknown"),
     "psu": ("ok", "no_states", "down", "unconfigured", "unknown"),

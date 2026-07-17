@@ -156,7 +156,7 @@ def wait_for_choco(choco_url: str, timeout: int = 30):
             pass
         time.sleep(1)
     print(" timed out", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(2)  # dependency (choco) unavailable -> degraded, retry heals
 
 
 def push_to_choco(choco_url: str, groups: list[str],
@@ -233,7 +233,7 @@ def main():
         frame0_ns = eop_utils.read_fpga_master_frame0_ns(fpga_host, fpga_port, 30.0)
     except Exception as e:
         print(f"fpga_master not reachable: {e}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)  # dependency unavailable -> degraded, retry heals
     t0 = eop_utils.calc_astropy_time_from_unix_ns(frame0_ns)
     print(f"frame0: {frame0_ns} ns  ({t0.utc.isot} UTC)")
 
@@ -280,20 +280,27 @@ def main():
         print(f"State saved to {state_file}")
     else:
         print("Some groups failed - state NOT updated", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)  # dependency (choco/nodes) trouble -> degraded
 
     print("Done")
 
 
 if __name__ == "__main__":
+    # Exit codes (shared job convention, read by choco's badge):
+    #   0 ok; 2 degraded — the job is fine but a dependency wasn't
+    #   (fpga_master unreachable, IERS download down, choco/groups not
+    #   accepting; the unit's Restart / next timer tick self-heals);
+    #   1 failed — config error or bug, needs a human.
     try:
         main()
-    except (OSError, ValueError, yaml.YAMLError) as e:
-        # Expected environmental failures — IERS download unreachable,
-        # unreadable state/nodes files (JSONDecodeError is a ValueError;
-        # requests and urllib errors are OSError) — get one useful line
-        # instead of a traceback.  Still exit nonzero so systemd records
-        # the failure and retries.  Anything else is a bug and keeps its
-        # traceback.
+    except OSError as e:
+        # Environmental: IERS download unreachable, network errors
+        # (requests/urllib errors are OSError).
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(2)
+    except (ValueError, yaml.YAMLError) as e:
+        # Config or state-file problems (JSONDecodeError is a
+        # ValueError) — needs a human.  Anything else is a bug and
+        # keeps its traceback.
         print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)

@@ -217,11 +217,11 @@ Every page (for logged-in users) shows a thin strip above the nav with pill badg
 
 - **FPGA** — colour-coded readout from the `fpga_master` daemon. Green when `/status` responds and `/get-frame0-time` parses (timing is good); yellow when `/status` is reachable but timing can't be read; red when the daemon is unreachable; grey when no `fpga_master` block is configured. The tooltip carries the host, last-seen, error, and current `frame0_ns`.
 - **PSU** — colour-coded readout from the power_db analog power controller. Green when `/status` responds and `/channel_states` decodes (the tooltip shows how many channels are powered); yellow when the controller is up but channel states can't be read; red when it's unreachable; grey when no `psu` block is configured.
-- **EOP** — health of the EOP broadcast job. Red when `systemctl show choco-eop-broadcast.service` reports the last run failed; yellow when the `eop-state.json` mtime is older than ~25 hours (the job rewrites it on every successful daily run); green when the last run succeeded and the state file is fresh; grey when the unit has never run or health can't be determined.
-- **BFFS** — health of the bffs feed-flagging job (`choco-bffs-flag.service`), from the same generic helper. Green/red from the last run's systemd result; the state-file mtime is shown in the tooltip as "last change" but doesn't age the badge, since bffs only rewrites its state when the bad-feed list changes.
-- **EIGENCAL** — health of the eigencal gain-calibration job (`choco-eigencal.service`), same helper. Green/red from the last run's systemd result (an exit-2 quality-gate failure shows red); the state-file mtime is "last calibration" in the tooltip but doesn't age the badge, since daytime transits are skipped by design.
+- **EOP** — health of the EOP broadcast job. Green (`ok`) when the last run succeeded and `eop-state.json` is fresh; yellow `degraded` when the run couldn't do its job for external reasons (fpga_master unreachable for `frame0`, IERS download down, choco not accepting); yellow `stale` when the state file is older than ~25 hours (the job rewrites it on every successful daily run); red `failed` for config errors or bugs; grey when the unit has never run.
+- **BFFS** — health of the bffs feed-flagging job (`choco-bffs-flag.service`). Green `ok`, yellow `degraded` when flagging ran with reduced coverage or couldn't run for external reasons (no/stale kotekan data, nodes or choco unreachable), red `failed` for config errors. The state-file mtime is "last change" in the tooltip but doesn't age the badge, since bffs only rewrites its state when the bad-feed list changes.
+- **EIGENCAL** — health of the eigencal gain-calibration job (`choco-eigencal.service`). Yellow `degraded` covers both dependency trouble and a solution that failed its quality gate (archived, not sent); red `failed` means a real error. The state-file mtime is "last calibration" in the tooltip but doesn't age the badge, since daytime transits are skipped by design.
 
-Job health combines two cheap signals — the unit's `Result` from `systemctl show` and the job state file's mtime — with no timestamp parsing. The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
+Job health combines the unit's `Result` and `ExecMainStatus` from `systemctl show` with the job state file's mtime — no timestamp parsing. All jobs share one exit-code convention: **0 = ok, 2 = degraded (the job is fine, a dependency or input wasn't — retries self-heal), 1 = failed (config error or bug — needs a human)**. The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
 
 ### Service pages
 
@@ -312,8 +312,9 @@ hosts, or configs:
   (worth alerting on)
 - `choco_service_state{service,state}` — one-hot health per service (`fpga`:
   ok / no_timing / down / unconfigured / unknown; `psu`: ok / no_states / down /
-  unconfigured / unknown; `eop`, `bffs`, `eigencal`: ok / stale / failed /
-  never_run / unknown)
+  unconfigured / unknown; `eop`, `bffs`, `eigencal`: ok / degraded / stale /
+  failed / never_run / unknown — degraded = the job exited 2, meaning a
+  dependency or input problem rather than a broken job)
 - `choco_nodes{status}`, `choco_nodes_total`, `choco_nodes_started_desired`,
   `choco_nodes_maintenance` — node counts
 

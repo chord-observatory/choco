@@ -15,19 +15,19 @@
 {%- else -%}{{ h | replace('_', ' ') }}
 {%- endif -%}
 {%- endmacro %}
+{# job states: ok green; degraded (dependency/input trouble, exit 2) and
+   stale yellow; failed (config/bug) red; never_run/unknown grey. Jobs say
+   "ok"/"failed", not "up"/"down" — up/down is for the daemon monitors. #}
 {% macro job_color(h) -%}
 {%- if h == 'ok' -%}#2ecc40
-{%- elif h == 'stale' -%}#ffdc00
-{%- elif h == 'never_run' -%}#aaa
-{%- elif h == 'unknown' -%}#aaa
+{%- elif h in ('degraded', 'stale') -%}#ffdc00
+{%- elif h in ('never_run', 'unknown') -%}#aaa
 {%- else -%}#ff4136
 {%- endif -%}
 {%- endmacro %}
 {% macro job_label(h) -%}
-{%- if h == 'ok' -%}up
-{%- elif h == 'stale' -%}stale
-{%- elif h == 'failed' -%}down
-{%- elif h == 'never_run' -%}not run
+{%- if h == 'never_run' -%}not run
+{%- elif h -%}{{ h }}
 {%- else -%}unknown
 {%- endif -%}
 {%- endmacro %}

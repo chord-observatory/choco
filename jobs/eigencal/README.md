@@ -33,9 +33,12 @@ eigencal lives in the [choco](../../README.md) repo and runs from choco's venv:
 ../../.venv/bin/pytest                                                # the tests (or: ../../choco.sh test)
 ```
 
-`-v`/`-vv` raise the log level. Exit codes: 0 = success *or* nothing-to-do,
-2 = the solution failed the quality gate (archived but not sent), 1 = error.
-See `eigencal.example.yaml` for an annotated config and
+`-v`/`-vv` raise the log level. Exit codes (the shared choco job convention):
+0 = success *or* nothing-to-do, 2 = *degraded* — the solution failed the
+quality gate (archived but not sent) or a dependency wasn't available (no N²
+data covering the transit, choco not up; the next tick retries), 1 = a config
+error or bug that needs a human. choco's EIGENCAL badge renders these as
+green / yellow / red. See `eigencal.example.yaml` for an annotated config and
 `eigencal_feeds.example.yaml` for the feed layout file.
 
 ### As a systemd timer

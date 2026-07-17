@@ -635,9 +635,16 @@ def main(argv=None) -> int:
             write_state(cfg, result, sent=True)
         return 0
 
-    except (OSError, ValueError) as e:
-        # Expected environmental failures (no N² file yet, choco not up,
-        # transit not covered) get one useful line; -vv adds the traceback.
+    except OSError as e:
+        # Environmental (no N² file yet, choco not up): exit 2 like the
+        # quality gate — degraded, not failed; the next tick retries.
+        # (Shared job exit-code convention, read by choco's badge:
+        # 0 ok, 2 degraded, 1 failed.)
+        log.error("%s: %s", type(e).__name__, e)
+        log.debug("traceback:", exc_info=True)
+        return 2
+    except ValueError as e:
+        # Config or consistency errors — needs a human.
         log.error("%s: %s", type(e).__name__, e)
         log.debug("traceback:", exc_info=True)
         return 1
