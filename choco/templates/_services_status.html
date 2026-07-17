@@ -1,4 +1,4 @@
-{% from "_service_macros.html" import fpga_color, fpga_label, job_color, job_label, since, pill_style %}
+{% from "_service_macros.html" import monitor_color, monitor_label, job_color, job_label, since, pill_style %}
 {% set now = now_ts %}
 {% macro job_pill(label, name, job, mtime_label) -%}
 {% set tip = label ~ ' job (' ~ job.unit ~ ')'
@@ -18,8 +18,19 @@
              ~ ('\nlast seen: ' ~ since(fpga.last_seen, now) if fpga.last_seen else '')
              ~ ('\nerror: ' ~ fpga.error if fpga.error else '')
              ~ '\n\nclick for details' %}
-<a href="/service/fpga" title="{{ tip }}" style="{{ pill_style() }} background: {{ fpga_color(fpga.health) }};">
-    <strong>FPGA</strong> <span>{{ fpga_label(fpga.health) }}</span>
+<a href="/service/fpga" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(fpga.health) }};">
+    <strong>FPGA</strong> <span>{{ monitor_label(fpga.health) }}</span>
+</a>
+{% endif %}
+{% if psu %}
+{% set tip = 'power_db at ' ~ (psu.host or '?') ~ ':' ~ (psu.port or '?')
+             ~ '\nhealth: ' ~ psu.health
+             ~ ('\nchannels on: ' ~ psu.n_on ~ ' / ' ~ psu.n_channels if psu.n_channels else '')
+             ~ ('\nlast seen: ' ~ since(psu.last_seen, now) if psu.last_seen else '')
+             ~ ('\nerror: ' ~ psu.error if psu.error else '')
+             ~ '\n\nclick for details' %}
+<a href="/service/psu" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(psu.health) }};">
+    <strong>PSU</strong> <span>{{ monitor_label(psu.health) }}</span>
 </a>
 {% endif %}
 {{ job_pill('EOP', 'eop', eop, 'last run') }}

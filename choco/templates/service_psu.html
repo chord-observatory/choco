@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% from "_service_macros.html" import monitor_color, monitor_label, since, pill_style %}
+
+{% block title %}PSU — CHOCO{% endblock %}
+
+{% block styles %}
+dl.service-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.15em 1.25em;
+    margin: 0.5em 0 1.5em 0;
+    font-size: 0.95em;
+}
+dl.service-facts dt { font-weight: 600; }
+dl.service-facts dd { margin: 0; }
+table.psu-grid { margin: 0 0 1.5em 0; font-size: 0.85em; }
+table.psu-grid th, table.psu-grid td { padding: 0.3em 0.6em; text-align: center; }
+table.psu-grid td.rowhead { text-align: left; white-space: nowrap; font-family: monospace; }
+.chan { display: inline-block; min-width: 2.4em; padding: 0.15em 0.3em; border-radius: 4px; color: white; }
+.chan.on { background: #2ecc40; }
+.chan.off { background: #aaa; }
+{% endblock %}
+
+{% block content %}
+<hgroup style="margin-bottom: 0.75em;">
+    <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
+        PSU
+        <span style="{{ pill_style() }} background: {{ monitor_color(psu.health) }}; font-size: 0.55em;">{{ monitor_label(psu.health) }}</span>
+    </h2>
+    <p>The analog power controller (power_db) — Infineon high-side switches powering the feed amplifiers,
+    one channel per output.</p>
+</hgroup>
+
+<dl class="service-facts">
+    <dt>Endpoint</dt>
+    <dd>{% if psu.configured %}<code>http://{{ psu.host }}:{{ psu.port }}</code>{% else %}<em>not configured (psu.host / port)</em>{% endif %}</dd>
+    <dt>Health</dt>
+    <dd>{{ psu.health }}</dd>
+    {% if psu.n_channels %}
+    <dt>Channels on</dt>
+    <dd>{{ psu.n_on }} / {{ psu.n_channels }}</dd>
+    {% endif %}
+    <dt>Last polled</dt>
+    <dd>{{ since(psu.last_polled, now_ts) }}</dd>
+    <dt>Last seen up</dt>
+    <dd>{{ since(psu.last_seen, now_ts) }}</dd>
+    {% if psu.error %}
+    <dt>Error</dt>
+    <dd><code>{{ psu.error }}</code></dd>
+    {% endif %}
+</dl>
+
+{% for bus, rows in channels | dictsort %}
+<h4 style="margin-bottom: 0.25em;">SPI bus {{ bus }} — {{ boards.get(bus, (rows | length) // 2) }} boards</h4>
+<figure style="margin: 0; overflow-x: auto;">
+<table class="psu-grid">
+    <thead>
+        <tr>
+            <th style="text-align: left;">Board / chip</th>
+            {% for c in range(8) %}<th>ch{{ c }}</th>{% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td class="rowhead">board {{ row.board }} &middot; {{ row.chip }}</td>
+            {% for on in row.channels %}
+            <td><span class="chan {{ 'on' if on else 'off' }}">{{ 'on' if on else 'off' }}</span></td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p><em>No channel states read yet{% if psu.configured %} — waiting for the first poll{% endif %}.</em></p>
+{% endfor %}
+{% endblock %}

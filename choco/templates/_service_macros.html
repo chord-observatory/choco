@@ -1,17 +1,18 @@
 {# Shared macros for the services strip and the /service/<name> pages. #}
-{% macro fpga_color(h) -%}
+{# monitor_* cover the hardware monitors (FPGA, PSU): ok/down/unconfigured/
+   unknown plus per-monitor degraded states (no_timing, no_states) that all
+   render yellow. #}
+{% macro monitor_color(h) -%}
 {%- if h == 'ok' -%}#2ecc40
-{%- elif h == 'no_timing' -%}#ffdc00
-{%- elif h == 'unconfigured' -%}#aaa
-{%- else -%}#ff4136
+{%- elif h == 'down' -%}#ff4136
+{%- elif h in ('unconfigured', 'unknown') -%}#aaa
+{%- else -%}#ffdc00
 {%- endif -%}
 {%- endmacro %}
-{% macro fpga_label(h) -%}
+{% macro monitor_label(h) -%}
 {%- if h == 'ok' -%}up
-{%- elif h == 'no_timing' -%}no timing
 {%- elif h == 'unconfigured' -%}not configured
-{%- elif h == 'down' -%}down
-{%- else -%}unknown
+{%- else -%}{{ h | replace('_', ' ') }}
 {%- endif -%}
 {%- endmacro %}
 {% macro job_color(h) -%}

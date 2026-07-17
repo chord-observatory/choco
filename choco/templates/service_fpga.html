@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_service_macros.html" import fpga_color, fpga_label, since, pill_style %}
+{% from "_service_macros.html" import monitor_color, monitor_label, since, pill_style %}
 
 {% block title %}FPGA — CHOCO{% endblock %}
 
@@ -19,7 +19,7 @@ dl.service-facts dd { margin: 0; }
 <hgroup style="margin-bottom: 0.75em;">
     <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
         FPGA
-        <span style="{{ pill_style() }} background: {{ fpga_color(fpga.health) }}; font-size: 0.55em;">{{ fpga_label(fpga.health) }}</span>
+        <span style="{{ pill_style() }} background: {{ monitor_color(fpga.health) }}; font-size: 0.55em;">{{ monitor_label(fpga.health) }}</span>
     </h2>
     <p>The fpga_master daemon — runs the F-engine (ICEBoards) and stamps frame0, the timing origin
     kotekan and the EOP table are anchored to.</p>

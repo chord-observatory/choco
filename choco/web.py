@@ -498,13 +498,17 @@ def _service_units() -> dict[str, str]:
 
 
 def _services_health() -> dict:
-    """Health snapshots for the FPGA master and the oneshot jobs.
+    """Health snapshots for the hardware monitors and the oneshot jobs.
 
     Shared by the header strip, /api/status, and /metrics.
     """
-    monitor = current_app.config.get("fpga_monitor")
+    fpga = current_app.config.get("fpga_monitor")
+    psu = current_app.config.get("psu_monitor")
     registry = _service_registry()
-    health = {"fpga": monitor.to_dict() if monitor is not None else None}
+    health = {
+        "fpga": fpga.to_dict() if fpga is not None else None,
+        "psu": psu.to_dict() if psu is not None else None,
+    }
     for name in ("eop", "bffs", "eigencal"):
         svc = registry[name]
         health[name] = job_status(svc["unit"], state_file=svc["state_file"],
@@ -515,11 +519,12 @@ def _services_health() -> dict:
 @bp.route("/partials/services")
 @login_required
 def partial_services():
-    """Render the FPGA + job (EOP, bffs, eigencal) status strip."""
+    """Render the monitor (FPGA, PSU) + job (EOP, bffs, eigencal) strip."""
     services = _services_health()
     return render_template(
         "_services_status.html",
         fpga=services["fpga"],
+        psu=services["psu"],
         eop=services["eop"],
         bffs=services["bffs"],
         eigencal=services["eigencal"],
@@ -629,6 +634,15 @@ def service_page(name):
         return render_template(
             "service_fpga.html", fpga=fpga,
             frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+            now_ts=time.time(),
+        )
+    if name == "psu":
+        monitor = current_app.config.get("psu_monitor")
+        if monitor is None:
+            abort(404)
+        return render_template(
+            "service_psu.html", psu=monitor.to_dict(),
+            channels=monitor.channels, boards=monitor.boards,
             now_ts=time.time(),
         )
     svc = _service_registry().get(name)
@@ -824,8 +838,11 @@ def api_status():
 
 
 # Health states each service can report, for one-hot /metrics gauges.
-_FPGA_STATES = ("ok", "no_timing", "down", "unconfigured", "unknown")
 _JOB_STATES = ("ok", "stale", "failed", "never_run", "unknown")
+_MONITOR_STATES = {
+    "fpga": ("ok", "no_timing", "down", "unconfigured", "unknown"),
+    "psu": ("ok", "no_states", "down", "unconfigured", "unknown"),
+}
 
 
 @bp.route("/metrics", methods=["GET"])
@@ -850,7 +867,7 @@ def metrics():
         "# TYPE choco_service_state gauge",
     ]
     for name, health in summary["services"].items():
-        states = _FPGA_STATES if name == "fpga" else _JOB_STATES
+        states = _MONITOR_STATES.get(name, _JOB_STATES)
         for state in states:
             value = 1 if health == state else 0
             lines.append(

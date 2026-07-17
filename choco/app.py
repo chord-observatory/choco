@@ -14,7 +14,7 @@ import yaml
 from flask import Flask
 
 from .auth import init_auth
-from .services import FpgaMonitor
+from .services import FpgaMonitor, PsuMonitor
 from .state import Registry
 from .sync import Orchestrator
 
@@ -37,6 +37,7 @@ _DEFAULT_CONFIG = {
         "num_workers": 4,
     },
     "fpga_master": {},
+    "psu": {},
     "eop": {},
     "bffs": {},
     "eigencal": {},
@@ -83,6 +84,7 @@ def load_config(path: str | Path) -> dict:
                        "move it to a top-level fpga_master.host block.")
     if legacy_port and not config["fpga_master"].get("port"):
         config["fpga_master"]["port"] = legacy_port
+    config["psu"] = raw.get("psu") or {}
     config["bffs"] = raw.get("bffs") or {}
     config["eigencal"] = raw.get("eigencal") or {}
     config["ldap"] = raw.get("ldap") or {}
@@ -123,19 +125,27 @@ def create_app(
         num_workers=int(sync_cfg["num_workers"]),
     )
 
-    # FPGA-master service monitor: separate concern from kotekan polling,
-    # used by the service-status strip in the page header.
+    # Hardware service monitors: separate concern from kotekan polling,
+    # used by the service-status strip in the page header.  Instantiated
+    # unconditionally so the UI is uniform; unconfigured ones don't poll.
     fpga_cfg = config.get("fpga_master") or {}
     fpga_monitor = FpgaMonitor(
         host=fpga_cfg.get("host") or None,
         port=fpga_cfg.get("port") or None,
         timeout=float(fpga_cfg.get("timeout") or 5.0),
     )
+    psu_cfg = config.get("psu") or {}
+    psu_monitor = PsuMonitor(
+        host=psu_cfg.get("host") or None,
+        port=psu_cfg.get("port") or None,
+        timeout=float(psu_cfg.get("timeout") or 5.0),
+    )
 
     # Store on app for access in routes
     app.config["registry"] = registry
     app.config["orchestrator"] = orchestrator
     app.config["fpga_monitor"] = fpga_monitor
+    app.config["psu_monitor"] = psu_monitor
     app.config["eop_cfg"] = config.get("eop") or {}
     app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["eigencal_cfg"] = config.get("eigencal") or {}
@@ -151,6 +161,8 @@ def create_app(
     gevent.spawn(orchestrator.run)
     if fpga_monitor.configured:
         gevent.spawn(fpga_monitor.run)
+    if psu_monitor.configured:
+        gevent.spawn(psu_monitor.run)
 
     return app
 

@@ -310,12 +310,14 @@ class TestServicesPartial:
         assert "EOP" in body
         assert "BFFS" in body
         assert "EIGENCAL" in body
-        # FPGA badge is only rendered if a monitor is set on app.config.
-        # The test app does install one (unconfigured), so it shows up.
+        # Monitor badges are only rendered if a monitor is set on
+        # app.config.  The test app installs both (unconfigured).
         assert "FPGA" in body
+        assert "PSU" in body
         # Badges link to the service pages.
         assert '/service/eop' in body
         assert '/service/fpga' in body
+        assert '/service/psu' in body
 
 
 class TestMaintenanceToggles:
@@ -561,6 +563,30 @@ class TestServicePage:
         assert "FPGA" in body
         assert "not configured" in body
 
+    def test_psu_page_renders(self, client):
+        _login(client)
+        resp = client.get("/service/psu")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "PSU" in body
+        assert "not configured" in body
+
+    def test_psu_page_channel_grid(self, client, app):
+        from choco.services import PsuMonitor
+        _login(client)
+        monitor = app.config["psu_monitor"]
+        monitor.boards = {0: 1}
+        monitor.channels = {0: [
+            {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
+            {"board": 0, "chip": "B", "channels": [False] * 8},
+        ]}
+        resp = client.get("/service/psu")
+        body = resp.data.decode()
+        assert "SPI bus 0" in body
+        assert "board 0" in body
+        assert body.count('class="chan on"') == 1
+        assert body.count('class="chan off"') == 15
+
     def test_timer_facts_shown(self, client):
         from unittest.mock import patch
         _login(client)
@@ -655,7 +681,9 @@ class TestStatusApi:
         assert data["up"] is True
         assert data["services"]["eop"] == "ok"
         assert data["services"]["bffs"] == "ok"
+        assert data["services"]["eigencal"] == "ok"
         assert "fpga" in data["services"]
+        assert data["services"]["psu"] == "unconfigured"
         assert data["nodes"]["total"] == 3
         # Fresh Registry constructs every node in maintenance mode.
         assert data["nodes"]["maintenance"] == 3
@@ -690,6 +718,9 @@ class TestMetrics:
         assert "choco_start_time_seconds" in body
         assert 'choco_service_state{service="eop",state="failed"} 1' in body
         assert 'choco_service_state{service="eop",state="ok"} 0' in body
+        assert 'choco_service_state{service="eigencal",state="failed"} 1' in body
+        assert 'choco_service_state{service="psu",state="unconfigured"} 1' in body
+        assert 'choco_service_state{service="psu",state="no_states"} 0' in body
         assert "choco_nodes_total 3" in body
         assert "choco_nodes_maintenance 3" in body
         # One-hot node counts by status are present for every status.

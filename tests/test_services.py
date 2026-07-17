@@ -9,7 +9,8 @@ import pytest
 import responses
 
 from choco.services import (
-    FpgaMonitor, job_status, timer_status, read_state_json, EOP_STALE_AFTER_S,
+    FpgaMonitor, PsuMonitor, decode_out_bytes, job_status, timer_status,
+    read_state_json, EOP_STALE_AFTER_S,
 )
 
 
@@ -72,6 +73,101 @@ class TestFpgaMonitorPollOnce:
         mon.poll_once()
         assert mon.health == "unconfigured"
         assert mon.configured is False
+
+
+PSU_BASE = "http://psu.example:5000"
+
+
+@pytest.fixture
+def psu():
+    return PsuMonitor(host="psu.example", port=5000, timeout=1)
+
+
+class TestDecodeOutBytes:
+    def test_out_bytes_are_odd_positions_from_the_end(self):
+        # 2 chips -> 4 raw bytes; after reversal every even index is a
+        # chip's OUT byte, chip 0 first.
+        assert decode_out_bytes([0x18, 0x02, 0x18, 0x01]) == [0x01, 0x02]
+
+    def test_live_shape_all_off(self):
+        # The deployed controller reads [128, 0] per chip: status byte
+        # 128, OUT byte 0 -> every channel off.
+        assert decode_out_bytes([128, 0] * 4) == [0, 0, 0, 0]
+
+    def test_empty(self):
+        assert decode_out_bytes([]) == []
+
+
+class TestPsuMonitorPollOnce:
+    @responses.activate
+    def test_healthy_path(self, psu):
+        responses.get(f"{PSU_BASE}/status", json={
+            "active_buses": [0],
+            "buses": {"0": {"board_count": 1, "chip_count": 2}},
+        })
+        # chip 0 (board 0 A): ch0 on; chip 1 (board 0 B): all off
+        responses.get(f"{PSU_BASE}/channel_states", json={
+            "channel_states": {"0": [0x18, 0x00, 0x18, 0x01]},
+        })
+        psu.poll_once()
+        assert psu.health == "ok"
+        assert psu.error is None
+        assert psu.boards == {0: 1}
+        rows = psu.channels[0]
+        assert rows[0] == {"board": 0, "chip": "A",
+                           "channels": [True] + [False] * 7}
+        assert rows[1]["chip"] == "B"
+        assert not any(rows[1]["channels"])
+        assert psu.n_channels == 16
+        assert psu.n_on == 1
+        assert psu.last_seen is not None
+
+    @responses.activate
+    def test_status_down(self, psu):
+        responses.get(f"{PSU_BASE}/status", status=500)
+        psu.poll_once()
+        assert psu.health == "down"
+        assert psu.error
+
+    @responses.activate
+    def test_status_unreachable(self, psu):
+        import requests as _requests
+        responses.get(f"{PSU_BASE}/status",
+                      body=_requests.ConnectionError("refused"))
+        psu.poll_once()
+        assert psu.health == "down"
+
+    @responses.activate
+    def test_status_ok_but_states_missing(self, psu):
+        responses.get(f"{PSU_BASE}/status",
+                      json={"active_buses": [0], "buses": {}})
+        responses.get(f"{PSU_BASE}/channel_states", status=500)
+        psu.poll_once()
+        assert psu.health == "no_states"
+        assert "/channel_states" in psu.error
+
+    def test_unconfigured_monitor_reports_unconfigured(self):
+        m = PsuMonitor(host=None, port=None)
+        assert m.configured is False
+        assert m.health == "unconfigured"
+        m.poll_once()
+        assert m.health == "unconfigured"
+
+    @responses.activate
+    def test_to_dict(self, psu):
+        responses.get(f"{PSU_BASE}/status", json={
+            "active_buses": [0],
+            "buses": {"0": {"board_count": 1, "chip_count": 2}},
+        })
+        responses.get(f"{PSU_BASE}/channel_states", json={
+            "channel_states": {"0": [0, 0xFF, 0, 0xFF]},
+        })
+        psu.poll_once()
+        d = psu.to_dict()
+        assert d["health"] == "ok"
+        assert d["buses"] == [0]
+        assert d["n_channels"] == 16
+        assert d["n_on"] == 16
 
 
 UNIT = "choco-test-job.service"

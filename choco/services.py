@@ -126,6 +126,148 @@ class FpgaMonitor:
         }
 
 
+# --- PSU (power_db) -------------------------------------------------------
+
+def decode_out_bytes(raw: list[int]) -> list[int]:
+    """Per-chip OUT bytes from one bus's raw ``/channel_states`` buffer.
+
+    Mirrors power_db's own daisy-chain decode (``spi_ops``; the same
+    convention as ``jobs/bffs/sources/power.py``): reverse the flat byte
+    list, then every even index is a chip's OUT byte — chip ``k`` of the
+    chain, i.e. board ``k // 2``, chip ``'A'`` if ``k`` is even else
+    ``'B'``.  Each OUT bit ``c`` (0..7) is channel ``c``; 1 = powered.
+    """
+    resp = list(raw)
+    resp.reverse()
+    return [resp[i] for i in range(0, len(resp), 2)]
+
+
+class PsuMonitor:
+    """Background poller for the power_db PSU controller.
+
+    Hits ``/status`` and ``/channel_states`` on a slow interval and
+    decodes the per-channel power state.  Same shape as
+    :class:`FpgaMonitor`: latest result held in attributes, surfaced by
+    the services strip and the ``/service/psu`` page.
+
+    Health levels:
+      * ``ok``        — both endpoints responded and decoded.
+      * ``no_states`` — /status responded but /channel_states did not.
+      * ``down``      — /status did not respond.
+      * ``unconfigured`` — no psu.host / port in config.
+    """
+
+    POLL_INTERVAL_S = 30
+
+    def __init__(self, host: str | None, port: int | None,
+                 timeout: float = 5.0):
+        self.host = host
+        self.port = int(port) if port else None
+        self.timeout = float(timeout)
+        self.health: str = "unknown" if self.configured else "unconfigured"
+        # {bus: [{"board": int, "chip": "A"|"B", "channels": [bool]*8}]}
+        self.channels: dict[int, list[dict]] = {}
+        self.boards: dict[int, int] = {}   # bus -> board count (from /status)
+        self.last_polled: float | None = None
+        self.last_seen: float | None = None
+        self.error: str | None = None
+        self._running = False
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.host) and bool(self.port)
+
+    @property
+    def base_url(self) -> str | None:
+        if not self.configured:
+            return None
+        return f"http://{self.host}:{self.port}"
+
+    @property
+    def n_channels(self) -> int:
+        return sum(8 * len(rows) for rows in self.channels.values())
+
+    @property
+    def n_on(self) -> int:
+        return sum(sum(r["channels"]) for rows in self.channels.values()
+                   for r in rows)
+
+    def poll_once(self) -> None:
+        """Probe both endpoints once and update in-memory state."""
+        self.last_polled = time.time()
+        if not self.configured:
+            self.health = "unconfigured"
+            self.error = "psu.host / port not set"
+            return
+
+        # /status: reachability + board counts
+        try:
+            resp = requests.get(f"{self.base_url}/status",
+                                timeout=self.timeout)
+            resp.raise_for_status()
+            status = resp.json()
+            self.boards = {
+                int(bus): int((info or {}).get("board_count", 0))
+                for bus, info in (status.get("buses") or {}).items()
+            }
+        except (requests.RequestException, ValueError, TypeError) as e:
+            self.health = "down"
+            self.error = f"{type(e).__name__}: {e}"
+            return
+
+        # /channel_states: raw OUT-register bytes per bus
+        try:
+            resp = requests.get(f"{self.base_url}/channel_states",
+                                timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            channels: dict[int, list[dict]] = {}
+            for bus_str, raw in (data["channel_states"] or {}).items():
+                rows = []
+                for k, out in enumerate(decode_out_bytes(raw)):
+                    rows.append({
+                        "board": k // 2,
+                        "chip": "A" if k % 2 == 0 else "B",
+                        "channels": [bool(out & (1 << c)) for c in range(8)],
+                    })
+                channels[int(bus_str)] = rows
+            self.channels = channels
+            self.health = "ok"
+            self.error = None
+            self.last_seen = self.last_polled
+        except (requests.RequestException, ValueError, KeyError,
+                TypeError) as e:
+            self.health = "no_states"
+            self.error = f"/channel_states: {type(e).__name__}: {e}"
+
+    def run(self) -> None:
+        """Poll forever on ``POLL_INTERVAL_S``.  Designed for gevent.spawn."""
+        self._running = True
+        while self._running:
+            try:
+                self.poll_once()
+            except Exception:
+                logger.exception("PsuMonitor.poll_once raised")
+            gevent.sleep(self.POLL_INTERVAL_S)
+
+    def stop(self) -> None:
+        self._running = False
+
+    def to_dict(self) -> dict:
+        return {
+            "configured": self.configured,
+            "host": self.host,
+            "port": self.port,
+            "health": self.health,
+            "buses": sorted(self.channels),
+            "n_channels": self.n_channels,
+            "n_on": self.n_on,
+            "last_polled": self.last_polled,
+            "last_seen": self.last_seen,
+            "error": self.error,
+        }
+
+
 # --- Job status (EOP broadcast, bffs, ...) -------------------------------
 
 # The handful of ``systemctl show`` properties consumed by job_status.
