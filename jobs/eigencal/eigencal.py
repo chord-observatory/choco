@@ -260,8 +260,12 @@ def collect_segments(cfg, t_lo, t_hi):
             segments.append((meta, sel))
 
     if not segments:
-        raise ValueError("no N² data overlaps the transit window "
-                         f"[{t_lo:.0f}, {t_hi:.0f}]")
+        # OSError, not ValueError: missing/too-old data is a dependency
+        # problem (exit 2, degraded badge) — the acquisition being down
+        # is not an eigencal failure, and the next covered transit heals.
+        raise OSError("no N² data overlaps the transit window "
+                      f"[{t_lo:.0f}, {t_hi:.0f}] — acquisition down or "
+                      "files too old")
     segments.sort(key=lambda s: s[0].time[s[1][0]])
     first = segments[0][0]
     for meta, _ in segments[1:]:
@@ -313,9 +317,11 @@ def process_transit(cfg, transit_unix, eph):
     on = np.abs(ha_all) <= win_fit
     off = np.abs(ha_all) > win_off
     if on.sum() < 10:
-        raise ValueError(f"only {int(on.sum())} on-source samples in the N² data "
-                         f"(HA coverage {ha_all.min():.3f}..{ha_all.max():.3f} rad); "
-                         "transit not covered")
+        # Same reasoning as the empty-overlap case: partial coverage is
+        # a data-availability problem, not an eigencal failure.
+        raise OSError(f"only {int(on.sum())} on-source samples in the N² data "
+                      f"(HA coverage {ha_all.min():.3f}..{ha_all.max():.3f} rad); "
+                      "transit not covered")
     if off.sum() > ana["n_off_max"]:                 # decimate the off samples
         idx = np.flatnonzero(off)
         off[:] = False

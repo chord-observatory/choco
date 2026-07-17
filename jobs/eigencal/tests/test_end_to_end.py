@@ -172,3 +172,20 @@ def test_quality_gate_rejects_noise_only_data(setup):
                                 + 1j * rng.standard_normal(shape))).astype(np.complex64)
 
     assert process_transit(cfg, transit, eph) is None
+
+
+def test_stale_files_raise_oserror_for_degraded_exit(setup):
+    """Files that don't cover the transit are a data-availability problem:
+    OSError -> exit 2 (degraded badge), not ValueError -> failed."""
+    cfg, eph, transit, tmp_path = setup
+    rng = np.random.default_rng(3)
+    _make_file(cfg, eph, transit, tmp_path, rng)
+    # A transit a day later than the data on disk: nothing overlaps.
+    with pytest.raises(OSError, match="acquisition down or files too old"):
+        eigencal.collect_segments(cfg, transit + 86400 - 600, transit + 86400 + 600)
+
+
+def test_no_files_at_all_is_oserror(setup):
+    cfg, eph, transit, tmp_path = setup
+    with pytest.raises(OSError):
+        eigencal.collect_segments(cfg, transit - 600, transit + 600)
