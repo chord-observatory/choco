@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_service_macros.html" import monitor_color, monitor_label, since, pill_style %}
+{% from "_service_macros.html" import monitor_color, monitor_label, pill_style %}
 
 {% block title %}FPGA — CHOCO{% endblock %}
 
@@ -13,6 +13,8 @@ dl.service-facts {
 }
 dl.service-facts dt { font-weight: 600; }
 dl.service-facts dd { margin: 0; }
+.fpga-controls form { margin: 0; }
+.fpga-controls button { width: auto; margin: 0; }
 {% endblock %}
 
 {% block content %}
@@ -25,22 +27,31 @@ dl.service-facts dd { margin: 0; }
     kotekan and the EOP table are anchored to.</p>
 </hgroup>
 
-<dl class="service-facts">
-    <dt>Endpoint</dt>
-    <dd>{% if fpga.configured %}<code>http://{{ fpga.host }}:{{ fpga.port }}</code>{% else %}<em>not configured (fpga_master.host / port)</em>{% endif %}</dd>
-    <dt>Health</dt>
-    <dd>{{ fpga.health }}</dd>
-    {% if fpga.frame0_ns %}
-    <dt>frame0</dt>
-    <dd>{{ frame0_fmt }} (<code>{{ fpga.frame0_ns }}</code> ns)</dd>
-    {% endif %}
-    <dt>Last polled</dt>
-    <dd>{{ since(fpga.last_polled, now_ts) }}</dd>
-    <dt>Last seen up</dt>
-    <dd>{{ since(fpga.last_seen, now_ts) }}</dd>
-    {% if fpga.error %}
-    <dt>Error</dt>
-    <dd><code>{{ fpga.error }}</code></dd>
-    {% endif %}
-</dl>
+<div id="fpga-status"
+     hx-get="/partials/service-fpga"
+     hx-trigger="every 10s"
+     hx-swap="innerHTML">
+{% include "_service_fpga_status.html" %}
+</div>
+
+{% if control and fpga.configured %}
+<section>
+    <h4 style="margin-bottom: 0.25em;">Controls</h4>
+    <p style="font-size: 0.9em;">&#9888; A restart assigns a <strong>new frame0</strong> — kotekan's
+    timing and the EOP table are anchored to it, so downstream consumers must resynchronize
+    after the F-engine comes back up.</p>
+    <div class="fpga-controls" style="display: flex; gap: 1em;">
+        <form method="post" action="/service/fpga/start"
+              onsubmit="return confirm('Start the FPGA master?\n\nIt initializes in the background with the config it was launched with; the state above follows the progress.')">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button type="submit">Start</button>
+        </form>
+        <form method="post" action="/service/fpga/stop"
+              onsubmit="return confirm('Stop the FPGA master?\n\nThe F-engine shuts down (this can take a while), and the next start assigns a new frame0.')">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="secondary">Stop</button>
+        </form>
+    </div>
+</section>
+{% endif %}
 {% endblock %}

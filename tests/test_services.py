@@ -74,6 +74,95 @@ class TestFpgaMonitorPollOnce:
         assert mon.health == "unconfigured"
         assert mon.configured is False
 
+    @responses.activate
+    def test_state_and_start_result_captured(self, monitor):
+        responses.get(f"{BASE}/status",
+                      json={"state": "on", "is_ready": True,
+                            "start_result": "Initialization complete"})
+        responses.get(f"{BASE}/get-frame0-time",
+                      json={"frame0_nano": 1, "start_ctime": 0.0})
+        monitor.poll_once()
+        assert monitor.state == "on"
+        assert monitor.start_result == "Initialization complete"
+        assert monitor.to_dict()["state"] == "on"
+
+    @responses.activate
+    def test_failed_start_body_surfaces_in_error(self, monitor):
+        # A failed background /start makes /status itself error with the
+        # exception in the body.
+        responses.get(f"{BASE}/status", status=500,
+                      body="RuntimeError: no ICEBoards found")
+        monitor.poll_once()
+        assert monitor.health == "down"
+        assert monitor.state is None
+        assert "no ICEBoards found" in monitor.error
+
+
+class TestFpgaMonitorControls:
+    @responses.activate
+    def test_start_master_posts_empty_config(self, monitor):
+        start = responses.post(
+            f"{BASE}/start",
+            json="Initialization in progress. Check status for completion.")
+        # start_master() re-polls; give the poll something to hit.
+        responses.get(f"{BASE}/status", json={"state": "starting"})
+        responses.get(f"{BASE}/get-frame0-time", json={})
+        ok, message = monitor.start_master()
+        assert ok is True
+        assert "Initialization in progress" in message
+        assert start.calls[0].request.body == b"{}"
+
+    @responses.activate
+    def test_start_master_failure(self, monitor):
+        responses.post(f"{BASE}/start", status=500)
+        ok, message = monitor.start_master()
+        assert ok is False
+        assert message
+
+    def test_start_master_unconfigured(self):
+        ok, message = FpgaMonitor(host=None, port=None).start_master()
+        assert ok is False
+        assert "not configured" in message
+
+    @responses.activate
+    def test_stop_master_waits_and_repolls(self, monitor):
+        responses.post(f"{BASE}/stop", json={"stopped": True})
+        responses.get(f"{BASE}/status", json={"state": "off"})
+        responses.get(f"{BASE}/get-frame0-time", json={})
+        ok, message = monitor.stop_master()
+        assert ok is True
+        assert monitor.state == "off"
+
+    @responses.activate
+    def test_stop_master_failure_still_repolls(self, monitor):
+        responses.post(f"{BASE}/stop", status=500)
+        responses.get(f"{BASE}/status", json={"state": "on"})
+        responses.get(f"{BASE}/get-frame0-time", json={})
+        ok, message = monitor.stop_master()
+        assert ok is False
+        assert monitor.state == "on"
+
+
+class TestFpgaMonitorPollIfStale:
+    @responses.activate
+    def test_polls_when_never_polled(self, monitor):
+        responses.get(f"{BASE}/status", json={"state": "on"})
+        responses.get(f"{BASE}/get-frame0-time", json={})
+        monitor.poll_if_stale(10)
+        assert monitor.last_polled is not None
+
+    def test_skips_when_fresh(self, monitor):
+        monitor.last_polled = time.time()
+        # No responses registered: a poll would raise ConnectionError
+        # and flip health to down — skipping leaves it untouched.
+        monitor.poll_if_stale(10)
+        assert monitor.health == "unknown"
+
+    def test_unconfigured_never_polls(self):
+        mon = FpgaMonitor(host=None, port=None)
+        mon.poll_if_stale(0)
+        assert mon.last_polled is None
+
 
 PSU_BASE = "http://psu.example:5000"
 

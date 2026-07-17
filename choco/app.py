@@ -145,7 +145,9 @@ def create_app(
     app.config["registry"] = registry
     app.config["orchestrator"] = orchestrator
     app.config["fpga_monitor"] = fpga_monitor
+    app.config["fpga_cfg"] = fpga_cfg
     app.config["psu_monitor"] = psu_monitor
+    app.config["psu_cfg"] = psu_cfg
     app.config["eop_cfg"] = config.get("eop") or {}
     app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["eigencal_cfg"] = config.get("eigencal") or {}

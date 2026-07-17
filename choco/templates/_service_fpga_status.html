@@ -1,0 +1,27 @@
+{% from "_service_macros.html" import monitor_color, monitor_label, since, pill_style %}
+<dl class="service-facts">
+    <dt>Endpoint</dt>
+    <dd>{% if fpga.configured %}<code>http://{{ fpga.host }}:{{ fpga.port }}</code>{% else %}<em>not configured (fpga_master.host / port)</em>{% endif %}</dd>
+    <dt>Health</dt>
+    <dd><span style="{{ pill_style() }} background: {{ monitor_color(fpga.health) }}; font-size: 0.85em;">{{ monitor_label(fpga.health) }}</span></dd>
+    {% if fpga.state %}
+    <dt>State</dt>
+    <dd><code>{{ fpga.state }}</code></dd>
+    {% endif %}
+    {% if fpga.start_result %}
+    <dt>Last start result</dt>
+    <dd><code>{{ fpga.start_result }}</code></dd>
+    {% endif %}
+    {% if fpga.frame0_ns %}
+    <dt>frame0</dt>
+    <dd>{{ frame0_fmt }} (<code>{{ fpga.frame0_ns }}</code> ns)</dd>
+    {% endif %}
+    <dt>Last polled</dt>
+    <dd>{{ since(fpga.last_polled, now_ts) }}</dd>
+    <dt>Last seen up</dt>
+    <dd>{{ since(fpga.last_seen, now_ts) }}</dd>
+    {% if fpga.error %}
+    <dt>Error</dt>
+    <dd><code>{{ fpga.error }}</code></dd>
+    {% endif %}
+</dl>

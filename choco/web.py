@@ -6,6 +6,8 @@ import secrets
 import time
 from pathlib import Path
 
+import gevent
+
 from flask import (
     Blueprint, Response, render_template, request, redirect, url_for, flash,
     current_app, session, abort,
@@ -631,9 +633,11 @@ def service_page(name):
         if monitor is None:
             abort(404)
         fpga = monitor.to_dict()
+        fpga_cfg = current_app.config.get("fpga_cfg") or {}
         return render_template(
             "service_fpga.html", fpga=fpga,
             frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+            control=bool(fpga_cfg.get("control", True)),
             now_ts=time.time(),
         )
     if name == "psu":
@@ -658,6 +662,55 @@ def service_page(name):
         nlines=_journal_lines_arg(),
         now_ts=time.time(),
     )
+
+
+@bp.route("/partials/service-fpga")
+@login_required
+def partial_service_fpga():
+    """Live status block for the FPGA page.
+
+    The page polls this every 10s; poll_if_stale tightens the monitor's
+    effective cadence only while someone is actually watching.
+    """
+    monitor = current_app.config.get("fpga_monitor")
+    if monitor is None:
+        abort(404)
+    monitor.poll_if_stale(10)
+    fpga = monitor.to_dict()
+    return render_template(
+        "_service_fpga_status.html", fpga=fpga,
+        frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+        now_ts=time.time(),
+    )
+
+
+@bp.route("/service/fpga/<action>", methods=["POST"])
+@login_required
+def fpga_control(action):
+    """Start or stop the FPGA master from the /service/fpga page.
+
+    /start returns immediately (fpga_master initializes in the
+    background, reusing its launch config); /stop blocks until the
+    F-engine is down, so it runs in a greenlet and the page's status
+    poll shows the transition.
+    """
+    if action not in ("start", "stop"):
+        abort(404)
+    _check_csrf()
+    monitor = current_app.config.get("fpga_monitor")
+    fpga_cfg = current_app.config.get("fpga_cfg") or {}
+    if monitor is None or not fpga_cfg.get("control", True):
+        abort(403)
+    logger.warning(f"fpga_master {action} requested by "
+                   f"{getattr(current_user, 'username', '?')}")
+    if action == "start":
+        ok, message = monitor.start_master()
+        flash(f"FPGA start: {message}", "success" if ok else "error")
+    else:
+        gevent.spawn(monitor.stop_master)
+        flash("FPGA stop requested — the state below follows the shutdown.",
+              "success")
+    return redirect(url_for("web.service_page", name="fpga"))
 
 
 # --- JSON API endpoints for queue-based updates ---

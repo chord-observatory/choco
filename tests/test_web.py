@@ -667,6 +667,100 @@ class TestServicePage:
         assert "3 in maintenance" in body
 
 
+class TestFpgaControl:
+    def _configure(self, app, control=True):
+        monitor = app.config["fpga_monitor"]
+        monitor.host, monitor.port = "fpga.example", 54321
+        app.config["fpga_cfg"] = {"host": monitor.host, "port": monitor.port,
+                                  "control": control}
+        return monitor
+
+    def test_requires_login(self, client):
+        resp = client.post("/service/fpga/start", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_requires_csrf(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.post("/service/fpga/start", data={})
+        assert resp.status_code == 403
+
+    def test_unknown_action_404(self, client, app):
+        self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        resp = client.post("/service/fpga/reboot",
+                           data={"_csrf_token": token})
+        assert resp.status_code == 404
+
+    def test_control_disabled_403(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app, control=False)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "start_master") as sm:
+            resp = client.post("/service/fpga/start",
+                               data={"_csrf_token": token})
+        assert resp.status_code == 403
+        sm.assert_not_called()
+
+    def test_start_calls_monitor(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "start_master",
+                          return_value=(True, "Initialization in progress")) as sm:
+            resp = client.post("/service/fpga/start",
+                               data={"_csrf_token": token},
+                               follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/service/fpga")
+        sm.assert_called_once_with()
+
+    def test_stop_spawns_greenlet(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "stop_master",
+                          return_value=(True, "stopped")) as sm:
+            resp = client.post("/service/fpga/stop",
+                               data={"_csrf_token": token},
+                               follow_redirects=False)
+            import gevent
+            gevent.sleep(0)  # let the spawned greenlet run
+        assert resp.status_code == 302
+        sm.assert_called_once_with()
+
+    def test_controls_rendered_when_enabled(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.get("/service/fpga")
+        body = resp.data.decode()
+        assert "/service/fpga/start" in body
+        assert "/service/fpga/stop" in body
+        assert "new frame0" in body
+
+    def test_controls_hidden_when_disabled(self, client, app):
+        self._configure(app, control=False)
+        _login(client)
+        resp = client.get("/service/fpga")
+        body = resp.data.decode()
+        assert "/service/fpga/start" not in body
+
+    def test_status_partial_renders_and_polls(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        monitor.state = "on"
+        _login(client)
+        with patch.object(monitor, "poll_if_stale") as pis:
+            resp = client.get("/partials/service-fpga")
+        assert resp.status_code == 200
+        assert "on" in resp.data.decode()
+        pis.assert_called_once_with(10)
+
+
 # --- Status API + metrics ---
 # The test client's requests come from 127.0.0.1, so the JSON API's
 # localhost bypass applies (no login needed).

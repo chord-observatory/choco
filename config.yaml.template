@@ -29,6 +29,7 @@ fpga_master:
   host: chive.site.chord-observatory.ca
   port: 54321
   timeout: 5                        # HTTP request timeout (seconds)
+  control: true                     # show Start/Stop controls on /service/fpga
 
 # Analog PSU controller (power_db) — Infineon high-side switches on a
 # Raspberry Pi, REST on port 5000.  Feeds the PSU badge and /service/psu.

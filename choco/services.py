@@ -40,9 +40,16 @@ class FpgaMonitor:
       * ``ok``        — both endpoints responded; ``frame0_nano`` parsed.
       * ``no_timing`` — /status responded but /get-frame0-time did not.
       * ``down``      — /status did not respond (or fpga_master is not configured).
+
+    Also carries the daemon's own run state (``state`` / ``start_result``
+    from ``/status``) and thin ``start_master`` / ``stop_master`` control
+    wrappers for the ``/service/fpga`` page.
     """
 
     POLL_INTERVAL_S = 30
+    # /stop awaits the full F-engine shutdown before responding — call
+    # stop_master from a greenlet, never a request handler.
+    STOP_TIMEOUT_S = 300
 
     def __init__(self, host: str | None, port: int | None,
                  timeout: float = 5.0):
@@ -52,6 +59,8 @@ class FpgaMonitor:
         # Unconfigured monitors never poll, so reflect that up front
         # instead of sitting on "unknown" forever.
         self.health: str = "unknown" if self.configured else "unconfigured"
+        self.state: str | None = None      # fpga_master's own state string
+        self.start_result = None           # last /start outcome, if reported
         self.frame0_ns: int | None = None
         self.last_polled: float | None = None
         self.last_seen: float | None = None
@@ -76,14 +85,27 @@ class FpgaMonitor:
             self.error = "fpga_master.host / port not set"
             return
 
-        # /status: cheap reachability check
+        # /status: reachability + the daemon's own run state
         try:
             resp = requests.get(f"{self.base_url}/status",
                                 timeout=self.timeout)
             resp.raise_for_status()
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            self.state = data.get("state")
+            self.start_result = data.get("start_result") or None
         except requests.RequestException as e:
             self.health = "down"
-            self.error = f"{type(e).__name__}: {e}"
+            self.state = None
+            err = f"{type(e).__name__}: {e}"
+            # A failed background /start makes /status itself error; the
+            # response body then carries the start exception.
+            body = getattr(getattr(e, "response", None), "text", "") or ""
+            if body:
+                err += f" — {body[:300]}"
+            self.error = err
             return
 
         # /get-frame0-time: parse {frame0_nano, ...}
@@ -99,6 +121,60 @@ class FpgaMonitor:
         except (requests.RequestException, ValueError, KeyError, TypeError) as e:
             self.health = "no_timing"
             self.error = f"/get-frame0-time: {type(e).__name__}: {e}"
+
+    def poll_if_stale(self, max_age_s: float = 10.0) -> None:
+        """Poll now if the last poll is older than ``max_age_s``.
+
+        Lets the /service/fpga page tighten the effective cadence while
+        an operator is actually watching, without touching the 30s loop.
+        """
+        if not self.configured:
+            return
+        if (self.last_polled is None
+                or time.time() - self.last_polled > max_age_s):
+            self.poll_once()
+
+    def start_master(self) -> tuple[bool, str]:
+        """POST ``/start`` with no config overrides.
+
+        fpga_master reuses the config it was launched with, guards
+        against double-starts ("already started"), and initializes in
+        the background — completion or failure shows up in ``/status``
+        via the poller.  Returns ``(ok, message)``.
+        """
+        if not self.configured:
+            return False, "fpga_master is not configured"
+        try:
+            resp = requests.post(f"{self.base_url}/start", json={},
+                                 timeout=self.timeout)
+            resp.raise_for_status()
+            message = str(resp.json())
+        except (requests.RequestException, ValueError) as e:
+            return False, f"{type(e).__name__}: {e}"
+        self.poll_once()
+        return True, message
+
+    def stop_master(self) -> tuple[bool, str]:
+        """POST ``/stop`` and wait for the shutdown to complete.
+
+        Blocks up to ``STOP_TIMEOUT_S`` — run from a greenlet.  The
+        outcome is logged and the state re-polled either way, so the
+        page reflects reality on its next refresh.
+        """
+        if not self.configured:
+            return False, "fpga_master is not configured"
+        try:
+            resp = requests.post(f"{self.base_url}/stop", json={},
+                                 timeout=self.STOP_TIMEOUT_S)
+            resp.raise_for_status()
+            message = resp.text[:300]
+        except requests.RequestException as e:
+            logger.error(f"fpga_master stop failed: {e}")
+            self.poll_once()
+            return False, f"{type(e).__name__}: {e}"
+        logger.info(f"fpga_master stop completed: {message}")
+        self.poll_once()
+        return True, message
 
     def run(self) -> None:
         """Poll forever on ``POLL_INTERVAL_S``.  Designed for gevent.spawn."""
@@ -119,6 +195,8 @@ class FpgaMonitor:
             "host": self.host,
             "port": self.port,
             "health": self.health,
+            "state": self.state,
+            "start_result": self.start_result,
             "frame0_ns": self.frame0_ns,
             "last_polled": self.last_polled,
             "last_seen": self.last_seen,
