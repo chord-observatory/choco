@@ -26,6 +26,28 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+_RETRY_DELAY_S = 1.0
+
+
+def _get_with_retry(url: str, timeout: float) -> requests.Response:
+    """GET with one quick retry.
+
+    The monitors poll every 30s, so a single dropped or slow request
+    would otherwise show a service as down for a whole interval — one
+    retry turns a transient blip back into a non-event while a real
+    outage still fails within ~2*timeout.
+    """
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp
+    except requests.RequestException:
+        gevent.sleep(_RETRY_DELAY_S)
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp
+
+
 # --- FPGA master --------------------------------------------------------
 
 class FpgaMonitor:
@@ -87,12 +109,12 @@ class FpgaMonitor:
 
         # /status: reachability + the daemon's own run state
         try:
-            resp = requests.get(f"{self.base_url}/status",
-                                timeout=self.timeout)
-            resp.raise_for_status()
+            resp = _get_with_retry(f"{self.base_url}/status", self.timeout)
             try:
                 data = resp.json()
             except ValueError:
+                data = {}
+            if not isinstance(data, dict):
                 data = {}
             self.state = data.get("state")
             self.start_result = data.get("start_result") or None
@@ -110,9 +132,8 @@ class FpgaMonitor:
 
         # /get-frame0-time: parse {frame0_nano, ...}
         try:
-            resp = requests.get(f"{self.base_url}/get-frame0-time",
-                                timeout=self.timeout)
-            resp.raise_for_status()
+            resp = _get_with_retry(f"{self.base_url}/get-frame0-time",
+                                   self.timeout)
             data = resp.json()
             self.frame0_ns = int(data["frame0_nano"])
             self.health = "ok"
@@ -214,6 +235,10 @@ def decode_out_bytes(raw: list[int]) -> list[int]:
     list, then every even index is a chip's OUT byte — chip ``k`` of the
     chain, i.e. board ``k // 2``, chip ``'A'`` if ``k`` is even else
     ``'B'``.  Each OUT bit ``c`` (0..7) is channel ``c``; 1 = powered.
+
+    Verified against the live controller (2026-07-17): writing
+    ``00000001`` to board 0 chip A moves exactly the last raw byte from
+    0 to 1, i.e. chip ``k``'s OUT byte is ``raw[2N-1-2k]``.
     """
     resp = list(raw)
     resp.reverse()
@@ -271,13 +296,19 @@ class PsuMonitor:
                    for r in rows)
 
     def _fetch_states(self) -> dict[int, list[int]]:
-        """GET /channel_states, decoded to per-chip OUT bytes per bus."""
-        resp = requests.get(f"{self.base_url}/channel_states",
-                            timeout=self.timeout)
-        resp.raise_for_status()
+        """GET /channel_states, decoded to per-chip OUT bytes per bus.
+
+        Raises ValueError on an unexpected response shape so every
+        caller's error path treats "garbage" the same as "unreachable".
+        """
+        resp = _get_with_retry(f"{self.base_url}/channel_states",
+                               self.timeout)
         data = resp.json()
+        states = data.get("channel_states") if isinstance(data, dict) else None
+        if not isinstance(states, dict):
+            raise ValueError(f"unexpected /channel_states shape: {data!r:.80}")
         return {int(bus): decode_out_bytes(raw)
-                for bus, raw in (data["channel_states"] or {}).items()}
+                for bus, raw in states.items()}
 
     @staticmethod
     def _rows(out_bytes: list[int]) -> list[dict]:
@@ -296,14 +327,14 @@ class PsuMonitor:
 
         # /status: reachability + board counts
         try:
-            resp = requests.get(f"{self.base_url}/status",
-                                timeout=self.timeout)
-            resp.raise_for_status()
+            resp = _get_with_retry(f"{self.base_url}/status", self.timeout)
             status = resp.json()
+            buses = status.get("buses") if isinstance(status, dict) else None
             self.boards = {
-                int(bus): int((info or {}).get("board_count", 0))
-                for bus, info in (status.get("buses") or {}).items()
-            }
+                int(bus): int(info.get("board_count", 0))
+                for bus, info in (buses or {}).items()
+                if isinstance(info, dict)
+            } if isinstance(buses, dict) else {}
         except (requests.RequestException, ValueError, TypeError) as e:
             self.health = "down"
             self.error = f"{type(e).__name__}: {e}"

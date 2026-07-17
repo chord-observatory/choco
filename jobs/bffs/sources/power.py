@@ -5,9 +5,10 @@ An independent "is this feed powered" signal that does not depend on bffs's own
 flagging (no latch), and self-heals when a feed powers back on.
 
 PROVISIONAL: the channel->input map (``power_map.csv``) is assumed — real wiring
-comes from the hardware database (padloper); the board/chip numbering in
-``decode_channel_states`` follows power_db's own decode convention but is
-unverified against hardware. Only ever issues ``GET /channel_states``.
+comes from the hardware database (padloper). The board/chip byte framing in
+``decode_channel_states`` is verified against the live controller (2026-07-17,
+via choco's PSU toggle test: a ch0 write to board 0 chip A moves exactly the
+last raw byte). Only ever issues ``GET /channel_states``.
 
 Standalone diagnostic: ``python -m sources.power --url http://10.222.0.30:5000``
 """

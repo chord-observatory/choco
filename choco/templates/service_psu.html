@@ -52,6 +52,12 @@ button.chan { cursor: pointer; }
     {% endif %}
 </dl>
 
+{% if psu.health != 'ok' and channels %}
+<p style="font-size: 0.9em;"><strong>&#9888;</strong> <em>The controller isn't currently readable —
+the grid below shows the last states read {{ since(psu.last_seen, now_ts) }}. Toggles re-read
+the live state before writing and will fail while it's unreachable.</em></p>
+{% endif %}
+
 {% for bus, rows in channels | dictsort %}
 <h4 style="margin-bottom: 0.25em;">SPI bus {{ bus }} — {{ boards.get(bus, (rows | length) // 2) }} boards</h4>
 <figure style="margin: 0; overflow-x: auto;">

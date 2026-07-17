@@ -666,6 +666,49 @@ class TestServicePage:
         assert "3 registered" in body
         assert "3 in maintenance" in body
 
+    @pytest.mark.parametrize("name,state", [
+        # a state file with garbage contents must degrade to "no
+        # summary", never break the page
+        ("eop", {"earth_orientation_parameter_table":
+                 [{"t_inst_ns": "yesterday"}, "not-an-entry", None]}),
+        ("eop", {"earth_orientation_parameter_table": "not-a-table"}),
+        ("bffs", {"updated": "recently", "bad_inputs": 7,
+                  "history": "none"}),
+        ("bffs", {"bad_inputs": ["f1"],
+                  "history": [42, {"time": "then", "bad_inputs": 3}]}),
+        ("eigencal", {"updated": [], "transit_time": "noon",
+                      "good_frac": "most", "sent": "yes"}),
+    ])
+    def test_garbage_state_files_never_break_the_page(
+            self, client, app, tmp_path, name, state):
+        from unittest.mock import patch
+        _login(client)
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps(state))
+        if name == "eop":
+            app.config["eop_cfg"] = {"state_file": state_file.name}
+            app.config["configs_dir"] = tmp_path
+        else:
+            app.config[f"{name}_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get(f"/service/{name}")
+        assert resp.status_code == 200
+
+    def test_psu_stale_grid_warning(self, client, app):
+        _login(client)
+        monitor = app.config["psu_monitor"]
+        monitor.host, monitor.port = "psu.example", 5000
+        monitor.health = "down"
+        monitor.channels = {0: [
+            {"board": 0, "chip": "A", "channels": [False] * 8},
+        ]}
+        resp = client.get("/service/psu")
+        body = resp.data.decode()
+        assert "isn't currently readable" in body
+        # grid still rendered from the last read
+        assert "SPI bus 0" in body
+
 
 class TestFpgaControl:
     def _configure(self, app, control=True):

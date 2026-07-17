@@ -460,7 +460,7 @@ def _service_registry() -> dict[str, dict]:
     # the mtime doubles as "last successful run" and goes stale.
     eop_state = None
     if configs_dir and eop_cfg.get("state_file"):
-        eop_state = Path(configs_dir) / eop_cfg["state_file"]
+        eop_state = Path(configs_dir) / str(eop_cfg["state_file"])
 
     def job(unit: str, state_file, stale_after_s=None,
             mtime_label="last run") -> dict:
@@ -480,7 +480,7 @@ def _service_registry() -> dict[str, dict]:
         # bffs rewrites its state file only when the bad-feed list
         # changes, so no staleness threshold — the mtime is "last change".
         "bffs": job(bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
-                    Path(bffs_cfg["state_file"])
+                    Path(str(bffs_cfg["state_file"]))
                     if bffs_cfg.get("state_file") else None,
                     None, "last change"),
         # eigencal rewrites its state file once per processed transit;
@@ -488,7 +488,7 @@ def _service_registry() -> dict[str, dict]:
         # mtime is informational, not a health downgrade.
         "eigencal": job(eigencal_cfg.get("service_unit")
                         or "choco-eigencal.service",
-                        Path(eigencal_cfg["state_file"])
+                        Path(str(eigencal_cfg["state_file"]))
                         if eigencal_cfg.get("state_file") else None,
                         None, "last calibration"),
     }
@@ -568,8 +568,19 @@ def _service_detail(name: str, svc: dict) -> dict | None:
 
     Jobs are summarized from their JSON state file (missing or invalid
     state -> None, and the page shows only the common facts); choco is
-    summarized from the live registry.
+    summarized from the live registry.  A state file with unexpected
+    contents must degrade to "no summary", never break the page.
     """
+    try:
+        return _service_detail_inner(name, svc)
+    except (TypeError, ValueError, KeyError, AttributeError,
+            IndexError) as e:
+        logger.warning(f"service detail for {name}: "
+                       f"unusable state file contents: {e}")
+        return None
+
+
+def _service_detail_inner(name: str, svc: dict) -> dict | None:
     if name == "choco":
         registry = _registry()
         return {
@@ -602,22 +613,33 @@ def _service_detail(name: str, svc: dict) -> dict | None:
         }
 
     if name == "bffs":
-        history = state.get("history") or []
+        history = [h for h in (state.get("history") or [])
+                   if isinstance(h, dict)]
         return {
             "updated": _fmt_utc(state.get("updated")),
             "update_id": state.get("update_id"),
-            "bad_inputs": state.get("bad_inputs") or [],
-            "history": [dict(h, time_fmt=_fmt_utc(h.get("time")))
-                        for h in reversed(history[-10:])],
+            "bad_inputs": list(state.get("bad_inputs") or []),
+            # pre-shape everything the template touches, so a malformed
+            # entry fails here (-> detail None) and not mid-render
+            "history": [{
+                "time_fmt": _fmt_utc(h.get("time")),
+                "became_bad": list(h.get("became_bad") or []),
+                "became_good": list(h.get("became_good") or []),
+                "n_bad": len(h.get("bad_inputs") or []),
+            } for h in reversed(history[-10:])],
             "history_total": len(history),
         }
 
     if name == "eigencal":
+        try:
+            good_frac = float(state.get("good_frac"))
+        except (TypeError, ValueError):
+            good_frac = None
         return {
             "updated": _fmt_utc(state.get("updated")),
             "transit_time": _fmt_utc(state.get("transit_time")),
             "source": state.get("source"),
-            "good_frac": state.get("good_frac"),
+            "good_frac": good_frac,
             "sent": state.get("sent"),
         }
 

@@ -101,7 +101,7 @@ dl.service-facts dd { margin: 0; }
             <td style="white-space: nowrap;">{{ h.time_fmt or '?' }}</td>
             <td><code>{{ h.became_bad | join(', ') if h.became_bad else '—' }}</code></td>
             <td><code>{{ h.became_good | join(', ') if h.became_good else '—' }}</code></td>
-            <td>{{ h.bad_inputs | length if h.bad_inputs is defined else '?' }}</td>
+            <td>{{ h.n_bad }}</td>
         </tr>
         {% endfor %}
     </tbody>

@@ -19,6 +19,12 @@ PORT = 54321
 BASE = f"http://{HOST}:{PORT}"
 
 
+@pytest.fixture(autouse=True)
+def no_retry_delay(monkeypatch):
+    """Keep the retry's real-time sleep out of the test suite."""
+    monkeypatch.setattr("choco.services._RETRY_DELAY_S", 0)
+
+
 @pytest.fixture
 def monitor():
     return FpgaMonitor(host=HOST, port=PORT, timeout=1)
@@ -96,6 +102,39 @@ class TestFpgaMonitorPollOnce:
         assert monitor.health == "down"
         assert monitor.state is None
         assert "no ICEBoards found" in monitor.error
+
+    @responses.activate
+    def test_status_non_dict_json_tolerated(self, monitor):
+        responses.get(f"{BASE}/status", json=["not", "a", "dict"])
+        responses.get(f"{BASE}/get-frame0-time",
+                      json={"frame0_nano": 1, "start_ctime": 0.0})
+        monitor.poll_once()
+        assert monitor.health == "ok"
+        assert monitor.state is None
+
+    @responses.activate
+    def test_single_dropped_request_is_retried(self, monitor):
+        import requests as _requests
+        # First /status attempt drops; the immediate retry succeeds —
+        # the badge must not flip red on one transient blip.
+        responses.get(f"{BASE}/status",
+                      body=_requests.ConnectionError("blip"))
+        responses.get(f"{BASE}/status", json={"state": "on"})
+        responses.get(f"{BASE}/get-frame0-time",
+                      json={"frame0_nano": 1, "start_ctime": 0.0})
+        monitor.poll_once()
+        assert monitor.health == "ok"
+        assert monitor.state == "on"
+
+    @responses.activate
+    def test_persistent_failure_still_down(self, monitor):
+        import requests as _requests
+        # One registration serves every attempt, including the retry.
+        responses.get(f"{BASE}/status",
+                      body=_requests.ConnectionError("gone"))
+        monitor.poll_once()
+        assert monitor.health == "down"
+        assert len(responses.calls) == 2  # original + retry
 
 
 class TestFpgaMonitorControls:
@@ -235,6 +274,37 @@ class TestPsuMonitorPollOnce:
         assert psu.health == "no_states"
         assert "/channel_states" in psu.error
 
+    @responses.activate
+    def test_status_non_dict_json_tolerated(self, psu):
+        responses.get(f"{PSU_BASE}/status", json=["garbage"])
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json={"channel_states": {"0": [128, 0]}})
+        psu.poll_once()
+        assert psu.health == "ok"
+        assert psu.boards == {}
+
+    @responses.activate
+    def test_states_wrong_shape_is_no_states(self, psu):
+        responses.get(f"{PSU_BASE}/status",
+                      json={"active_buses": [0], "buses": {}})
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json={"channel_states": "bogus"})
+        psu.poll_once()
+        assert psu.health == "no_states"
+        assert "unexpected /channel_states shape" in psu.error
+
+    @responses.activate
+    def test_states_garbage_bus_info_tolerated(self, psu):
+        responses.get(f"{PSU_BASE}/status", json={
+            "active_buses": [0],
+            "buses": {"0": "sixteen", "1": {"board_count": 2}},
+        })
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json={"channel_states": {}})
+        psu.poll_once()
+        assert psu.health == "ok"
+        assert psu.boards == {1: 2}
+
     def test_unconfigured_monitor_reports_unconfigured(self):
         m = PsuMonitor(host=None, port=None)
         assert m.configured is False
@@ -333,6 +403,21 @@ class TestPsuSetChannel:
         ok, message = psu.set_channel(0, 0, "A", 0, True)
         assert ok is False
         assert "not present" in message
+
+    @responses.activate
+    def test_garbage_states_reported_not_raised(self, psu):
+        responses.get(f"{PSU_BASE}/channel_states",
+                      json={"channel_states": [1, 2, 3]})
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is False
+        assert "ValueError" in message
+
+    @responses.activate
+    def test_controller_unreachable_reported(self, psu):
+        # no responses registered -> ConnectionError on the pre-read
+        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        assert ok is False
+        assert "ConnectionError" in message
 
     def test_invalid_address(self, psu):
         ok, message = psu.set_channel(0, 0, "C", 0, True)
