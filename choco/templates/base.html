@@ -16,7 +16,7 @@
             font-size: 0.85em;
             font-weight: 600;
         }
-        .status-started { background: #2ecc40; color: white; }
+        .status-started { background: #008000; color: white; }
         .status-down { background: #ff4136; color: white; }
         .status-idle { background: #ffdc00; color: #333; }
         .status-syncing { background: #0074d9; color: white; }
@@ -35,7 +35,7 @@
             background: #aaaaaa1a;
             font-size: 0.95em;
         }
-        .flash-success { border-color: #2ecc40; background: #2ecc4017; }
+        .flash-success { border-color: #008000; background: #00800017; }
         .flash-error { border-color: #ff4136; background: #ff413617; }
         .flash .flash-dismiss {
             width: auto;
@@ -49,7 +49,27 @@
             cursor: pointer;
         }
         nav { margin-bottom: 1em; }
-        .logout-icon { text-decoration: none; }
+        /* Every nav item — pills, plain text, the logout icon — centers on
+           the same line regardless of its own font metrics: text and SVGs
+           have different line-height/baseline behaviour than a padded
+           pill, so without this each `li`'s content can sit a few px off
+           the others even though the containing `ul` is itself centered. */
+        nav li { display: inline-flex; align-items: center; }
+        /* Same pill shape as the service badges, but a fixed brand colour
+           rather than a health colour — it's a logo, not a status. */
+        .brand-pill {
+            display: inline-flex;
+            align-items: center;
+            margin: 0;
+            padding: 0.25em 0.7em;
+            border-radius: 999px;
+            background: #5c3a21;
+            color: white;
+            font-weight: 600;
+            line-height: 1;
+            text-decoration: none;
+        }
+        .logout-icon { display: inline-flex; align-items: center; text-decoration: none; }
         label.toggle-switch {
             position: relative;
             display: inline-block;
@@ -81,7 +101,7 @@
             background: white;
             transition: transform 0.2s;
         }
-        .toggle-slider.started { background: #2ecc40; }
+        .toggle-slider.started { background: #008000; }
         .toggle-slider.started::before { transform: translateX(18px); }
         .toggle-slider.idle { background: #ffdc00; }
         .toggle-slider.maintenance { background: #ff851b; }
@@ -150,19 +170,19 @@
 <body>
     <nav class="container">
         <ul>
-            <li><strong><a href="/">CHOCO</a></strong></li>
+            <li><a href="/" class="brand-pill">CHOCO</a></li>
             {% if current_user.is_authenticated %}
             <li id="services-status"
                 hx-get="/partials/services"
                 hx-trigger="load, every 30s"
                 hx-swap="innerHTML"
-                style="display: inline-flex; align-items: center; gap: 1.25em; font-size: 0.85em;"></li>
+                style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 1.25em; font-size: 0.85em;"></li>
             {% endif %}
         </ul>
-        <ul>
+        <ul style="font-size: 0.85em;">
             {% if current_user.is_authenticated %}
             <li><small>{{ current_user.username }}</small></li>
-            <li><a href="/logout" title="Logout" class="logout-icon"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -0.1em;"><path d="M6 2H3v12h3"/><path d="M10 5l3 3-3 3"/><path d="M13 8H6"/></svg></a></li>
+            <li><a href="/logout" title="Logout" class="logout-icon"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3v12h3"/><path d="M10 5l3 3-3 3"/><path d="M13 8H6"/></svg></a></li>
             {% endif %}
         </ul>
     </nav>

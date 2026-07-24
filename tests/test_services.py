@@ -9,7 +9,7 @@ import pytest
 import responses
 
 from choco.services import (
-    FpgaMonitor, PsuMonitor, decode_out_bytes, job_status, timer_status,
+    FpgaMonitor, PdbMonitor, decode_out_bytes, job_status, timer_status,
     read_state_json, EOP_STALE_AFTER_S,
 )
 
@@ -231,12 +231,12 @@ class TestFpgaMonitorPollIfStale:
         assert mon.last_polled is None
 
 
-PSU_BASE = "http://psu.example:5000"
+PDB_BASE = "http://pdb.example:5000"
 
 
 @pytest.fixture
-def psu():
-    return PsuMonitor(host="psu.example", port=5000, timeout=1)
+def pdb():
+    return PdbMonitor(host="pdb.example", port=5000, timeout=1)
 
 
 class TestDecodeOutBytes:
@@ -254,103 +254,103 @@ class TestDecodeOutBytes:
         assert decode_out_bytes([]) == []
 
 
-class TestPsuMonitorPollOnce:
+class TestPdbMonitorPollOnce:
     @responses.activate
-    def test_healthy_path(self, psu):
-        responses.get(f"{PSU_BASE}/status", json={
+    def test_healthy_path(self, pdb):
+        responses.get(f"{PDB_BASE}/status", json={
             "active_buses": [0],
             "buses": {"0": {"board_count": 1, "chip_count": 2}},
         })
         # chip 0 (board 0 A): ch0 on; chip 1 (board 0 B): all off
-        responses.get(f"{PSU_BASE}/channel_states", json={
+        responses.get(f"{PDB_BASE}/channel_states", json={
             "channel_states": {"0": [0x18, 0x00, 0x18, 0x01]},
         })
-        psu.poll_once()
-        assert psu.health == "ok"
-        assert psu.error is None
-        assert psu.boards == {0: 1}
-        rows = psu.channels[0]
+        pdb.poll_once()
+        assert pdb.health == "ok"
+        assert pdb.error is None
+        assert pdb.boards == {0: 1}
+        rows = pdb.channels[0]
         assert rows[0] == {"board": 0, "chip": "A",
                            "channels": [True] + [False] * 7}
         assert rows[1]["chip"] == "B"
         assert not any(rows[1]["channels"])
-        assert psu.n_channels == 16
-        assert psu.n_on == 1
-        assert psu.last_seen is not None
+        assert pdb.n_channels == 16
+        assert pdb.n_on == 1
+        assert pdb.last_seen is not None
 
     @responses.activate
-    def test_status_down(self, psu):
-        responses.get(f"{PSU_BASE}/status", status=500)
-        psu.poll_once()
-        assert psu.health == "down"
-        assert psu.error
+    def test_status_down(self, pdb):
+        responses.get(f"{PDB_BASE}/status", status=500)
+        pdb.poll_once()
+        assert pdb.health == "down"
+        assert pdb.error
 
     @responses.activate
-    def test_status_unreachable(self, psu):
+    def test_status_unreachable(self, pdb):
         import requests as _requests
-        responses.get(f"{PSU_BASE}/status",
+        responses.get(f"{PDB_BASE}/status",
                       body=_requests.ConnectionError("refused"))
-        psu.poll_once()
-        assert psu.health == "down"
+        pdb.poll_once()
+        assert pdb.health == "down"
 
     @responses.activate
-    def test_status_ok_but_states_missing(self, psu):
-        responses.get(f"{PSU_BASE}/status",
+    def test_status_ok_but_states_missing(self, pdb):
+        responses.get(f"{PDB_BASE}/status",
                       json={"active_buses": [0], "buses": {}})
-        responses.get(f"{PSU_BASE}/channel_states", status=500)
-        psu.poll_once()
-        assert psu.health == "no_states"
-        assert "/channel_states" in psu.error
+        responses.get(f"{PDB_BASE}/channel_states", status=500)
+        pdb.poll_once()
+        assert pdb.health == "no_states"
+        assert "/channel_states" in pdb.error
 
     @responses.activate
-    def test_status_non_dict_json_tolerated(self, psu):
-        responses.get(f"{PSU_BASE}/status", json=["garbage"])
-        responses.get(f"{PSU_BASE}/channel_states",
+    def test_status_non_dict_json_tolerated(self, pdb):
+        responses.get(f"{PDB_BASE}/status", json=["garbage"])
+        responses.get(f"{PDB_BASE}/channel_states",
                       json={"channel_states": {"0": [128, 0]}})
-        psu.poll_once()
-        assert psu.health == "ok"
-        assert psu.boards == {}
+        pdb.poll_once()
+        assert pdb.health == "ok"
+        assert pdb.boards == {}
 
     @responses.activate
-    def test_states_wrong_shape_is_no_states(self, psu):
-        responses.get(f"{PSU_BASE}/status",
+    def test_states_wrong_shape_is_no_states(self, pdb):
+        responses.get(f"{PDB_BASE}/status",
                       json={"active_buses": [0], "buses": {}})
-        responses.get(f"{PSU_BASE}/channel_states",
+        responses.get(f"{PDB_BASE}/channel_states",
                       json={"channel_states": "bogus"})
-        psu.poll_once()
-        assert psu.health == "no_states"
-        assert "unexpected /channel_states shape" in psu.error
+        pdb.poll_once()
+        assert pdb.health == "no_states"
+        assert "unexpected /channel_states shape" in pdb.error
 
     @responses.activate
-    def test_states_garbage_bus_info_tolerated(self, psu):
-        responses.get(f"{PSU_BASE}/status", json={
+    def test_states_garbage_bus_info_tolerated(self, pdb):
+        responses.get(f"{PDB_BASE}/status", json={
             "active_buses": [0],
             "buses": {"0": "sixteen", "1": {"board_count": 2}},
         })
-        responses.get(f"{PSU_BASE}/channel_states",
+        responses.get(f"{PDB_BASE}/channel_states",
                       json={"channel_states": {}})
-        psu.poll_once()
-        assert psu.health == "ok"
-        assert psu.boards == {1: 2}
+        pdb.poll_once()
+        assert pdb.health == "ok"
+        assert pdb.boards == {1: 2}
 
     def test_unconfigured_monitor_reports_unconfigured(self):
-        m = PsuMonitor(host=None, port=None)
+        m = PdbMonitor(host=None, port=None)
         assert m.configured is False
         assert m.health == "unconfigured"
         m.poll_once()
         assert m.health == "unconfigured"
 
     @responses.activate
-    def test_to_dict(self, psu):
-        responses.get(f"{PSU_BASE}/status", json={
+    def test_to_dict(self, pdb):
+        responses.get(f"{PDB_BASE}/status", json={
             "active_buses": [0],
             "buses": {"0": {"board_count": 1, "chip_count": 2}},
         })
-        responses.get(f"{PSU_BASE}/channel_states", json={
+        responses.get(f"{PDB_BASE}/channel_states", json={
             "channel_states": {"0": [0, 0xFF, 0, 0xFF]},
         })
-        psu.poll_once()
-        d = psu.to_dict()
+        pdb.poll_once()
+        d = pdb.to_dict()
         assert d["health"] == "ok"
         assert d["buses"] == [0]
         assert d["n_channels"] == 16
@@ -361,18 +361,18 @@ def _states(raw: list[int]) -> dict:
     return {"channel_states": {"0": raw}}
 
 
-class TestPsuSetChannel:
+class TestPdbSetChannel:
     """1 board = 2 chips = 4 raw bytes; chip0's OUT byte is raw[3],
     chip1's is raw[1] (odd positions from the end)."""
 
     @responses.activate
-    def test_turn_on(self, psu):
-        responses.get(f"{PSU_BASE}/channel_states",
+    def test_turn_on(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 0]))          # pre: all off
-        write = responses.post(f"{PSU_BASE}/write_command", json={"message": "ok"})
-        responses.get(f"{PSU_BASE}/channel_states",
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 1]))          # post: ch0 on
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is True
         assert "ch0 on" in message
         import json as _json
@@ -380,82 +380,226 @@ class TestPsuSetChannel:
         assert payload == {"spi_bus": 0, "board_idx": 0, "chip_letter": "A",
                            "operation": "OUT", "states": "00000001"}
         # the post-write read refreshed the grid
-        assert psu.channels[0][0]["channels"][0] is True
+        assert pdb.channels[0][0]["channels"][0] is True
 
     @responses.activate
-    def test_turn_off_keeps_other_bits(self, psu):
-        responses.get(f"{PSU_BASE}/channel_states",
+    def test_turn_off_keeps_other_bits(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 0b11]))       # ch0+ch1 on
-        write = responses.post(f"{PSU_BASE}/write_command", json={"message": "ok"})
-        responses.get(f"{PSU_BASE}/channel_states",
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 0b10]))
-        ok, message = psu.set_channel(0, 0, "A", 0, False)
+        ok, message = pdb.set_channel(0, 0, "A", 0, False)
         assert ok is True
         import json as _json
         assert _json.loads(write.calls[0].request.body)["states"] == "00000010"
 
     @responses.activate
-    def test_already_on_skips_write(self, psu):
+    def test_already_on_skips_write(self, pdb):
         # No POST registered: a write attempt would raise ConnectionError.
-        responses.get(f"{PSU_BASE}/channel_states",
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 1]))
-        responses.get(f"{PSU_BASE}/channel_states",
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 1]))
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is True
         assert "already on" in message
 
     @responses.activate
-    def test_verify_mismatch_reported(self, psu):
-        responses.get(f"{PSU_BASE}/channel_states",
+    def test_verify_mismatch_reported(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 0]))
-        responses.post(f"{PSU_BASE}/write_command", json={"message": "ok"})
-        responses.get(f"{PSU_BASE}/channel_states",
+        responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 0]))          # didn't take
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is False
         assert "verify failed" in message
         assert "state changed underneath us" in message
 
     @responses.activate
-    def test_write_failure(self, psu):
-        responses.get(f"{PSU_BASE}/channel_states",
+    def test_write_failure(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
                       json=_states([128, 0, 128, 0]))
-        responses.post(f"{PSU_BASE}/write_command", status=500)
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        responses.post(f"{PDB_BASE}/write_command", status=500)
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is False
 
     @responses.activate
-    def test_chip_not_present(self, psu):
-        responses.get(f"{PSU_BASE}/channel_states", json=_states([]))
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+    def test_chip_not_present(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states", json=_states([]))
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is False
         assert "not present" in message
 
     @responses.activate
-    def test_garbage_states_reported_not_raised(self, psu):
-        responses.get(f"{PSU_BASE}/channel_states",
+    def test_garbage_states_reported_not_raised(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
                       json={"channel_states": [1, 2, 3]})
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is False
         assert "ValueError" in message
 
     @responses.activate
-    def test_controller_unreachable_reported(self, psu):
+    def test_controller_unreachable_reported(self, pdb):
         # no responses registered -> ConnectionError on the pre-read
-        ok, message = psu.set_channel(0, 0, "A", 0, True)
+        ok, message = pdb.set_channel(0, 0, "A", 0, True)
         assert ok is False
         assert "ConnectionError" in message
 
-    def test_invalid_address(self, psu):
-        ok, message = psu.set_channel(0, 0, "C", 0, True)
+    def test_invalid_address(self, pdb):
+        ok, message = pdb.set_channel(0, 0, "C", 0, True)
         assert ok is False
-        ok, message = psu.set_channel(0, 0, "A", 8, True)
+        ok, message = pdb.set_channel(0, 0, "A", 8, True)
         assert ok is False
 
     def test_unconfigured(self):
-        ok, message = PsuMonitor(host=None, port=None).set_channel(
+        ok, message = PdbMonitor(host=None, port=None).set_channel(
             0, 0, "A", 0, True)
+        assert ok is False
+        assert "not configured" in message
+
+
+class TestPdbSetGroup:
+    """Bulk power: whole chips written as all-ones / all-zeros OUT bytes.
+
+    Two boards = 4 chips = 8 raw bytes; chip k's OUT byte is raw[2N-1-2k],
+    so [128, x3, 128, x2, 128, x1, 128, x0] holds chips 0..3 in x0..x3.
+    """
+
+    @staticmethod
+    def _payloads(write):
+        import json as _json
+        return [_json.loads(c.request.body) for c in write.calls]
+
+    @responses.activate
+    def test_chip_scope_writes_one_chip(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0, 128, 0, 128, 0]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0, 128, 0xFF, 128, 0]))
+        ok, message = pdb.set_group(0, True, board=0, chip="B")
+        assert ok is True
+        assert self._payloads(write) == [
+            {"spi_bus": 0, "board_idx": 0, "chip_letter": "B",
+             "operation": "OUT", "states": "11111111"}]
+        assert "8 channels on" in message
+
+    @responses.activate
+    def test_board_scope_writes_both_chips(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0, 128, 0, 128, 0]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0, 128, 0xFF, 128, 0xFF]))
+        ok, message = pdb.set_group(0, True, board=0)
+        assert ok is True
+        assert [(p["board_idx"], p["chip_letter"])
+                for p in self._payloads(write)] == [(0, "A"), (0, "B")]
+        assert "16 channels on" in message
+
+    @responses.activate
+    def test_bus_scope_writes_every_chip(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0, 128, 0, 128, 0]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0xFF, 128, 0xFF, 128, 0xFF, 128, 0xFF]))
+        ok, message = pdb.set_group(0, True)
+        assert ok is True
+        assert [(p["board_idx"], p["chip_letter"])
+                for p in self._payloads(write)] == [
+            (0, "A"), (0, "B"), (1, "A"), (1, "B")]
+        assert "32 channels on" in message
+        assert pdb.n_on == 32
+
+    @responses.activate
+    def test_off_writes_zero_bytes(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0xFF, 128, 0xFF]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))
+        ok, message = pdb.set_group(0, False, board=0)
+        assert ok is True
+        assert {p["states"] for p in self._payloads(write)} == {"00000000"}
+
+    @responses.activate
+    def test_chips_already_correct_are_not_written(self, pdb):
+        """Only chip B needs the write; chip A is already all-on."""
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0xFF]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0xFF, 128, 0xFF]))
+        ok, message = pdb.set_group(0, True, board=0)
+        assert ok is True
+        assert [p["chip_letter"] for p in self._payloads(write)] == ["B"]
+        assert "8 channels on (16 in scope)" in message
+
+    @responses.activate
+    def test_nothing_to_do_skips_writes_entirely(self, pdb):
+        # No POST registered: any write attempt would raise.
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0xFF, 128, 0xFF]))
+        ok, message = pdb.set_group(0, True, board=0)
+        assert ok is True
+        assert "already on" in message
+
+    @responses.activate
+    def test_partial_write_failure_is_reported(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))
+        responses.post(f"{PDB_BASE}/write_command", status=500)
+        responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0xFF, 128, 0]))
+        ok, message = pdb.set_group(0, True, board=0)
+        assert ok is False
+        assert "1 write(s) failed" in message
+        assert "did not take" in message
+        # the successful half is still reflected in the grid
+        assert pdb.channels[0][1]["channels"] == [True] * 8
+
+    @responses.activate
+    def test_verify_read_failure_is_reported(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0, 128, 0]))
+        responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states", status=500)
+        ok, message = pdb.set_group(0, True, board=0)
+        assert ok is False
+        assert "verify read failed" in message
+
+    @responses.activate
+    def test_unknown_bus_reported(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states", json=_states([128, 0]))
+        ok, message = pdb.set_group(7, True)
+        assert ok is False
+        assert "bus not present" in message
+
+    @responses.activate
+    def test_unknown_board_reported(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states", json=_states([128, 0]))
+        ok, message = pdb.set_group(0, True, board=9)
+        assert ok is False
+        assert "no such chips" in message
+
+    @responses.activate
+    def test_controller_unreachable_reported(self, pdb):
+        ok, message = pdb.set_group(0, True)
+        assert ok is False
+        assert "ConnectionError" in message
+
+    def test_invalid_scope(self, pdb):
+        assert pdb.set_group(0, True, board=0, chip="C")[0] is False
+        assert pdb.set_group(0, True, board=-1)[0] is False
+        # a chip is only addressable within a board
+        assert pdb.set_group(0, True, chip="A")[0] is False
+
+    def test_unconfigured(self):
+        ok, message = PdbMonitor(host=None, port=None).set_group(0, True)
         assert ok is False
         assert "not configured" in message
 
@@ -631,6 +775,67 @@ class TestJobLogs:
         from choco.services import job_logs
         with _with_systemctl(), self._patch_journalctl("", returncode=1):
             assert job_logs(UNIT) is None
+
+
+class TestRenderDotSvg:
+    DOT = "digraph pipeline {}\n"
+    SVG_DOC = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+               '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"\n'
+               ' "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n'
+               '<svg xmlns="http://www.w3.org/2000/svg"><g/></svg>\n')
+
+    def _patch_dot(self, stdout: str, returncode: int = 0):
+        completed = MagicMock(returncode=returncode, stdout=stdout, stderr="")
+        return patch("choco.services.subprocess.run", return_value=completed)
+
+    def test_renders_and_strips_prolog(self):
+        from choco.services import render_dot_svg, _DOT_LAYOUT_ARGS
+        with _with_systemctl(), self._patch_dot(self.SVG_DOC) as run:
+            out = render_dot_svg(self.DOT)
+        assert out is not None and out.startswith("<svg")
+        assert "DOCTYPE" not in out
+        assert run.call_args.kwargs["input"] == self.DOT
+        # First attempt renders with the layout attributes injected.
+        assert run.call_count == 1
+        for arg in _DOT_LAYOUT_ARGS:
+            assert arg in run.call_args.args[0]
+
+    def test_layout_failure_retries_plain(self):
+        from choco.services import render_dot_svg, _DOT_LAYOUT_ARGS
+        ortho_fail = MagicMock(returncode=1, stdout="", stderr="ortho bug")
+        plain_ok = MagicMock(returncode=0, stdout=self.SVG_DOC, stderr="")
+        with _with_systemctl(), \
+             patch("choco.services.subprocess.run",
+                   side_effect=[ortho_fail, plain_ok]) as run:
+            out = render_dot_svg(self.DOT)
+        assert out is not None and out.startswith("<svg")
+        assert run.call_count == 2
+        # The retry drops the layout args.
+        for arg in _DOT_LAYOUT_ARGS:
+            assert arg not in run.call_args_list[1].args[0]
+
+    def test_none_without_dot_binary(self):
+        from choco.services import render_dot_svg
+        with _no_systemctl():
+            assert render_dot_svg(self.DOT) is None
+
+    def test_none_on_render_failure(self):
+        from choco.services import render_dot_svg
+        with _with_systemctl(), self._patch_dot("", returncode=1):
+            assert render_dot_svg(self.DOT) is None
+
+    def test_none_on_svg_less_output(self):
+        from choco.services import render_dot_svg
+        with _with_systemctl(), self._patch_dot("not svg at all"):
+            assert render_dot_svg(self.DOT) is None
+
+    def test_none_on_timeout(self):
+        from choco.services import render_dot_svg
+        import subprocess as sp
+        with _with_systemctl(), \
+             patch("choco.services.subprocess.run",
+                   side_effect=sp.TimeoutExpired(["dot"], 10)):
+            assert render_dot_svg(self.DOT) is None
 
 
 TIMER = "choco-eop-broadcast.timer"

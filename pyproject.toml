@@ -7,21 +7,27 @@ name = "choco"
 version = "0.1.0"
 description = "CHORD Config Orchestrator — manages kotekan instances on a cluster"
 requires-python = ">=3.10"
+# Core = what the choco web service itself imports.  The scientific
+# stack lives in the [jobs] extra: only the timer jobs (EOP, bffs,
+# eigencal) need it, and keeping it out of core shrinks the web-facing
+# process's supply chain.  choco.sh installs .[jobs], so a deployed venv
+# still carries everything.
 dependencies = [
     "flask>=3.0",
     "flask-login>=0.6",
-    "flask-ldap3-login>=0.9",
+    "ldap3>=2.9",
     "gevent>=24.0",
     "requests>=2.31",
-    "cryptography>=42.0",
     "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+jobs = [
     "astropy>=6.0",
     "numpy>=1.26",
     "h5py>=3.6",
     "hdf5plugin>=4.0",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",

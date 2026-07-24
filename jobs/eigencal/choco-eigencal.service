@@ -5,6 +5,9 @@ After=choco.service
 
 [Service]
 Type=oneshot
+# systemd owns /var/lib/eigencal (creates it with the right ownership);
+# the default state_file and archive_dir live there.
+StateDirectory=eigencal
 ExecStart=/opt/choco/jobs/eigencal/eigencal.sh /etc/choco/eigencal.yaml
 # No Restart: the script self-gates (it exits 0 in seconds unless a transit
 # just completed and is unprocessed), so a failed run — N² data missing,

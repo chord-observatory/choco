@@ -1,7 +1,9 @@
 """Flask routes for the choco web UI."""
 
+import base64
 import json
 import logging
+import re
 import secrets
 import time
 from pathlib import Path
@@ -15,8 +17,10 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
+from .pdbmap import PdbMap, cross_check, kotekan_dish_labels
 from .services import (
-    job_status, job_logs, timer_status, read_state_json, EOP_STALE_AFTER_S,
+    job_status, job_logs, timer_status, read_state_json, render_dot_svg,
+    EOP_STALE_AFTER_S,
 )
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
@@ -83,18 +87,18 @@ def login():
             flash("LDAP is not configured. Set ldap.host in config.yaml.", "error")
             return render_template("login.html")
 
-        ldap_manager = current_app.config["ldap_manager"]
-        result = ldap_manager.authenticate(username, password)
+        authenticator = current_app.config["ldap_authenticator"]
+        user_dn = authenticator.authenticate(username, password)
 
-        if result.status.name == "success":
-            user = save_user(result.user_dn, result.user_id, result.user_info)
+        if user_dn:
+            user = save_user(user_dn, username)
             login_user(user)
             next_page = request.args.get("next", "")
             if not next_page or next_page.startswith(("//", "http:", "https:")):
                 next_page = url_for("web.dashboard")
             return redirect(next_page)
         else:
-            logger.warning(f"Login failed for '{username}': {result.status.name}")
+            logger.warning(f"Login failed for '{username}'")
             flash("Invalid username or password.", "error")
 
     return render_template("login.html")
@@ -436,6 +440,106 @@ def partial_node_status(node_key):
     return render_template("_node_status.html", node=node)
 
 
+@bp.route("/partials/node-pipeline/<path:node_key>")
+@login_required
+def partial_node_pipeline(node_key):
+    """Pipeline graph for a node's edit page.
+
+    Fetched on demand only (opening the section, or its refresh button)
+    — never on a timed poll: /pipeline_dot walks kotekan's full
+    buffer/stage graph, and rendering it costs a dot subprocess here.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    dot = node.get_pipeline_dot()
+    svg_b64 = None
+    if dot is not None:
+        svg = render_dot_svg(dot)
+        if svg is not None:
+            svg_b64 = base64.b64encode(svg.encode()).decode("ascii")
+    return render_template(
+        "_node_pipeline.html",
+        node_key=node_key, dot=dot, svg_b64=svg_b64,
+    )
+
+
+# Kotekan buffer names are config keys; anything else is rejected before
+# the name is placed in a kotekan URL path.
+_BUFFER_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]+")
+
+
+def _human_bytes(n) -> str:
+    if not isinstance(n, (int, float)):
+        return ""
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return ""
+
+
+@bp.route("/partials/node-buffers/<path:node_key>")
+@login_required
+def partial_node_buffers(node_key):
+    """Buffer fullness table for a node's edit page (polled every 5 s).
+
+    Ring buffers report no frame accounting and have no frame-peek
+    endpoint, so they get no fullness column or Peek button.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    buffers = node.get_buffers()
+    rows = []
+    for name, info in sorted((buffers or {}).items()):
+        if not isinstance(info, dict):
+            continue
+        frames = info.get("frames")
+        rows.append({
+            "name": name,
+            "full": info.get("num_full_frame"),
+            "frames": len(frames) if isinstance(frames, list) else None,
+            "size_h": _human_bytes(info.get("frame_size")),
+            "peek_hold": bool(info.get("peek_hold")),
+            "peekable": "num_full_frame" in info,
+        })
+    return render_template(
+        "_node_buffers.html", node_key=node_key, buffers=buffers, rows=rows,
+    )
+
+
+@bp.route("/partials/node-buffer-frame/<path:node_key>")
+@login_required
+def partial_node_buffer_frame(node_key):
+    """Metadata-only peek of one buffer's newest frame (on demand).
+
+    Fetches ``/buffer/<name>/frame?len=0`` — frame descriptor and
+    metadata, no data bytes — so peeking is cheap even on 400 MB frames.
+    The buffer name arrives as a query parameter and is validated before
+    being placed in the kotekan URL.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    buffer_name = request.args.get("buffer", "")
+    if not _BUFFER_NAME_RE.fullmatch(buffer_name):
+        abort(400)
+    frame = node.get_buffer_frame(buffer_name, length=0)
+    desc_json = meta_json = None
+    if frame is not None and not frame.get("error"):
+        desc_json = json.dumps(frame.get("frame_desc"), indent=2, sort_keys=True)
+        meta_json = json.dumps(frame.get("metadata"), indent=2, sort_keys=True)
+    return render_template(
+        "_node_buffer_frame.html",
+        node_key=node_key, buffer_name=buffer_name, frame=frame,
+        desc_json=desc_json, meta_json=meta_json,
+    )
+
+
 @bp.route("/partials/dashboard-table")
 @login_required
 def partial_dashboard_table():
@@ -457,10 +561,16 @@ def _service_registry() -> dict[str, dict]:
     configs_dir = current_app.config.get("configs_dir")
 
     # EOP rewrites its state file on every successful (daily) run, so
-    # the mtime doubles as "last successful run" and goes stale.
+    # the mtime doubles as "last successful run" and goes stale.  The
+    # path is absolute (the /var/lib/eop default) or, for backward
+    # compatibility, relative to configs_dir (the legacy layout).
     eop_state = None
-    if configs_dir and eop_cfg.get("state_file"):
-        eop_state = Path(configs_dir) / str(eop_cfg["state_file"])
+    if eop_cfg.get("state_file"):
+        p = Path(str(eop_cfg["state_file"]))
+        if p.is_absolute():
+            eop_state = p
+        elif configs_dir:
+            eop_state = Path(configs_dir) / p
 
     def job(unit: str, state_file, stale_after_s=None,
             mtime_label="last run") -> dict:
@@ -505,11 +615,11 @@ def _services_health() -> dict:
     Shared by the header strip, /api/status, and /metrics.
     """
     fpga = current_app.config.get("fpga_monitor")
-    psu = current_app.config.get("psu_monitor")
+    pdb = current_app.config.get("pdb_monitor")
     registry = _service_registry()
     health = {
         "fpga": fpga.to_dict() if fpga is not None else None,
-        "psu": psu.to_dict() if psu is not None else None,
+        "pdb": pdb.to_dict() if pdb is not None else None,
     }
     for name in ("eop", "bffs", "eigencal"):
         svc = registry[name]
@@ -521,12 +631,12 @@ def _services_health() -> dict:
 @bp.route("/partials/services")
 @login_required
 def partial_services():
-    """Render the monitor (FPGA, PSU) + job (EOP, bffs, eigencal) strip."""
+    """Render the monitor (FPGA, PDB) + job (EOP, bffs, eigencal) strip."""
     services = _services_health()
     return render_template(
         "_services_status.html",
         fpga=services["fpga"],
-        psu=services["psu"],
+        pdb=services["pdb"],
         eop=services["eop"],
         bffs=services["bffs"],
         eigencal=services["eigencal"],
@@ -652,6 +762,16 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
     return None
 
 
+@bp.route("/service/psu")
+def legacy_psu_page():
+    """The PDB page lived at /service/psu before the rename.
+
+    A URL alias, not a service page — kept out of ``service_page`` so
+    that function stays "render the page for this service".
+    """
+    return redirect(url_for("web.service_page", name="pdb"))
+
+
 @bp.route("/service/<name>")
 @login_required
 def service_page(name):
@@ -669,16 +789,13 @@ def service_page(name):
             actions=monitor.actions,
             now_ts=time.time(),
         )
-    if name == "psu":
-        monitor = current_app.config.get("psu_monitor")
-        if monitor is None:
+    if name == "pdb":
+        if current_app.config.get("pdb_monitor") is None:
             abort(404)
-        psu_cfg = current_app.config.get("psu_cfg") or {}
+        context = _pdb_context()
         return render_template(
-            "service_psu.html", psu=monitor.to_dict(),
-            channels=monitor.channels, boards=monitor.boards,
-            control=bool(psu_cfg.get("control", True)),
-            now_ts=time.time(),
+            "service_pdb.html", **context,
+            check=_pdb_cross_check(context["pdb_map"]),
         )
     svc = _service_registry().get(name)
     if svc is None:
@@ -686,10 +803,16 @@ def service_page(name):
     job = job_status(svc["unit"], state_file=svc["state_file"],
                      stale_after_s=svc["stale_after_s"])
     timer = timer_status(svc["timer"]) if svc["timer"] else None
+    # Pretty-printed raw state file, shown verbatim in a collapsed
+    # <details> below the curated summary. Values already came from
+    # json.load, so re-serializing them can't raise.
+    state = read_state_json(svc["state_file"])
+    state_json = json.dumps(state, indent=2) if state is not None else None
     return render_template(
         "service.html",
         name=name, svc=svc, job=job, timer=timer,
         detail=_service_detail(name, svc),
+        state_json=state_json,
         nlines=_journal_lines_arg(),
         now_ts=time.time(),
     )
@@ -716,25 +839,114 @@ def partial_service_fpga():
     )
 
 
-@bp.route("/partials/service-psu")
+def _pdb_buses(monitor) -> list[dict]:
+    """Per-bus grid data: boards, their chips, and channel counts.
+
+    The monitor stores one flat row per chip in daisy-chain order; the
+    grid wants them grouped by board (a board is two chips, and the
+    board-level power buttons span both rows), and the bus header wants
+    the counts.  Shaped here rather than in Jinja so the template stays
+    a table and not arithmetic.
+    """
+    buses = []
+    for bus, rows in sorted(monitor.channels.items()):
+        boards: list[dict] = []
+        for row in rows:
+            if not boards or boards[-1]["board"] != row["board"]:
+                boards.append({"board": row["board"], "chips": []})
+            boards[-1]["chips"].append(row)
+        buses.append({
+            "bus": bus,
+            "boards": boards,
+            # /status knows the configured board count; fall back to
+            # what actually came back on the wire.
+            "n_boards": monitor.boards.get(bus, len(boards)),
+            "n_channels": sum(len(r["channels"]) for r in rows),
+            "n_on": sum(1 for r in rows for c in r["channels"] if c),
+        })
+    return buses
+
+
+def _pdb_context() -> dict:
+    """Template variables shared by the PDB page, poll, and control replies.
+
+    The grid, its labels, and the bulk controls all render from the same
+    dict, so a control reply can hand back exactly what the poll would.
+    """
+    monitor = current_app.config["pdb_monitor"]
+    pdb_cfg = current_app.config.get("pdb_cfg") or {}
+    return {
+        "pdb": monitor.to_dict(),
+        "buses": _pdb_buses(monitor),
+        # .get() re-reads the CSV if its mtime changed, so edits show up
+        # on the next render without a restart.
+        "pdb_map": current_app.config["pdb_map"].get(),
+        "control": bool(pdb_cfg.get("control", True)),
+        "now_ts": time.time(),
+    }
+
+
+def _pdb_cross_check(pdb_map: PdbMap) -> dict:
+    """Check the master map against a kotekan group's dish_inputs table.
+
+    kotekan's table is the naming authority (it is what the bad-input
+    mask is indexed against), so anything the map and it disagree on is
+    a wiring-table bug worth showing.  Every way this can come up empty
+    — no groups, an unreadable config, no dish_inputs — degrades to a
+    printed reason, never a 500.
+    """
+    cfg = current_app.config.get("pdb_cfg") or {}
+    registry = _registry()
+    group = cfg.get("kotekan_group")
+    if not group:
+        # Single-group sites are the norm; take the first group rather
+        # than making the check opt-in.
+        group = next((n.group for n in registry.nodes.values()), None)
+    result = {"available": False, "group": group, "reason": None}
+    if not group:
+        result["reason"] = "no node groups in nodes.yaml"
+        return result
+    sample = next((n for n in registry.nodes.values() if n.group == group),
+                  None)
+    if sample is None:
+        result["reason"] = f"group '{group}' is not in nodes.yaml"
+        return result
+    try:
+        desired = sample.desired_config
+    except Exception as e:                      # noqa: BLE001 — never 500
+        logger.exception("pdb cross-check: %s config failed to render", group)
+        result["reason"] = f"{group} config failed to render: " \
+                           f"{type(e).__name__}: {e}"
+        return result
+    if desired is None:
+        result["reason"] = (sample.load_error
+                            or f"no config file ({sample.config_filename})")
+        return result
+    labels = kotekan_dish_labels(desired)
+    if not labels:
+        result["reason"] = f"the {group} kotekan config has no dish_inputs " \
+                           f"table to check against"
+        return result
+    result.update(cross_check(pdb_map, labels), available=True)
+    return result
+
+
+@bp.route("/partials/service-pdb")
 @login_required
-def partial_service_psu():
-    """Live status + channel grid for the PSU page (5s htmx poll).
+def partial_service_pdb():
+    """Live status + channel grid for the PDB page (5s htmx poll).
 
     poll_if_stale tightens the monitor's effective cadence only while
-    someone is actually watching.
+    someone is actually watching.  The channel map's cross-check is
+    deliberately *not* here — it re-renders a kotekan config, which is
+    far too much work for a 5s poll, and wiring doesn't change while
+    you watch.
     """
-    monitor = current_app.config.get("psu_monitor")
+    monitor = current_app.config.get("pdb_monitor")
     if monitor is None:
         abort(404)
     monitor.poll_if_stale(5)
-    psu_cfg = current_app.config.get("psu_cfg") or {}
-    return render_template(
-        "_service_psu_status.html", psu=monitor.to_dict(),
-        channels=monitor.channels, boards=monitor.boards,
-        control=bool(psu_cfg.get("control", True)),
-        now_ts=time.time(),
-    )
+    return render_template("_service_pdb_status.html", **_pdb_context())
 
 
 @bp.route("/partials/service-status/<name>")
@@ -795,15 +1007,37 @@ def fpga_control(action):
     return redirect(url_for("web.service_page", name="fpga"))
 
 
-@bp.route("/service/psu/set", methods=["POST"])
-@login_required
-def psu_control():
-    """Toggle one PSU channel from the /service/psu page."""
-    _check_csrf()
-    monitor = current_app.config.get("psu_monitor")
-    psu_cfg = current_app.config.get("psu_cfg") or {}
-    if monitor is None or not psu_cfg.get("control", True):
+def _pdb_control_monitor():
+    """The PDB monitor, or abort 403 when control is off / absent."""
+    monitor = current_app.config.get("pdb_monitor")
+    pdb_cfg = current_app.config.get("pdb_cfg") or {}
+    if monitor is None or not pdb_cfg.get("control", True):
         abort(403)
+    return monitor
+
+
+def _pdb_result(ok: bool, message: str):
+    """Reply to a power write.
+
+    From htmx (the normal path) the grid is swapped in place and the
+    outcome rides along as an out-of-band notice, so the page does not
+    reload and does not jump back to the top — the point of doing this
+    over htmx at all.  A plain form POST (no JS) still gets the old
+    flash-and-redirect, so the controls degrade rather than break.
+    """
+    if request.headers.get("HX-Request"):
+        return render_template("_service_pdb_result.html",
+                               ok=ok, message=message, **_pdb_context())
+    flash(f"PDB: {message}", "success" if ok else "error")
+    return redirect(url_for("web.service_page", name="pdb"))
+
+
+@bp.route("/service/pdb/set", methods=["POST"])
+@login_required
+def pdb_control():
+    """Toggle one PDB channel from the /service/pdb page."""
+    _check_csrf()
+    monitor = _pdb_control_monitor()
     try:
         bus = int(request.form["bus"])
         board = int(request.form["board"])
@@ -815,12 +1049,44 @@ def psu_control():
     if chip not in ("A", "B") or not 0 <= channel < 8 or board < 0:
         abort(400)
     logger.warning(
-        f"psu: bus {bus} board {board} chip {chip} ch{channel} -> "
+        f"pdb: bus {bus} board {board} chip {chip} ch{channel} -> "
         f"{'on' if on else 'off'} requested by "
         f"{getattr(current_user, 'username', '?')}")
     ok, message = monitor.set_channel(bus, board, chip, channel, on)
-    flash(f"PSU: {message}", "success" if ok else "error")
-    return redirect(url_for("web.service_page", name="psu"))
+    return _pdb_result(ok, message)
+
+
+@bp.route("/service/pdb/set-group", methods=["POST"])
+@login_required
+def pdb_control_group():
+    """Power a whole chip, board, or SPI bus on or off.
+
+    Same audit trail as a single channel — one warning line naming the
+    scope and the operator — because this is the same write, just wider.
+    """
+    _check_csrf()
+    monitor = _pdb_control_monitor()
+    form = request.form
+    try:
+        bus = int(form["bus"])
+        board = int(form["board"]) if form.get("board", "") != "" else None
+        on = form["state"] == "on"
+    except (KeyError, ValueError):
+        abort(400)
+    chip = form.get("chip") or None
+    if chip is not None and chip not in ("A", "B"):
+        abort(400)
+    if board is not None and board < 0:
+        abort(400)
+    if chip is not None and board is None:
+        abort(400)
+    scope = (f"bus {bus}" + (f" board {board}" if board is not None else "")
+             + (f" chip {chip}" if chip else ""))
+    logger.warning(
+        f"pdb: {scope} -> all {'on' if on else 'off'} requested by "
+        f"{getattr(current_user, 'username', '?')}")
+    ok, message = monitor.set_group(bus, on, board=board, chip=chip)
+    return _pdb_result(ok, message)
 
 
 # --- JSON API endpoints for queue-based updates ---
@@ -1004,7 +1270,7 @@ def api_status():
 _JOB_STATES = ("ok", "degraded", "stale", "failed", "never_run", "unknown")
 _MONITOR_STATES = {
     "fpga": ("ok", "no_timing", "down", "unconfigured", "unknown"),
-    "psu": ("ok", "no_states", "down", "unconfigured", "unknown"),
+    "pdb": ("ok", "no_states", "down", "unconfigured", "unknown"),
 }
 
 
@@ -1109,3 +1375,25 @@ def api_group_config(group):
         return {"error": sample.load_error
                 or f"No config file ({sample.config_filename})"}, 503
     return desired
+
+
+@bp.route("/api/pdb/map", methods=["GET"])
+@localhost_or_login_required
+def api_pdb_map():
+    """The master dish-input <-> power-channel table, plus its cross-check.
+
+    One table, served rather than copied: bffs's power source reads it
+    from here so choco's file stays the single authority for which
+    breaker feeds which feed.  ``check`` is the same comparison against
+    kotekan's ``dish_inputs`` that the /service/pdb page shows, so a
+    consumer can refuse to act on a map kotekan disagrees with.
+    """
+    pdb_map = current_app.config["pdb_map"].get()
+    return {
+        "path": pdb_map.path,
+        "mtime": pdb_map.mtime,
+        "n_entries": pdb_map.n_entries,
+        "errors": pdb_map.errors,
+        "channels": pdb_map.to_list(),
+        "check": _pdb_cross_check(pdb_map),
+    }

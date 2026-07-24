@@ -225,7 +225,11 @@ def main():
     configs_dir = Path(config.get("configs_dir", "configs"))
     if not configs_dir.is_absolute():
         configs_dir = Path(config_path).parent / configs_dir
-    state_file = configs_dir / state_filename
+    # The state file lives at an absolute path (the /var/lib/eop default);
+    # a relative path is resolved against configs_dir (the legacy layout).
+    state_file = Path(state_filename)
+    if not state_file.is_absolute():
+        state_file = configs_dir / state_file
 
     # Frame0
     print(f"Reading frame0 from fpga_master at {fpga_host}:{fpga_port} ...")

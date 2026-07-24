@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "_service_macros.html" import monitor_color, monitor_label, since, pill_style %}
+
+{% block title %}PDB — CHOCO{% endblock %}
+
+{% block styles %}
+dl.service-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.15em 1.25em;
+    margin: 0.5em 0 1.5em 0;
+    font-size: 0.95em;
+}
+dl.service-facts dt { font-weight: 600; }
+dl.service-facts dd { margin: 0; }
+table.pdb-grid { margin: 0 0 1.5em 0; font-size: 0.85em; }
+table.pdb-grid th, table.pdb-grid td { padding: 0.3em 0.5em; text-align: center; }
+table.pdb-grid td.boardhead { text-align: left; white-space: nowrap; font-family: monospace; vertical-align: middle; }
+table.pdb-grid td.chiphead { font-family: monospace; }
+table.pdb-grid form { margin: 0; display: inline; }
+.chan {
+    display: inline-block;
+    min-width: 3.6em;
+    padding: 0.15em 0.35em;
+    border-radius: 4px;
+    border: none;
+    color: white;
+    font-family: monospace;
+    font-size: inherit;
+    line-height: inherit;
+}
+button.chan { cursor: pointer; }
+.chan.on { background: #008000; }
+.chan.off { background: #aaa; }
+.chan.unmapped { font-style: italic; opacity: 0.75; }
+/* Bulk controls read as actions, not as state: outlined, never filled,
+   so a row of grey "all off" buttons can't be mistaken for the grid
+   itself reporting everything off. */
+.bulk {
+    width: auto;
+    margin: 0;
+    padding: 0.1em 0.5em;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    background: none;
+    font-size: 0.85em;
+    line-height: 1.5;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.bulk.on { color: #008000; }
+.bulk.off { color: #777; }
+.bulk:hover { background: #0000000d; }
+.bulk-group { display: inline-flex; gap: 0.3em; }
+.bus-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.75em;
+    margin: 0 0 0.35em 0;
+}
+.bus-head h4 { margin: 0; }
+.map-section table { font-size: 0.85em; }
+.map-note { font-size: 0.9em; margin: 0.25em 0; }
+.map-tags code { margin-right: 0.4em; }
+{% endblock %}
+
+{% block content %}
+<hgroup style="margin-bottom: 0.75em;">
+    <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
+        PDB
+        <span style="{{ pill_style() }} background: {{ monitor_color(pdb.health) }}; font-size: 0.55em;">{{ monitor_label(pdb.health) }}</span>
+    </h2>
+    <p>The power distribution boards (power_db) — Infineon high-side switches powering
+    the feed amplifiers, one channel per output.</p>
+</hgroup>
+
+{# Control outcomes land here as an out-of-band swap, so they survive the
+   grid's 5s refresh and don't require a page reload to be seen. #}
+<div id="pdb-flash"></div>
+
+<div id="pdb-status"
+     hx-get="/partials/service-pdb"
+     hx-trigger="every 5s"
+     hx-ext="morph"
+     hx-swap="morph:innerHTML">
+{% include "_service_pdb_status.html" %}
+</div>
+
+{% include "_pdb_map_section.html" %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='idiomorph-ext.min.js') }}"></script>
+<script>
+    // Confirmation gate for power writes, hooked into htmx's own
+    // confirm event (the controls post over htmx, so an onsubmit
+    // handler would fire too late to stop the request).
+    //
+    // Single-channel toggles ask once per browsing session: the
+    // acknowledgement lives in sessionStorage, so bulk work isn't
+    // nagged and the flag resets when the tab is closed.  Whole-chip,
+    // board and bus writes ask *every* time regardless — switching 8
+    // to 256 amplifiers at once is not a click to make absent-mindedly.
+    document.body.addEventListener('htmx:confirm', function (evt) {
+        var elt = evt.detail.elt;
+        var data = elt.dataset || {};
+        var question = data.confirmAlways || data.confirm;
+        if (!question) return;          // status polls and everything else
+        var always = !!data.confirmAlways;
+        if (!always && sessionStorage.getItem('pdb-toggle-ack') === '1') return;
+        evt.preventDefault();
+        var suffix = always ? '' :
+            '\n\n(Single-channel toggles will not ask again until you reload or reopen this tab.)';
+        if (confirm(question + suffix)) {
+            if (!always) sessionStorage.setItem('pdb-toggle-ack', '1');
+            // Deferred so htmx's own confirm bookkeeping unwinds first —
+            // the documented shape is an async callback, and re-entering
+            // it from inside the handler is asking for trouble.
+            setTimeout(function () { evt.detail.issueRequest(true); }, 0);
+        }
+    });
+</script>
+{% endblock %}

@@ -17,8 +17,13 @@ ensure_local_venv() {
     fi
     if [ ! -x "$venv/bin/choco" ] || ! $as_user "$venv/bin/python" -c "import choco" 2>/dev/null; then
         echo "Setting up local venv..."
-        $as_user python3 -m venv "$venv"
-        $as_user "$venv/bin/pip" install -e "$SCRIPT_DIR[dev]"
+        $as_user python3 -m venv --upgrade-deps "$venv"
+        # Locked deps first so dev runs the same versions a deploy gets;
+        # the editable install then only adds choco itself + dev tools.
+        if [ -f "$SCRIPT_DIR/requirements.lock" ]; then
+            $as_user "$venv/bin/pip" install --require-hashes -r "$SCRIPT_DIR/requirements.lock"
+        fi
+        $as_user "$venv/bin/pip" install -e "$SCRIPT_DIR[dev,jobs]"
     fi
 }
 
@@ -55,7 +60,9 @@ check_config() {
     if grep -qE '^\s*secret_key:\s*change-me\s*$' "$config" 2>/dev/null; then
         warnings+=("server.secret_key is still the default 'change-me'")
     fi
-    for field in host base_dn bind_dn bind_password; do
+    # bind_dn/bind_password deliberately absent: direct-bind LDAP needs
+    # no service account, so those legacy keys are ignored if present.
+    for field in host base_dn; do
         if grep -qE "^\s*${field}:\s*(#.*)?$" "$config" 2>/dev/null; then
             warnings+=("ldap.$field is not set")
         fi
@@ -69,6 +76,37 @@ check_config() {
         done
         echo "  Edit with: sudo \$EDITOR $config"
         echo ""
+    fi
+}
+
+# The deployed master PDB channel map (dish input <-> power board/chip/
+# channel). It may be the only authoritative record of that wiring, so it
+# is treated like config.yaml rather than like a kotekan config: seeded
+# once, never replaced by an install, and if the repo copy differs it is
+# staged alongside for the operator to merge.
+PDB_MAP_NAME="pdb_map.csv"
+
+copy_repo_configs() {
+    # tar rather than cp -r so the map can be excluded; "." carries the
+    # hidden .updatable/ tree along with the group directories.
+    tar -C "$SCRIPT_DIR/configs" --exclude="./$PDB_MAP_NAME" -cf - . \
+        | tar -C "$CONFIG_DIR/configs" -xf -
+}
+
+deploy_pdb_map() {
+    local src="$SCRIPT_DIR/configs/$PDB_MAP_NAME"
+    local dest="$CONFIG_DIR/configs/$PDB_MAP_NAME"
+    [ -f "$src" ] || return 0
+    mkdir -p "$CONFIG_DIR/configs"
+    if [ ! -f "$dest" ]; then
+        cp "$src" "$dest"
+        echo "Seeded $dest -- fill in the real dish-input wiring before use"
+    elif cmp -s "$src" "$dest"; then
+        rm -f "$dest.new"
+    else
+        cp "$src" "$dest.new"
+        echo "Kept existing $dest (the master PDB channel map, deployment data);"
+        echo "  the repo copy is at $dest.new -- merge by hand if you want it."
     fi
 }
 
@@ -94,8 +132,19 @@ cmd_install() {
     local tmp_src
     tmp_src="$(mktemp -d)"
     rsync -a --exclude='.venv' --exclude='.git' --exclude='.ssl' "$SCRIPT_DIR/" "$tmp_src/"
-    python3 -m venv "$INSTALL_DIR/.venv"
-    "$INSTALL_DIR/.venv/bin/pip" install "$tmp_src"
+    python3 -m venv --upgrade-deps "$INSTALL_DIR/.venv"
+    # Install dependencies from the lock so a deploy gets exactly the
+    # reviewed versions, then choco itself with --no-deps so nothing
+    # floats past the pins.  ([jobs] is the scientific stack the timer
+    # jobs need; the lock covers core + jobs.)  Fall back to a floating
+    # resolve only if the lock is missing.
+    if [ -f "$tmp_src/requirements.lock" ]; then
+        "$INSTALL_DIR/.venv/bin/pip" install --require-hashes -r "$tmp_src/requirements.lock"
+        "$INSTALL_DIR/.venv/bin/pip" install --no-deps "$tmp_src"
+    else
+        echo "Warning: requirements.lock missing; installing unpinned versions."
+        "$INSTALL_DIR/.venv/bin/pip" install "$tmp_src[jobs]"
+    fi
     rm -rf "$tmp_src"
 
     # Jobs (one subdir per job: units, wrapper script, Python code)
@@ -145,10 +194,13 @@ cmd_install() {
         echo "Seeded $CONFIG_DIR/eigencal_feeds.yaml -- fill in the real feed layout before use"
     fi
 
-    # Seed or overwrite kotekan configs from repo
+    # Seed or overwrite kotekan configs from repo.  pdb_map.csv is excluded
+    # from every copy here and handled separately below -- it is deployment
+    # data, not a repo artifact, so even an explicit --overwrite-configs
+    # must not replace it.
     if [ -d "$SCRIPT_DIR/configs" ]; then
         if [ -z "$(ls -A "$CONFIG_DIR/configs" 2>/dev/null)" ]; then
-            cp -r "$SCRIPT_DIR/configs/." "$CONFIG_DIR/configs/"
+            copy_repo_configs
             echo "Copied initial configs to $CONFIG_DIR/configs"
         else
             if [ -z "$overwrite_configs" ]; then
@@ -159,13 +211,14 @@ cmd_install() {
                 esac
             fi
             if [ "$overwrite_configs" = "yes" ]; then
-                cp -r "$SCRIPT_DIR/configs/." "$CONFIG_DIR/configs/"
+                copy_repo_configs
                 echo "Overwritten configs in $CONFIG_DIR/configs"
             else
                 echo "Keeping existing configs in $CONFIG_DIR/configs"
             fi
         fi
     fi
+    deploy_pdb_map
 
     # Network
     ensure_iptables
@@ -194,6 +247,14 @@ cmd_install() {
 
     systemctl enable choco
     systemctl restart choco
+
+    # Optional host tool: node pages render kotekan's pipeline graph
+    # through the graphviz CLI, falling back to raw dot text without it.
+    if ! command -v dot >/dev/null 2>&1; then
+        echo ""
+        echo "Note: graphviz (dot) not found -- pipeline graphs on node pages"
+        echo "  will show raw dot text.  apt install graphviz to render them."
+    fi
 
     echo ""
     echo "choco installed and running."
@@ -261,6 +322,106 @@ cmd_test() {
     (cd "$SCRIPT_DIR/jobs/eigencal" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
+cmd_lock() {
+    # Regenerate requirements.lock: the pinned production dependency set
+    # (core + [jobs], no dev tools), resolved fresh in a scratch venv so
+    # dev-only packages can't leak in — then hash-locked: each pin lists
+    # the sha256 of every artifact PyPI serves for that version (all
+    # platform wheels + the sdist), so installs run --require-hashes and
+    # refuse a substituted or tampered file even at the right version,
+    # while still installing on any platform.  Run after editing
+    # pyproject dependencies, review the diff, and commit the result.
+    local tmp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+    echo "Resolving production dependency set in a scratch venv..."
+    python3 -m venv --upgrade-deps "$tmp/venv"
+    "$tmp/venv/bin/pip" install -q "$SCRIPT_DIR[jobs]"
+    # --all keeps pip itself in the freeze: pip is the tool that verifies
+    # the hashes, so it gets pinned, hash-locked, and audited like any
+    # other dependency (the scratch venv's --upgrade-deps means the pin
+    # is current, not whatever the OS seeded).
+    "$tmp/venv/bin/pip" freeze --all --exclude-editable \
+        | grep -vE '^(choco(==| @ )|setuptools==|wheel==)' > "$tmp/pins"
+    echo "Fetching artifact hashes from PyPI for $(wc -l < "$tmp/pins") pins..."
+    python3 - "$tmp/pins" > "$SCRIPT_DIR/requirements.lock" <<'PYEOF'
+import json, re, sys, urllib.request
+
+pins = [ln.strip() for ln in open(sys.argv[1]) if "==" in ln]
+print("# Pinned production dependencies (core + [jobs] extra), hash-locked.")
+print("# Each pin lists the sha256 of every artifact PyPI serves for that")
+print("# version, so `pip install --require-hashes` (what choco.sh runs)")
+print("# refuses a substituted or tampered file even at the same version.")
+print("# Regenerate with: ./choco.sh lock   (then review the diff and commit)")
+for pin in sorted(pins, key=str.lower):
+    name, version = pin.split("==")
+    url = (f"https://pypi.org/pypi/"
+           f"{re.sub(r'[-_.]+', '-', name).lower()}/{version}/json")
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        files = json.load(resp)["urls"]
+    hashes = sorted({f["digests"]["sha256"] for f in files})
+    if not hashes:
+        raise SystemExit(f"no artifacts on PyPI for {pin}")
+    print(f"{pin} \\")
+    print(" \\\n".join(f"    --hash=sha256:{h}" for h in hashes))
+PYEOF
+    echo "Wrote $SCRIPT_DIR/requirements.lock:"
+    grep -c '==' "$SCRIPT_DIR/requirements.lock" | xargs echo "  pinned packages:"
+    grep -c -- '--hash=' "$SCRIPT_DIR/requirements.lock" | xargs echo "  artifact hashes:"
+}
+
+cmd_audit() {
+    # Check every requirements.lock pin against the latest PyPI release
+    # and the OSV vulnerability database (osv.dev aggregates PyPI's
+    # advisory feed + GitHub advisories).  Read-only and stdlib-only —
+    # nothing is installed or changed.  To act on findings: bump with
+    # ./choco.sh lock, review the diff, run tests, commit.
+    python3 - "$SCRIPT_DIR/requirements.lock" <<'PYEOF'
+import json, re, sys, urllib.request
+
+def get(url, payload=None):
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json"} if payload else {})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.load(resp)
+
+pins = []
+for ln in open(sys.argv[1]):
+    m = re.match(r"^([A-Za-z0-9_.-]+)==(\S+?)\s*\\?$", ln)
+    if m:
+        pins.append(m.groups())
+
+stale, vulnerable = [], []
+for name, version in pins:
+    canon = re.sub(r"[-_.]+", "-", name).lower()
+    latest = get(f"https://pypi.org/pypi/{canon}/json")["info"]["version"]
+    osv = get("https://api.osv.dev/v1/query", json.dumps(
+        {"package": {"name": canon, "ecosystem": "PyPI"},
+         "version": version}).encode())
+    vulns = [v["id"] for v in (osv.get("vulns") or [])]
+    notes = []
+    if vulns:
+        notes.append("VULNERABLE: " + ", ".join(vulns))
+        vulnerable.append(name)
+    if latest != version:
+        notes.append(f"latest: {latest}")
+        stale.append(name)
+    print(f"  {name + '==' + version:<44s} {'; '.join(notes) or 'ok'}")
+
+print()
+if vulnerable:
+    print(f"{len(vulnerable)} pin(s) have known advisories: "
+          f"{', '.join(vulnerable)} — run ./choco.sh lock to bump, "
+          f"review, test, commit.")
+if stale:
+    print(f"{len(stale)} pin(s) behind latest: {', '.join(stale)}")
+if not vulnerable and not stale:
+    print("All pins are the latest release with no known advisories.")
+sys.exit(1 if vulnerable else 0)
+PYEOF
+}
+
 cmd_help() {
     echo "Usage: ./choco.sh <command> [args...]"
     echo ""
@@ -271,6 +432,8 @@ cmd_help() {
     echo "  uninstall   Remove daemon, iptables rules, and $INSTALL_DIR (requires root)"
     echo "  run         Run choco locally for development (requires root; extra args forwarded)"
     echo "  test        Run tests (extra args forwarded to pytest)"
+    echo "  lock        Regenerate requirements.lock (pinned production deps)"
+    echo "  audit       Check lock pins against latest PyPI + OSV advisories"
     echo "  help        Show this message"
 }
 
@@ -279,5 +442,7 @@ case "${1:-help}" in
     uninstall) cmd_uninstall ;;
     run)       shift; cmd_run "$@" ;;
     test)      shift; cmd_test "$@" ;;
+    lock)      cmd_lock ;;
+    audit)     cmd_audit ;;
     help|*)    cmd_help ;;
 esac

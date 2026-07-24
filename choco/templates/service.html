@@ -41,6 +41,15 @@ dl.service-facts dd { margin: 0; }
 {% include "_service_status.html" %}
 </div>
 
+{% if state_json %}
+<section>
+    <details>
+        <summary><strong>State file</strong>{% if job.state_file %} <small><code>{{ job.state_file }}</code></small>{% endif %}</summary>
+        <pre style="max-height: 28em; overflow: auto; font-size: 0.8em; margin-top: 0.5em;">{{ state_json }}</pre>
+    </details>
+</section>
+{% endif %}
+
 <section>
     <div class="journal-header">
         <h4 style="margin-bottom: 0.25em;">Journal</h4>

@@ -50,12 +50,16 @@ sources:
     freq_hi: 800.0
     min_valid_frac: 0.5
 
-  # External-service sources (provisional until the hardware is live; map
-  # defaults to sources/<name>_map.csv — fpga's is the rack wiring table,
-  # power's is a placeholder pending padloper).
+  # External-service sources (provisional until the hardware is live).
   # - kind: power                # feeds whose amplifier is unpowered (power_db)
   #   url: http://10.222.0.30:5000
-  #   map: sources/power_map.csv
+  #   # The channel->input map comes from choco's master PDB table
+  #   # (GET /api/pdb/map, i.e. <configs_dir>/pdb_map.csv) so this job and
+  #   # choco's PDB page agree on the wiring; choco's cross-check of that
+  #   # table against kotekan's dish_inputs is logged on every run. Set
+  #   # `map:` to override with a local CSV; the bundled placeholder
+  #   # (sources/power_map.csv) is the fallback when choco is unreachable.
+  #   # map: sources/power_map.csv
   #
   # - kind: fpga                 # F-engine health: overflow / no frames / ADC RMS
   #   url: http://fpga-node:5000

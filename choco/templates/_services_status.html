@@ -22,15 +22,15 @@
     <strong>FPGA</strong> <span>{{ monitor_label(fpga.health) }}</span>
 </a>
 {% endif %}
-{% if psu %}
-{% set tip = 'power_db at ' ~ (psu.host or '?') ~ ':' ~ (psu.port or '?')
-             ~ '\nhealth: ' ~ psu.health
-             ~ ('\nchannels on: ' ~ psu.n_on ~ ' / ' ~ psu.n_channels if psu.n_channels else '')
-             ~ ('\nlast seen: ' ~ since(psu.last_seen, now) if psu.last_seen else '')
-             ~ ('\nerror: ' ~ psu.error if psu.error else '')
+{% if pdb %}
+{% set tip = 'power_db at ' ~ (pdb.host or '?') ~ ':' ~ (pdb.port or '?')
+             ~ '\nhealth: ' ~ pdb.health
+             ~ ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else '')
+             ~ ('\nlast seen: ' ~ since(pdb.last_seen, now) if pdb.last_seen else '')
+             ~ ('\nerror: ' ~ pdb.error if pdb.error else '')
              ~ '\n\nclick for details' %}
-<a href="/service/psu" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(psu.health) }};">
-    <strong>PSU</strong> <span>{{ monitor_label(psu.health) }}</span>
+<a href="/service/pdb" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(pdb.health) }};">
+    <strong>PDB</strong> <span>{{ monitor_label(pdb.health) }}</span>
 </a>
 {% endif %}
 {{ job_pill('EOP', 'eop', eop, 'last run') }}

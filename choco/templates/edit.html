@@ -52,6 +52,27 @@
 {% endfor %}
 {% endif %}
 
+<h3>Buffers</h3>
+{# morph keeps the Peek buttons alive across the poll swap, so a refresh
+   landing mid-click can't cancel an in-flight peek request. #}
+<div id="node-buffers" hx-ext="morph"
+     hx-get="/partials/node-buffers/{{ node_key }}"
+     hx-trigger="load, every 5s"
+     hx-swap="morph:innerHTML">
+    <p><em>Loading buffers…</em></p>
+</div>
+{# Peek results land outside the polled region so they survive the 5 s refresh. #}
+<div id="buffer-peek"></div>
+
+<h3>Pipeline Graph</h3>
+{# intersect defers the fetch until the graph scrolls into view; "once"
+   so it never re-fetches on its own — that's the refresh button's job. #}
+<div id="pipeline-graph"
+     hx-get="/partials/node-pipeline/{{ node_key }}"
+     hx-trigger="intersect once">
+    <p><em>Loading pipeline graph…</em></p>
+</div>
+
 {% endblock %}
 
 {% block scripts %}

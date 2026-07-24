@@ -96,3 +96,60 @@ class TestLifecycle:
         info = node.get_version_info()
         assert info == {"kotekan_version": "2024.11"}
         assert info.get("branch") is None
+
+
+class TestGetBuffers:
+    @responses.activate
+    def test_returns_buffer_table(self, node):
+        payload = {
+            "n2_buffer": {
+                "num_full_frame": 3, "frames": [1, 1, 1, 0],
+                "frame_size": 100756, "peek_hold": True,
+            },
+            "ring_buf": {"consumers": {}, "producers": {}},
+        }
+        responses.get(f"{BASE}/buffers", json=payload)
+        assert node.get_buffers() == payload
+
+    @responses.activate
+    def test_unreachable(self, node):
+        responses.get(f"{BASE}/buffers", body=ConnectionError())
+        assert node.get_buffers() is None
+
+    @responses.activate
+    def test_non_dict_reply(self, node):
+        responses.get(f"{BASE}/buffers", json=["not", "a", "dict"])
+        assert node.get_buffers() is None
+
+
+class TestGetBufferFrame:
+    @responses.activate
+    def test_returns_frame_reply(self, node):
+        payload = {
+            "buffer": "n2_buffer", "frame_id": 2, "frame_size": 100756,
+            "data_length": 0, "metadata": {"fpga_seq": 12345},
+            "frame_desc": {"frame_desc_type": "N2"},
+        }
+        responses.get(f"{BASE}/buffer/n2_buffer/frame", json=payload)
+        assert node.get_buffer_frame("n2_buffer", length=0) == payload
+        assert responses.calls[0].request.url.endswith("?len=0")
+
+    @responses.activate
+    def test_no_length_omits_len_param(self, node):
+        responses.get(f"{BASE}/buffer/n2_buffer/frame", json={"frame_id": 0})
+        node.get_buffer_frame("n2_buffer")
+        assert "len=" not in responses.calls[0].request.url
+
+    @responses.activate
+    def test_no_full_frame_is_error_reply_not_none(self, node):
+        # kotekan reports a peek miss as HTTP 402; that's a meaningful
+        # reply ("try again" / "enable peek_hold"), not an outage.
+        responses.get(f"{BASE}/buffer/n2_buffer/frame", status=402)
+        frame = node.get_buffer_frame("n2_buffer", length=0)
+        assert frame is not None
+        assert "no full frame" in frame["error"]
+
+    @responses.activate
+    def test_unreachable(self, node):
+        responses.get(f"{BASE}/buffer/n2_buffer/frame", body=ConnectionError())
+        assert node.get_buffer_frame("n2_buffer") is None

@@ -343,10 +343,18 @@ class Node:
 
     # --- Kotekan REST API ---
 
-    def _request(self, method: str, path: str, **kwargs) -> requests.Response | None:
+    def _request(
+        self, method: str, path: str, accept_statuses: tuple[int, ...] = (), **kwargs
+    ) -> requests.Response | None:
+        """One kotekan REST call.  Returns None on any transport or HTTP
+        error, except that statuses in ``accept_statuses`` are returned to
+        the caller (for endpoints where an error status is a meaningful
+        reply, e.g. the frame peek's 402 "no full frame")."""
         url = f"{self._base_url}/{path.lstrip('/')}"
         try:
             resp = requests.request(method, url, timeout=self.timeout, **kwargs)
+            if resp.status_code in accept_statuses:
+                return resp
             resp.raise_for_status()
             return resp
         except (requests.ConnectionError, ConnectionError):
@@ -430,6 +438,58 @@ class Node:
         resp = self._request("GET", "/version")
         if resp is None:
             return None
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def get_pipeline_dot(self) -> str | None:
+        """Get the pipeline graph as graphviz dot text.
+
+        Buffer labels in the graph embed live fullness, so a re-fetch is
+        a fresh snapshot, not a static picture. Returns None if the node
+        is unreachable.
+        """
+        resp = self._request("GET", "/pipeline_dot")
+        return resp.text if resp is not None else None
+
+    def get_buffers(self) -> dict | None:
+        """Get kotekan's buffer table (``GET /buffers``).
+
+        One entry per buffer.  Frame buffers carry ``num_full_frame``,
+        ``frames``, ``frame_size``, ``last_frame_arrival_time`` and (on
+        new enough kotekan) ``peek_hold``; ring buffers only the shared
+        producer/consumer bookkeeping.  Returns None if the node is
+        unreachable or the reply is malformed.
+        """
+        resp = self._request("GET", "/buffers")
+        if resp is None:
+            return None
+        try:
+            data = resp.json()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def get_buffer_frame(self, name: str, length: int | None = None) -> dict | None:
+        """Peek the newest full frame of a buffer (``GET /buffer/<name>/frame``).
+
+        ``length`` bounds the data bytes copied out of the frame
+        (``0`` = metadata and frame descriptor only); None copies the
+        whole frame.  Returns the parsed JSON reply; ``{"error": ...}``
+        when kotekan has no full frame to serve (HTTP 402 — expected on
+        fast-draining buffers without ``peek_hold``); or None if the
+        node is unreachable or the reply is malformed.
+        """
+        params = {} if length is None else {"len": length}
+        resp = self._request(
+            "GET", f"/buffer/{name}/frame", accept_statuses=(402,), params=params
+        )
+        if resp is None:
+            return None
+        if resp.status_code == 402:
+            return {"error": "no full frame currently in buffer"}
         try:
             data = resp.json()
         except Exception:

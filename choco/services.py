@@ -269,7 +269,14 @@ class FpgaMonitor:
         }
 
 
-# --- PSU (power_db) -------------------------------------------------------
+# --- PDB (power_db) -------------------------------------------------------
+
+def _summarize(items: list[str], limit: int = 4) -> str:
+    """First few items plus a count of the rest — bulk writes can fail wide."""
+    head = ", ".join(items[:limit])
+    extra = len(items) - limit
+    return f"{head} and {extra} more" if extra > 0 else head
+
 
 def decode_out_bytes(raw: list[int]) -> list[int]:
     """Per-chip OUT bytes from one bus's raw ``/channel_states`` buffer.
@@ -289,19 +296,19 @@ def decode_out_bytes(raw: list[int]) -> list[int]:
     return [resp[i] for i in range(0, len(resp), 2)]
 
 
-class PsuMonitor:
-    """Background poller for the power_db PSU controller.
+class PdbMonitor:
+    """Background poller for the power_db PDB (power distribution boards).
 
     Hits ``/status`` and ``/channel_states`` on a slow interval and
     decodes the per-channel power state.  Same shape as
     :class:`FpgaMonitor`: latest result held in attributes, surfaced by
-    the services strip and the ``/service/psu`` page.
+    the services strip and the ``/service/pdb`` page.
 
     Health levels:
       * ``ok``        — both endpoints responded and decoded.
       * ``no_states`` — /status responded but /channel_states did not.
       * ``down``      — /status did not respond.
-      * ``unconfigured`` — no psu.host / port in config.
+      * ``unconfigured`` — no pdb.host / port in config.
     """
 
     POLL_INTERVAL_S = 30
@@ -354,19 +361,34 @@ class PsuMonitor:
         return {int(bus): decode_out_bytes(raw)
                 for bus, raw in states.items()}
 
+    # Position in the daisy chain <-> (board, chip).  Every read and every
+    # write goes through this pair, so the convention is stated once: get
+    # it wrong and the UI labels — or powers — the wrong amplifier.
     @staticmethod
-    def _rows(out_bytes: list[int]) -> list[dict]:
-        return [{"board": k // 2,
-                 "chip": "A" if k % 2 == 0 else "B",
-                 "channels": [bool(out & (1 << c)) for c in range(8)]}
-                for k, out in enumerate(out_bytes)]
+    def _chip_num(board: int, chip: str) -> int:
+        return board * 2 + (0 if chip == "A" else 1)
+
+    @staticmethod
+    def _board_chip(chip_num: int) -> tuple[int, str]:
+        return chip_num // 2, ("A" if chip_num % 2 == 0 else "B")
+
+    @classmethod
+    def _rows(cls, out_bytes: list[int]) -> list[dict]:
+        rows = []
+        for k, out in enumerate(out_bytes):
+            board, chip = cls._board_chip(k)
+            rows.append({
+                "board": board, "chip": chip,
+                "channels": [bool(out & (1 << c)) for c in range(8)],
+            })
+        return rows
 
     def poll_once(self) -> None:
         """Probe both endpoints once and update in-memory state."""
         self.last_polled = time.time()
         if not self.configured:
             self.health = "unconfigured"
-            self.error = "psu.host / port not set"
+            self.error = "pdb.host / port not set"
             return
 
         # /status: reachability + board counts
@@ -400,7 +422,7 @@ class PsuMonitor:
     def poll_if_stale(self, max_age_s: float = 10.0) -> None:
         """Poll now if the last poll is older than ``max_age_s``.
 
-        Lets the /service/psu page tighten the effective cadence while
+        Lets the /service/pdb page tighten the effective cadence while
         an operator is actually watching, without touching the 30s loop.
         """
         if not self.configured:
@@ -427,11 +449,11 @@ class PsuMonitor:
         wrong channel.
         """
         if not self.configured:
-            return False, "psu is not configured"
+            return False, "pdb is not configured"
         if chip not in ("A", "B") or not 0 <= channel < 8 or board < 0:
             return False, f"invalid channel address: board {board} " \
                           f"chip {chip} ch{channel}"
-        chip_num = board * 2 + (0 if chip == "A" else 1)
+        chip_num = self._chip_num(board, chip)
         label = f"bus {bus} board {board} chip {chip} ch{channel}"
         try:
             outs = self._fetch_states().get(bus)
@@ -441,13 +463,7 @@ class PsuMonitor:
             wanted = (current | (1 << channel) if on
                       else current & ~(1 << channel))
             if wanted != current:
-                resp = requests.post(
-                    f"{self.base_url}/write_command",
-                    json={"spi_bus": bus, "board_idx": board,
-                          "chip_letter": chip, "operation": "OUT",
-                          "states": format(wanted, "08b")},
-                    timeout=self.timeout)
-                resp.raise_for_status()
+                self._write_out_byte(bus, board, chip, wanted)
             readback = self._fetch_states()
             self.channels = {b: self._rows(o) for b, o in readback.items()}
             self.last_seen = time.time()
@@ -462,8 +478,115 @@ class PsuMonitor:
                 f"writer?); check the grid and retry")
         if wanted == current:
             return True, f"{label} was already {'on' if on else 'off'}"
-        logger.info(f"psu: {label} -> {'on' if on else 'off'}")
+        logger.info(f"pdb: {label} -> {'on' if on else 'off'}")
         return True, f"{label} {'on' if on else 'off'}"
+
+    def _write_out_byte(self, bus: int, board: int, chip: str,
+                        value: int) -> None:
+        """POST one chip's whole OUT register.  Raises on a failed write."""
+        resp = requests.post(
+            f"{self.base_url}/write_command",
+            json={"spi_bus": bus, "board_idx": board,
+                  "chip_letter": chip, "operation": "OUT",
+                  "states": format(value, "08b")},
+            timeout=self.timeout)
+        resp.raise_for_status()
+
+    def set_group(self, bus: int, on: bool, board: int | None = None,
+                  chip: str | None = None) -> tuple[bool, str]:
+        """Power every channel of a chip, a board, or a whole bus.
+
+        The scope widens as arguments are dropped: ``chip`` given ->
+        that chip's 8 channels; only ``board`` -> both of its chips;
+        neither -> every chip on ``bus``.  A chip is an all-ones or
+        all-zeros OUT byte, so this is the same read-modify-write as
+        :meth:`set_channel` with the "modify" being the whole byte —
+        and the same rules apply: chips already in the wanted state are
+        not written, and the result is confirmed by one fresh read.
+
+        Writes are issued per chip because power_db has no bulk
+        endpoint.  If some fail the rest still go out (the grid then
+        shows exactly which took), and the message names the failures —
+        a partial result is reported, never retried silently.
+        """
+        if not self.configured:
+            return False, "pdb is not configured"
+        if chip is not None and chip not in ("A", "B"):
+            return False, f"invalid chip: {chip}"
+        if board is not None and board < 0:
+            return False, f"invalid board: {board}"
+        if chip is not None and board is None:
+            return False, "a chip scope needs a board"
+
+        if chip is not None:
+            scope = f"bus {bus} board {board} chip {chip}"
+        elif board is not None:
+            scope = f"bus {bus} board {board}"
+        else:
+            scope = f"bus {bus} (all boards)"
+        wanted = 0xFF if on else 0x00
+        state_word = "on" if on else "off"
+
+        try:
+            outs = self._fetch_states().get(bus)
+        except (requests.RequestException, ValueError, KeyError,
+                TypeError) as e:
+            return False, f"{scope}: {type(e).__name__}: {e}"
+        if outs is None:
+            return False, f"{scope}: bus not present on the controller"
+
+        targets = []   # (chip_num, board, chip, current OUT byte)
+        for chip_num, current in enumerate(outs):
+            b, c = self._board_chip(chip_num)
+            if board is not None and b != board:
+                continue
+            if chip is not None and c != chip:
+                continue
+            targets.append((chip_num, b, c, current))
+        if not targets:
+            return False, f"{scope}: no such chips on the controller"
+
+        todo = [t for t in targets if t[3] != wanted]
+        if not todo:
+            return True, (f"{scope}: all {len(targets) * 8} channels were "
+                          f"already {state_word}")
+
+        logger.warning(
+            f"pdb: {scope} -> all {state_word} "
+            f"({len(todo)} of {len(targets)} chips need writing)")
+        failures = []
+        for _chip_num, b, c, _current in todo:
+            try:
+                self._write_out_byte(bus, b, c, wanted)
+            except (requests.RequestException, ValueError) as e:
+                failures.append(f"board {b} chip {c} ({type(e).__name__})")
+
+        try:
+            readback = self._fetch_states()
+            self.channels = {b: self._rows(o) for b, o in readback.items()}
+            self.last_seen = time.time()
+            got = readback[bus]
+        except (requests.RequestException, ValueError, KeyError,
+                TypeError) as e:
+            return False, (
+                f"{scope}: wrote {len(todo) - len(failures)} of "
+                f"{len(todo)} chips but the verify read failed "
+                f"({type(e).__name__}: {e}) — check the grid")
+        stale = [f"board {b} chip {c}" for chip_num, b, c, _ in targets
+                 if chip_num >= len(got) or got[chip_num] != wanted]
+
+        if failures or stale:
+            parts = []
+            if failures:
+                parts.append(f"{len(failures)} write(s) failed: "
+                             + _summarize(failures))
+            if stale:
+                parts.append(f"{len(stale)} chip(s) did not take: "
+                             + _summarize(stale))
+            return False, f"{scope}: turning all {state_word} — " \
+                          + "; ".join(parts)
+        return True, (f"{scope}: {len(todo) * 8} channels {state_word} "
+                      f"({len(targets) * 8} in scope)")
 
     def run(self) -> None:
         """Poll forever on ``POLL_INTERVAL_S``.  Designed for gevent.spawn."""
@@ -472,7 +595,7 @@ class PsuMonitor:
             try:
                 self.poll_once()
             except Exception:
-                logger.exception("PsuMonitor.poll_once raised")
+                logger.exception("PdbMonitor.poll_once raised")
             gevent.sleep(self.POLL_INTERVAL_S)
 
     def stop(self) -> None:
@@ -563,6 +686,50 @@ def job_logs(service_unit: str, lines: int = 50,
                      f"{result.stderr.strip()}")
         return None
     return result.stdout.splitlines()
+
+
+# Layout attributes injected at render time (kotekan's dot text carries no
+# layout hints): orthogonal edge routing plus wider rank/node separation
+# turns the default spline spaghetti into readable right-angle channels on
+# the ~200-edge production pipelines.
+_DOT_LAYOUT_ARGS = ("-Gsplines=ortho", "-Granksep=1.2", "-Gnodesep=0.6")
+
+
+def render_dot_svg(dot_text: str, timeout: float = 10.0) -> str | None:
+    """Render graphviz dot text to an SVG document string.
+
+    Shells out to the graphviz CLI (same host-tool-over-Python-dependency
+    choice as the openssl TLS fallback), injecting ``_DOT_LAYOUT_ARGS``;
+    orthogonal routing is the fussiest graphviz code path, so a failed
+    render is retried once without the layout args before giving up.
+    Returns None when it can't render at all (no ``dot`` binary on the
+    host, render failure, timeout) — the caller falls back to showing the
+    raw dot text.  The output is sliced down to the ``<svg`` element: the
+    XML prolog and DOCTYPE would be invalid embedded in an HTML page.
+    """
+    if shutil.which("dot") is None:
+        return None
+    for extra_args in (_DOT_LAYOUT_ARGS, ()):
+        try:
+            result = subprocess.run(
+                ["dot", "-Tsvg", *extra_args],
+                input=dot_text, capture_output=True, text=True,
+                timeout=timeout,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.warning(f"dot -Tsvg {' '.join(extra_args)} failed: {e}")
+            continue
+        if result.returncode != 0:
+            logger.warning(f"dot -Tsvg {' '.join(extra_args)} "
+                           f"rc={result.returncode}: "
+                           f"{result.stderr.strip()[:200]}")
+            continue
+        start = result.stdout.find("<svg")
+        if start < 0:
+            logger.warning("dot -Tsvg produced no <svg> element")
+            continue
+        return result.stdout[start:]
+    return None
 
 
 # Schedule facts for a job's timer.  The timestamp values are systemd's

@@ -5,7 +5,7 @@
     <button class="outline" title="Set {{ _scope }} nodes to idle" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #ffdc00; color: #333; border-color: #ffdc00;"
             hx-post="{{ _url }}/stop" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
             hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>&#x25BC;</button>
-    <button class="outline" title="Set {{ _scope }} nodes to started" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #2ecc40; color: white; border-color: #2ecc40;"
+    <button class="outline" title="Set {{ _scope }} nodes to started" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #008000; color: white; border-color: #008000;"
             hx-post="{{ _url }}/start" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
             hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>&#x25B2;</button>
 </span>

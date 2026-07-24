@@ -1,0 +1,50 @@
+# Master PDB channel map: which power channel feeds which dish input.
+#
+# This file is the authority for the wiring between the analog power
+# distribution boards (driven by power_db) and the correlator's dish
+# inputs.  choco labels the /service/pdb grid from it, serves it as JSON
+# at /api/pdb/map (where the bad-feed flagger reads it), and cross-checks
+# its dish_input values against the labels kotekan reports in its own
+# dish_inputs table -- a disagreement is shown on the PDB page.
+#
+# Columns:
+#   spi_bus, board, chip, channel  the power channel address; chip is A or
+#                                  B, channel 0-7 (see power_db)
+#   dish_input                     the kotekan dish_inputs label (A1X, ...);
+#                                  correlator_input / label are accepted as
+#                                  column aliases for older tables
+#   amplifier, notes               free text, shown on the page only
+#
+# Blank lines and #-comments are ignored, so keep section headings here.
+# Rows are validated one at a time: a bad row is reported on the PDB page
+# and skipped, the rest still load.  Edits are picked up on the next page
+# render -- no choco restart needed.
+#
+# THIS FILE IS DEPLOYMENT DATA.  There may be no upstream source for this
+# wiring (it is not certain padloper will carry it), so the deployed copy
+# may be the only authoritative record of it.  Treat it accordingly:
+#
+#   * `choco.sh install` never overwrites it -- not even with
+#     --overwrite-configs.  It is seeded once; on later installs, if the
+#     repo copy differs, it is staged beside it as pdb_map.csv.new for you
+#     to merge by hand.  The same rule config.yaml gets.
+#   * Back it up with the rest of /etc/choco, and commit site edits
+#     somewhere you keep them -- the repo copy below is only a starting
+#     point, not a backup.
+#   * The cross-check against kotekan's dish_inputs (shown on the PDB page
+#     and served with /api/pdb/map) is the check on this file's accuracy;
+#     read it after every edit.
+#
+# The rows below are the placeholder wiring inherited from bffs's
+# sources/power_map.csv -- replace them with the real table.  Until then
+# the cross-check will show most dish inputs as unmapped, which is the
+# honest state of things.
+spi_bus,board,chip,channel,dish_input,amplifier,notes
+0,0,A,0,feed_0000,AMP-0000,provisional
+0,0,A,1,feed_0001,AMP-0001,provisional
+0,0,B,0,feed_0008,AMP-0008,provisional
+0,7,A,0,feed_0112,AMP-0112,provisional
+0,7,B,0,feed_0120,AMP-0120,provisional
+0,7,B,1,feed_0121,AMP-0121,provisional
+0,15,A,0,feed_0240,AMP-0240,provisional
+0,15,B,7,feed_0255,AMP-0255,provisional

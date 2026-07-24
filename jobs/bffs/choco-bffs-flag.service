@@ -5,6 +5,9 @@ After=choco.service
 
 [Service]
 Type=oneshot
+# systemd owns /var/lib/bffs (creates it with the right ownership); the
+# default bffs state.path lives there.
+StateDirectory=bffs
 ExecStart=/opt/choco/jobs/bffs/bffs-flag.sh /etc/choco/bffs.yaml
 # No Restart: bffs sends only on change and records state after a successful
 # send, so a failed run (choco not up yet, N2 file missing) is simply retried

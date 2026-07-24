@@ -1,9 +1,9 @@
 {# Shared macros for the services strip and the /service/<name> pages. #}
-{# monitor_* cover the hardware monitors (FPGA, PSU): ok/down/unconfigured/
+{# monitor_* cover the hardware monitors (FPGA, PDB): ok/down/unconfigured/
    unknown plus per-monitor degraded states (no_timing, no_states) that all
    render yellow. #}
 {% macro monitor_color(h) -%}
-{%- if h == 'ok' -%}#2ecc40
+{%- if h == 'ok' -%}#008000
 {%- elif h == 'down' -%}#ff4136
 {%- elif h in ('unconfigured', 'unknown') -%}#aaa
 {%- else -%}#ffdc00
@@ -19,7 +19,7 @@
    stale yellow; failed (config/bug) red; never_run/unknown grey. Jobs say
    "ok"/"failed", not "up"/"down" — up/down is for the daemon monitors. #}
 {% macro job_color(h) -%}
-{%- if h == 'ok' -%}#2ecc40
+{%- if h == 'ok' -%}#008000
 {%- elif h in ('degraded', 'stale') -%}#ffdc00
 {%- elif h in ('never_run', 'unknown') -%}#aaa
 {%- else -%}#ff4136
@@ -42,6 +42,11 @@
 {%- else -%}never
 {%- endif -%}
 {%- endmacro %}
+{# margin: 0 overrides Pico's nav-link rule, which gives every `nav li a`
+   a negative margin equal to its own padding (a trick to keep plain-text
+   links from shifting layout on hover). That negative margin cancels out
+   almost all of the strip's `gap` between pills, so without this reset
+   the badges render crowded together rather than evenly spaced. #}
 {% macro pill_style() -%}
-display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1; text-decoration: none;
+display: inline-flex; align-items: center; gap: 0.4em; margin: 0; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1; text-decoration: none;
 {%- endmacro %}

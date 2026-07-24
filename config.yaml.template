@@ -31,20 +31,28 @@ fpga_master:
   timeout: 5                        # HTTP request timeout (seconds)
   control: true                     # show Start/Stop controls on /service/fpga
 
-# Analog PSU controller (power_db) — Infineon high-side switches on a
-# Raspberry Pi, REST on port 5000.  Feeds the PSU badge and /service/psu.
-psu:
+# Power distribution boards (power_db) — Infineon high-side switches on a
+# Raspberry Pi, REST on port 5000.  Feeds the PDB badge and /service/pdb.
+# (This block was called psu: before the rename; the old name is still
+# read, with a deprecation warning at startup.)
+pdb:
   host: 10.222.0.30
   port: 5000
   timeout: 5                        # HTTP request timeout (seconds)
-  control: true                     # allow channel toggles on /service/psu
+  control: true                     # allow power toggles on /service/pdb
+  # Master dish-input <-> channel table; relative paths resolve against
+  # configs_dir.  Default: <configs_dir>/pdb_map.csv.
+  map_file: pdb_map.csv
+  # Node group whose kotekan dish_inputs table the map is cross-checked
+  # against.  Unset: the first group in nodes.yaml.
+  # kotekan_group: cx
 
 # Earth Orientation Parameter service settings.
 eop:
   intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
   intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
-  state_file: eop-state.json        # State file name (stored in configs_dir)
+  state_file: /var/lib/eop/state.json   # State file (absolute; rewritten on every successful run). A relative path is resolved against configs_dir (legacy layout).
   service_unit: choco-eop-broadcast.service  # systemd unit to query for last-run status
 
 # bffs feed-flagging job (BFFS badge in the web UI header).
@@ -57,8 +65,12 @@ eigencal:
   service_unit: choco-eigencal.service       # systemd unit to query for last-run status
   state_file: /var/lib/eigencal/state.json   # eigencal run.state_file (absolute; written once per processed transit)
 
-# FreeIPA LDAP authentication.
+# FreeIPA LDAP authentication (direct bind: the user's DN is
+# <user_login_attr>=<username>,<user_dn>,<base_dn>, bound with their own
+# password — no service account needed).
 # All routes require login. Leave host empty to disable (dev/testing only).
+# Legacy keys from the search-bind era (bind_dn, bind_password,
+# user_object_filter, user_search_scope) are ignored if present.
 ldap:
   host:                             # e.g. ldaps://ipa1.auth.chord-observatory.ca
   port: 636
@@ -66,6 +78,3 @@ ldap:
   base_dn:                          # e.g. dc=auth,dc=chord-observatory,dc=ca
   user_dn: cn=users,cn=accounts
   user_login_attr: uid
-  user_object_filter: "(objectclass=posixaccount)"
-  bind_dn:                          # e.g. uid=choco,cn=users,cn=accounts,dc=auth,dc=chord-observatory,dc=ca
-  bind_password:

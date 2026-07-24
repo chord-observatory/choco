@@ -1,0 +1,29 @@
+<article style="margin: 0; padding: 0.75em 1em;">
+    <header style="display: flex; align-items: center; gap: 0.75em; margin: 0 0 0.5em 0; padding: 0;">
+        <small><code>/pipeline_dot</code> — buffer labels show fullness at
+        fetch time; click the image to toggle full resolution</small>
+        <button hx-get="/partials/node-pipeline/{{ node_key }}"
+                hx-target="#pipeline-graph" hx-swap="innerHTML"
+                title="Refresh"
+                style="width: auto; margin: 0 0 0 auto; padding: 0.1em 0.6em; font-size: 0.9em;">&#x21bb;</button>
+    </header>
+    {% if dot is none %}
+    <p style="margin: 0;"><em>kotekan unreachable — no pipeline graph.</em></p>
+    {% elif svg_b64 %}
+    {# data: URI <img>, not inline markup: images never execute script, so
+       node-supplied SVG content is inert in choco's authenticated UI. #}
+    <div style="overflow: auto; max-height: 45em;">
+        <img src="data:image/svg+xml;base64,{{ svg_b64 }}"
+             alt="kotekan pipeline graph for {{ node_key }}"
+             title="Click to toggle full resolution"
+             style="max-width: 100%; cursor: zoom-in;"
+             onclick="var fit = this.style.maxWidth === '100%';
+                      this.style.maxWidth = fit ? 'none' : '100%';
+                      this.style.cursor = fit ? 'zoom-out' : 'zoom-in';">
+    </div>
+    {% else %}
+    <p style="margin: 0 0 0.5em 0;"><em>Showing raw dot text — install
+    graphviz (<code>dot</code>) on the choco host for a rendered graph.</em></p>
+    <pre style="max-height: 32em; overflow: auto; margin: 0; padding: 0.5em 0.75em; font-size: 0.8em; line-height: 1.35;">{{ dot }}</pre>
+    {% endif %}
+</article>

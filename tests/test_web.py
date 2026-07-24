@@ -287,6 +287,191 @@ class TestSetStartedGroup:
         assert resp.status_code == 403
 
 
+class TestNodePipelinePartial:
+    DOT = "digraph pipeline { \"n2_buffer\" -> \"stage\"; }\n"
+
+    def test_requires_login(self, client):
+        resp = client.get("/partials/node-pipeline/cx/cx1",
+                          follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_node_404(self, client):
+        _login(client)
+        resp = client.get("/partials/node-pipeline/cx/nope")
+        assert resp.status_code == 404
+
+    def test_unreachable_node_message(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_pipeline_dot", return_value=None):
+            resp = client.get("/partials/node-pipeline/cx/cx1")
+        assert resp.status_code == 200
+        assert b"unreachable" in resp.data
+
+    def test_rendered_svg_embedded_as_data_uri(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch("choco.web.render_dot_svg",
+                   return_value="<svg><g/></svg>") as rds:
+            resp = client.get("/partials/node-pipeline/cx/cx1")
+        assert resp.status_code == 200
+        assert b"data:image/svg+xml;base64," in resp.data
+        # Fits the page width by default; clicking toggles full resolution.
+        assert b"max-width: 100%" in resp.data
+        assert b"onclick" in resp.data
+        rds.assert_called_once_with(self.DOT)
+
+    def test_falls_back_to_escaped_dot_text(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch("choco.web.render_dot_svg", return_value=None):
+            resp = client.get("/partials/node-pipeline/cx/cx1")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "graphviz" in body
+        # Raw dot text is present and HTML-escaped.
+        assert "&#34;n2_buffer&#34;" in body
+
+    def test_edit_page_carries_lazy_pipeline_section(self, client):
+        _login(client)
+        resp = client.get("/edit/cx/cx1")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "/partials/node-pipeline/cx/cx1" in body
+        assert "intersect once" in body
+        assert "<h3>Pipeline Graph</h3>" in body
+
+
+class TestNodeBuffersPartial:
+    BUFFERS = {
+        "n2_buffer": {
+            "num_full_frame": 3, "frames": [1, 1, 1, 0],
+            "frame_size": 100756, "peek_hold": True,
+        },
+        "host_voltage_buffer_0": {
+            "num_full_frame": 0, "frames": [0, 0],
+            "frame_size": 402653184,
+        },
+        "ring_buf": {"consumers": {}, "producers": {}},
+    }
+
+    def test_requires_login(self, client):
+        resp = client.get("/partials/node-buffers/cx/cx1",
+                          follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_node_404(self, client):
+        _login(client)
+        resp = client.get("/partials/node-buffers/cx/nope")
+        assert resp.status_code == 404
+
+    def test_unreachable_node_message(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffers", return_value=None):
+            resp = client.get("/partials/node-buffers/cx/cx1")
+        assert resp.status_code == 200
+        assert b"unreachable" in resp.data
+
+    def test_table_rows_badges_and_peek_buttons(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffers", return_value=self.BUFFERS):
+            resp = client.get("/partials/node-buffers/cx/cx1")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "n2_buffer" in body
+        assert "3/4" in body
+        assert "held" in body  # peek_hold badge
+        assert "384.0 MiB" in body
+        # Frame buffers get a Peek button; the ring buffer doesn't.
+        assert "?buffer=n2_buffer" in body
+        assert "?buffer=host_voltage_buffer_0" in body
+        assert "?buffer=ring_buf" not in body
+        # Ring buffers report no frame accounting.
+        assert "—" in body
+
+    def test_edit_page_carries_polled_buffers_section(self, client):
+        _login(client)
+        resp = client.get("/edit/cx/cx1")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "<h3>Buffers</h3>" in body
+        assert "/partials/node-buffers/cx/cx1" in body
+        assert 'id="buffer-peek"' in body
+
+
+class TestNodeBufferFramePartial:
+    FRAME = {
+        "buffer": "n2_buffer", "frame_id": 2, "frame_size": 100756,
+        "data_length": 0,
+        "metadata": {"fpga_seq_start": 12345},
+        "frame_desc": {"frame_desc_type": "N2", "num_elements": 128},
+    }
+
+    def test_requires_login(self, client):
+        resp = client.get(
+            "/partials/node-buffer-frame/cx/cx1?buffer=n2_buffer",
+            follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_node_404(self, client):
+        _login(client)
+        resp = client.get("/partials/node-buffer-frame/cx/nope?buffer=b")
+        assert resp.status_code == 404
+
+    def test_bad_buffer_name_400(self, client):
+        _login(client)
+        for bad in ("", "a/b", "a b", "a%2Fb/../kill"):
+            resp = client.get(
+                f"/partials/node-buffer-frame/cx/cx1?buffer={bad}")
+            assert resp.status_code == 400, bad
+
+    def test_metadata_only_peek_rendered(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffer_frame",
+                          return_value=self.FRAME) as gbf:
+            resp = client.get(
+                "/partials/node-buffer-frame/cx/cx1?buffer=n2_buffer")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        # Always fetched metadata-only: cheap even on 400 MB frames.
+        gbf.assert_called_once_with("n2_buffer", length=0)
+        assert "frame_desc_type" in body
+        assert "fpga_seq_start" in body
+
+    def test_no_full_frame_suggests_peek_hold(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffer_frame",
+                          return_value={"error": "no full frame currently in buffer"}):
+            resp = client.get(
+                "/partials/node-buffer-frame/cx/cx1?buffer=n2_buffer")
+        assert resp.status_code == 200
+        assert b"no full frame" in resp.data
+        assert b"peek_hold" in resp.data
+
+    def test_unreachable_node_message(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffer_frame", return_value=None):
+            resp = client.get(
+                "/partials/node-buffer-frame/cx/cx1?buffer=n2_buffer")
+        assert resp.status_code == 200
+        assert b"unreachable" in resp.data
+
+
 class TestServicesPartial:
     def test_requires_login(self, client):
         resp = client.get("/partials/services", follow_redirects=False)
@@ -313,11 +498,11 @@ class TestServicesPartial:
         # Monitor badges are only rendered if a monitor is set on
         # app.config.  The test app installs both (unconfigured).
         assert "FPGA" in body
-        assert "PSU" in body
+        assert "PDB" in body
         # Badges link to the service pages.
         assert '/service/eop' in body
         assert '/service/fpga' in body
-        assert '/service/psu' in body
+        assert '/service/pdb' in body
 
 
 class TestMaintenanceToggles:
@@ -578,29 +763,37 @@ class TestServicePage:
         assert "FPGA" in body
         assert "not configured" in body
 
-    def test_psu_page_renders(self, client):
+    def test_pdb_page_renders(self, client):
         _login(client)
-        resp = client.get("/service/psu")
+        resp = client.get("/service/pdb")
         assert resp.status_code == 200
         body = resp.data.decode()
-        assert "PSU" in body
+        assert "PDB" in body
         assert "not configured" in body
 
-    def test_psu_page_channel_grid(self, client, app):
-        from choco.services import PsuMonitor
+    def test_pdb_page_channel_grid(self, client, app):
         _login(client)
-        monitor = app.config["psu_monitor"]
+        monitor = app.config["pdb_monitor"]
         monitor.boards = {0: 1}
         monitor.channels = {0: [
             {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
             {"board": 0, "chip": "B", "channels": [False] * 8},
         ]}
-        resp = client.get("/service/psu")
+        resp = client.get("/service/pdb")
         body = resp.data.decode()
         assert "SPI bus 0" in body
         assert "board 0" in body
-        assert body.count('class="chan on"') == 1
-        assert body.count('class="chan off"') == 15
+        # No channel map in the test configs dir, so every cell is
+        # "unmapped" and falls back to the plain on/off wording.
+        assert body.count('class="chan on unmapped"') == 1
+        assert body.count('class="chan off unmapped"') == 15
+
+    def test_psu_page_redirects_to_pdb(self, client):
+        """The page was /service/psu before the rename."""
+        _login(client)
+        resp = client.get("/service/psu", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/service/pdb")
 
     def test_timer_facts_shown(self, client):
         from unittest.mock import patch
@@ -677,6 +870,23 @@ class TestServicePage:
         assert "CYG_A" in body
         assert "87.0%" in body
 
+    def test_raw_state_file_shown(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        # a key the eigencal summary never surfaces, so finding it in the
+        # response proves the raw file dump is rendered
+        state = {"source": "CYG_A", "sent": True, "raw_marker": 4242}
+        state_file = tmp_path / "eigencal-state.json"
+        state_file.write_text(json.dumps(state))
+        app.config["eigencal_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/eigencal")
+        body = resp.data.decode()
+        assert "State file" in body
+        assert "raw_marker" in body
+        assert "4242" in body
+
     def test_eop_detail_table_span(self, client, app, configs_dir):
         from unittest.mock import patch
         _login(client)
@@ -729,15 +939,15 @@ class TestServicePage:
             resp = client.get(f"/service/{name}")
         assert resp.status_code == 200
 
-    def test_psu_stale_grid_warning(self, client, app):
+    def test_pdb_stale_grid_warning(self, client, app):
         _login(client)
-        monitor = app.config["psu_monitor"]
-        monitor.host, monitor.port = "psu.example", 5000
+        monitor = app.config["pdb_monitor"]
+        monitor.host, monitor.port = "pdb.example", 5000
         monitor.health = "down"
         monitor.channels = {0: [
             {"board": 0, "chip": "A", "channels": [False] * 8},
         ]}
-        resp = client.get("/service/psu")
+        resp = client.get("/service/pdb")
         body = resp.data.decode()
         assert "isn't currently readable" in body
         # grid still rendered from the last read
@@ -866,15 +1076,15 @@ class TestFpgaControl:
         pis.assert_called_once_with(5)
 
 
-class TestPsuControl:
+class TestPdbControl:
     def _configure(self, app, control=True):
-        monitor = app.config["psu_monitor"]
-        monitor.host, monitor.port = "psu.example", 5000
+        monitor = app.config["pdb_monitor"]
+        monitor.host, monitor.port = "pdb.example", 5000
         monitor.channels = {0: [
             {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
             {"board": 0, "chip": "B", "channels": [False] * 8},
         ]}
-        app.config["psu_cfg"] = {"host": monitor.host, "port": monitor.port,
+        app.config["pdb_cfg"] = {"host": monitor.host, "port": monitor.port,
                                  "control": control}
         return monitor
 
@@ -885,13 +1095,13 @@ class TestPsuControl:
         return form
 
     def test_requires_login(self, client):
-        resp = client.post("/service/psu/set", follow_redirects=False)
+        resp = client.post("/service/pdb/set", follow_redirects=False)
         assert resp.status_code == 302
 
     def test_requires_csrf(self, client, app):
         self._configure(app)
         _login(client)
-        resp = client.post("/service/psu/set", data={"bus": "0"})
+        resp = client.post("/service/pdb/set", data={"bus": "0"})
         assert resp.status_code == 403
 
     def test_control_disabled_403(self, client, app):
@@ -900,7 +1110,7 @@ class TestPsuControl:
         _login(client)
         token = _csrf(client)
         with patch.object(monitor, "set_channel") as sc:
-            resp = client.post("/service/psu/set", data=self._form(token))
+            resp = client.post("/service/pdb/set", data=self._form(token))
         assert resp.status_code == 403
         sc.assert_not_called()
 
@@ -912,7 +1122,7 @@ class TestPsuControl:
         self._configure(app)
         _login(client)
         token = _csrf(client)
-        resp = client.post("/service/psu/set", data=self._form(token, **bad))
+        resp = client.post("/service/pdb/set", data=self._form(token, **bad))
         assert resp.status_code == 400
 
     def test_toggle_calls_set_channel(self, client, app):
@@ -922,11 +1132,11 @@ class TestPsuControl:
         token = _csrf(client)
         with patch.object(monitor, "set_channel",
                           return_value=(True, "bus 0 board 0 chip A ch3 on")) as sc:
-            resp = client.post("/service/psu/set",
+            resp = client.post("/service/pdb/set",
                                data=self._form(token),
                                follow_redirects=False)
         assert resp.status_code == 302
-        assert resp.headers["Location"].endswith("/service/psu")
+        assert resp.headers["Location"].endswith("/service/pdb")
         sc.assert_called_once_with(0, 0, "A", 3, True)
 
     def test_verify_failure_flashes_error(self, client, app):
@@ -936,7 +1146,7 @@ class TestPsuControl:
         token = _csrf(client)
         with patch.object(monitor, "set_channel",
                           return_value=(False, "verify failed")):
-            resp = client.post("/service/psu/set",
+            resp = client.post("/service/pdb/set",
                                data=self._form(token, state="off"),
                                follow_redirects=True)
         assert b"verify failed" in resp.data
@@ -944,18 +1154,18 @@ class TestPsuControl:
     def test_grid_buttons_when_control_enabled(self, client, app):
         self._configure(app)
         _login(client)
-        resp = client.get("/service/psu")
+        resp = client.get("/service/pdb")
         body = resp.data.decode()
-        assert '/service/psu/set' in body
+        assert '/service/pdb/set' in body
         assert body.count("<button") >= 16
         assert 'name="channel"' in body
 
     def test_grid_readonly_when_control_disabled(self, client, app):
         self._configure(app, control=False)
         _login(client)
-        resp = client.get("/service/psu")
+        resp = client.get("/service/pdb")
         body = resp.data.decode()
-        assert '/service/psu/set' not in body
+        assert '/service/pdb/set' not in body
         assert '<span class="chan' in body
 
     def test_status_partial_renders_and_polls(self, client, app):
@@ -963,12 +1173,266 @@ class TestPsuControl:
         monitor = self._configure(app)
         _login(client)
         with patch.object(monitor, "poll_if_stale") as pis:
-            resp = client.get("/partials/service-psu")
+            resp = client.get("/partials/service-pdb")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "SPI bus 0" in body
-        assert '/service/psu/set' in body  # toggles live inside the partial
+        assert '/service/pdb/set' in body  # toggles live inside the partial
         pis.assert_called_once_with(5)
+
+    def test_htmx_toggle_swaps_in_place_instead_of_redirecting(
+            self, client, app):
+        """The page must not reload (and so must not jump to the top)."""
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channel",
+                          return_value=(True, "ch3 on")):
+            resp = client.post("/service/pdb/set", data=self._form(token),
+                               headers={"HX-Request": "true"})
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "SPI bus 0" in body                 # the fresh grid
+        assert 'id="pdb-flash" hx-swap-oob="true"' in body
+        assert "PDB: ch3 on" in body
+
+    def test_htmx_toggle_failure_is_an_error_notice(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channel",
+                          return_value=(False, "verify failed")):
+            resp = client.post("/service/pdb/set", data=self._form(token),
+                               headers={"HX-Request": "true"})
+        body = resp.data.decode()
+        assert "flash-error" in body
+        assert "verify failed" in body
+
+
+class TestPdbGroupControl:
+    """Bulk power buttons: per chip, per board, and per SPI bus."""
+
+    def _configure(self, app, control=True):
+        monitor = app.config["pdb_monitor"]
+        monitor.host, monitor.port = "pdb.example", 5000
+        monitor.channels = {0: [
+            {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
+            {"board": 0, "chip": "B", "channels": [False] * 8},
+            {"board": 1, "chip": "A", "channels": [False] * 8},
+            {"board": 1, "chip": "B", "channels": [False] * 8},
+        ]}
+        app.config["pdb_cfg"] = {"host": monitor.host, "port": monitor.port,
+                                 "control": control}
+        return monitor
+
+    def test_requires_login(self, client):
+        resp = client.post("/service/pdb/set-group", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_requires_csrf(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.post("/service/pdb/set-group",
+                           data={"bus": "0", "state": "on"})
+        assert resp.status_code == 403
+
+    def test_control_disabled_403(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app, control=False)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_group") as sg:
+            resp = client.post("/service/pdb/set-group", data={
+                "_csrf_token": token, "bus": "0", "state": "on"})
+        assert resp.status_code == 403
+        sg.assert_not_called()
+
+    @pytest.mark.parametrize("form,expected", [
+        ({"bus": "0", "state": "on"}, (0, True, None, None)),
+        ({"bus": "0", "board": "1", "state": "on"}, (0, True, 1, None)),
+        ({"bus": "0", "board": "1", "chip": "B", "state": "off"},
+         (0, False, 1, "B")),
+    ])
+    def test_scope_widens_with_the_form(self, client, app, form, expected):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_group",
+                          return_value=(True, "done")) as sg:
+            client.post("/service/pdb/set-group",
+                        data={"_csrf_token": token, **form})
+        bus, on, board, chip = expected
+        sg.assert_called_once_with(bus, on, board=board, chip=chip)
+
+    @pytest.mark.parametrize("form", [
+        {"bus": "zero", "state": "on"},
+        {"bus": "0", "board": "-1", "state": "on"},
+        {"bus": "0", "board": "0", "chip": "C", "state": "on"},
+        {"bus": "0", "chip": "A", "state": "on"},   # chip without a board
+        {"state": "on"},                            # no bus
+    ])
+    def test_bad_params_400(self, client, app, form):
+        self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        resp = client.post("/service/pdb/set-group",
+                           data={"_csrf_token": token, **form})
+        assert resp.status_code == 400
+
+    def test_htmx_reply_swaps_the_grid(self, client, app):
+        from unittest.mock import patch
+        monitor = self._configure(app)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_group",
+                          return_value=(True, "bus 0: 32 channels on")):
+            resp = client.post(
+                "/service/pdb/set-group",
+                data={"_csrf_token": token, "bus": "0", "state": "on"},
+                headers={"HX-Request": "true"})
+        body = resp.data.decode()
+        assert "SPI bus 0" in body
+        assert "PDB: bus 0: 32 channels on" in body
+
+    def test_buttons_rendered_at_each_scope(self, client, app):
+        self._configure(app)
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert '/service/pdb/set-group' in body
+        assert "bus all on" in body and "bus all off" in body
+        # one chip-level pair per chip; no per-board button (the chip
+        # column is the same two clicks, so the board button was dropped)
+        assert body.count(">all on<") == 4
+        assert body.count(">all off<") == 4
+        assert "board 0" in body and "board 1" in body
+
+    def test_no_bulk_buttons_when_control_disabled(self, client, app):
+        self._configure(app, control=False)
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert '/service/pdb/set-group' not in body
+
+
+class TestPdbChannelMap:
+    """The master dish-input <-> channel table and its kotekan cross-check."""
+
+    MAP = ("spi_bus,board,chip,channel,dish_input,amplifier,notes\n"
+           "0,0,A,0,A1X,AMP-1,\n"
+           "0,0,A,1,A1Y,AMP-2,\n")
+
+    def _configure(self, app, configs_dir, map_text=None, dish_inputs=None):
+        monitor = app.config["pdb_monitor"]
+        monitor.host, monitor.port = "pdb.example", 5000
+        monitor.channels = {0: [
+            {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
+            {"board": 0, "chip": "B", "channels": [False] * 8},
+        ]}
+        app.config["pdb_cfg"] = {"host": monitor.host, "port": monitor.port,
+                                 "control": True, "kotekan_group": "cx"}
+        if map_text is not None:
+            (configs_dir / "pdb_map.csv").write_text(map_text)
+        if dish_inputs is not None:
+            (configs_dir / "cx" / "cx1.yaml").write_text(
+                yaml.safe_dump({"dish_inputs": dish_inputs}))
+            app.config["registry"].reload()
+        return monitor
+
+    def test_grid_cells_carry_the_dish_input(self, client, app, configs_dir):
+        self._configure(app, configs_dir, map_text=self.MAP)
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert "A1X" in body and "A1Y" in body
+        # mapped cells lose the "unmapped" styling; unmapped ones keep it
+        assert 'class="chan on"' in body
+        assert 'class="chan off unmapped"' in body
+
+    def test_map_problems_are_shown_not_fatal(self, client, app, configs_dir):
+        self._configure(app, configs_dir,
+                        map_text=self.MAP + "0,0,C,0,BAD,,\n")
+        _login(client)
+        resp = client.get("/service/pdb")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "1 bad row in the channel map" in body
+        assert "chip must be A/B" in body
+        assert "A1X" in body           # the good rows still label the grid
+
+    def test_cross_check_agreement(self, client, app, configs_dir):
+        self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
+            {"dish_idx": 0, "label": "A1X"},
+            {"dish_idx": 1, "label": "A1Y"},
+        ])
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert "agreed" in body
+
+    def test_cross_check_reports_disagreements(self, client, app,
+                                               configs_dir):
+        self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
+            {"dish_idx": 0, "label": "A1X"},
+            {"dish_idx": 1, "label": "A2X"},     # map has A1Y instead
+        ])
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert "disagreements" in body
+        assert "1 in kotekan but not in the map" in body
+        assert "1 in the map but not in kotekan" in body
+        assert "A2X" in body           # kotekan knows it, the map doesn't
+        assert "A1Y" in body           # the map knows it, kotekan doesn't
+
+    def test_no_dish_inputs_degrades_to_a_reason(self, client, app,
+                                                 configs_dir):
+        """The stock test config has no dish_inputs table."""
+        self._configure(app, configs_dir, map_text=self.MAP)
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert "Not cross-checked against kotekan" in body
+        assert "has no dish_inputs table" in body
+
+    def test_api_serves_the_master_table(self, client, app, configs_dir):
+        self._configure(app, configs_dir, map_text=self.MAP)
+        resp = client.get("/api/pdb/map")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["n_entries"] == 2
+        assert data["errors"] == []
+        first = data["channels"][0]
+        assert first["dish_input"] == "A1X"
+        # bffs's CSV loader keys on correlator_input; both names are served
+        assert first["correlator_input"] == "A1X"
+        assert data["check"]["available"] is False   # no dish_inputs table
+
+    def test_api_includes_the_cross_check(self, client, app, configs_dir):
+        self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
+            {"dish_idx": 0, "label": "A1X"},
+            {"dish_idx": 1, "label": "A1Y"},
+        ])
+        data = client.get("/api/pdb/map").get_json()
+        assert data["check"]["available"] is True
+        assert data["check"]["ok"] is True
+        assert data["check"]["group"] == "cx"
+
+    def test_missing_map_file_is_not_an_error_page(self, client, app,
+                                                   configs_dir):
+        self._configure(app, configs_dir)      # no CSV written
+        _login(client)
+        resp = client.get("/service/pdb")
+        assert resp.status_code == 200
+        assert "FileNotFoundError" in resp.data.decode()
+
+    def test_map_is_reread_when_the_file_changes(self, client, app,
+                                                 configs_dir):
+        self._configure(app, configs_dir, map_text=self.MAP)
+        _login(client)
+        assert "A1X" in client.get("/service/pdb").data.decode()
+        (configs_dir / "pdb_map.csv").write_text(
+            "spi_bus,board,chip,channel,dish_input\n0,0,A,0,RENAMED\n")
+        body = client.get("/service/pdb").data.decode()
+        assert "RENAMED" in body
+        assert "A1X" not in body
 
 
 # --- Status API + metrics ---
@@ -987,7 +1451,7 @@ class TestStatusApi:
         assert data["services"]["bffs"] == "ok"
         assert data["services"]["eigencal"] == "ok"
         assert "fpga" in data["services"]
-        assert data["services"]["psu"] == "unconfigured"
+        assert data["services"]["pdb"] == "unconfigured"
         assert data["nodes"]["total"] == 3
         # Fresh Registry constructs every node in maintenance mode.
         assert data["nodes"]["maintenance"] == 3
@@ -1043,8 +1507,8 @@ class TestMetrics:
         assert 'choco_service_state{service="eop",state="ok"} 0' in body
         assert 'choco_service_state{service="eop",state="degraded"} 0' in body
         assert 'choco_service_state{service="eigencal",state="failed"} 1' in body
-        assert 'choco_service_state{service="psu",state="unconfigured"} 1' in body
-        assert 'choco_service_state{service="psu",state="no_states"} 0' in body
+        assert 'choco_service_state{service="pdb",state="unconfigured"} 1' in body
+        assert 'choco_service_state{service="pdb",state="no_states"} 0' in body
         assert "choco_nodes_total 3" in body
         assert "choco_nodes_maintenance 3" in body
         # One-hot node counts by status are present for every status.

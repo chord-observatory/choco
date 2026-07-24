@@ -1,0 +1,104 @@
+{# The master channel map and its cross-check against kotekan.
+
+   Rendered once per page load, deliberately outside #pdb-status: the
+   cross-check re-renders a kotekan config, which is far too much work for
+   the grid's 5s poll, and wiring does not change while you watch. Reload
+   the page after editing the CSV (choco re-reads it on mtime change). #}
+<section class="map-section" style="margin-top: 1em;">
+<h4 style="margin-bottom: 0.35em;">Channel map</h4>
+
+<p class="map-note">
+    Master table: <code>{{ pdb_map.path }}</code> — {{ pdb_map.n_entries }}
+    channel{{ '' if pdb_map.n_entries == 1 else 's' }} mapped to dish inputs.
+    Also served as JSON at <code>/api/pdb/map</code>, which is where the
+    bad-feed flagger reads it from.
+</p>
+
+{% if pdb_map.errors %}
+<div class="flash flash-error" role="alert" style="display: block;">
+    <strong>{{ pdb_map.errors | length }} bad row{{ '' if (pdb_map.errors | length) == 1 else 's' }} in the channel map</strong>
+    — those rows are skipped, the rest still load:
+    <ul style="margin: 0.4em 0 0 0;">
+        {% for err in pdb_map.errors[:10] %}<li><code>{{ err }}</code></li>{% endfor %}
+        {% if pdb_map.errors | length > 10 %}
+        <li><em>… and {{ pdb_map.errors | length - 10 }} more</em></li>
+        {% endif %}
+    </ul>
+</div>
+{% endif %}
+
+{% if not check.available %}
+<p class="map-note"><em>Not cross-checked against kotekan: {{ check.reason }}.</em></p>
+{% else %}
+<p class="map-note">
+    Cross-checked against the <code>dish_inputs</code> table of the
+    <strong>{{ check.group }}</strong> kotekan config — the same table
+    kotekan indexes its bad-input mask with.
+    {% if check.ok %}
+    <span style="color: #008000;"><strong>&#10003; agreed</strong></span> —
+    all {{ check.n_matched }} dish inputs are mapped to exactly one channel.
+    {% else %}
+    <span style="color: #b8860b;"><strong>&#9888; disagreements</strong></span>
+    — {{ check.n_matched }} of {{ check.n_kotekan }} kotekan dish inputs
+    matched.
+    {% endif %}
+</p>
+
+{# One disagreement: a headline count, why it matters, then the labels
+   (capped — a freshly-deployed map can disagree about hundreds). #}
+{% macro mismatch(labels, headline, gloss, cap=40) %}
+{% if labels %}
+<li><strong>{{ labels | length }} {{ headline }}</strong> — {{ gloss }}:
+    <span>{% for label in labels[:cap] %}<code>{{ label }}</code>{% endfor %}</span>
+    {% if (labels | length) > cap %}<em>… and {{ (labels | length) - cap }} more</em>{% endif %}
+</li>
+{% endif %}
+{% endmacro %}
+
+{% if not check.ok %}
+<ul class="map-tags" style="font-size: 0.9em;">
+    {{ mismatch(check.missing_in_map, 'in kotekan but not in the map',
+                'no channel is known to power these feeds') }}
+    {{ mismatch(check.unknown_to_kotekan, 'in the map but not in kotekan',
+                'stale rows, or a typo hiding a real channel') }}
+    {% if check.duplicate_labels %}
+    <li><strong>{{ check.duplicate_labels | length }} dish input(s) claimed by
+        more than one channel</strong> — at most one can be right:
+        <ul>
+        {% for label, addrs in check.duplicate_labels | dictsort %}
+            <li><code>{{ label }}</code>: {{ addrs | join('; ') }}</li>
+        {% endfor %}
+        </ul>
+    </li>
+    {% endif %}
+</ul>
+{% endif %}
+{% endif %}
+
+{% if pdb_map.n_entries %}
+<details>
+    <summary>Full channel map ({{ pdb_map.n_entries }} rows)</summary>
+    <figure style="margin: 0.5em 0 0 0; max-height: 30em; overflow: auto;">
+    <table>
+        <thead>
+            <tr><th>Bus</th><th>Board</th><th>Chip</th><th>Ch</th>
+                <th>Dish input</th><th>Amplifier</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            {% for row in pdb_map.to_list() %}
+            <tr>
+                <td>{{ row.spi_bus }}</td>
+                <td>{{ row.board }}</td>
+                <td>{{ row.chip }}</td>
+                <td>{{ row.channel }}</td>
+                <td><code>{{ row.dish_input }}</code></td>
+                <td>{{ row.amplifier }}</td>
+                <td>{{ row.notes }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </figure>
+</details>
+{% endif %}
+</section>

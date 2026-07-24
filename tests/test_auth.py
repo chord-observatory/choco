@@ -3,8 +3,10 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from ldap3.core.exceptions import LDAPInvalidCredentialsResult
+
 from choco.app import create_app
-from choco.auth import User, save_user, _users
+from choco.auth import LdapAuthenticator, User, save_user, _users
 
 
 @pytest.fixture(autouse=True)
@@ -94,6 +96,93 @@ class TestLoginFlow:
             follow_redirects=True,
         )
         assert b"LDAP is not configured" in resp.data
+
+    def _enable_ldap(self, app):
+        """Wire a stub authenticator in as if ldap.host were configured."""
+        app.config["LDAP_ENABLED"] = True
+        authenticator = MagicMock(spec=LdapAuthenticator)
+        app.config["ldap_authenticator"] = authenticator
+        return authenticator
+
+    def test_login_success_creates_session(self, client, app):
+        authenticator = self._enable_ldap(app)
+        authenticator.authenticate.return_value = \
+            "uid=alice,cn=users,cn=accounts,dc=example"
+        token = self._get_csrf(client)
+        resp = client.post(
+            "/login",
+            data={"username": "alice", "password": "pw", "_csrf_token": token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/"
+        authenticator.authenticate.assert_called_once_with("alice", "pw")
+        # the session is live: a protected page now renders
+        assert client.get("/").status_code == 200
+
+    def test_login_failure_flashes_error(self, client, app):
+        authenticator = self._enable_ldap(app)
+        authenticator.authenticate.return_value = None
+        token = self._get_csrf(client)
+        resp = client.post(
+            "/login",
+            data={"username": "alice", "password": "wrong", "_csrf_token": token},
+            follow_redirects=True,
+        )
+        assert b"Invalid username or password" in resp.data
+        # still locked out
+        assert client.get("/", follow_redirects=False).status_code == 302
+
+
+class TestLdapAuthenticator:
+    def _auth(self, **kwargs):
+        defaults = dict(host="ldaps://ipa.example", port=636, use_ssl=True,
+                        base_dn="dc=example,dc=ca",
+                        user_dn="cn=users,cn=accounts", login_attr="uid")
+        defaults.update(kwargs)
+        return LdapAuthenticator(**defaults)
+
+    def test_user_dn_construction(self):
+        auth = self._auth()
+        assert auth.user_dn_for("alice") == \
+            "uid=alice,cn=users,cn=accounts,dc=example,dc=ca"
+
+    def test_user_dn_without_base_dn(self):
+        auth = self._auth(base_dn="")
+        assert auth.user_dn_for("alice") == "uid=alice,cn=users,cn=accounts"
+
+    def test_user_dn_escapes_dn_metacharacters(self):
+        """A crafted username must not splice components into the DN."""
+        auth = self._auth()
+        dn = auth.user_dn_for("alice,cn=admins")
+        assert dn == "uid=alice\\,cn\\=admins,cn=users,cn=accounts,dc=example,dc=ca"
+
+    def test_successful_bind_returns_dn(self):
+        auth = self._auth()
+        with patch("choco.auth.ldap3.Connection") as conn:
+            conn.return_value.__enter__ = MagicMock()
+            conn.return_value.__exit__ = MagicMock(return_value=False)
+            dn = auth.authenticate("alice", "pw")
+        assert dn == "uid=alice,cn=users,cn=accounts,dc=example,dc=ca"
+        kwargs = conn.call_args.kwargs
+        assert kwargs["user"] == dn
+        assert kwargs["password"] == "pw"
+        assert kwargs["raise_exceptions"] is True
+
+    def test_bad_credentials_returns_none(self):
+        auth = self._auth()
+        with patch("choco.auth.ldap3.Connection",
+                   side_effect=LDAPInvalidCredentialsResult):
+            assert auth.authenticate("alice", "wrong") is None
+
+    def test_empty_password_rejected_without_contacting_ldap(self):
+        """An empty password would be an anonymous bind — the classic
+        LDAP pitfall where 'authentication' succeeds with no credentials."""
+        auth = self._auth()
+        with patch("choco.auth.ldap3.Connection") as conn:
+            assert auth.authenticate("alice", "") is None
+            assert auth.authenticate("", "pw") is None
+        conn.assert_not_called()
 
 
 class TestAuthenticatedAccess:

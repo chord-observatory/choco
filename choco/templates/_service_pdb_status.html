@@ -1,0 +1,138 @@
+{% from "_service_macros.html" import since %}
+
+{# One bulk power write. This page only ever calls it two ways — whole bus
+   (board and chip both none) or one chip (both given) — the per-board
+   button was dropped in favour of the chip-level column, but the macro
+   stays as general as the route it posts to (``PdbMonitor.set_group``
+   also widens/narrows scope via board/chip, board alone included).
+   Every bulk write carries data-confirm-always, so the page's confirm
+   gate asks each time rather than honouring the per-session
+   acknowledgement that a single-channel toggle sets. #}
+{% macro bulk(bus, board, chip, on, text, count) %}
+{%- set scope = 'bus ' ~ bus
+    ~ (', board ' ~ board if board is not none else '')
+    ~ (', chip ' ~ chip if chip else '') -%}
+{%- set confirm = 'Power ' ~ ('ON' if on else 'OFF') ~ ' all ' ~ count
+    ~ ' channels of ' ~ scope ~ '?'
+    ~ ('\n\nThat is every amplifier on the bus — expect a large inrush on power-up.'
+       if board is none else '') -%}
+<form method="post" action="/service/pdb/set-group"
+      hx-post="/service/pdb/set-group"
+      hx-target="#pdb-status" hx-swap="morph:innerHTML"
+      data-confirm-always="{{ confirm }}">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="bus" value="{{ bus }}">
+    {% if board is not none %}<input type="hidden" name="board" value="{{ board }}">{% endif %}
+    {% if chip %}<input type="hidden" name="chip" value="{{ chip }}">{% endif %}
+    <input type="hidden" name="state" value="{{ 'on' if on else 'off' }}">
+    <button type="submit" class="bulk {{ 'on' if on else 'off' }}"
+            title="Power {{ 'on' if on else 'off' }} all {{ count }} channels of {{ scope }}">{{ text }}</button>
+</form>
+{% endmacro %}
+
+<dl class="service-facts">
+    <dt>Endpoint</dt>
+    <dd>{% if pdb.configured %}<code>http://{{ pdb.host }}:{{ pdb.port }}</code>{% else %}<em>not configured (pdb.host / port)</em>{% endif %}</dd>
+    <dt>Health</dt>
+    <dd>{{ pdb.health }}</dd>
+    {% if pdb.n_channels %}
+    <dt>Channels on</dt>
+    <dd>{{ pdb.n_on }} / {{ pdb.n_channels }}</dd>
+    {% endif %}
+    <dt>Last polled</dt>
+    <dd>{{ since(pdb.last_polled, now_ts) }}</dd>
+    <dt>Last seen up</dt>
+    <dd>{{ since(pdb.last_seen, now_ts) }}</dd>
+    {% if pdb.error %}
+    <dt>Error</dt>
+    <dd><code>{{ pdb.error }}</code></dd>
+    {% endif %}
+</dl>
+
+{% if pdb.health != 'ok' and buses %}
+<p style="font-size: 0.9em;"><strong>&#9888;</strong> <em>The controller isn't currently readable —
+the grid below shows the last states read {{ since(pdb.last_seen, now_ts) }}. Toggles re-read
+the live state before writing and will fail while it's unreachable.</em></p>
+{% endif %}
+
+{% for bus in buses %}
+<div class="bus-head">
+    <h4>SPI bus {{ bus.bus }} — {{ bus.n_boards }} boards</h4>
+    <small>{{ bus.n_on }} / {{ bus.n_channels }} channels on</small>
+    {% if control %}
+    <span class="bulk-group">
+        {{ bulk(bus.bus, none, none, true, 'bus all on', bus.n_channels) }}
+        {{ bulk(bus.bus, none, none, false, 'bus all off', bus.n_channels) }}
+    </span>
+    {% endif %}
+</div>
+<figure style="margin: 0; overflow-x: auto;">
+<table class="pdb-grid">
+    <thead>
+        <tr>
+            <th style="text-align: left;">Board</th>
+            <th>Chip</th>
+            {% for c in range(8) %}<th>ch{{ c }}</th>{% endfor %}
+            {% if control %}<th>Chip power</th>{% endif %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for board in bus.boards %}
+        {% for chip in board.chips %}
+        <tr>
+            {% if loop.first %}
+            <td class="boardhead" rowspan="{{ board.chips | length }}">
+                board {{ board.board }}
+            </td>
+            {% endif %}
+            <td class="chiphead">{{ chip.chip }}</td>
+            {% for on in chip.channels %}
+            {% set ci = loop.index0 %}
+            {% set label = pdb_map.label(bus.bus, board.board, chip.chip, ci) %}
+            {% set addr = 'bus %s board %s chip %s ch%s' % (bus.bus, board.board, chip.chip, ci) %}
+            {# The dish input is the useful name; the leading glyph keeps
+               on/off readable without relying on the colour alone. #}
+            {% set text = (('● ' if on else '○ ') ~ label) if label
+                          else ('on' if on else 'off') %}
+            {% set state_title = addr ~ '\n' ~ (label or 'not in the channel map')
+                                 ~ '\ncurrently ' ~ ('on' if on else 'off') %}
+            <td>
+                {% if control %}
+                <form id="pdb-c-{{ bus.bus }}-{{ board.board }}-{{ chip.chip }}-{{ ci }}"
+                      method="post" action="/service/pdb/set"
+                      hx-post="/service/pdb/set"
+                      hx-target="#pdb-status" hx-swap="morph:innerHTML"
+                      data-confirm="Power {{ 'OFF' if on else 'ON' }}: {{ addr }}{% if label %} ({{ label }}){% endif %}?">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="bus" value="{{ bus.bus }}">
+                    <input type="hidden" name="board" value="{{ board.board }}">
+                    <input type="hidden" name="chip" value="{{ chip.chip }}">
+                    <input type="hidden" name="channel" value="{{ ci }}">
+                    <input type="hidden" name="state" value="{{ 'off' if on else 'on' }}">
+                    <button type="submit" class="chan {{ 'on' if on else 'off' }}{{ '' if label else ' unmapped' }}"
+                            aria-label="{{ state_title }} — click to turn {{ 'off' if on else 'on' }}"
+                            title="{{ state_title }} — click to turn {{ 'off' if on else 'on' }}">{{ text }}</button>
+                </form>
+                {% else %}
+                <span class="chan {{ 'on' if on else 'off' }}{{ '' if label else ' unmapped' }}"
+                      title="{{ state_title }}">{{ text }}</span>
+                {% endif %}
+            </td>
+            {% endfor %}
+            {% if control %}
+            <td>
+                <span class="bulk-group">
+                    {{ bulk(bus.bus, board.board, chip.chip, true, 'all on', chip.channels | length) }}
+                    {{ bulk(bus.bus, board.board, chip.chip, false, 'all off', chip.channels | length) }}
+                </span>
+            </td>
+            {% endif %}
+        </tr>
+        {% endfor %}
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p><em>No channel states read yet{% if pdb.configured %} — waiting for the first poll{% endif %}.</em></p>
+{% endfor %}

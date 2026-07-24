@@ -1,0 +1,14 @@
+{# Reply to a power write made over htmx.
+
+   The grid goes to the request's target (#pdb-status), swapped in place so
+   the page neither reloads nor scrolls; the outcome rides along as an
+   out-of-band swap into #pdb-flash, which sits outside the polled region
+   and therefore survives the next 5s refresh instead of blinking away. #}
+<div id="pdb-flash" hx-swap-oob="true">
+    <div class="flash flash-{{ 'success' if ok else 'error' }}" role="alert">
+        <span>PDB: {{ message }}</span>
+        <button class="flash-dismiss" title="Dismiss"
+                onclick="this.closest('.flash').remove()">&times;</button>
+    </div>
+</div>
+{% include "_service_pdb_status.html" %}

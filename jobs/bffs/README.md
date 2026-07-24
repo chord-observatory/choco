@@ -134,8 +134,16 @@ Each source is a module under `sources/` exposing `mask(src, labels, kotekan_fil
 labels through a channel→input map: `fpga`'s map is the real rack wiring table
 (Slot 1–4 × ADC1–8 → feed), keyed to `raw_acq`'s 0-based slot/chan metric labels
 (remaining assumptions — crate 0, ADC N → chan N−1 — await a live F-engine);
-`power`'s map is still a placeholder — **pending the hardware database
-(padloper)**. `rfi` needs no map: kotekan's `RfiSKMetrics` stage serves a JSON
+`power`'s map is choco's **master PDB channel table** (`GET /api/pdb/map`,
+backed by one CSV beside choco's `nodes.yaml`), so this job and choco's PDB
+page read the same wiring instead of each keeping a copy; choco cross-checks
+that table against kotekan's `dish_inputs` and the verdict is logged on every
+run (a mismatch is a warning, not a failure — a label off the element axis
+projects onto nothing, so a stale row leaves a feed unwatched rather than
+mis-flagging one). Setting `map:` in the source config overrides it with a
+local CSV, and the bundled `sources/power_map.csv` is the fallback for dry
+runs and choco outages. The wiring itself is still a placeholder —
+**pending the hardware database (padloper)**. `rfi` needs no map: kotekan's `RfiSKMetrics` stage serves a JSON
 `/sk` endpoint whose arrays are indexed by element — the feed's position in the
 label list. By default `rfi` derives its endpoints from choco's node registry
 (`GET /api/nodes`): every *started* node of the broadcast group, polled at each
