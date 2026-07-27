@@ -938,21 +938,57 @@ class TestSanitizePipelineSvg:
     def test_active_content_cannot_survive(self):
         out = sanitize_pipeline_svg(self.SVG, {"n2_buffer"}, "cx/cx1")
         assert out is not None
-        # `<a>` itself is whitelisted (see below); what must not survive is
-        # anything that makes it do something -- href, target, handlers.
+        # Unlisted elements are unwrapped rather than copied, so none of
+        # these reach the DOM -- and neither does anything that would make
+        # one do something.
         for banned in ("script", "alert", "foreignObject", "onclick",
-                       "xlink", "javascript", "href", "<div"):
+                       "xlink", "javascript", "href", "<div", "<a"):
             assert banned not in out, banned
         # The drawing itself survives.
         assert "<polygon" in out and "<path" in out
         assert "n2_buffer" in out
 
+    def test_unlisted_wrappers_are_unwrapped_not_deleted(self):
+        # The general rule, and the one that matters: an element nobody
+        # listed must not be able to take the drawing down with it.  This is
+        # how the graph went blank -- graphviz wraps a node's shape and text
+        # in <a> as soon as it has a URL *or* a tooltip, and deleting the
+        # subtree left 111 of 223 nodes as empty groups: still in the DOM,
+        # still clickable, nothing drawn.
+        svg = """<svg xmlns="http://www.w3.org/2000/svg"
+             width="100pt" height="50pt" viewBox="0 0 100 50">
+          <g id="graph0" class="graph">
+            <someNewGraphvizWrapper enabled="yes">
+              <polygon fill="none" stroke="black" points="0,0 50,20"/>
+              <text x="25" y="10">still here</text>
+            </someNewGraphvizWrapper>
+          </g>
+        </svg>"""
+        out = sanitize_pipeline_svg(svg, set(), "cx/cx1")
+        assert out is not None
+        assert "someNewGraphvizWrapper" not in out and "enabled" not in out
+        assert "<polygon" in out and ">still here<" in out
+
+    def test_unwrapping_does_not_carry_over_text(self):
+        # Unwrapping keeps child *elements*, never the unlisted element's own
+        # text -- that is what keeps a <script> body out of the page.
+        svg = """<svg xmlns="http://www.w3.org/2000/svg"
+             width="10pt" height="10pt" viewBox="0 0 10 10">
+          <g id="graph0" class="graph">
+            <script>var pwned = 1;</script>
+            <style>* { display: none }</style>
+            <foreignObject><div onclick="x()">html!</div></foreignObject>
+          </g>
+        </svg>"""
+        out = sanitize_pipeline_svg(svg, set(), "cx/cx1")
+        assert out is not None
+        for banned in ("pwned", "display: none", "html!", "onclick",
+                       "script", "style", "foreignObject", "<div"):
+            assert banned not in out, banned
+
     def test_link_wrapped_nodes_keep_their_drawing(self):
-        # graphviz wraps a node's shape and text in `<a>` as soon as the node
-        # carries a URL *or* a tooltip, and kotekan sets a tooltip on every
-        # buffer and every stage.  Dropping the element takes its subtree with
-        # it, so every node renders blank -- a clickable buffer stays
-        # clickable while being invisible.
+        # The concrete case of the rule above, in the exact shape graphviz
+        # emits it.
         svg = """<svg xmlns="http://www.w3.org/2000/svg"
              xmlns:xlink="http://www.w3.org/1999/xlink"
              width="100pt" height="50pt" viewBox="0 0 100 50">

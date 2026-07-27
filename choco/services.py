@@ -776,6 +776,18 @@ def render_dot_svg(dot_text: str, timeout: float = 10.0,
 # known-inert graphviz output elements/attributes are copied over —
 # <script>, event handlers, <foreignObject>, xlink:href and anything
 # else unexpected can't survive because nothing is copied by default.
+#
+# An element that is not on the list is UNWRAPPED, not deleted: it is left
+# out of the output and its children are rebuilt in its place.  That keeps
+# deny-by-default exactly as strict — the output can still only ever contain
+# listed elements carrying listed attributes, and an unknown wrapper reaches
+# the DOM no more than a <script> does — while making the failure mode
+# lossless.  Deleting the subtree instead is a silent one: graphviz wraps a
+# node's shape and text in <a> as soon as the node carries a URL *or* a
+# tooltip, kotekan sets a tooltip on every buffer and every stage, and the
+# result was 111 of 223 nodes rendering as empty groups — present in the DOM
+# and still clickable, but with nothing drawn.  Whichever element graphviz
+# starts emitting next, the worst this can now do is lose its styling.
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 # Process-global ET state: makes SVG the *default* namespace on
@@ -789,14 +801,6 @@ ET.register_namespace("", _SVG_NS)
 _SVG_ALLOWED = {
     "svg": {"width", "height", "viewBox"},
     "g": {"id", "class", "transform"},
-    # graphviz wraps a node's shape and text in <a> as soon as the node
-    # carries a URL *or* a tooltip, and kotekan sets a tooltip on every
-    # buffer and every stage.  Dropping the element takes its whole subtree
-    # with it, so the node renders blank — the entire graph goes blank, not
-    # just the buffers, and a clickable buffer stays clickable while
-    # invisible.  So <a> survives with *no* attributes: xlink:href and
-    # xlink:title go, the shape and label stay.
-    "a": set(),
     "title": set(),
     "polygon": {"fill", "stroke", "stroke-width", "stroke-dasharray", "points"},
     "polyline": {"fill", "stroke", "stroke-width", "stroke-dasharray", "points"},
@@ -826,7 +830,9 @@ def sanitize_pipeline_svg(svg_text: str, clickable: set[str],
     ``tabindex``/``role``/``aria-label`` so they are reachable by
     keyboard (pipeline.js turns Enter/Space into a click).
     Returns the sanitized SVG markup, or None if the input doesn't
-    parse (caller falls back to the raw dot text).
+    parse (caller falls back to the raw dot text), or if the root is
+    not an ``<svg>`` — the root is the one element that cannot be
+    unwrapped, since there would be nothing to put the graph in.
     """
     try:
         root = ET.fromstring(svg_text)
@@ -836,23 +842,40 @@ def sanitize_pipeline_svg(svg_text: str, clickable: set[str],
     if _svg_local(root.tag) != "svg":
         return None
 
-    def rebuild(src: ET.Element, dst_parent: ET.Element | None) -> ET.Element | None:
+    unwrapped: set[str] = set()
+
+    def rebuild(src: ET.Element, dst_parent: ET.Element) -> None:
+        """Copy `src` under `dst_parent` if it is listed; else unwrap it."""
         tag = _svg_local(src.tag)
         allowed = _SVG_ALLOWED.get(tag)
         if allowed is None:
-            return None  # unknown element: dropped with its whole subtree
+            # Not copied, so it never reaches the DOM — but its children
+            # get their own turn under the same rule, so a wrapper cannot
+            # take the drawing down with it.  Text is deliberately not
+            # carried over: that is what keeps <script> contents out.
+            unwrapped.add(tag)
+            for child in src:
+                rebuild(child, dst_parent)
+            return
         attrs = {name: value for raw, value in src.attrib.items()
                  if (name := _svg_local(raw)) in allowed}
-        qtag = f"{{{_SVG_NS}}}{tag}"
-        dst = (ET.Element(qtag, attrs) if dst_parent is None
-               else ET.SubElement(dst_parent, qtag, attrs))
+        dst = ET.SubElement(dst_parent, f"{{{_SVG_NS}}}{tag}", attrs)
         if tag in ("text", "title"):
             dst.text = src.text
         for child in src:
             rebuild(child, dst)
-        return dst
 
-    out = rebuild(root, None)
+    root_attrs = {name: value for raw, value in root.attrib.items()
+                  if (name := _svg_local(raw)) in _SVG_ALLOWED["svg"]}
+    out = ET.Element(f"{{{_SVG_NS}}}svg", root_attrs)
+    for child in root:
+        rebuild(child, out)
+    if unwrapped:
+        # Not an error -- graphviz is free to wrap things -- but worth
+        # saying, since it means the output lost whatever those elements
+        # were styling.
+        logger.info("pipeline SVG: unwrapped unlisted elements: "
+                    f"{', '.join(sorted(unwrapped))}")
 
     for group in out.iter(f"{{{_SVG_NS}}}g"):
         if "node" not in group.get("class", "").split():
