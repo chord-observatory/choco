@@ -795,10 +795,22 @@ class TestRenderDotSvg:
         assert out is not None and out.startswith("<svg")
         assert "DOCTYPE" not in out
         assert run.call_args.kwargs["input"] == self.DOT
+        # kotekan's labels carry `×` and `·`: the pipe is UTF-8 by contract,
+        # not by whatever locale the systemd unit happens to inherit.
+        assert run.call_args.kwargs["encoding"] == "utf-8"
         # First attempt renders with the layout attributes injected.
         assert run.call_count == 1
         for arg in _DOT_LAYOUT_ARGS:
             assert arg in run.call_args.args[0]
+
+    def test_ortho_preset_leaves_nodesep_to_kotekan(self):
+        # Widening nodesep aborts graphviz 2.43 in the ortho maze router on a
+        # clustered CHORD graph that renders fine at kotekan's own 0.3.  The
+        # retry-without-args path hides it: the operator picks ortho and
+        # silently gets curves.
+        from choco.services import PIPELINE_LAYOUTS
+        assert not any(a.startswith("-Gnodesep")
+                       for a in PIPELINE_LAYOUTS["ortho"])
 
     def test_layout_failure_retries_plain(self):
         from choco.services import render_dot_svg, _DOT_LAYOUT_ARGS
@@ -926,12 +938,44 @@ class TestSanitizePipelineSvg:
     def test_active_content_cannot_survive(self):
         out = sanitize_pipeline_svg(self.SVG, {"n2_buffer"}, "cx/cx1")
         assert out is not None
+        # `<a>` itself is whitelisted (see below); what must not survive is
+        # anything that makes it do something -- href, target, handlers.
         for banned in ("script", "alert", "foreignObject", "onclick",
-                       "xlink", "javascript", "<a", "<div"):
+                       "xlink", "javascript", "href", "<div"):
             assert banned not in out, banned
         # The drawing itself survives.
         assert "<polygon" in out and "<path" in out
         assert "n2_buffer" in out
+
+    def test_link_wrapped_nodes_keep_their_drawing(self):
+        # graphviz wraps a node's shape and text in `<a>` as soon as the node
+        # carries a URL *or* a tooltip, and kotekan sets a tooltip on every
+        # buffer and every stage.  Dropping the element takes its subtree with
+        # it, so every node renders blank -- a clickable buffer stays
+        # clickable while being invisible.
+        svg = """<svg xmlns="http://www.w3.org/2000/svg"
+             xmlns:xlink="http://www.w3.org/1999/xlink"
+             width="100pt" height="50pt" viewBox="0 0 100 50">
+          <g id="graph0" class="graph">
+            <g id="node1" class="node">
+              <title>n2_buffer</title>
+              <g id="a_node1"><a xlink:href="/buffer/n2_buffer/frame"
+                                 xlink:title="n2_buffer (ndarray buffer)">
+                <polygon fill="none" stroke="black" points="0,0 50,20"/>
+                <text x="25" y="10">n2_buffer</text>
+              </a></g>
+            </g>
+          </g>
+        </svg>"""
+        out = sanitize_pipeline_svg(svg, {"n2_buffer"}, "cx/cx1")
+        assert out is not None
+        # Shape and label survive; the link and its tooltip do not.
+        assert "<polygon" in out
+        assert ">n2_buffer<" in out
+        assert "href" not in out and "xlink" not in out
+        assert "/buffer/n2_buffer/frame" not in out
+        # ...and the node is still the clickable one.
+        assert 'data-plot-buffer="n2_buffer"' in out
 
     def test_clickable_buffers_are_stamped(self):
         out = sanitize_pipeline_svg(self.SVG, {"n2_buffer"}, "cx/cx1")

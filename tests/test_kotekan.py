@@ -209,3 +209,42 @@ class TestGetBufferFrame:
     def test_unreachable(self, node):
         responses.get(f"{BASE}/buffer/n2_buffer/frame", body=ConnectionError())
         assert node.get_buffer_frame("n2_buffer") is None
+
+
+class TestGetPipelineDot:
+    # kotekan's layout lines carry these; they are the whole reason the
+    # decoding below has to be pinned rather than negotiated.
+    DOT = ('digraph pipeline {\n'
+           '  "host_buf" [label=<host_buf<BR/>int8 P:2 × D:64<BR/>'
+           'ndarray · chordMetadata>];\n}\n')
+
+    @responses.activate
+    def test_returns_dot_text(self, node):
+        responses.get(f"{BASE}/pipeline_dot", body=self.DOT,
+                      content_type="text/vnd.graphviz; charset=utf-8")
+        assert node.get_pipeline_dot() == self.DOT
+
+    @responses.activate
+    def test_asks_for_no_urls(self, node):
+        # kotekan's per-buffer links are relative to the node, so they
+        # would resolve against choco; the inline view has its own click
+        # handler on those same nodes.
+        responses.get(f"{BASE}/pipeline_dot", body=self.DOT)
+        node.get_pipeline_dot()
+        assert "urls=0" in responses.calls[0].request.url
+
+    @responses.activate
+    def test_decoded_as_utf8_without_a_charset(self, node):
+        # kotekan before the charset fix labels the body `text/vnd.graphviz`
+        # with no charset -- which HTTP defines as ISO-8859-1, and requests
+        # believes it.  Left alone, every `×` and `·` arrives as mojibake.
+        responses.get(f"{BASE}/pipeline_dot", body=self.DOT.encode("utf-8"),
+                      content_type="text/vnd.graphviz")
+        out = node.get_pipeline_dot()
+        assert out == self.DOT
+        assert "×" in out and "·" in out
+
+    @responses.activate
+    def test_unreachable(self, node):
+        responses.get(f"{BASE}/pipeline_dot", body=ConnectionError())
+        assert node.get_pipeline_dot() is None

@@ -460,12 +460,26 @@ class Node:
     def get_pipeline_dot(self) -> str | None:
         """Get the pipeline graph as graphviz dot text.
 
-        Buffer labels in the graph embed live fullness, so a re-fetch is
-        a fresh snapshot, not a static picture. Returns None if the node
-        is unreachable.
+        The labels carry live fullness, measured rates, per-stage CPU and
+        array layouts, so a re-fetch is a fresh snapshot, not a static
+        picture.  Returns None if the node is unreachable.
+
+        ``urls=0`` drops the ``/buffer/<name>/frame`` link kotekan puts on
+        every frame buffer.  Those paths are relative to the *node*, so they
+        resolve against choco and 404; graphviz renders them as an ``<a>``
+        wrapping the node's shape, which would fight the inline view's own
+        click-to-plot handler.  Older kotekan ignores the argument.
+
+        The reply is decoded as UTF-8 whatever the node says: layout lines
+        hold ``×`` and ``·``, and kotekan builds before the charset fix
+        label the body ``text/vnd.graphviz`` with no charset — which HTTP
+        defines as ISO-8859-1, and ``requests`` believes it.
         """
-        resp = self._request("GET", "/pipeline_dot")
-        return resp.text if resp is not None else None
+        resp = self._request("GET", "/pipeline_dot", params={"urls": 0})
+        if resp is None:
+            return None
+        resp.encoding = "utf-8"
+        return resp.text
 
     def get_buffers(self) -> dict | None:
         """Get kotekan's buffer table (``GET /buffers``).

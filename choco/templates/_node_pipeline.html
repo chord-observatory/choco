@@ -1,7 +1,9 @@
 <article style="margin: 0; padding: 0.75em 1em;">
     <header style="display: flex; align-items: center; gap: 0.75em; margin: 0 0 0.5em 0; padding: 0;">
-        <small><code>/pipeline_dot</code> — buffer labels show fullness at
-        fetch time; click the image to toggle full resolution</small>
+        <small><code>/pipeline_dot</code> — a snapshot at fetch time: buffer
+        layouts and fill, measured rates, per-stage CPU. A buffer outlined in
+        red has no free frame; a dashed one has never seen data. Click the
+        image to toggle full resolution</small>
         <button hx-get="/partials/node-pipeline/{{ node_key }}"
                 hx-target="#pipeline-graph" hx-swap="innerHTML"
                 title="Refresh"

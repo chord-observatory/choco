@@ -689,10 +689,10 @@ def job_logs(service_unit: str, lines: int = 50,
     return result.stdout.splitlines()
 
 
-# Layout attributes injected at render time (kotekan's dot text carries no
-# layout hints): orthogonal edge routing plus wider rank/node separation
-# turns the default spline spaghetti into readable right-angle channels on
-# the ~200-edge production pipelines.  mclimit raises the crossing-
+# Layout attributes injected at render time.  kotekan ships its own
+# rankdir/nodesep/ranksep/mclimit/newrank now, and a -G on the command line
+# silently overrides the graph's own value, so anything set here is a
+# deliberate override of kotekan's choice.  mclimit raises the crossing-
 # minimisation effort and newrank improves ranking — together they laid
 # out the 645-line cx19 pipeline ~11% narrower (fewer edge crossings)
 # for well under a second of extra layout time.  Splines (curves) are
@@ -706,9 +706,17 @@ _DOT_LAYOUT_ARGS = ("-Gsplines=true", "-Granksep=1.0", "-Gnodesep=0.5",
 # is a taste call on a graph this size, so the page lets the operator
 # flip between them live.  Keys are the allowlist for the ``?layout=``
 # query parameter — never pass raw values to the dot command line.
+#
+# ortho deliberately leaves nodesep to kotekan (0.3).  Widening it aborts
+# graphviz 2.43 outright — `chkSgraph: Assertion np->cells[0] failed` in
+# the ortho maze router — on a clustered CHORD graph that renders fine at
+# kotekan's own value; 0.4 survived and 0.5 did not, so the threshold is
+# graph-dependent and the safe move is not to override it at all.  The
+# crash is caught by the retry-without-args path, but the operator picks
+# "ortho" and silently gets curves after a wasted render.
 PIPELINE_LAYOUTS = {
     "curves": _DOT_LAYOUT_ARGS,
-    "ortho": ("-Gsplines=ortho", "-Granksep=1.2", "-Gnodesep=0.6",
+    "ortho": ("-Gsplines=ortho", "-Granksep=1.2",
               "-Gmclimit=8", "-Gnewrank=true"),
     "polyline": ("-Gsplines=polyline", "-Granksep=1.0", "-Gnodesep=0.5",
                  "-Gmclimit=8", "-Gnewrank=true"),
@@ -727,6 +735,11 @@ def render_dot_svg(dot_text: str, timeout: float = 10.0,
     host, render failure, timeout) — the caller falls back to showing the
     raw dot text.  The output is sliced down to the ``<svg`` element: the
     XML prolog and DOCTYPE would be invalid embedded in an HTML page.
+
+    The pipe is UTF-8 explicitly rather than by locale: kotekan's layout
+    lines carry ``×`` and ``·``, and choco runs as a systemd unit with no
+    LANG to speak of — a C-locale interpreter would raise UnicodeEncodeError
+    here, which is not a ``SubprocessError`` and would 500 the route.
     """
     if shutil.which("dot") is None:
         return None
@@ -735,7 +748,7 @@ def render_dot_svg(dot_text: str, timeout: float = 10.0,
             result = subprocess.run(
                 ["dot", "-Tsvg", *extra_args],
                 input=dot_text, capture_output=True, text=True,
-                timeout=timeout,
+                encoding="utf-8", timeout=timeout,
             )
         except (subprocess.SubprocessError, OSError) as e:
             logger.warning(f"dot -Tsvg {' '.join(extra_args)} failed: {e}")
@@ -776,6 +789,14 @@ ET.register_namespace("", _SVG_NS)
 _SVG_ALLOWED = {
     "svg": {"width", "height", "viewBox"},
     "g": {"id", "class", "transform"},
+    # graphviz wraps a node's shape and text in <a> as soon as the node
+    # carries a URL *or* a tooltip, and kotekan sets a tooltip on every
+    # buffer and every stage.  Dropping the element takes its whole subtree
+    # with it, so the node renders blank — the entire graph goes blank, not
+    # just the buffers, and a clickable buffer stays clickable while
+    # invisible.  So <a> survives with *no* attributes: xlink:href and
+    # xlink:title go, the shape and label stay.
+    "a": set(),
     "title": set(),
     "polygon": {"fill", "stroke", "stroke-width", "stroke-dasharray", "points"},
     "polyline": {"fill", "stroke", "stroke-width", "stroke-dasharray", "points"},
