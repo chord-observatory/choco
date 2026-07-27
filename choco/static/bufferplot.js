@@ -265,10 +265,11 @@
     // Within a composite the earlier-listed dimension varies slowest,
     // matching what a C-order reshape of adjacent dims would give.
     //
-    // slices pins a dimension to one index (C=0 for real, SK=1 for one
-    // statistic) instead of reducing over it: -1 = free, >= 0 = fixed.
-    // Everything free and not on an axis is reduced by `how`.
-    function reduceToGrid(values, dims, yDims, xDims, how, slices) {
+    // A dimension is all-or-nothing: either it is on an axis (every
+    // index of it drawn) or it is combined away by `how`.  There is no
+    // pinning to a single index — an index pick is a dimension of
+    // length 1, which is the one thing an axis composition cannot say.
+    function reduceToGrid(values, dims, yDims, xDims, how) {
         var nd = dims.length, d;
         var mulY = new Int32Array(nd), mulX = new Int32Array(nd);
         var h = 1, w = 1;
@@ -280,66 +281,48 @@
             mulX[xDims[d]] = w;
             w *= dims[xDims[d]];
         }
-        var slice = new Int32Array(nd).fill(-1);
-        if (slices)
-            for (d = 0; d < nd; d++)
-                if (typeof slices[d] === "number" && slices[d] >= 0)
-                    slice[d] = slices[d];
 
         var acc = new Float64Array(h * w);
         var cnt = new Float64Array(h * w);
         if (how === "max") acc.fill(-Infinity);
         if (how === "min") acc.fill(Infinity);
         var idx = new Int32Array(nd);
-        // Cell offsets and the count of pinned dimensions currently off
-        // their target are carried incrementally: the odometer only ever
+        // Cell offsets are carried incrementally: the odometer only ever
         // changes a suffix of the index, so this stays O(1) per element.
-        var yCell = 0, xCell = 0, mismatch = 0;
-        for (d = 0; d < nd; d++)
-            if (slice[d] > 0) mismatch++;
+        var yCell = 0, xCell = 0;
         // Clamp to whole slices: a trailing partial slice would wrap the
         // odometer back to cell 0 and pollute the grid.
         var total = 1;
         for (d = 0; d < nd; d++) total *= dims[d];
         var n = Math.min(values.length, total);
         for (var i = 0; i < n; i++) {
-            if (mismatch === 0) {
-                var v = values[i];
-                var cell = yCell * w + xCell;
-                if (how === "max") {
-                    if (v > acc[cell]) acc[cell] = v;
-                } else if (how === "min") {
-                    if (v < acc[cell]) acc[cell] = v;
-                } else {
-                    acc[cell] += v;
-                }
-                cnt[cell]++;
+            var v = values[i];
+            var cell = yCell * w + xCell;
+            if (how === "max") {
+                if (v > acc[cell]) acc[cell] = v;
+            } else if (how === "min") {
+                if (v < acc[cell]) acc[cell] = v;
+            } else {
+                acc[cell] += v;
             }
+            cnt[cell]++;
             for (d = nd - 1; d >= 0; d--) {
-                var was = idx[d];
                 if (++idx[d] < dims[d]) {
                     yCell += mulY[d];
                     xCell += mulX[d];
-                    if (slice[d] >= 0) {
-                        if (was === slice[d]) mismatch++;
-                        else if (idx[d] === slice[d]) mismatch--;
-                    }
                     break;
                 }
                 idx[d] = 0;
                 yCell -= mulY[d] * (dims[d] - 1);
                 xCell -= mulX[d] * (dims[d] - 1);
-                if (slice[d] >= 0) {
-                    if (was === slice[d]) mismatch++;
-                    if (slice[d] === 0) mismatch--;
-                }
             }
         }
         if (how !== "max" && how !== "min")
             for (var c = 0; c < acc.length; c++)
                 if (cnt[c]) acc[c] /= cnt[c];
-        // Cells that no element reached (a pinned index beyond the
-        // fetched prefix) must read as missing, not as 0 or ±Infinity.
+        // Cells that no element reached (the received bytes stopping
+        // short of a whole grid) must read as missing, not as 0 or
+        // ±Infinity.
         for (var e = 0; e < acc.length; e++)
             if (!cnt[e]) acc[e] = NaN;
         return { grid: acc, h: h, w: w };
@@ -379,8 +362,8 @@
         return "color " + fmtVal(lo) + " … " + fmtVal(hi);
     }
 
-    function renderHeatmap(canvas, values, dims, yDims, xDims, how, opts, slices) {
-        var r = reduceToGrid(values, dims, yDims, xDims, how, slices);
+    function renderHeatmap(canvas, values, dims, yDims, xDims, how, opts) {
+        var r = reduceToGrid(values, dims, yDims, xDims, how);
         return drawGrid(canvas, r.grid, r.h, r.w, opts) + " (" + how + ")";
     }
 
@@ -469,10 +452,8 @@
     // The watched buffer is remembered per node for the browser session,
     // so revisiting the page reopens the live plot without a click.
     var STORE_PREFIX = "chocoBufferPlot:";
-    // Per-buffer axis layout memory, and the point past which a
-    // dimension gets no per-index pin list.
+    // Per-buffer axis layout memory.
     var LAYOUT_PREFIX = "chocoBufferAxes:";
-    var MAX_PIN_INDICES = 64;
 
     function rememberOpen(nodeKey, buffer) {
         try { sessionStorage.setItem(STORE_PREFIX + nodeKey, buffer); } catch (e) {}
@@ -590,12 +571,11 @@
             }
             note = renderHeatmap(plot.canvas, plot.lastValues, plot.dims,
                                  plot.axisY, plot.axisX,
-                                 plot.controls.reduce.value,
+                                 plot.controls.combine.value,
                                  plot.dec.mask ? { range: [0, 1], color: maskColor }
-                                               : null,
-                                 plot.slices);
+                                               : null);
             note = "y: " + axisLabel(plot.axisY) + ", x: " + axisLabel(plot.axisX) +
-                   pinnedNote() + " — " + note;
+                   " — " + note;
         } else if (mode === "line") {
             note = renderLine(plot.canvas, plot.lastValues);
         } else {
@@ -695,17 +675,19 @@
             var names = allNames.slice(k, ext.length);
             if (plot.dec.sub > 1) {
                 // Packed values are always the fastest-varying axis, so
-                // they extend the *last* extent.  For a boolean mask
-                // that is a plain C-order reshape back to the logical
-                // array — kotekan's own dim names say so: pl_mask_exp is
+                // they extend the *last* extent.  The default is to keep
+                // them as a dimension of their own: the 8 bits are then
+                // pickable as an axis, and the packing is visible rather
+                // than folded into a neighbour.  "merge into last axis"
+                // is the other reading, and for a boolean mask it is a
+                // plain C-order reshape back to the logical array —
+                // kotekan's own dim names say so: pl_mask_exp is
                 // [Thi64, F, P, D8, Tlo64=8] × 8 bits = 64 time samples
                 // ("lo64"), and 128 × 8 × 8 = 8192 = samples_per_data_set.
-                // Merging restores that real axis; "separate axis" keeps
-                // the raw 8-bit layout for looking at the packing itself.
                 // Component packing (int4x2's re/im) is never merged —
                 // interleaving components into a dish axis would be a
                 // lie about what the axis is.
-                if (plot.dec.mask && plot.bitsMode !== "axis") {
+                if (plot.dec.mask && plot.bitsMode === "merge") {
                     dims[dims.length - 1] *= plot.dec.sub;
                     if (names.length === dims.length)
                         names[names.length - 1] =
@@ -725,16 +707,6 @@
         }
     }
 
-    // Which dimensions are pinned, for the status line.
-    function pinnedNote() {
-        if (!plot.slices) return "";
-        var parts = [];
-        for (var i = 0; i < plot.slices.length; i++)
-            if (plot.slices[i] >= 0)
-                parts.push(dimName(i) + "=" + plot.slices[i]);
-        return parts.length ? " [" + parts.join(", ") + "]" : "";
-    }
-
     // The axis layout is remembered per node+buffer for the browsing
     // session, keyed by the dimension *names* — the leading extent moves
     // with the fetch size, so keying on extents would throw the layout
@@ -748,7 +720,7 @@
     function saveLayout() {
         try {
             sessionStorage.setItem(layoutKey(), JSON.stringify({
-                y: plot.axisY, x: plot.axisX, slices: plot.slices,
+                y: plot.axisY, x: plot.axisX,
             }));
         } catch (e) {}
     }
@@ -762,14 +734,16 @@
         } catch (e) { return null; }
     }
 
-    // Default axes: the two largest usable dimensions, larger on y —
-    // time is usually the longest, and a waterfall reads better tall.
+    // Default axes: the two largest usable dimensions, the *largest on
+    // x*.  The panel is wide and its height is capped (max-height: 30em)
+    // while the width is the full card, so the longer dimension gets
+    // several times more pixels — and fewer of its entries collapsed
+    // into one cell — lying along x.
     function defaultAxes() {
         var use = usableDims().slice();
         use.sort(function (a, b) { return plot.dims[b] - plot.dims[a]; });
-        plot.axisY = use.length ? [use[0]] : [];
-        plot.axisX = use.length > 1 ? [use[1]] : [];
-        plot.slices = new Array(plot.dims.length).fill(-1);
+        plot.axisX = use.length ? [use[0]] : [];
+        plot.axisY = use.length > 1 ? [use[1]] : [];
     }
 
     function validLayout(v) {
@@ -793,7 +767,6 @@
         if (!plot.dims) {
             c.yPick.root.style.display = "none";
             c.xPick.root.style.display = "none";
-            c.leftovers.textContent = "";
             return;
         }
         c.yPick.root.style.display = "";
@@ -805,19 +778,12 @@
             if (validLayout(saved)) {
                 plot.axisY = saved.y;
                 plot.axisX = saved.x;
-                plot.slices = Array.isArray(saved.slices) &&
-                              saved.slices.length === plot.dims.length
-                    ? saved.slices : new Array(plot.dims.length).fill(-1);
             } else {
                 defaultAxes();
             }
         }
-        // Clamp pins that no longer fit (a shorter fetch, a new shape).
-        for (var i = 0; i < plot.dims.length; i++)
-            if (plot.slices[i] >= plot.dims[i]) plot.slices[i] = -1;
         renderAxisPicker(c.yPick, plot.axisY, plot.axisX);
         renderAxisPicker(c.xPick, plot.axisX, plot.axisY);
-        renderLeftovers();
     }
 
     function renderAxisPicker(pick, mine, theirs) {
@@ -851,7 +817,6 @@
             mine.sort(function (a, b) { return a - b; });  // array order = slowest first
             var o = other.indexOf(d);
             if (o >= 0) other.splice(o, 1);
-            plot.slices[d] = -1;  // a plotted dimension is not pinned
         } else if (!on && at >= 0) {
             mine.splice(at, 1);
         }
@@ -860,45 +825,13 @@
         rerender();
     }
 
-    // One control per dimension that is on neither axis: reduce over it
-    // (the default) or pin it to a single index.  Pinning is what makes
-    // categorical dimensions readable — C=0 is the real part, SK=1 one
-    // statistic; averaging across them mixes unlike quantities.
-    function renderLeftovers() {
-        var box = plot.controls.leftovers;
-        box.textContent = "";
-        usableDims().forEach(function (d) {
-            if (plot.axisY.indexOf(d) >= 0 || plot.axisX.indexOf(d) >= 0) return;
-            var wrap = el("label", {
-                style: "display: flex; align-items: center; gap: 0.3em; margin: 0;",
-            }, dimName(d));
-            var sel = el("select", {
-                style: "width: auto; margin: 0; padding: 0.1em 1.6em 0.1em 0.4em; font-size: 1em;",
-            });
-            sel.appendChild(el("option", { value: "-1" }, "reduce (" + plot.dims[d] + ")"));
-            // Index lists stay short: a long dimension is one you plot or
-            // reduce, not one you step through an entry at a time.
-            if (plot.dims[d] <= MAX_PIN_INDICES)
-                for (var i = 0; i < plot.dims[d]; i++)
-                    sel.appendChild(el("option", { value: String(i) }, String(i)));
-            sel.value = String(plot.slices[d]);
-            sel.addEventListener("change", function () {
-                plot.slices[d] = +sel.value;
-                saveLayout();
-                rerender();
-            });
-            wrap.appendChild(sel);
-            box.appendChild(wrap);
-        });
-    }
-
     function dataUrl(len) {
         return "/api/node-buffer-data/" + plot.nodeKey +
             "?buffer=" + encodeURIComponent(plot.buffer) + "&len=" + len;
     }
 
     // Show the N2 block/part selectors only for N2 frames, and hide the
-    // axis/reduce controls there (blocks have fixed shapes).  The part
+    // axis/combine controls there (blocks have fixed shapes).  The part
     // selector only applies to complex blocks.
     function updateN2Controls() {
         if (!plot) return;
@@ -907,8 +840,7 @@
         c.block.parentElement.style.display = isN2 ? "" : "none";
         c.yPick.root.style.display = isN2 ? "none" : "";
         c.xPick.root.style.display = isN2 ? "none" : "";
-        c.leftovers.style.display = isN2 ? "none" : "";
-        c.reduce.parentElement.style.display = isN2 ? "none" : "";
+        c.combine.parentElement.style.display = isN2 ? "none" : "";
         var blk = isN2 ? plot.n2.blocks[c.block.value] : null;
         c.part.parentElement.style.display =
             (blk && blk.type === "c64") ? "" : "none";
@@ -962,16 +894,16 @@
                         });
                 }
                 if (plot.dec.mask) {
-                    // Reductions on a 1 = good mask: max is degenerate
-                    // (a cell reads 1 unless *everything* under it is
-                    // bad) and mean buries a single lost packet in
-                    // thousands of good ones — 1.0000 vs 0.9997 is the
-                    // same colour.  min is the sensitive one: a cell
-                    // goes dark-to-amber the moment any bit under it is
+                    // Combining a 1 = good mask: max is degenerate (a
+                    // cell reads 1 unless *everything* under it is bad)
+                    // and mean buries a single lost packet in thousands
+                    // of good ones — 1.0000 vs 0.9997 is the same
+                    // colour.  min is the sensitive one: a cell goes
+                    // dark-to-amber the moment any bit under it is
                     // clear, which is what a mask is for.  Set once at
                     // descriptor load, when the panel has just opened,
                     // so it can't override an operator's own pick.
-                    plot.controls.reduce.value = "min";
+                    plot.controls.combine.value = "min";
                 }
                 updateN2Controls();
                 updateMaskControls();
@@ -1084,25 +1016,25 @@
         block.parentElement.style.display = "none";
         part.parentElement.style.display = "none";
         // Mask-only: how to treat the packed bit axis (see shapeReceived).
-        var bits = select("bits", [["merge", "merge into last axis"],
-                                   ["axis", "separate axis"]]);
+        var bits = select("bits", [["axis", "separate axis"],
+                                   ["merge", "merge into last axis"]]);
         bits.parentElement.style.display = "none";
         // Axes are *composed*: tick one or more dimensions for each.
-        // Whatever is left over gets a reduce-or-pin control below.
+        // Everything not ticked is combined away — a dimension is
+        // all-or-nothing, there is no picking one index out of it.
         var yPick = checkboxDropdown("y");
         var xPick = checkboxDropdown("x");
         controls.appendChild(yPick.root);
         controls.appendChild(xPick.root);
-        var leftovers = el("div", {
-            style: "display: flex; flex-wrap: wrap; gap: 0.5em; align-items: center;",
-        });
-        controls.appendChild(leftovers);
-        // max first (the default): outliers and saturation are usually
-        // what an operator is looking for; mean washes them out.  min is
-        // max's mirror and is what masks need — with 1 = good, a cell
-        // reads 0 as soon as any value under it is bad.
-        var reduce = select("reduce", [["max", "max"], ["mean", "mean"],
-                                       ["min", "min"]]);
+        // How the values landing in one cell become that cell — every
+        // dimension off the axes, plus the many entries of a long axis
+        // sharing a pixel.  max first (the default): outliers and
+        // saturation are usually what an operator is looking for; mean
+        // washes them out.  min is max's mirror and is what masks need —
+        // with 1 = good, a cell reads 0 as soon as any value under it is
+        // bad.
+        var combine = select("combine", [["max", "max"], ["mean", "mean"],
+                                         ["min", "min"]]);
         var fetchLen = select("fetch", FETCH_CHOICES.map(function (c) {
             return [String(c[0]), c[1]];
         }));
@@ -1174,12 +1106,12 @@
             shapeNote: null, descLoaded: false, dec: decoderFor(null),
             n2: null,
             controls: { mode: mode, block: block, part: part, bits: bits,
-                        yPick: yPick, xPick: xPick, leftovers: leftovers,
-                        reduce: reduce, fetchLen: fetchLen, log: log },
-            bitsMode: "merge",
-            axisY: [], axisX: [], slices: [], layoutKey: null,
+                        yPick: yPick, xPick: xPick,
+                        combine: combine, fetchLen: fetchLen, log: log },
+            bitsMode: "axis",
+            axisY: [], axisX: [], layoutKey: null,
         };
-        [mode, part, reduce].forEach(function (c) {
+        [mode, part, combine].forEach(function (c) {
             c.addEventListener("change", rerender);
         });
         // Re-shaping the same bytes: no refetch, just a different view
