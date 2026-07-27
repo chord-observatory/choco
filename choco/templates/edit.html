@@ -2,7 +2,10 @@
 {% block title %}CHOCO - {{ node_key }}{% endblock %}
 
 {% block content %}
-<h2>{{ node.key }}</h2>
+<h2>{{ node.key }}
+    <a href="/status/{{ node_key }}" role="button" class="outline"
+       style="width: auto; font-size: 0.55em; vertical-align: middle; margin-left: 0.75em; padding: 0.2em 0.8em;">Live status</a>
+</h2>
 
 <table>
     <tbody>
@@ -51,27 +54,6 @@
 </form>
 {% endfor %}
 {% endif %}
-
-<h3>Buffers</h3>
-{# morph keeps the Peek buttons alive across the poll swap, so a refresh
-   landing mid-click can't cancel an in-flight peek request. #}
-<div id="node-buffers" hx-ext="morph"
-     hx-get="/partials/node-buffers/{{ node_key }}"
-     hx-trigger="load, every 5s"
-     hx-swap="morph:innerHTML">
-    <p><em>Loading buffers…</em></p>
-</div>
-{# Peek results land outside the polled region so they survive the 5 s refresh. #}
-<div id="buffer-peek"></div>
-
-<h3>Pipeline Graph</h3>
-{# intersect defers the fetch until the graph scrolls into view; "once"
-   so it never re-fetches on its own — that's the refresh button's job. #}
-<div id="pipeline-graph"
-     hx-get="/partials/node-pipeline/{{ node_key }}"
-     hx-trigger="intersect once">
-    <p><em>Loading pipeline graph…</em></p>
-</div>
 
 {% endblock %}
 

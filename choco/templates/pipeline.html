@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+{# Standalone full-viewport page (deliberately not base.html): the graph
+   needs every pixel, so the usual container/nav chrome is replaced by a
+   slim header carrying the navigation links. #}
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CHOCO - {{ node_key }} pipeline</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='pico.min.css') }}">
+    {# Apply the saved theme before first paint (default dark). #}
+    <script>
+        try {
+            document.documentElement.dataset.theme =
+                localStorage.getItem("chocoPipelineTheme") || "dark";
+        } catch (e) {}
+    </script>
+    <script src="{{ url_for('static', filename='htmx.min.js') }}"></script>
+    <style>
+        html, body { height: 100%; }
+        body {
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+            padding: 0.5em 0.75em 0.75em 0.75em;
+            box-sizing: border-box;
+        }
+        .pg-header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.6em;
+            margin-bottom: 0.5em;
+        }
+        .pg-header .brand-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25em 0.7em;
+            border-radius: 999px;
+            background: #5c3a21;
+            color: white;
+            font-weight: 600;
+            line-height: 1;
+            text-decoration: none;
+        }
+        .pg-header a[role="button"], .pg-header button {
+            width: auto;
+            margin: 0;
+            padding: 0.1em 0.7em;
+            font-size: 0.85em;
+        }
+        .pg-header select {
+            width: auto;
+            margin: 0;
+            padding: 0.1em 1.8em 0.1em 0.5em;
+            font-size: 0.85em;
+        }
+        .pg-spacer { flex: 1; }
+        #pipeline-graph {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            cursor: grab;
+            border: 1px solid rgba(128,128,128,0.35);
+            border-radius: 6px;
+            background: #fff;
+        }
+        #pipeline-graph.dragging { cursor: grabbing; user-select: none; }
+        /* Fit = overview (contain); 1:1 = natural size; ctrl+scroll
+           (or trackpad pinch) zooms freely around the cursor. */
+        #pipeline-graph.fit svg { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; margin: auto; }
+        #pipeline-graph.full svg { max-width: none; max-height: none; }
+        .clickable-buffer { cursor: pointer; }
+        .pg-note { margin: 0 0 0.4em 0.5em; font-size: 0.85em; opacity: 0.8; }
+        /* Plottable (peek_hold) buffers carry a persistent amber
+           outline so they stand apart from the rest of the graph at a
+           glance; hover thickens it and tints the interior.
+           ID-anchored so the rules outrank the dark-mode [stroke]
+           recolors below. */
+        #pipeline-graph svg .clickable-buffer polygon,
+        #pipeline-graph svg .clickable-buffer ellipse { stroke: #e8930c; stroke-width: 1.7; }
+        #pipeline-graph svg .clickable-buffer:hover polygon,
+        #pipeline-graph svg .clickable-buffer:hover ellipse { stroke-width: 3; }
+        [data-theme="dark"] #pipeline-graph svg .clickable-buffer polygon,
+        [data-theme="dark"] #pipeline-graph svg .clickable-buffer ellipse { stroke: #ffb020; }
+        /* Buffer nodes are drawn unfilled, so by default only the
+           outline and label are hit-testable — a click in the middle of
+           one would fall through to the canvas.  pointer-events: all
+           makes the whole interior clickable regardless of paint, and
+           the hover tint shows the target area. */
+        #pipeline-graph svg .clickable-buffer polygon,
+        #pipeline-graph svg .clickable-buffer ellipse,
+        #pipeline-graph svg .clickable-buffer text { pointer-events: all; }
+        #pipeline-graph svg .clickable-buffer:hover polygon,
+        #pipeline-graph svg .clickable-buffer:hover ellipse { fill: rgba(232,147,12,0.15); }
+        [data-theme="dark"] #pipeline-graph svg .clickable-buffer:hover polygon,
+        [data-theme="dark"] #pipeline-graph svg .clickable-buffer:hover ellipse { fill: rgba(255,176,32,0.2); }
+        /* Keyboard reachability: the sanitizer stamps tabindex/role on
+           clickable buffers, pipeline.js turns Enter/Space into a click. */
+        #pipeline-graph svg .clickable-buffer:focus { outline: none; }
+        #pipeline-graph svg .clickable-buffer:focus-visible polygon,
+        #pipeline-graph svg .clickable-buffer:focus-visible ellipse {
+            stroke-width: 3.5; stroke-dasharray: 5 3;
+        }
+        /* Dark mode: dark canvas, light pipes.  The SVG is inline DOM,
+           so graphviz's presentation attributes can be restyled with
+           plain attribute selectors — no SVG rewriting involved.  The
+           rule is "every light paint becomes a dark one, every dark
+           paint becomes light", applied per graphviz colour name:
+             black    ink (edges, labels)      -> light grey
+             white    only the canvas polygon  -> transparent; the white
+                      *node cards* (GPU command steps) become dark cards
+                      with a visible edge — recolouring them transparent
+                      like the canvas made them vanish entirely
+             lightgrey cluster boxes           -> dark grey
+             lightblue network sends, #cd6090/hotpink GPU memory nodes
+                      are *filled* with black labels; the labels are now
+                      light, so the fills have to go dark too or the
+                      text is light-on-light.  Their strokes brighten
+                      instead, keeping each node type's colour identity. */
+        [data-theme="dark"] #pipeline-graph { background: #14181c; border-color: #3a4148; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="black"] { stroke: #b9c4cf; }
+        [data-theme="dark"] #pipeline-graph svg [fill="black"] { fill: #b9c4cf; }
+        [data-theme="dark"] #pipeline-graph svg > g.graph > polygon[fill="white"] { fill: transparent; }
+        [data-theme="dark"] #pipeline-graph svg .node [fill="white"] { fill: #1c2329; }
+        [data-theme="dark"] #pipeline-graph svg .node [stroke="white"] { stroke: #59636d; }
+        [data-theme="dark"] #pipeline-graph svg [fill="lightgrey"] { fill: #2a3138; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="lightgrey"] { stroke: #4a545e; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="blue"] { stroke: #6ea8fe; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="darkgreen"] { stroke: #51cf66; }
+        [data-theme="dark"] #pipeline-graph svg [fill="lightblue"] { fill: #1d3f57; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="lightblue"] { stroke: #7fc0e4; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#cd6090"] { fill: #56253c; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#cd6090"] { stroke: #e58fb4; }
+        [data-theme="dark"] #pipeline-graph svg [fill="hotpink"] { fill: #56253c; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="hotpink"] { stroke: #ff8ec4; }
+        /* The live plot opens as a popup overlay above the graph, so the
+           graph keeps the full viewport; hidden until a panel is open. */
+        #buffer-plot {
+            position: fixed;
+            right: 1em;
+            bottom: 1em;
+            width: min(46em, calc(100vw - 2em));
+            max-height: 72vh;
+            overflow: auto;
+            z-index: 50;
+        }
+        #buffer-plot:not(:has(article)) { display: none; }
+        #buffer-plot article {
+            margin: 0;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="pg-header">
+        <a href="/" class="brand-pill">CHOCO</a>
+        <strong>{{ node.key }} pipeline</strong>
+        <small style="opacity: 0.7;">scroll to zoom · drag to pan · amber buffers are plottable — click one</small>
+        <a href="/status/{{ node_key }}" role="button" class="outline">status</a>
+        <a href="/edit/{{ node_key }}" role="button" class="outline">edit</a>
+        <span class="pg-spacer"></span>
+        <button type="button" id="pg-theme" class="outline" title="Toggle dark/light">◐</button>
+        <button type="button" id="pg-fit" class="outline">Fit</button>
+        <button type="button" id="pg-full" class="outline">1:1</button>
+        {# Options come from the PIPELINE_LAYOUTS allowlist itself, so the
+           selector and the server-side presets can't drift apart. #}
+        <select id="pg-layout" name="layout"
+                title="Edge routing style"
+                hx-get="/partials/node-pipeline-svg/{{ node_key }}"
+                hx-target="#pipeline-graph" hx-swap="innerHTML"
+                hx-trigger="change">
+            {% for name in layouts %}
+            <option value="{{ name }}"{% if name == layout %} selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+        </select>
+        <button type="button" class="outline"
+                hx-get="/partials/node-pipeline-svg/{{ node_key }}"
+                hx-include="#pg-layout"
+                hx-target="#pipeline-graph" hx-swap="innerHTML">Refresh</button>
+    </div>
+
+    {# hx-include on the *load* trigger too: browsers restore a select's
+       value across a reload, so without it a restored "ortho" would sit
+       in the selector while the graph rendered curves. #}
+    <div id="pipeline-graph" class="fit"
+         hx-get="/partials/node-pipeline-svg/{{ node_key }}"
+         hx-include="#pg-layout"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <p style="margin: 0.5em;"><em>Rendering pipeline graph…</em></p>
+    </div>
+
+    {# Popup overlay for the live plots (bufferplot.js renders into it). #}
+    <div id="buffer-plot" data-node-key="{{ node_key }}"></div>
+
+    <script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
+    <script src="{{ url_for('static', filename='pipeline.js') }}"></script>
+</body>
+</html>

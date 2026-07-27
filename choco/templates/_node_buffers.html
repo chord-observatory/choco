@@ -23,13 +23,18 @@
             </td>
             <td>{% if row.full is not none %}{{ row.full }}/{{ row.frames }}{% else %}—{% endif %}</td>
             <td>{{ row.size_h or "—" }}</td>
-            <td style="text-align: right;">
+            <td style="text-align: right; white-space: nowrap;">
                 {% if row.peekable %}
                 <button id="peek-btn-{{ row.name }}"
                         hx-get="/partials/node-buffer-frame/{{ node_key }}?buffer={{ row.name|urlencode }}"
                         hx-target="#buffer-peek" hx-swap="innerHTML"
                         class="outline"
                         style="width: auto; margin: 0; padding: 0.05em 0.6em; font-size: 0.9em;">Peek</button>
+                <button id="plot-btn-{{ row.name }}" type="button"
+                        data-plot-node="{{ node_key }}"
+                        data-plot-buffer="{{ row.name }}"
+                        class="outline"
+                        style="width: auto; margin: 0; padding: 0.05em 0.6em; font-size: 0.9em;">Plot</button>
                 {% endif %}
             </td>
         </tr>

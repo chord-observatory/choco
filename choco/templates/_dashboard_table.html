@@ -60,7 +60,10 @@
                     —
                 {% endif %}
             </td>
-            <td><a href="/edit/{{ key }}" role="button" class="outline">Edit</a></td>
+            <td style="white-space: nowrap;">
+                <a href="/status/{{ key }}" role="button" class="outline">Status</a>
+                <a href="/edit/{{ key }}" role="button" class="outline">Edit</a>
+            </td>
         </tr>
         {% endfor %}
     </tbody>

@@ -10,7 +10,7 @@ import responses
 
 from choco.services import (
     FpgaMonitor, PdbMonitor, decode_out_bytes, job_status, timer_status,
-    read_state_json, EOP_STALE_AFTER_S,
+    read_state_json, sanitize_pipeline_svg, EOP_STALE_AFTER_S,
 )
 
 
@@ -893,3 +893,72 @@ class TestReadStateJson:
         p = tmp_path / "state.json"
         p.write_text("[1, 2, 3]")
         assert read_state_json(p) is None
+
+
+class TestSanitizePipelineSvg:
+    """Whitelist reconstruction of the graphviz pipeline SVG."""
+
+    SVG = """<svg xmlns="http://www.w3.org/2000/svg"
+         xmlns:xlink="http://www.w3.org/1999/xlink"
+         width="100pt" height="50pt" viewBox="0 0 100 50">
+      <g id="graph0" class="graph" transform="translate(4 46)">
+        <title>pipeline</title>
+        <polygon fill="white" stroke="none" points="-4,4 96,4"/>
+        <g id="node1" class="node">
+          <title>n2_buffer</title>
+          <polygon fill="none" stroke="black" points="0,0 50,20"/>
+          <text text-anchor="middle" x="25" y="10" font-size="14.00">n2_buffer</text>
+        </g>
+        <g id="node2" class="node">
+          <title>other_buf</title>
+          <ellipse fill="none" stroke="black" cx="10" cy="10" rx="5" ry="5"/>
+        </g>
+        <script>alert(1)</script>
+        <foreignObject><div>html!</div></foreignObject>
+        <g id="edge1" class="edge" onclick="alert(2)">
+          <title>a-&gt;b</title>
+          <path fill="none" stroke="black" d="M0,0 L10,10"/>
+        </g>
+        <a xlink:href="javascript:alert(3)"><text x="1" y="1">link</text></a>
+      </g>
+    </svg>"""
+
+    def test_active_content_cannot_survive(self):
+        out = sanitize_pipeline_svg(self.SVG, {"n2_buffer"}, "cx/cx1")
+        assert out is not None
+        for banned in ("script", "alert", "foreignObject", "onclick",
+                       "xlink", "javascript", "<a", "<div"):
+            assert banned not in out, banned
+        # The drawing itself survives.
+        assert "<polygon" in out and "<path" in out
+        assert "n2_buffer" in out
+
+    def test_clickable_buffers_are_stamped(self):
+        out = sanitize_pipeline_svg(self.SVG, {"n2_buffer"}, "cx/cx1")
+        assert 'data-plot-buffer="n2_buffer"' in out
+        assert 'data-plot-node="cx/cx1"' in out
+        assert "clickable-buffer" in out
+        # other_buf has no peek_hold: present but not clickable.
+        assert 'data-plot-buffer="other_buf"' not in out
+
+    def test_clickable_buffers_are_keyboard_reachable(self):
+        # Stamped groups double as buttons: pipeline.js turns Enter/Space
+        # on a focused group into the click bufferplot.js listens for.
+        out = sanitize_pipeline_svg(self.SVG, {"n2_buffer"}, "cx/cx1")
+        assert 'tabindex="0"' in out
+        assert 'role="button"' in out
+        assert 'aria-label="plot buffer n2_buffer"' in out
+        # Non-clickable nodes stay out of the tab order.
+        assert out.count('tabindex="0"') == 1
+
+    def test_edge_groups_not_stamped(self):
+        out = sanitize_pipeline_svg(self.SVG, {"a->b"}, "cx/cx1")
+        assert "data-plot-buffer" not in out
+        assert "tabindex" not in out
+
+    def test_unparseable_input_is_none(self):
+        assert sanitize_pipeline_svg("<svg", set(), "cx/cx1") is None
+        assert sanitize_pipeline_svg("not xml at all", set(), "cx/cx1") is None
+
+    def test_non_svg_root_is_none(self):
+        assert sanitize_pipeline_svg("<html>x</html>", set(), "cx/cx1") is None

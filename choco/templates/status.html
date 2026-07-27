@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}CHOCO - {{ node_key }} status{% endblock %}
+
+{% block content %}
+<h2>{{ node.key }}
+    <a href="/edit/{{ node_key }}" role="button" class="outline"
+       style="width: auto; font-size: 0.55em; vertical-align: middle; margin-left: 0.75em; padding: 0.2em 0.8em;">Edit config</a>
+</h2>
+
+<table>
+    <tbody>
+        <tr><th>Host</th><td>{{ node.host }}:{{ node.port }}</td></tr>
+        <tbody id="node-status"
+               hx-ext="morph"
+               hx-get="/partials/node-status/{{ node_key }}"
+               hx-trigger="load, every 2s"
+               hx-swap="morph:innerHTML">
+            {% include "_node_status.html" %}
+        </tbody>
+    </tbody>
+</table>
+
+<h3>Buffers</h3>
+{# morph keeps the Peek/Plot buttons alive across the poll swap, so a
+   refresh landing mid-click can't cancel an in-flight request. #}
+<div id="node-buffers" hx-ext="morph"
+     hx-get="/partials/node-buffers/{{ node_key }}"
+     hx-trigger="load, every 5s"
+     hx-swap="morph:innerHTML">
+    <p><em>Loading buffers…</em></p>
+</div>
+{# Peek results land outside the polled region so they survive the 5 s refresh. #}
+<div id="buffer-peek"></div>
+{# Live plot panel (bufferplot.js), likewise outside the polled table.
+   data-node-key lets the script auto-reopen the last-watched buffer. #}
+<div id="buffer-plot" data-node-key="{{ node_key }}"></div>
+
+<h3>Pipeline Graph
+    <a href="/pipeline/{{ node_key }}" role="button" class="outline"
+       style="width: auto; font-size: 0.55em; vertical-align: middle; margin-left: 0.75em; padding: 0.2em 0.8em;">Full-page view</a>
+</h3>
+{# intersect defers the fetch until the graph scrolls into view; "once"
+   so it never re-fetches on its own — that's the refresh button's job. #}
+<div id="pipeline-graph"
+     hx-get="/partials/node-pipeline/{{ node_key }}"
+     hx-trigger="intersect once">
+    <p><em>Loading pipeline graph…</em></p>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='idiomorph-ext.min.js') }}"></script>
+<script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
+{% endblock %}

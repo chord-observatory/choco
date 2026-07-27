@@ -20,7 +20,7 @@ from .auth import save_user, localhost_or_login_required
 from .pdbmap import PdbMap, cross_check, kotekan_dish_labels
 from .services import (
     job_status, job_logs, timer_status, read_state_json, render_dot_svg,
-    EOP_STALE_AFTER_S,
+    sanitize_pipeline_svg, EOP_STALE_AFTER_S, PIPELINE_LAYOUTS,
 )
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
@@ -193,6 +193,91 @@ def node_edit(node_key):
         config_content=config_content,
         updatable_json=updatable_json,
     )
+
+
+@bp.route("/pipeline/<path:node_key>")
+@login_required
+def node_pipeline_page(node_key):
+    """Full-page interactive pipeline view.
+
+    The graph pane fills the viewport (drag to pan, scroll to zoom,
+    Fit/1:1 buttons) and buffer nodes with ``peek_hold`` are clickable —
+    a click opens the live plot in a popup overlay pinned to the
+    bottom-right corner, so the graph keeps the whole viewport.  The SVG
+    is inlined after ``sanitize_pipeline_svg`` whitelist reconstruction,
+    unlike the status page's inert base64 ``<img>``.
+
+    ``?layout=`` preselects an edge-routing preset (allowlisted against
+    PIPELINE_LAYOUTS) so a layout choice survives a refresh and can be
+    bookmarked; pipeline.js keeps the URL in step with the selector.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        flash(f"Node {node_key} not found", "error")
+        return redirect(url_for("web.dashboard"))
+    layout = request.args.get("layout", "")
+    if layout not in PIPELINE_LAYOUTS:
+        layout = "curves"
+    return render_template(
+        "pipeline.html", node=node, node_key=node_key,
+        layout=layout, layouts=list(PIPELINE_LAYOUTS),
+    )
+
+
+@bp.route("/partials/node-pipeline-svg/<path:node_key>")
+@login_required
+def partial_node_pipeline_svg(node_key):
+    """Sanitized inline SVG for the full-page pipeline view.
+
+    ``?layout=`` selects an edge-routing preset; the value is an
+    allowlist key into PIPELINE_LAYOUTS, never a raw dot argument.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    layout = request.args.get("layout", "curves")
+    layout_args = PIPELINE_LAYOUTS.get(layout, PIPELINE_LAYOUTS["curves"])
+    dot = node.get_pipeline_dot()
+    svg_markup = None
+    # Which buffers are clickable needs a second kotekan read, and it can
+    # fail on its own: distinguish "asked, got nothing" (buffers_ok, an
+    # idle kotekan or a pipeline with no peek_hold) from "couldn't ask"
+    # so the template doesn't leave the page promising amber buffers
+    # that were never marked.
+    buffers_ok = True
+    clickable = set()
+    if dot is not None:
+        svg = render_dot_svg(dot, layout_args=layout_args)
+        if svg is not None:
+            buffers = node.get_buffers()
+            buffers_ok = buffers is not None
+            clickable = {name for name, info in (buffers or {}).items()
+                         if isinstance(info, dict) and info.get("peek_hold")}
+            svg_markup = sanitize_pipeline_svg(svg, clickable, node_key)
+    return render_template(
+        "_node_pipeline_svg.html",
+        node_key=node_key, dot=dot, svg_markup=svg_markup,
+        buffers_ok=buffers_ok, clickable_count=len(clickable),
+    )
+
+
+@bp.route("/status/<path:node_key>")
+@login_required
+def node_status_page(node_key):
+    """Read-only live view of a node: buffers, plots, pipeline graph.
+
+    Split out from the edit page so watching a node (all reads —
+    allowed in maintenance mode) doesn't share a page with the config
+    forms; the two pages link to each other.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        flash(f"Node {node_key} not found", "error")
+        return redirect(url_for("web.dashboard"))
+    return render_template("status.html", node=node, node_key=node_key)
 
 
 # --- Nodes-registry editor (nodes.yaml) ---
@@ -431,7 +516,8 @@ def partial_node_status(node_key):
     node = registry.get_node(node_key)
     if node is None:
         abort(404)
-    # Light probe so the edit page gets fresh data between sync loop polls.
+    # Light probe so the status/edit pages get fresh data between sync
+    # loop polls.
     probe = node.get_status()
     if probe != node.status:
         node.status = probe
@@ -443,8 +529,10 @@ def partial_node_status(node_key):
 @bp.route("/partials/node-pipeline/<path:node_key>")
 @login_required
 def partial_node_pipeline(node_key):
-    """Pipeline graph for a node's edit page.
+    """Inert base64-``<img>`` pipeline graph for a node's status page.
 
+    (The clickable inline-SVG version lives at
+    ``/partials/node-pipeline-svg`` and serves the full-page view.)
     Fetched on demand only (opening the section, or its refresh button)
     — never on a timed poll: /pipeline_dot walks kotekan's full
     buffer/stage graph, and rendering it costs a dot subprocess here.
@@ -483,7 +571,7 @@ def _human_bytes(n) -> str:
 @bp.route("/partials/node-buffers/<path:node_key>")
 @login_required
 def partial_node_buffers(node_key):
-    """Buffer fullness table for a node's edit page (polled every 5 s).
+    """Buffer fullness table for a node's status page (polled every 5 s).
 
     Ring buffers report no frame accounting and have no frame-peek
     endpoint, so they get no fullness column or Peek button.
@@ -504,7 +592,14 @@ def partial_node_buffers(node_key):
             "frames": len(frames) if isinstance(frames, list) else None,
             "size_h": _human_bytes(info.get("frame_size")),
             "peek_hold": bool(info.get("peek_hold")),
-            "peekable": "num_full_frame" in info,
+            # Peek/Plot buttons only where a peek is guaranteed to have
+            # a frame to serve: buffers holding their newest frame.  A
+            # fast-draining buffer without peek_hold answers "no full
+            # frame" almost every time — a button that mostly errors is
+            # noise.  (The data API itself stays open to any frame
+            # buffer.)  Enable peek_hold on a buffer's config block to
+            # get its buttons.
+            "peekable": bool(info.get("peek_hold")),
         })
     return render_template(
         "_node_buffers.html", node_key=node_key, buffers=buffers, rows=rows,
@@ -538,6 +633,75 @@ def partial_node_buffer_frame(node_key):
         node_key=node_key, buffer_name=buffer_name, frame=frame,
         desc_json=desc_json, meta_json=meta_json,
     )
+
+
+# Bounds for the buffer-data proxy: the default keeps a 5 s poll cheap;
+# the cap keeps one request from streaming a whole 400 MB voltage frame
+# through choco.  These are byte counts of frame *prefix* — every pathfinder
+# buffer is C-order with time leading, so a prefix is complete early
+# timesamples with all inner structure intact.
+_BUFFER_DATA_DEFAULT_LEN = 4 * 1024 * 1024
+_BUFFER_DATA_MAX_LEN = 32 * 1024 * 1024
+
+
+@bp.route("/api/node-buffer-data/<path:node_key>")
+@localhost_or_login_required
+def api_node_buffer_data(node_key):
+    """Frame-data proxy for the live buffer plots (``bufferplot.js``).
+
+    ``?len=0`` returns kotekan's JSON reply as-is (frame descriptor,
+    metadata, frame id) — the plotter fetches it once to learn the
+    value type and extents.  ``?len>0`` (clamped, default 4 MiB)
+    returns the newest frame's leading bytes as raw
+    ``application/octet-stream`` — kotekan base64-encodes frame data
+    inside its JSON reply, so choco decodes here rather than making
+    the browser do it — with the frame id in ``X-Frame-Id`` so the
+    poller can spot a stalled pipeline serving the same held frame.
+
+    Errors are JSON: 400 bad buffer name / ``len``, 404 unknown node
+    or no full frame in the buffer, 502 kotekan unreachable or reply
+    malformed.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        return {"error": f"Node '{node_key}' not found"}, 404
+    buffer_name = request.args.get("buffer", "")
+    if not _BUFFER_NAME_RE.fullmatch(buffer_name):
+        return {"error": "bad buffer name"}, 400
+    try:
+        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
+    except ValueError:
+        return {"error": "'len' must be a non-negative integer"}, 400
+    if length < 0:
+        return {"error": "'len' must be a non-negative integer"}, 400
+    length = min(length, _BUFFER_DATA_MAX_LEN)
+
+    frame = node.get_buffer_frame(buffer_name, length=length)
+    if frame is None:
+        return {"error": "kotekan unreachable"}, 502
+    if frame.get("error"):
+        return {"error": frame["error"]}, 404
+    if length == 0:
+        return frame
+
+    encoded = frame.get("data")
+    if not isinstance(encoded, str) or frame.get("encoding") != "base64":
+        return {"error": "unexpected kotekan reply: no base64 frame data"}, 502
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return {"error": "unexpected kotekan reply: bad base64 frame data"}, 502
+    resp = Response(raw, mimetype="application/octet-stream")
+    # int-check before echoing kotekan-supplied values into headers —
+    # Werkzeug rejects control characters with a 500, so don't let a
+    # malformed reply get that far.
+    frame_id = frame.get("frame_id")
+    frame_size = frame.get("frame_size")
+    resp.headers["X-Frame-Id"] = str(frame_id) if isinstance(frame_id, int) else ""
+    resp.headers["X-Frame-Size"] = str(frame_size) if isinstance(frame_size, int) else ""
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @bp.route("/partials/dashboard-table")

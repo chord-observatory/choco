@@ -337,14 +337,162 @@ class TestNodePipelinePartial:
         # Raw dot text is present and HTML-escaped.
         assert "&#34;n2_buffer&#34;" in body
 
-    def test_edit_page_carries_lazy_pipeline_section(self, client):
+    def test_status_page_carries_lazy_pipeline_section(self, client):
         _login(client)
-        resp = client.get("/edit/cx/cx1")
+        resp = client.get("/status/cx/cx1")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "/partials/node-pipeline/cx/cx1" in body
         assert "intersect once" in body
-        assert "<h3>Pipeline Graph</h3>" in body
+        assert "Pipeline Graph" in body
+        assert "/pipeline/cx/cx1" in body  # full-page view link
+
+
+class TestPipelinePage:
+    """Full-page interactive pipeline view (/pipeline/<key>)."""
+
+    DOT = 'digraph pipeline {\n"n2_buffer" -> "stage_x";\n}'
+    # Graphviz-shaped SVG: one held buffer, one without peek_hold.
+    SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="10pt" height="10pt" '
+           'viewBox="0 0 10 10"><g class="graph">'
+           '<g id="node1" class="node"><title>n2_buffer</title>'
+           '<polygon fill="none" stroke="black" points="0,0 5,5"/></g>'
+           '<g id="node2" class="node"><title>host_voltage_buffer_0</title>'
+           '<polygon fill="none" stroke="black" points="0,0 5,5"/></g>'
+           '</g></svg>')
+    BUFFERS = {
+        "n2_buffer": {"num_full_frame": 1, "peek_hold": True},
+        "host_voltage_buffer_0": {"num_full_frame": 0},
+    }
+
+    def test_requires_login(self, client):
+        resp = client.get("/pipeline/cx/cx1", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_node_redirects(self, client):
+        _login(client)
+        resp = client.get("/pipeline/cx/nope", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_page_structure(self, client):
+        _login(client)
+        body = client.get("/pipeline/cx/cx1").data.decode()
+        # Standalone full-viewport page with slim nav, not base.html.
+        assert 'id="pipeline-graph"' in body
+        assert "/partials/node-pipeline-svg/cx/cx1" in body
+        assert 'class="brand-pill"' in body and 'href="/"' in body
+        assert "/status/cx/cx1" in body
+        assert "/edit/cx/cx1" in body
+        # Plot popup overlay + layout preset selector + theme toggle.
+        assert 'id="buffer-plot"' in body
+        assert 'data-node-key="cx/cx1"' in body
+        assert 'name="layout"' in body
+        # curves is the default layout (first option in the selector).
+        assert body.index('value="curves"') < body.index('value="ortho"')
+        assert 'id="pg-theme"' in body
+        assert 'data-theme="dark"' in body  # dark is the default
+        assert "bufferplot.js" in body and "pipeline.js" in body
+
+    def test_page_layout_selection_round_trips(self, client):
+        _login(client)
+        # ?layout= preselects a preset, so a refresh or a shared link
+        # comes back with the same routing...
+        body = client.get("/pipeline/cx/cx1?layout=ortho").data.decode()
+        assert '<option value="ortho" selected>' in body
+        assert '<option value="curves">' in body
+        # ...and an unknown value falls back to curves, never reaching dot.
+        body = client.get("/pipeline/cx/cx1?layout=../evil").data.decode()
+        assert '<option value="curves" selected>' in body
+        assert "evil" not in body
+        # The initial graph fetch includes the selector, so a browser
+        # restoring a select value across a reload can't disagree with
+        # what gets rendered.
+        assert 'hx-include="#pg-layout"' in body
+
+    def test_partial_layout_presets_are_allowlisted(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        from choco.services import PIPELINE_LAYOUTS
+        _login(client)
+        for requested, expected in (
+            ("curves", PIPELINE_LAYOUTS["curves"]),
+            ("ortho", PIPELINE_LAYOUTS["ortho"]),
+            ("../evil", PIPELINE_LAYOUTS["curves"]),  # unknown -> default
+        ):
+            with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+                 patch.object(Node, "get_buffers", return_value=self.BUFFERS), \
+                 patch("choco.web.render_dot_svg",
+                       return_value=self.SVG) as rds:
+                resp = client.get(
+                    f"/partials/node-pipeline-svg/cx/cx1?layout={requested}")
+            assert resp.status_code == 200
+            rds.assert_called_once_with(self.DOT, layout_args=expected)
+
+    def test_partial_stamps_only_held_buffers(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch.object(Node, "get_buffers", return_value=self.BUFFERS), \
+             patch("choco.web.render_dot_svg", return_value=self.SVG):
+            resp = client.get("/partials/node-pipeline-svg/cx/cx1")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert 'data-plot-buffer="n2_buffer"' in body
+        assert 'data-plot-node="cx/cx1"' in body
+        assert 'data-plot-buffer="host_voltage_buffer_0"' not in body
+        # Inline SVG, not the base64 <img> of the status page.
+        assert "<svg" in body and "data:image/svg+xml" not in body
+
+    def test_partial_notes_when_nothing_is_clickable(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        # A failed /buffers read: the graph renders, but nothing could be
+        # marked — say so rather than silently showing an amber-less graph.
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch.object(Node, "get_buffers", return_value=None), \
+             patch("choco.web.render_dot_svg", return_value=self.SVG):
+            body = client.get("/partials/node-pipeline-svg/cx/cx1").data.decode()
+        assert "buffer list unavailable" in body
+        assert "data-plot-buffer" not in body
+        # A reachable kotekan with no peek_hold buffers is a different
+        # (also worth stating) case.
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch.object(Node, "get_buffers",
+                          return_value={"host_voltage_buffer_0": {"num_full_frame": 0}}), \
+             patch("choco.web.render_dot_svg", return_value=self.SVG):
+            body = client.get("/partials/node-pipeline-svg/cx/cx1").data.decode()
+        assert "no <code>peek_hold</code> buffers" in body
+        # ...and neither note appears when buffers are clickable.
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch.object(Node, "get_buffers", return_value=self.BUFFERS), \
+             patch("choco.web.render_dot_svg", return_value=self.SVG):
+            body = client.get("/partials/node-pipeline-svg/cx/cx1").data.decode()
+        assert "unavailable" not in body and "nothing is clickable" not in body
+
+    def test_partial_falls_back_to_dot_text(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_pipeline_dot", return_value=self.DOT), \
+             patch("choco.web.render_dot_svg", return_value=None):
+            resp = client.get("/partials/node-pipeline-svg/cx/cx1")
+        body = resp.data.decode()
+        assert "graphviz" in body
+        assert "&#34;n2_buffer&#34;" in body  # escaped dot text
+
+    def test_partial_unreachable(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_pipeline_dot", return_value=None):
+            resp = client.get("/partials/node-pipeline-svg/cx/cx1")
+        assert b"unreachable" in resp.data
+
+    def test_partial_unknown_node_404(self, client):
+        _login(client)
+        assert client.get("/partials/node-pipeline-svg/cx/nope").status_code == 404
 
 
 class TestNodeBuffersPartial:
@@ -379,6 +527,16 @@ class TestNodeBuffersPartial:
         assert resp.status_code == 200
         assert b"unreachable" in resp.data
 
+    def test_idle_node_reports_no_buffers_not_unreachable(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffers", return_value={}):
+            resp = client.get("/partials/node-buffers/cx/cx1")
+        assert resp.status_code == 200
+        assert b"No buffers reported" in resp.data
+        assert b"unreachable" not in resp.data
+
     def test_table_rows_badges_and_peek_buttons(self, client):
         from unittest.mock import patch
         from choco.state import Node
@@ -391,21 +549,60 @@ class TestNodeBuffersPartial:
         assert "3/4" in body
         assert "held" in body  # peek_hold badge
         assert "384.0 MiB" in body
-        # Frame buffers get a Peek button; the ring buffer doesn't.
+        # Only buffers with peek_hold get Peek/Plot buttons — a buffer
+        # without the hold usually has no full frame to serve, so the
+        # buttons would mostly error.
         assert "?buffer=n2_buffer" in body
-        assert "?buffer=host_voltage_buffer_0" in body
+        assert 'data-plot-buffer="n2_buffer"' in body
+        assert 'data-plot-node="cx/cx1"' in body
+        assert "?buffer=host_voltage_buffer_0" not in body
+        assert 'data-plot-buffer="host_voltage_buffer_0"' not in body
         assert "?buffer=ring_buf" not in body
+        assert 'data-plot-buffer="ring_buf"' not in body
         # Ring buffers report no frame accounting.
         assert "—" in body
 
-    def test_edit_page_carries_polled_buffers_section(self, client):
+    def test_status_page_carries_polled_buffers_section(self, client):
         _login(client)
-        resp = client.get("/edit/cx/cx1")
+        resp = client.get("/status/cx/cx1")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "<h3>Buffers</h3>" in body
         assert "/partials/node-buffers/cx/cx1" in body
         assert 'id="buffer-peek"' in body
+        # Live plot: panel container + vendored renderer script; the
+        # node key on the container drives last-watched auto-reopen.
+        assert 'id="buffer-plot"' in body
+        assert 'data-node-key="cx/cx1"' in body
+        assert "bufferplot.js" in body
+
+
+class TestNodeStatusPage:
+    def test_requires_login(self, client):
+        resp = client.get("/status/cx/cx1", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_node_redirects_to_dashboard(self, client):
+        _login(client)
+        resp = client.get("/status/cx/nope", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "/" in resp.headers["Location"]
+
+    def test_pages_cross_link(self, client):
+        _login(client)
+        status_body = client.get("/status/cx/cx1").data.decode()
+        assert "/edit/cx/cx1" in status_body
+        edit_body = client.get("/edit/cx/cx1").data.decode()
+        assert "/status/cx/cx1" in edit_body
+        # The watch sections moved off the edit page entirely.
+        assert "<h3>Buffers</h3>" not in edit_body
+        assert "<h3>Pipeline Graph</h3>" not in edit_body
+        assert "bufferplot.js" not in edit_body
+
+    def test_dashboard_links_to_status(self, client):
+        _login(client)
+        body = client.get("/").data.decode()
+        assert '/status/cx/cx1' in body
 
 
 class TestNodeBufferFramePartial:
@@ -461,6 +658,19 @@ class TestNodeBufferFramePartial:
         assert b"no full frame" in resp.data
         assert b"peek_hold" in resp.data
 
+    def test_missing_endpoint_error_has_no_peek_hold_hint(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        _login(client)
+        with patch.object(Node, "get_buffer_frame",
+                          return_value={"error": "no buffer endpoint for 'x'"}):
+            resp = client.get(
+                "/partials/node-buffer-frame/cx/cx1?buffer=x")
+        assert resp.status_code == 200
+        assert b"no buffer endpoint" in resp.data
+        # The peek_hold suggestion only makes sense for a peek miss.
+        assert b"peek_hold" not in resp.data
+
     def test_unreachable_node_message(self, client):
         from unittest.mock import patch
         from choco.state import Node
@@ -470,6 +680,116 @@ class TestNodeBufferFramePartial:
                 "/partials/node-buffer-frame/cx/cx1?buffer=n2_buffer")
         assert resp.status_code == 200
         assert b"unreachable" in resp.data
+
+
+class TestNodeBufferDataApi:
+    """The frame-data proxy behind the live buffer plots.
+
+    Requests come from 127.0.0.1 so the localhost bypass applies (no
+    login needed), same as the other /api/ routes.
+    """
+
+    RAW = bytes(range(16))
+
+    @classmethod
+    def frame(cls, **extra):
+        import base64
+        f = {
+            "buffer": "n2_buffer", "frame_id": 7, "frame_size": 100756,
+            "data_length": len(cls.RAW),
+            "data": base64.b64encode(cls.RAW).decode("ascii"),
+            "encoding": "base64",
+            "metadata": {"fpga_seq_start": 12345},
+            "frame_desc": {"frame_desc_type": "ndarray",
+                           "value_type": "int32", "extents": [4, 2]},
+        }
+        f.update(extra)
+        return f
+
+    def test_unknown_node_404(self, client):
+        resp = client.get("/api/node-buffer-data/cx/nope?buffer=b")
+        assert resp.status_code == 404
+
+    def test_bad_buffer_name_400(self, client):
+        for bad in ("", "a/b", "a b", "a%2Fb/../kill"):
+            resp = client.get(f"/api/node-buffer-data/cx/cx1?buffer={bad}")
+            assert resp.status_code == 400, bad
+
+    def test_bad_len_400(self, client):
+        for bad in ("abc", "-1", "1.5"):
+            resp = client.get(
+                f"/api/node-buffer-data/cx/cx1?buffer=n2_buffer&len={bad}")
+            assert resp.status_code == 400, bad
+
+    def test_len_defaults_and_clamps(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        with patch.object(Node, "get_buffer_frame",
+                          return_value=self.frame()) as gbf:
+            client.get("/api/node-buffer-data/cx/cx1?buffer=n2_buffer")
+        gbf.assert_called_once_with("n2_buffer", length=4 * 1024 * 1024)
+        with patch.object(Node, "get_buffer_frame",
+                          return_value=self.frame()) as gbf:
+            client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_buffer&len=999999999")
+        gbf.assert_called_once_with("n2_buffer", length=32 * 1024 * 1024)
+
+    def test_len_zero_returns_descriptor_json(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        frame = self.frame()
+        del frame["data"], frame["encoding"]
+        with patch.object(Node, "get_buffer_frame",
+                          return_value=frame) as gbf:
+            resp = client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_buffer&len=0")
+        gbf.assert_called_once_with("n2_buffer", length=0)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["frame_desc"]["value_type"] == "int32"
+        assert data["frame_id"] == 7
+
+    def test_data_returned_as_raw_bytes(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        with patch.object(Node, "get_buffer_frame",
+                          return_value=self.frame()):
+            resp = client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_buffer&len=16")
+        assert resp.status_code == 200
+        assert resp.content_type == "application/octet-stream"
+        assert resp.data == self.RAW
+        assert resp.headers["X-Frame-Id"] == "7"
+        assert resp.headers["X-Frame-Size"] == "100756"
+
+    def test_no_full_frame_404_json(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        with patch.object(Node, "get_buffer_frame",
+                          return_value={"error": "no full frame currently in buffer"}):
+            resp = client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_buffer")
+        assert resp.status_code == 404
+        assert "no full frame" in resp.get_json()["error"]
+
+    def test_unreachable_502(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        with patch.object(Node, "get_buffer_frame", return_value=None):
+            resp = client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_buffer")
+        assert resp.status_code == 502
+
+    def test_missing_data_field_502(self, client):
+        from unittest.mock import patch
+        from choco.state import Node
+        frame = self.frame()
+        del frame["data"], frame["encoding"]
+        with patch.object(Node, "get_buffer_frame", return_value=frame):
+            resp = client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_buffer&len=16")
+        assert resp.status_code == 502
+        assert "base64" in resp.get_json()["error"]
 
 
 class TestServicesPartial:

@@ -1,0 +1,20 @@
+{% if svg_markup %}
+{# The graph promises "amber buffers are plottable", so say so when
+   nothing could be marked — a failed /buffers read and a pipeline with
+   no peek_hold buffers look identical in the drawing otherwise. #}
+{% if not buffers_ok %}
+<p class="pg-note"><em>buffer list unavailable — nothing is marked clickable in this render.</em></p>
+{% elif not clickable_count %}
+<p class="pg-note"><em>no <code>peek_hold</code> buffers on this node — nothing is clickable.</em></p>
+{% endif %}
+{# |safe is earned: svg_markup came out of sanitize_pipeline_svg's
+   whitelist reconstruction — kotekan content cannot carry script
+   through it.  Clickable buffer groups carry data-plot-* attributes
+   that bufferplot.js's delegated handler picks up. #}
+{{ svg_markup|safe }}
+{% elif dot %}
+<p><em>graphviz render failed or <code>dot</code> is not installed — raw pipeline description:</em></p>
+<pre style="max-height: 60vh; overflow: auto; font-size: 0.75em;">{{ dot }}</pre>
+{% else %}
+<p style="margin: 0;"><em>kotekan unreachable — no pipeline graph.</em></p>
+{% endif %}

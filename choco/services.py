@@ -18,6 +18,7 @@ import logging
 import shutil
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import gevent
@@ -691,11 +692,31 @@ def job_logs(service_unit: str, lines: int = 50,
 # Layout attributes injected at render time (kotekan's dot text carries no
 # layout hints): orthogonal edge routing plus wider rank/node separation
 # turns the default spline spaghetti into readable right-angle channels on
-# the ~200-edge production pipelines.
-_DOT_LAYOUT_ARGS = ("-Gsplines=ortho", "-Granksep=1.2", "-Gnodesep=0.6")
+# the ~200-edge production pipelines.  mclimit raises the crossing-
+# minimisation effort and newrank improves ranking — together they laid
+# out the 645-line cx19 pipeline ~11% narrower (fewer edge crossings)
+# for well under a second of extra layout time.  Splines (curves) are
+# the default routing: ortho was the original pick when default splines
+# were spaghetti, but mclimit/newrank tamed that, curves lay out ~10%
+# more compact, and the operator prefers them; ortho stays a preset.
+_DOT_LAYOUT_ARGS = ("-Gsplines=true", "-Granksep=1.0", "-Gnodesep=0.5",
+                    "-Gmclimit=8", "-Gnewrank=true")
+
+# Selectable presets for the full-page pipeline view: edge-routing style
+# is a taste call on a graph this size, so the page lets the operator
+# flip between them live.  Keys are the allowlist for the ``?layout=``
+# query parameter — never pass raw values to the dot command line.
+PIPELINE_LAYOUTS = {
+    "curves": _DOT_LAYOUT_ARGS,
+    "ortho": ("-Gsplines=ortho", "-Granksep=1.2", "-Gnodesep=0.6",
+              "-Gmclimit=8", "-Gnewrank=true"),
+    "polyline": ("-Gsplines=polyline", "-Granksep=1.0", "-Gnodesep=0.5",
+                 "-Gmclimit=8", "-Gnewrank=true"),
+}
 
 
-def render_dot_svg(dot_text: str, timeout: float = 10.0) -> str | None:
+def render_dot_svg(dot_text: str, timeout: float = 10.0,
+                   layout_args: tuple[str, ...] = _DOT_LAYOUT_ARGS) -> str | None:
     """Render graphviz dot text to an SVG document string.
 
     Shells out to the graphviz CLI (same host-tool-over-Python-dependency
@@ -709,7 +730,7 @@ def render_dot_svg(dot_text: str, timeout: float = 10.0) -> str | None:
     """
     if shutil.which("dot") is None:
         return None
-    for extra_args in (_DOT_LAYOUT_ARGS, ()):
+    for extra_args in (layout_args, ()):
         try:
             result = subprocess.run(
                 ["dot", "-Tsvg", *extra_args],
@@ -730,6 +751,101 @@ def render_dot_svg(dot_text: str, timeout: float = 10.0) -> str | None:
             continue
         return result.stdout[start:]
     return None
+
+
+# --- Pipeline SVG sanitizer (clickable inline graph) ---
+#
+# The status page embeds the pipeline SVG as an inert base64 <img> so
+# kotekan-supplied content can never execute script in choco's
+# authenticated UI.  The full-page pipeline view needs the SVG *live*
+# in the DOM to make buffer nodes clickable, so it goes through this
+# whitelist RECONSTRUCTION instead: a brand-new tree is built and only
+# known-inert graphviz output elements/attributes are copied over —
+# <script>, event handlers, <foreignObject>, xlink:href and anything
+# else unexpected can't survive because nothing is copied by default.
+
+_SVG_NS = "http://www.w3.org/2000/svg"
+# Process-global ET state: makes SVG the *default* namespace on
+# serialization (``<svg xmlns=...>`` rather than ``<ns0:svg
+# xmlns:ns0=...>``, which browsers would still honour but no CSS
+# selector here would match).  services.py is choco's only ElementTree
+# user; a second one serializing a different vocabulary would need its
+# own register_namespace call.
+ET.register_namespace("", _SVG_NS)
+
+_SVG_ALLOWED = {
+    "svg": {"width", "height", "viewBox"},
+    "g": {"id", "class", "transform"},
+    "title": set(),
+    "polygon": {"fill", "stroke", "stroke-width", "stroke-dasharray", "points"},
+    "polyline": {"fill", "stroke", "stroke-width", "stroke-dasharray", "points"},
+    "ellipse": {"fill", "stroke", "stroke-width", "stroke-dasharray",
+                "cx", "cy", "rx", "ry"},
+    "circle": {"fill", "stroke", "stroke-width", "stroke-dasharray",
+               "cx", "cy", "r"},
+    "path": {"fill", "stroke", "stroke-width", "stroke-dasharray", "d"},
+    "text": {"text-anchor", "x", "y", "font-family", "font-size", "fill"},
+}
+
+
+def _svg_local(tag_or_attr: str) -> str:
+    """Local name of a possibly namespace-qualified tag/attribute."""
+    return tag_or_attr.rsplit("}", 1)[-1]
+
+
+def sanitize_pipeline_svg(svg_text: str, clickable: set[str],
+                          node_key: str) -> str | None:
+    """Rebuild a graphviz pipeline SVG through the whitelist above.
+
+    Graphviz wraps every dot node in ``<g class="node">`` whose first
+    ``<title>`` child is the exact dot node name; groups whose title is
+    in ``clickable`` (the peek_hold buffer names) are stamped with
+    ``data-plot-buffer``/``data-plot-node`` so bufferplot.js's existing
+    delegated click handler opens their live plot — no JS changes — plus
+    ``tabindex``/``role``/``aria-label`` so they are reachable by
+    keyboard (pipeline.js turns Enter/Space into a click).
+    Returns the sanitized SVG markup, or None if the input doesn't
+    parse (caller falls back to the raw dot text).
+    """
+    try:
+        root = ET.fromstring(svg_text)
+    except ET.ParseError as e:
+        logger.warning(f"pipeline SVG parse failed: {e}")
+        return None
+    if _svg_local(root.tag) != "svg":
+        return None
+
+    def rebuild(src: ET.Element, dst_parent: ET.Element | None) -> ET.Element | None:
+        tag = _svg_local(src.tag)
+        allowed = _SVG_ALLOWED.get(tag)
+        if allowed is None:
+            return None  # unknown element: dropped with its whole subtree
+        attrs = {name: value for raw, value in src.attrib.items()
+                 if (name := _svg_local(raw)) in allowed}
+        qtag = f"{{{_SVG_NS}}}{tag}"
+        dst = (ET.Element(qtag, attrs) if dst_parent is None
+               else ET.SubElement(dst_parent, qtag, attrs))
+        if tag in ("text", "title"):
+            dst.text = src.text
+        for child in src:
+            rebuild(child, dst)
+        return dst
+
+    out = rebuild(root, None)
+
+    for group in out.iter(f"{{{_SVG_NS}}}g"):
+        if "node" not in group.get("class", "").split():
+            continue
+        title = group.find(f"{{{_SVG_NS}}}title")
+        name = (title.text or "").strip() if title is not None else ""
+        if name in clickable:
+            group.set("data-plot-buffer", name)
+            group.set("data-plot-node", node_key)
+            group.set("class", group.get("class", "") + " clickable-buffer")
+            group.set("tabindex", "0")
+            group.set("role", "button")
+            group.set("aria-label", f"plot buffer {name}")
+    return ET.tostring(out, encoding="unicode")
 
 
 # Schedule facts for a job's timer.  The timestamp values are systemd's

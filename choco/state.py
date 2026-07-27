@@ -363,11 +363,24 @@ class Node:
             logger.debug(f"Timeout: {url}")
         except requests.HTTPError as e:
             logger.warning(f"HTTP error from {url}: {e}")
+        except requests.RequestException as e:
+            # Catch-all for the rarer transport failures (chunked-encoding
+            # errors, protocol errors on a mid-body disconnect, ...) so
+            # they degrade like any other failed request instead of
+            # bubbling a 500 out of whatever route made the call.
+            logger.warning(f"Request failed: {url}: {e}")
         return None
 
     def get_status(self) -> NodeStatus:
         """Probe kotekan: returns DOWN, IDLE, STARTED, or UNKNOWN."""
         resp = self._request("GET", "/status")
+        if resp is None:
+            # One quick retry before declaring DOWN: a single dropped
+            # request otherwise flips the node red for a whole poll
+            # cycle (and skips its sync tick).  A genuinely down node
+            # fails both attempts; connection-refused is instant, so
+            # the retry only costs time in the blackhole case.
+            resp = self._request("GET", "/status")
         if resp is None:
             return NodeStatus.DOWN
         try:
@@ -460,12 +473,22 @@ class Node:
         One entry per buffer.  Frame buffers carry ``num_full_frame``,
         ``frames``, ``frame_size``, ``last_frame_arrival_time`` and (on
         new enough kotekan) ``peek_hold``; ring buffers only the shared
-        producer/consumer bookkeeping.  Returns None if the node is
-        unreachable or the reply is malformed.
+        producer/consumer bookkeeping.  Returns ``{}`` when kotekan
+        answers but has no buffer table (an idle kotekan registers
+        ``/buffers`` only once a pipeline is running — the process
+        being up is not the same as buffers existing); None if the
+        node is unreachable or the reply is malformed.
         """
-        resp = self._request("GET", "/buffers")
+        resp = self._request("GET", "/buffers", accept_statuses=(404,))
+        if resp is None:
+            # One quick retry — the service-monitor rule: a single
+            # dropped request shouldn't read as an outage for a whole
+            # poll interval.
+            resp = self._request("GET", "/buffers", accept_statuses=(404,))
         if resp is None:
             return None
+        if resp.status_code == 404:
+            return {}
         try:
             data = resp.json()
         except Exception:
@@ -479,17 +502,37 @@ class Node:
         (``0`` = metadata and frame descriptor only); None copies the
         whole frame.  Returns the parsed JSON reply; ``{"error": ...}``
         when kotekan has no full frame to serve (HTTP 402 — expected on
-        fast-draining buffers without ``peek_hold``); or None if the
-        node is unreachable or the reply is malformed.
+        fast-draining buffers without ``peek_hold``) or when the buffer
+        endpoint doesn't exist (HTTP 404 — idle kotekan with no pipeline
+        running, a stale buffer name, or a kotekan too old for frame
+        peeks; without this, a 404 would masquerade as "unreachable");
+        or when kotekan itself fails to serialise the frame (HTTP 500 —
+        seen on dpdk-produced buffers whose metadata object is attached
+        but never populated, so ``chordMetadata::to_json`` reads
+        uninitialised dims: a reply about *that* frame, not an outage);
+        or None if the node is unreachable or the reply is malformed.
         """
         params = {} if length is None else {"len": length}
+        accept = (402, 404, 500)
         resp = self._request(
-            "GET", f"/buffer/{name}/frame", accept_statuses=(402,), params=params
+            "GET", f"/buffer/{name}/frame", accept_statuses=accept, params=params
         )
+        if resp is None:
+            # One quick retry, same rule as get_buffers.
+            resp = self._request(
+                "GET", f"/buffer/{name}/frame", accept_statuses=accept,
+                params=params,
+            )
         if resp is None:
             return None
         if resp.status_code == 402:
             return {"error": "no full frame currently in buffer"}
+        if resp.status_code == 404:
+            return {"error": f"no buffer endpoint for '{name}' on this kotekan "
+                             "(pipeline not running, or stale buffer name)"}
+        if resp.status_code == 500:
+            return {"error": f"kotekan could not serialise a frame of '{name}' "
+                             "(internal error — often uninitialised frame metadata)"}
         try:
             data = resp.json()
         except Exception:

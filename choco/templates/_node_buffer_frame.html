@@ -6,8 +6,9 @@
     {% if frame is none %}
     <p style="margin: 0;"><em>kotekan unreachable — no frame.</em></p>
     {% elif frame.error %}
-    <p style="margin: 0;"><em>{{ frame.error }}</em> — a fast-draining buffer
-    stays peekable with <code>peek_hold: true</code> on its config block.</p>
+    <p style="margin: 0;"><em>{{ frame.error }}</em>{% if "no full frame" in frame.error %} —
+    a fast-draining buffer stays peekable with <code>peek_hold: true</code>
+    on its config block.{% endif %}</p>
     {% else %}
     <p style="margin: 0 0 0.5em 0;">
         frame {{ frame.frame_id }},
