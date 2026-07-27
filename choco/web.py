@@ -263,23 +263,6 @@ def partial_node_pipeline_svg(node_key):
     )
 
 
-@bp.route("/status/<path:node_key>")
-@login_required
-def node_status_page(node_key):
-    """Read-only live view of a node: buffers, plots, pipeline graph.
-
-    Split out from the edit page so watching a node (all reads —
-    allowed in maintenance mode) doesn't share a page with the config
-    forms; the two pages link to each other.
-    """
-    registry = _registry()
-    node = registry.get_node(node_key)
-    if node is None:
-        flash(f"Node {node_key} not found", "error")
-        return redirect(url_for("web.dashboard"))
-    return render_template("status.html", node=node, node_key=node_key)
-
-
 # --- Nodes-registry editor (nodes.yaml) ---
 
 @bp.route("/nodes", methods=["GET"])
@@ -526,113 +509,9 @@ def partial_node_status(node_key):
     return render_template("_node_status.html", node=node)
 
 
-@bp.route("/partials/node-pipeline/<path:node_key>")
-@login_required
-def partial_node_pipeline(node_key):
-    """Inert base64-``<img>`` pipeline graph for a node's status page.
-
-    (The clickable inline-SVG version lives at
-    ``/partials/node-pipeline-svg`` and serves the full-page view.)
-    Fetched on demand only (opening the section, or its refresh button)
-    — never on a timed poll: /pipeline_dot walks kotekan's full
-    buffer/stage graph, and rendering it costs a dot subprocess here.
-    """
-    registry = _registry()
-    node = registry.get_node(node_key)
-    if node is None:
-        abort(404)
-    dot = node.get_pipeline_dot()
-    svg_b64 = None
-    if dot is not None:
-        svg = render_dot_svg(dot)
-        if svg is not None:
-            svg_b64 = base64.b64encode(svg.encode()).decode("ascii")
-    return render_template(
-        "_node_pipeline.html",
-        node_key=node_key, dot=dot, svg_b64=svg_b64,
-    )
-
-
 # Kotekan buffer names are config keys; anything else is rejected before
 # the name is placed in a kotekan URL path.
 _BUFFER_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]+")
-
-
-def _human_bytes(n) -> str:
-    if not isinstance(n, (int, float)):
-        return ""
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if n < 1024 or unit == "GiB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return ""
-
-
-@bp.route("/partials/node-buffers/<path:node_key>")
-@login_required
-def partial_node_buffers(node_key):
-    """Buffer fullness table for a node's status page (polled every 5 s).
-
-    Ring buffers report no frame accounting and have no frame-peek
-    endpoint, so they get no fullness column or Peek button.
-    """
-    registry = _registry()
-    node = registry.get_node(node_key)
-    if node is None:
-        abort(404)
-    buffers = node.get_buffers()
-    rows = []
-    for name, info in sorted((buffers or {}).items()):
-        if not isinstance(info, dict):
-            continue
-        frames = info.get("frames")
-        rows.append({
-            "name": name,
-            "full": info.get("num_full_frame"),
-            "frames": len(frames) if isinstance(frames, list) else None,
-            "size_h": _human_bytes(info.get("frame_size")),
-            "peek_hold": bool(info.get("peek_hold")),
-            # Peek/Plot buttons only where a peek is guaranteed to have
-            # a frame to serve: buffers holding their newest frame.  A
-            # fast-draining buffer without peek_hold answers "no full
-            # frame" almost every time — a button that mostly errors is
-            # noise.  (The data API itself stays open to any frame
-            # buffer.)  Enable peek_hold on a buffer's config block to
-            # get its buttons.
-            "peekable": bool(info.get("peek_hold")),
-        })
-    return render_template(
-        "_node_buffers.html", node_key=node_key, buffers=buffers, rows=rows,
-    )
-
-
-@bp.route("/partials/node-buffer-frame/<path:node_key>")
-@login_required
-def partial_node_buffer_frame(node_key):
-    """Metadata-only peek of one buffer's newest frame (on demand).
-
-    Fetches ``/buffer/<name>/frame?len=0`` — frame descriptor and
-    metadata, no data bytes — so peeking is cheap even on 400 MB frames.
-    The buffer name arrives as a query parameter and is validated before
-    being placed in the kotekan URL.
-    """
-    registry = _registry()
-    node = registry.get_node(node_key)
-    if node is None:
-        abort(404)
-    buffer_name = request.args.get("buffer", "")
-    if not _BUFFER_NAME_RE.fullmatch(buffer_name):
-        abort(400)
-    frame = node.get_buffer_frame(buffer_name, length=0)
-    desc_json = meta_json = None
-    if frame is not None and not frame.get("error"):
-        desc_json = json.dumps(frame.get("frame_desc"), indent=2, sort_keys=True)
-        meta_json = json.dumps(frame.get("metadata"), indent=2, sort_keys=True)
-    return render_template(
-        "_node_buffer_frame.html",
-        node_key=node_key, buffer_name=buffer_name, frame=frame,
-        desc_json=desc_json, meta_json=meta_json,
-    )
 
 
 # Bounds for the buffer-data proxy: the default keeps a 5 s poll cheap;
