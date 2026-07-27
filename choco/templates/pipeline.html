@@ -77,63 +77,84 @@
            glance; hover thickens it and tints the interior.
            ID-anchored so the rules outrank the dark-mode [stroke]
            recolors below. */
+        #pipeline-graph svg .clickable-buffer path,
         #pipeline-graph svg .clickable-buffer polygon,
         #pipeline-graph svg .clickable-buffer ellipse { stroke: #e8930c; stroke-width: 1.7; }
+        #pipeline-graph svg .clickable-buffer:hover path,
         #pipeline-graph svg .clickable-buffer:hover polygon,
         #pipeline-graph svg .clickable-buffer:hover ellipse { stroke-width: 3; }
+        [data-theme="dark"] #pipeline-graph svg .clickable-buffer path,
         [data-theme="dark"] #pipeline-graph svg .clickable-buffer polygon,
         [data-theme="dark"] #pipeline-graph svg .clickable-buffer ellipse { stroke: #ffb020; }
-        /* Buffer nodes are drawn unfilled, so by default only the
-           outline and label are hit-testable — a click in the middle of
-           one would fall through to the canvas.  pointer-events: all
-           makes the whole interior clickable regardless of paint, and
-           the hover tint shows the target area. */
+        /* `path` is in every one of these: kotekan draws buffers as
+           *rounded* boxes, which graphviz emits as <path>, not <polygon>.
+           Matching only polygon/ellipse silently marked nothing. */
+        #pipeline-graph svg .clickable-buffer path,
         #pipeline-graph svg .clickable-buffer polygon,
         #pipeline-graph svg .clickable-buffer ellipse,
         #pipeline-graph svg .clickable-buffer text { pointer-events: all; }
+        #pipeline-graph svg .clickable-buffer:hover path,
         #pipeline-graph svg .clickable-buffer:hover polygon,
         #pipeline-graph svg .clickable-buffer:hover ellipse { fill: rgba(232,147,12,0.15); }
+        [data-theme="dark"] #pipeline-graph svg .clickable-buffer:hover path,
         [data-theme="dark"] #pipeline-graph svg .clickable-buffer:hover polygon,
         [data-theme="dark"] #pipeline-graph svg .clickable-buffer:hover ellipse { fill: rgba(255,176,32,0.2); }
         /* Keyboard reachability: the sanitizer stamps tabindex/role on
            clickable buffers, pipeline.js turns Enter/Space into a click. */
         #pipeline-graph svg .clickable-buffer:focus { outline: none; }
+        #pipeline-graph svg .clickable-buffer:focus-visible path,
         #pipeline-graph svg .clickable-buffer:focus-visible polygon,
         #pipeline-graph svg .clickable-buffer:focus-visible ellipse {
             stroke-width: 3.5; stroke-dasharray: 5 3;
         }
-        /* Dark mode: dark canvas, light pipes.  The SVG is inline DOM,
-           so graphviz's presentation attributes can be restyled with
-           plain attribute selectors — no SVG rewriting involved.  The
-           rule is "every light paint becomes a dark one, every dark
-           paint becomes light", applied per graphviz colour name:
-             black    ink (edges, labels)      -> light grey
-             white    only the canvas polygon  -> transparent; the white
-                      *node cards* (GPU command steps) become dark cards
-                      with a visible edge — recolouring them transparent
-                      like the canvas made them vanish entirely
-             lightgrey cluster boxes           -> dark grey
-             lightblue network sends, #cd6090/hotpink GPU memory nodes
-                      are *filled* with black labels; the labels are now
-                      light, so the fills have to go dark too or the
-                      text is light-on-light.  Their strokes brighten
-                      instead, keeping each node type's colour identity. */
+        /* Dark mode: dark canvas, light pipes.  The SVG is inline DOM, so
+           graphviz's presentation attributes can be restyled with plain
+           attribute selectors — no SVG rewriting involved.
+
+           This is a MIRROR of kotekan's palette (lib/core/PipelineGraph.cpp:
+           graph_style() and the graph_* colour constants).  Every value
+           kotekan can emit needs a row here or it keeps its light paint on
+           the dark page — which is exactly how this drifted the first time.
+           tests/test_pipeline_palette.py renders the checked-in graph
+           fixture and fails if any colour in it is unmapped; refresh the
+           fixture when kotekan's palette moves and the test will name what
+           is missing.
+
+           Fills go dark keeping the hue, outlines brighten keeping the hue,
+           so each node type stays recognisable in either theme. */
         [data-theme="dark"] #pipeline-graph { background: #14181c; border-color: #3a4148; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="black"] { stroke: #b9c4cf; }
-        [data-theme="dark"] #pipeline-graph svg [fill="black"] { fill: #b9c4cf; }
+        /* Ink: label text (kotekan sets fontcolor, so text carries a fill). */
+        [data-theme="dark"] #pipeline-graph svg [fill="#1c2430"] { fill: #c9d3de; }
+        /* Edges, and the arrowheads that are filled with the same colour. */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#5c6b7a"] { stroke: #8492a1; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#5c6b7a"] { fill: #8492a1; }
+        /* The canvas: graphviz paints it white behind everything. */
         [data-theme="dark"] #pipeline-graph svg > g.graph > polygon[fill="white"] { fill: transparent; }
-        [data-theme="dark"] #pipeline-graph svg .node [fill="white"] { fill: #1c2329; }
-        [data-theme="dark"] #pipeline-graph svg .node [stroke="white"] { stroke: #59636d; }
-        [data-theme="dark"] #pipeline-graph svg [fill="lightgrey"] { fill: #2a3138; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="lightgrey"] { stroke: #4a545e; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="blue"] { stroke: #6ea8fe; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="darkgreen"] { stroke: #51cf66; }
-        [data-theme="dark"] #pipeline-graph svg [fill="lightblue"] { fill: #1d3f57; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="lightblue"] { stroke: #7fc0e4; }
-        [data-theme="dark"] #pipeline-graph svg [fill="#cd6090"] { fill: #56253c; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="#cd6090"] { stroke: #e58fb4; }
-        [data-theme="dark"] #pipeline-graph svg [fill="hotpink"] { fill: #56253c; }
-        [data-theme="dark"] #pipeline-graph svg [stroke="hotpink"] { stroke: #ff8ec4; }
+        /* Config-section boxes. */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#aab4bf"] { stroke: #4a545f; }
+        /* Buffers — blue. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#d6e6f7"] { fill: #16293c; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#2a6099"] { stroke: #5b9bd5; }
+        /* CPU stages — amber. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#f7edc0"] { fill: #332c10; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#94800c"] { stroke: #d4bc3a; }
+        /* GPU stages and their commands — orange. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#fbdcc0"] { fill: #3a2410; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#c2691a"] { stroke: #e08a3c; }
+        /* I/O stages — violet. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#e6dcf5"] { fill: #2a1f3d; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#7549a8"] { stroke: #a882dd; }
+        /* Device memory — magenta. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#fbd9ea"] { fill: #3a1428; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#b01a6b"] { stroke: #e061a0; }
+        /* Endpoints (the far end of a link) — teal. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#d3ece4"] { fill: #12312a; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#2b7a63"] { stroke: #4fb99a; }
+        /* The box around one device's stages and memory. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#fdf4ea"] { fill: #1f1a14; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#dcbf9a"] { stroke: #5c4a34; }
+        /* A buffer with no free frame left: brighten, never dim. */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#c0392b"] { stroke: #ff6b5b; }
         /* The live plot opens as a popup overlay above the graph, so the
            graph keeps the full viewport; hidden until a panel is open. */
         #buffer-plot {
