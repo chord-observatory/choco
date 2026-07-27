@@ -1,0 +1,74 @@
+// The same sample in the palette kotekan served BEFORE its colours
+// were named: no fontcolor and no edge colour (graphviz falls back
+// to black for both), endpoints sharing the buffer blue, and the
+// device region a grey slab.  Kept because kotekan rolls out to the
+// cluster on its own schedule and choco meets a mixed fleet until it
+// has: dark mode has to cover this too.  Delete with the legacy
+// block in pipeline.html once no node serves these values.
+digraph pipeline {
+    graph [ mclimit="6", newrank="true", nodesep="0.3", rankdir="LR", ranksep="0.9"];
+    node [fontname="Helvetica", fontsize="11"];
+    edge [fontname="Helvetica", fontsize="8"];
+    
+
+    subgraph "cluster_/gen" {
+        label=<gen>;
+        style="rounded";
+        color="gray70";
+        "/gen/voltage" [label=<voltage<BR/>&lt;testDataGen&gt;<BR/>1 thread · cpu 42%<BR/>cores 2,3>, color="#b8a417", fillcolor="#fbf3c9", shape="box", style="rounded,filled"];
+    }
+
+    "host_voltage_buffer" [label=<host_voltage_buffer<BR/>ndarray · chordMetadata<BR/>int4x2 T:8192 × F:16 × P:2 × D:64<BR/>2 MiB ×4 frames = 8 MiB<BR/>2/4 full (50.0%)<BR/>23.9 frame/s · 195 kB/s<BR/>numa 0 · mlock>, color="#3a6ea5", fillcolor="#dce9f7", shape="box", style="rounded,filled"];
+    "host_full_buffer" [label=<host_full_buffer<BR/>standard · chordMetadata<BR/>8 KiB ×24 frames = 192 KiB<BR/>24/24 full (100.0%)<BR/>0.82 frame/s>, color="#c0392b", fillcolor="#dce9f7", penwidth="2.5", shape="box", style="rounded,filled"];
+    "host_idle_buffer" [label=<host_idle_buffer<BR/>ndarray · chordMetadata<BR/>0/24 full (0.0%)<BR/>0 frames arrived>, color="#3a6ea5", fillcolor="#dce9f7", shape="box", style="rounded,filled,dashed"];
+
+    subgraph "cluster_/run_n2k" {
+        label=<run_n2k>;
+        style="rounded";
+        color="gray70";
+        subgraph "cluster_/run_n2k/gpu_0" {
+            label=<GPU 0>;
+            style="rounded,filled";
+            color="gray60";
+            fillcolor="#f0f0f0";
+            "/run_n2k/gpu_0" [label=<gpu_0<BR/>&lt;cudaProcess&gt;<BR/>1 thread<BR/>cores 12,13,14>, color="#cc7a2e", fillcolor="#fde0c2", shape="box", style="rounded,filled"];
+            "/run_n2k/gpu_0/commands/0" [label=<cudaCorrelator<BR/>kernel<BR/>1.06 ms · 2.53% of a frame>, color="#cc7a2e", fillcolor="#fde0c2", shape="box", style="filled"];
+            "/run_n2k/gpu_0/commands/1" [label=<sync_output<BR/>copy out>, color="#cc7a2e", fillcolor="#fde0c2", shape="invtrapezium", style="filled"];
+            "/run_n2k/gpu_0/commands/2" [label=<input: voltage<BR/>copy in>, color="#cc7a2e", fillcolor="#fde0c2", shape="trapezium", style="filled"];
+            subgraph "cluster_/run_n2k/gpu_0/mem" {
+                label=<device memory>;
+                style="rounded";
+                color="gray70";
+                "/run_n2k/gpu_0/mem/correlation" [label=<correlation<BR/>array ×4>, color="#c71585", fillcolor="#ffe9f3", shape="oval", style="filled"];
+                "/run_n2k/gpu_0/mem/voltage" [label=<voltage<BR/>array ×4>, color="#c71585", fillcolor="#ffe9f3", shape="oval", style="filled"];
+            }
+        }
+    }
+
+    "/buffer_send_n2_full" [label=<buffer_send_n2_full<BR/>&lt;bufferSend&gt;<BR/>1 thread<BR/>cores 0,1,8>, color="#8a5fb0", fillcolor="#e9ddf5", shape="box", style="rounded,filled"];
+    "/buffer_send_n2_full/destination" [label=<10.222.0.51:11027>, color="#3a6ea5", fillcolor="#cfe6f5", shape="doubleoctagon", style="filled"];
+
+    "/gen/voltage" -> "host_voltage_buffer" [weight="4"];
+    "host_voltage_buffer" -> "/run_n2k/gpu_0" [weight="4"];
+    "/run_n2k/gpu_0/commands/2" -> "/run_n2k/gpu_0/commands/0" [style="dotted"];
+    "/run_n2k/gpu_0/commands/0" -> "/run_n2k/gpu_0/commands/1" [style="dotted"];
+    "/run_n2k/gpu_0/mem/voltage" -> "/run_n2k/gpu_0/commands/0" [style="solid"];
+    "/run_n2k/gpu_0/commands/0" -> "/run_n2k/gpu_0/mem/correlation" [style="solid"];
+    "/run_n2k/gpu_0" -> "host_full_buffer" [weight="4"];
+    "host_full_buffer" -> "/buffer_send_n2_full" [weight="4"];
+    "/buffer_send_n2_full" -> "/buffer_send_n2_full/destination";
+    "/gen/voltage" -> "host_idle_buffer";
+
+    subgraph "cluster___legend" {
+        label=<legend>;
+        style="rounded";
+        color="gray70";
+        "__legend/buffer" [label=<buffer: name / type · metadata / layout / size / fill>, color="#3a6ea5", fillcolor="#dce9f7", shape="box", style="rounded,filled"];
+        "__legend/compute" [label=<stage on the CPU>, color="#b8a417", fillcolor="#fbf3c9", shape="box", style="rounded,filled"];
+        "__legend/gpu" [label=<GPU stage and its commands>, color="#cc7a2e", fillcolor="#fde0c2", shape="box", style="rounded,filled"];
+        "__legend/io" [label=<stage moving data on or off this machine>, color="#8a5fb0", fillcolor="#e9ddf5", shape="box", style="rounded,filled"];
+        "__legend/memory" [label=<device memory (not a kotekan buffer)>, color="#c71585", fillcolor="#ffe9f3", shape="oval", style="filled"];
+        "__legend/endpoint" [label=<the far end: a socket, a port, a file>, color="#3a6ea5", fillcolor="#cfe6f5", shape="doubleoctagon", style="filled"];
+        "__legend/buffer" -> "__legend/compute" [style="invis"];
+    }
+}

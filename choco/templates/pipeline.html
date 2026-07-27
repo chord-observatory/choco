@@ -121,11 +121,20 @@
            is missing.
 
            Fills go dark keeping the hue, outlines brighten keeping the hue,
-           so each node type stays recognisable in either theme. */
+           so each node type stays recognisable in either theme.
+
+           BOTH palettes are covered.  kotekan rolls out to the cluster on
+           its own schedule, so choco meets a mixed fleet for as long as
+           that takes and cannot assume either version; the older values are
+           in their own block below, safe to delete once no node serves
+           them. */
         [data-theme="dark"] #pipeline-graph { background: #14181c; border-color: #3a4148; }
-        /* Ink: label text (kotekan sets fontcolor, so text carries a fill). */
-        [data-theme="dark"] #pipeline-graph svg [fill="#1c2430"] { fill: #c9d3de; }
-        /* Edges, and the arrowheads that are filled with the same colour. */
+        /* Ink.  Selected by element, not by colour: kotekan only started
+           setting fontcolor recently, and before that the text carried no
+           fill attribute for any selector to match.  A CSS property beats a
+           presentation attribute, so this covers both. */
+        [data-theme="dark"] #pipeline-graph svg text { fill: #c9d3de; }
+        /* Edges, and the arrowheads that are filled to match. */
         [data-theme="dark"] #pipeline-graph svg [stroke="#5c6b7a"] { stroke: #8492a1; }
         [data-theme="dark"] #pipeline-graph svg [fill="#5c6b7a"] { fill: #8492a1; }
         /* The canvas: graphviz paints it white behind everything. */
@@ -153,8 +162,37 @@
         /* The box around one device's stages and memory. */
         [data-theme="dark"] #pipeline-graph svg [fill="#fdf4ea"] { fill: #1f1a14; }
         [data-theme="dark"] #pipeline-graph svg [stroke="#dcbf9a"] { stroke: #5c4a34; }
-        /* A buffer with no free frame left: brighten, never dim. */
+        /* A buffer with no free frame left: brighten, never dim.  Unchanged
+           across both palettes. */
         [data-theme="dark"] #pipeline-graph svg [stroke="#c0392b"] { stroke: #ff6b5b; }
+
+        /* --- kotekan before the palette was named (delete once the whole
+               cluster serves the values above) ---------------------------
+           Same hue-preserving mapping, and the same dark counterparts, so a
+           node looks the same whichever kotekan drew it.  Edges and
+           arrowheads were plain black then, with no graph-level colour.
+           The cluster greys are matched as #b3b3b3/#999999, not by name:
+           graphviz resolves its own grayNN scale to hex on the way out, so
+           a [stroke="gray70"] selector matches nothing. */
+        [data-theme="dark"] #pipeline-graph svg [stroke="black"] { stroke: #8492a1; }
+        [data-theme="dark"] #pipeline-graph svg [fill="black"] { fill: #8492a1; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#b3b3b3"] { stroke: #4a545f; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#dce9f7"] { fill: #16293c; }   /* buffer */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#3a6ea5"] { stroke: #5b9bd5; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#fbf3c9"] { fill: #332c10; }   /* compute */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#b8a417"] { stroke: #d4bc3a; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#fde0c2"] { fill: #3a2410; }   /* gpu */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#cc7a2e"] { stroke: #e08a3c; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#e9ddf5"] { fill: #2a1f3d; }   /* io */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#8a5fb0"] { stroke: #a882dd; }
+        [data-theme="dark"] #pipeline-graph svg [fill="#ffe9f3"] { fill: #3a1428; }   /* memory */
+        [data-theme="dark"] #pipeline-graph svg [stroke="#c71585"] { stroke: #e061a0; }
+        /* Endpoints shared the buffer blue then, so they cannot be told
+           apart by colour here; they keep the buffer mapping. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#cfe6f5"] { fill: #16293c; }
+        /* The device region was a grey slab -- the worst of the light glare. */
+        [data-theme="dark"] #pipeline-graph svg [fill="#f0f0f0"] { fill: #1f1a14; }
+        [data-theme="dark"] #pipeline-graph svg [stroke="#999999"] { stroke: #5c4a34; }
         /* The live plot opens as a popup overlay above the graph, so the
            graph keeps the full viewport; hidden until a panel is open. */
         #buffer-plot {
