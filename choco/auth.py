@@ -7,7 +7,7 @@ import ldap3
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.dn import escape_rdn
 from flask import Flask, Response, request, url_for
-from flask_login import LoginManager, UserMixin, current_user
+from flask_login import LoginManager, UserMixin, current_user, login_user
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,31 @@ def init_auth(app: Flask, config: dict):
         if request.headers.get("HX-Request"):
             return Response(status=200, headers={"HX-Redirect": login_url})
         return Response(status=302, headers={"Location": login_url})
+
+    # Dev mode: log every request in as a synthetic user, so a developer
+    # with no FreeIPA reachable still gets the whole UI.  Guarded by
+    # load_config, which refuses to start unless the server is bound to
+    # loopback (see the dev_auth check there) — this is not a role, it
+    # is the absence of authentication.
+    #
+    # Deliberately re-established per request rather than left to
+    # login_user's session cookie: dev instances are reached over ssh
+    # tunnels, where the browser's cookie jar is shared across every
+    # localhost port (cookies ignore the port), so a cookie minted by a
+    # different choco on the same port would otherwise lock the
+    # developer out with a CSRF 403 and no way to log back in.
+    dev_user = (config.get("server") or {}).get("dev_auth")
+    app.config["DEV_AUTH"] = dev_user
+    if dev_user:
+        logger.warning(
+            f"DEV MODE: server.dev_auth={dev_user!r} — login and CSRF "
+            f"checks are DISABLED for every request. Loopback only."
+        )
+
+        @app.before_request
+        def _dev_auto_login():
+            if not current_user.is_authenticated:
+                login_user(save_user(f"dev:{dev_user}", dev_user))
 
     # LDAP setup.  Legacy keys from the flask-ldap3-login era (bind_dn,
     # bind_password, user_object_filter, user_search_scope) are simply

@@ -9,6 +9,10 @@ server:
   ssl_cert:                       # Path to SSL certificate (PEM). Leave empty to auto-generate self-signed.
   ssl_key:                        # Path to SSL private key (PEM). Leave empty to auto-generate self-signed.
   http_redirect_port: 8080        # HTTP listener that redirects to HTTPS (iptables redirects 80 -> 8080)
+  ssl: true                       # false serves plain HTTP (dev only; see ./choco.sh develop)
+  dev_auth:                       # DEV ONLY. Set to a username to disable login AND CSRF for every
+                                  # request. choco refuses to start unless server.host is loopback.
+                                  # ./choco.sh develop writes this into dev/config.yaml for you.
 
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs

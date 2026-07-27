@@ -41,7 +41,20 @@ def _csrf_token() -> str:
     return session["_csrf_token"]
 
 
+def _dev_auth() -> bool:
+    """True when running with ``server.dev_auth`` (loopback-only, no auth).
+
+    CSRF has to come off with login rather than stay on: the token lives
+    in the session cookie, so with auto-login re-established per request
+    a stale cookie would 403 every POST — toggles, edits, PDB writes —
+    with no login flow left to reset it.
+    """
+    return bool(current_app.config.get("DEV_AUTH"))
+
+
 def _check_csrf():
+    if _dev_auth():
+        return
     token = request.form.get("_csrf_token", "")
     if not token or token != session.get("_csrf_token"):
         abort(403)
@@ -49,6 +62,8 @@ def _check_csrf():
 
 def _check_csrf_header():
     """CSRF check for JSON POSTs: token comes in via an ``X-CSRF-Token`` header."""
+    if _dev_auth():
+        return
     token = request.headers.get("X-CSRF-Token", "")
     if not token or token != session.get("_csrf_token"):
         abort(403)

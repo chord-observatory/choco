@@ -27,6 +27,8 @@ _DEFAULT_CONFIG = {
         "port": 5000,
         "secret_key": "dev-key-change-me",
         "log_level": "INFO",
+        "ssl": True,
+        "dev_auth": None,
     },
     "configs_dir": "configs",
     "kotekan": {
@@ -68,6 +70,19 @@ def load_config(path: str | Path) -> dict:
     config = dict(_DEFAULT_CONFIG)
     config["server"] = {**_DEFAULT_CONFIG["server"], **(raw.get("server") or {})}
     config["server"]["port"] = int(config["server"]["port"])
+    # Dev mode disables login *and* CSRF, so the only thing standing
+    # between it and an unauthenticated cluster control plane is the
+    # bind address.  Refuse to start rather than warn: a warning in a
+    # scrollback is not a security boundary, and the failure this
+    # prevents (a dev instance answering on 0.0.0.0) is silent.
+    if config["server"].get("dev_auth"):
+        host = str(config["server"].get("host") or "")
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            raise ValueError(
+                f"server.dev_auth is set but server.host is {host!r}. "
+                f"Dev mode has no authentication, so it may only bind "
+                f"loopback (127.0.0.1). Reach it over an ssh tunnel."
+            )
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
     config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
@@ -208,7 +223,18 @@ def _start_http_redirect(host: str, http_port: int, https_port: int):
 
 
 def _make_ssl_context(server_config: dict) -> ssl.SSLContext | None:
-    """Build an SSL context from config, auto-generating a self-signed cert if needed."""
+    """Build an SSL context from config, auto-generating a self-signed cert if needed.
+
+    ``ssl: false`` opts out entirely (plain HTTP).  That is a dev-mode
+    convenience — a loopback-bound instance reached through an ssh
+    tunnel is already encrypted on the wire, and dropping TLS drops the
+    cert warning and the self-signed cert's interaction with the
+    browser's per-host (port-blind) cookie jar along with it.
+    """
+    if not server_config.get("ssl", True):
+        logger.warning("server.ssl is false — serving plain HTTP, no TLS")
+        return None
+
     cert = server_config.get("ssl_cert")
     key = server_config.get("ssl_key")
 

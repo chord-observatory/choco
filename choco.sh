@@ -314,6 +314,106 @@ cmd_run() {
     exec sudo -u "$SUDO_USER" "$SCRIPT_DIR/.venv/bin/choco" "${@:-$SCRIPT_DIR/config.yaml}"
 }
 
+cmd_develop() {
+    # Unlike `run`, this needs no root: dev mode binds loopback, so there
+    # are no iptables redirects to install and no privileged port to
+    # claim.  If invoked under sudo anyway, drop back to the real user
+    # so .venv/ and dev/ don't silently become root-owned (which would
+    # then break `./choco.sh test`).
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        echo "develop needs no root — re-running as $SUDO_USER"
+        exec sudo -u "$SUDO_USER" "$SCRIPT_DIR/choco.sh" develop "$@"
+    fi
+
+    ensure_local_venv
+
+    local dev_dir="$SCRIPT_DIR/dev"
+    local dev_config="$dev_dir/config.yaml"
+    local dev_configs="$dev_dir/configs"
+
+    # Seeded once, then left alone — same rule as config.yaml and
+    # pdb_map.csv.  Edit the files to change the dev setup; there are no
+    # flags, because the file is the source of truth everywhere else in
+    # choco too.
+    mkdir -p "$dev_configs/dev"
+
+    if [ ! -f "$dev_config" ]; then
+        echo "Seeding $dev_config"
+        cat > "$dev_config" <<EOF
+# choco development config — created by ./choco.sh develop.
+# Gitignored; edit freely.  Delete it to have develop re-seed.
+server:
+  host: 127.0.0.1                 # loopback only: dev_auth means no auth
+  port: 5000
+  secret_key: dev-only-not-a-secret
+  log_level: DEBUG
+  ssl: false                      # plain HTTP — no cert warning
+  dev_auth: dev                   # auto-login, CSRF off (loopback only)
+  http_redirect_port:             # empty: no second listener
+
+configs_dir: $dev_configs
+
+kotekan:
+  timeout: 10
+
+sync:
+  poll_interval: 5
+  restart_timeout: 10
+  num_workers: 2
+
+# fpga_master / pdb are deliberately absent: a dev instance should not
+# poll (let alone control) the real F-engine or the power boards.  Their
+# badges render as "unconfigured" and no greenlet spawns.
+
+ldap:
+  host:                           # disabled — dev_auth logs you in
+EOF
+    fi
+
+    if [ ! -f "$dev_configs/nodes.yaml" ]; then
+        echo "Seeding $dev_configs/nodes.yaml"
+        cat > "$dev_configs/nodes.yaml" <<'EOF'
+# Dev registry: one node, pointed at a kotekan you run locally.
+# `started` is only the pre-discovery default — discover_node_states()
+# overwrites it from the node's real /status at startup.
+groups:
+  dev:
+    local:
+      host: 127.0.0.1
+      port: 12048
+      started: false
+EOF
+    fi
+
+    if [ ! -f "$dev_configs/dev/local.yaml" ]; then
+        echo "Seeding $dev_configs/dev/local.yaml"
+        cat > "$dev_configs/dev/local.yaml" <<'EOF'
+# Base kotekan config for the local dev node.  Placeholder: replace with
+# a real pipeline config (kotekan/config/*.yaml) once kotekan is
+# listening on 127.0.0.1:12048.  It only needs to be loadable YAML for
+# the node to appear in the UI.
+log_level: info
+EOF
+    fi
+
+    # The config file is authoritative for the port, so read it back
+    # rather than assuming 5000 — the operator may well have edited it.
+    local port
+    port=$("$SCRIPT_DIR/.venv/bin/python" -c \
+        "import yaml,sys; print((yaml.safe_load(open(sys.argv[1])) or {}).get('server',{}).get('port',5000))" \
+        "$dev_config")
+    check_ports "$port"
+
+    echo ""
+    echo "Starting choco in DEV MODE (no auth, no CSRF, loopback only)."
+    echo "  URL:      http://127.0.0.1:$port"
+    echo "  Tunnel:   ssh -N -L 8443:localhost:$port <user>@<this-host>"
+    echo "            then browse http://localhost:8443"
+    echo "  Configs:  $dev_configs"
+    echo ""
+    exec "$SCRIPT_DIR/.venv/bin/choco" "$dev_config"
+}
+
 cmd_test() {
     ensure_local_venv
     "$SCRIPT_DIR/.venv/bin/pytest" "$SCRIPT_DIR/tests" -v "$@"
@@ -430,7 +530,8 @@ cmd_help() {
     echo "                --overwrite-configs   Overwrite existing configs without prompting"
     echo "                --keep-configs        Keep existing configs without prompting"
     echo "  uninstall   Remove daemon, iptables rules, and $INSTALL_DIR (requires root)"
-    echo "  run         Run choco locally for development (requires root; extra args forwarded)"
+    echo "  run         Run choco locally against config.yaml (requires root; extra args forwarded)"
+    echo "  develop     Run a loopback-only dev instance: no auth, no TLS, dev/ configs (no root)"
     echo "  test        Run tests (extra args forwarded to pytest)"
     echo "  lock        Regenerate requirements.lock (pinned production deps)"
     echo "  audit       Check lock pins against latest PyPI + OSV advisories"
@@ -441,6 +542,7 @@ case "${1:-help}" in
     install)   shift; cmd_install "$@" ;;
     uninstall) cmd_uninstall ;;
     run)       shift; cmd_run "$@" ;;
+    develop)   shift; cmd_develop "$@" ;;
     test)      shift; cmd_test "$@" ;;
     lock)      cmd_lock ;;
     audit)     cmd_audit ;;

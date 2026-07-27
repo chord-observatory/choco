@@ -157,6 +157,17 @@
             font-size: 0.85em;
             line-height: 1.4;
         }
+        /* Dev mode has no authentication at all, so it says so on every
+           page — the one thing worse than a dev instance is a dev
+           instance mistaken for the production one. */
+        .dev-banner {
+            padding: 0.4em 1em;
+            background: #ff851b;
+            color: #1a1a1a;
+            font-size: 0.85em;
+            font-weight: 600;
+            text-align: center;
+        }
         button.build-toggle {
             width: auto;
             margin: 0;
@@ -168,6 +179,11 @@
     </style>
 </head>
 <body>
+    {% if config.DEV_AUTH %}
+    <div class="dev-banner">
+        DEV MODE — no login, no CSRF (server.dev_auth={{ config.DEV_AUTH }})
+    </div>
+    {% endif %}
     <nav class="container">
         <ul>
             <li><a href="/" class="brand-pill">CHOCO</a></li>
