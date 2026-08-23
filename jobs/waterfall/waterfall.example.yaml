@@ -1,0 +1,42 @@
+# waterfall — per-acquisition upper-triangle visibility waterfalls.
+#
+# Copy to /etc/choco/waterfall.yaml and edit.  Rendering is driven
+# entirely by what has landed on disk: each run folds newly-arrived
+# source files into their acquisition's images and exits.
+
+# Source roots to render.  Only these are touched -- `full` and `old`
+# are deliberately left alone.
+roots:
+  - name: subset
+    path: /mnt/cs00/data/kotekan_vis_files/subset
+
+# Where the images go.  A sibling of the data, not a subdirectory of each
+# acquisition: the acquisition directories are owned by the (NFS-squashed)
+# writer and are not writable by anyone else.  The tree mirrors the source
+# layout, <waterfalls_dir>/<root name>/<acq>/, and holds nothing but
+# relative paths, so it can be moved or copied wholesale with the data.
+waterfalls_dir: /mnt/cs00/data/kotekan_vis_files/waterfalls
+
+# Job state, read back by choco's WF badge and /service/waterfall page.
+state_file: /var/lib/waterfall/state.json
+
+# Exclusive run lock.  Defaults to waterfall.lock beside the state file.
+# Two runs appending to the same image would interleave their deflate
+# segments, so a second run exits 0 immediately rather than waiting.
+# lock_file: /var/lib/waterfall/waterfall.lock
+
+# Deflate level.  6 is the balance point (level 9 costs 3.5x the CPU for
+# 0.58% fewer bytes); 4 is worth passing for a long backfill.
+level: 6
+
+# Files folded per run, across all acquisitions.  Acquisitions are visited
+# newest first, so the live one always keeps up and the rest backfill
+# behind it.  0 means unlimited -- reasonable for a one-off backfill run,
+# but not from the timer, where a 24 h run would starve the live data.
+#
+# This is also the only effective throttle against kotekan: the reads go
+# over NFS, which neither Nice nor IOSchedulingClass governs.  40 sustains
+# roughly 58 MB/s off the data server and clears a 10,900-file backlog in
+# about a day; 10 quarters that and takes about four days.  Live data
+# keeps up either way -- files land every ~3.2 min and a run renders many.
+max_files_per_run: 40

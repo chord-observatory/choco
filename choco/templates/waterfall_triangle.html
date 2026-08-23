@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ acq }} — waterfalls — CHOCO{% endblock %}
+
+{% block styles %}
+.tri-head { display: flex; align-items: baseline; justify-content: space-between;
+            gap: 1em; flex-wrap: wrap; margin-bottom: 0.4em; }
+.tri-head h2 { margin: 0; font-size: 1.2em; }
+.tri-head code { font-size: 0.9em; }
+.tri-note { color: #666; font-size: 0.85em; margin: 0 0 1em; }
+.tri-filter { display: flex; align-items: center; gap: 0.4em; margin: 0; }
+.tri-filter input { width: 12em; margin: 0; padding: 0.2em 0.4em; font-size: 0.85em; }
+.tri-filter button { margin: 0; padding: 0.2em 0.7em; font-size: 0.85em; }
+
+table.tri { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.tri td { padding: 0; border: 1px solid var(--pico-muted-border-color, #ddd);
+               vertical-align: top; }
+table.tri td.empty { border: none; }
+table.tri td.num { text-align: center; vertical-align: middle; border: none;
+                   font-weight: 600; font-size: 0.7em; line-height: 1;
+                   white-space: nowrap; font-family: var(--pico-font-family, monospace); }
+/* Column headers rotate so a label of any length fits a 1/33-wide column;
+   row labels sit at the end of each row and stay horizontal. */
+table.tri td.col { writing-mode: vertical-rl; text-orientation: mixed;
+                   padding: 0.2em 0; height: 3.5em; }
+table.tri td.row { padding: 0 0.35em; text-align: left; }
+table.tri td.num small { font-weight: 400; opacity: 0.55; }
+table.tri img { width: 100%; height: auto; display: block; image-rendering: pixelated; }
+table.tri a { display: block; line-height: 0; }
+table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
+                            outline-offset: -2px; }
+{% endblock %}
+
+{% block content %}
+<div class="tri-head">
+    <h2>Waterfalls <code>{{ acq }}</code></h2>
+    <form class="tri-filter" method="get" action="">
+        <label for="elements" style="font-size: 0.85em; margin: 0;">Elements</label>
+        <input type="text" id="elements" name="elements" value="{{ elements_arg }}"
+               placeholder="all" aria-label="Comma-separated element indices">
+        <button type="submit" class="outline">Show</button>
+    </form>
+</div>
+
+<p class="tri-note">
+    {{ grid.elements | length }} element{{ '' if grid.elements | length == 1 else 's' }} ·
+    {{ grid.cells | length }} product{{ '' if grid.cells | length == 1 else 's' }} rendered ·
+    {{ n_files }} source file{{ '' if n_files == 1 else 's' }} folded in
+    {%- if index.n_freq %} · {{ index.n_freq }} channels{% endif %} ·
+    <a href="/files">back to data files</a>
+    <br>
+    Frequency across, time down; a thumbnail is one row per source file.
+    Click a cell for the full-resolution image with axes.
+</p>
+
+{% if not grid.elements %}
+<p>Nothing rendered for this acquisition yet.</p>
+{% else %}
+<table class="tri">
+    <tr>
+        {% for b in grid.elements %}
+        <td class="num col" title="element {{ b }}">{{ grid.labels.get(b, b) }}</td>
+        {% endfor %}
+        <td class="num"></td>
+    </tr>
+    {% for a in grid.elements %}
+    <tr>
+        {% for b in grid.elements %}
+        {% if b < a %}
+        <td class="empty"></td>
+        {% else %}
+        {% set cell = grid.cells.get((a, b)) %}
+        {% if cell %}
+        <td>
+            <a href="/waterfall/{{ root }}/{{ acq }}/view/wf_{{ cell.name }}.png"
+               title="{{ grid.labels.get(a, a) }} × {{ grid.labels.get(b, b) }} (elements {{ a }}, {{ b }}) — {{ cell.rows }} scanlines">
+                <img src="/waterfall/{{ root }}/{{ acq }}/{{ cell.shard }}/th_{{ cell.name }}.png"
+                     loading="lazy" decoding="async"
+                     alt="{{ grid.labels.get(a, a) }} × {{ grid.labels.get(b, b) }}"
+                     onerror="this.style.visibility='hidden'">
+            </a>
+        </td>
+        {% else %}
+        <td class="empty"></td>
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        <td class="num row" title="element {{ a }}">{{ grid.labels.get(a, a) }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

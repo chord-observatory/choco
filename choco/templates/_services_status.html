@@ -33,6 +33,18 @@
     <strong>PDB</strong> <span>{{ monitor_label(pdb.health) }}</span>
 </a>
 {% endif %}
+{% if data %}
+{% set tip = 'Data-file roots (' ~ data.n_roots ~ ')'
+             ~ '\nhealth: ' ~ data.health
+             ~ ('\nreachable: ' ~ data.n_ok ~ ' / ' ~ data.n_roots if data.n_roots else '')
+             ~ ('\nlast seen: ' ~ since(data.last_seen, now) if data.last_seen else '')
+             ~ ('\nerror: ' ~ data.error if data.error else '')
+             ~ '\n\nclick for details' %}
+<a href="/files" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(data.health) }};">
+    <strong>DATA</strong> <span>{{ monitor_label(data.health) }}</span>
+</a>
+{% endif %}
 {{ job_pill('EOP', 'eop', eop, 'last run') }}
 {{ job_pill('BFFS', 'bffs', bffs, 'last change') }}
 {{ job_pill('EIGENCAL', 'eigencal', eigencal, 'last calibration') }}
+{{ job_pill('WF', 'waterfall', waterfall, 'last run') }}

@@ -69,6 +69,29 @@ eigencal:
   service_unit: choco-eigencal.service       # systemd unit to query for last-run status
   state_file: /var/lib/eigencal/state.json   # eigencal run.state_file (absolute; written once per processed transit)
 
+# waterfall image-rendering job (WF badge, /files column, contact sheet).
+# What to render is configured in /etc/choco/waterfall.yaml; these keys are
+# what choco needs to read the result back.  Without images_dir the column
+# reads "-" for every acquisition and the contact sheet 404s.
+waterfall:
+  service_unit: choco-waterfall.service       # systemd unit to query for last-run status
+  state_file: /var/lib/waterfall/state.json   # waterfall state_file (absolute; rewritten every run)
+  images_dir: /mnt/cs00/data/kotekan_vis_files/waterfalls   # must match waterfall.yaml's waterfalls_dir
+  ttl: 30                                     # seconds to cache the per-acquisition summary sweep
+  timezone: America/Vancouver                 # IANA zone for the viewer's time axis (default shown)
+
+# Data-file roots shown on /files.  Each root is scanned one level deep:
+# its immediate subdirectories are listed with the number, total size and
+# newest mtime of the *.h5 files sitting directly in each.  Files staged
+# under a .partial subdirectory are not counted -- they are not part of
+# the acquisition yet.  Leave roots empty (or omit the block) to disable
+# the page.
+vis_files:
+  roots:
+    - /mnt/cs00/data/kotekan_vis_files/full
+    - /mnt/cs00/data/kotekan_vis_files/subset
+  ttl: 30                           # Seconds to cache a scan (these are NFS mounts)
+
 # FreeIPA LDAP authentication (direct bind: the user's DN is
 # <user_login_attr>=<username>,<user_dn>,<base_dn>, bound with their own
 # password — no service account needed).

@@ -1,0 +1,10 @@
+[Unit]
+Description=render visibility waterfall images (every 2 min; self-gating)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target

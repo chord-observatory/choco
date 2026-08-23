@@ -15,14 +15,18 @@ gevent greenlet and a job query is one ``systemctl`` subprocess plus one
 
 import json
 import logging
+import os
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import gevent
 import requests
+from gevent.lock import BoundedSemaphore
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +272,168 @@ class FpgaMonitor:
             "last_seen": self.last_seen,
             "error": self.error,
         }
+
+
+# --- FPGA digital gains ---------------------------------------------------
+
+class GainArchive:
+    """The F-engine's current digital-gain file, fetched and cached.
+
+    fpga_master serves ``/get-current-gain-file`` as an HDF5 archive
+    (``pychfpga.digital_gain.DigitalGainArchive``): ``gain_coeff``
+    [update_time, freq, input] complex64 plus small per-input datasets
+    and an ``index_map``.  Its datasets are C-order arrays with named
+    axes, which is exactly the shape the buffer-plot API already speaks,
+    so the web layer can hand them to the existing plotter untouched.
+
+    Two things are deliberate here.  The HDF5 parsing runs as a
+    **subprocess** (``choco.h5read``): h5py is a blocking C extension
+    whose import alone costs ~90 ms, and this process is a gevent hub —
+    the same reason the timer jobs are separate processes.  And the
+    result is **cached** for ``ttl_s``: the plot panel polls every few
+    seconds, while the gains change when someone recalibrates, so
+    without a cache every poll would re-download 8.4 MB and pay for a
+    fresh interpreter.
+
+    The download itself is plain ``requests`` and therefore cooperative
+    — ``monkey.patch_all()`` runs at startup — so only the parse needed
+    isolating.
+    """
+
+    DEFAULT_TTL_S = 30.0
+    FETCH_TIMEOUT_S = 60.0
+
+    def __init__(self, base_url: str | None, ttl_s: float = DEFAULT_TTL_S):
+        self.base_url = base_url
+        self.ttl_s = float(ttl_s)
+        self._path: Path | None = None      # the cached .h5 on disk
+        self._manifest: dict | None = None
+        self._data: dict[str, bytes] = {}   # dataset name -> raw bytes
+        self._fetched_at: float | None = None
+        self.error: str | None = None
+        self._lock = BoundedSemaphore(1)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url)
+
+    def _stale(self) -> bool:
+        return (self._fetched_at is None
+                or time.time() - self._fetched_at > self.ttl_s)
+
+    def refresh(self, force: bool = False) -> bool:
+        """Re-download and re-read if the cache is stale.  True on success.
+
+        Serialised: with several viewers on the page, concurrent misses
+        would otherwise each pull the whole file.  The waiters re-check
+        staleness after the lock and normally find the work already done.
+        """
+        if not self.configured:
+            self.error = "fpga_master.host / port not set"
+            return False
+        with self._lock:
+            if not force and not self._stale() and self._manifest is not None:
+                return True
+            try:
+                self._load()
+            except Exception as exc:            # network, subprocess, JSON
+                self.error = f"{type(exc).__name__}: {exc}"
+                logger.warning(f"gain archive refresh failed: {self.error}")
+                # Keep whatever was cached: a stale gain table still
+                # tells the operator more than an empty page does.
+                return self._manifest is not None
+            self.error = None
+            return True
+
+    def _load(self) -> None:
+        resp = requests.get(f"{self.base_url}/get-current-gain-file",
+                            timeout=self.FETCH_TIMEOUT_S)
+        resp.raise_for_status()
+        fd, tmp = tempfile.mkstemp(prefix="choco-gain-", suffix=".h5")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(resp.content)
+            manifest = json.loads(_h5read("manifest", tmp).decode())
+        except Exception:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        self._discard_file()
+        self._path = Path(tmp)
+        self._manifest = manifest
+        self._data = {}
+        self._fetched_at = time.time()
+
+    def _discard_file(self) -> None:
+        if self._path is not None:
+            self._path.unlink(missing_ok=True)
+            self._path = None
+
+    def manifest(self) -> dict | None:
+        self.refresh()
+        return self._manifest
+
+    def dataset(self, name: str) -> bytes | None:
+        """Raw little-endian C-order bytes of one dataset, or None.
+
+        The name is checked against the manifest rather than passed
+        through: the same never-hand-the-caller's-string-to-the-tool
+        rule as the journalctl allowlist.
+        """
+        if not self.refresh() or self._manifest is None:
+            return None
+        if not any(d["name"] == name for d in self._manifest["datasets"]):
+            return None
+        if name not in self._data:
+            if self._path is None:
+                return None
+            try:
+                self._data[name] = _h5read("data", str(self._path), name)
+            except Exception as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
+                logger.warning(f"gain dataset '{name}' unreadable: {self.error}")
+                return None
+        return self._data[name]
+
+    def describe(self, name: str) -> dict | None:
+        manifest = self.manifest()
+        if manifest is None:
+            return None
+        for dataset in manifest["datasets"]:
+            if dataset["name"] == name:
+                return dataset
+        return None
+
+    def file_bytes(self) -> bytes | None:
+        """The archive itself, for the page's download link."""
+        if not self.refresh() or self._path is None:
+            return None
+        try:
+            return self._path.read_bytes()
+        except OSError as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+            return None
+
+    def to_dict(self) -> dict:
+        manifest = self._manifest or {}
+        return {
+            "configured": self.configured,
+            "error": self.error,
+            "fetched_at": self._fetched_at,
+            "datasets": manifest.get("datasets", []),
+            "attrs": manifest.get("attrs", {}),
+            "scalars": manifest.get("scalars", {}),
+            "index_map": manifest.get("index_map", {}),
+        }
+
+
+def _h5read(mode: str, path: str, *args: str) -> bytes:
+    """Run choco.h5read in a subprocess and return its stdout."""
+    cmd = [sys.executable, "-m", "choco.h5read", mode, path, *args]
+    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip() or "no detail"
+        raise RuntimeError(f"h5read {mode} failed: {detail}")
+    return proc.stdout
 
 
 # --- PDB (power_db) -------------------------------------------------------

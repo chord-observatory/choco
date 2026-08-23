@@ -1,0 +1,86 @@
+[Unit]
+Description=choco job: render visibility waterfall images
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+# systemd owns /var/lib/waterfall (creates it with the right ownership);
+# the default state_file lives there.
+StateDirectory=waterfall
+# Run as a real account, not root.  The output tree is on NFS, where root
+# is squashed to nobody -- files written that way are awkward to manage
+# from a normal login, and this data is expected to be moved to long-term
+# storage later.  The parent directory is world-writable, so any account
+# will do; it just must not be root.
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/waterfall/waterfall.sh /etc/choco/waterfall.yaml
+# No Restart: the script self-gates and caps its own work, so a run that
+# fails -- mount unavailable, a file unreadable -- is simply retried by
+# the next timer tick.  Exit code 2 = degraded (a dependency was missing,
+# or individual files were skipped); 1 = config error / bug.
+# A backfill is ~24 h of work reading the same NFS server kotekan is
+# writing to, at roughly 58 MB/s sustained with the default budget.
+# Nice only governs CPU, and IOSchedulingClass governs *local* block
+# devices -- neither throttles NFS traffic, so the only real lever is
+# max_files_per_run in waterfall.yaml (10 instead of 40 roughly quarters
+# the read rate and stretches the backfill to ~4 days; live data still
+# keeps up, since files land every ~3.2 min).
+Nice=10
+IOSchedulingClass=idle
+# Hold the job to half the box, so a backfill cannot crowd out the other
+# services that share this host or a developer's shell.  The quota is a
+# ceiling rather than a throttle: the work is single-threaded and I/O
+# bound, so it does not currently come near two cores -- what the cap
+# buys is the surprising cases, numpy's unused OpenBLAS pool spinning or
+# a future run that parallelises.
+#
+# CPUWeight is the one that bites day to day.  Between cgroups the
+# scheduler distributes by cgroup weight, so the Nice above orders tasks
+# only *within* this unit -- it does nothing for another service or for
+# an interactive shell in user.slice, each of which is a sibling cgroup.
+# At 20 against the default 100 this job yields whenever anything else
+# wants the CPU, and still runs up to its quota when nothing does.
+CPUQuota=200%
+CPUWeight=20
+# Cap the page cache this job is charged for.  Source files are read once
+# and never revisited -- rendering is append-only -- so the gigabytes a
+# run streams off NFS are cache that can never be hit again, but the
+# kernel has no way to know that.  Measured during the first backfill:
+# ~9 MB/s of cache growth, 4 GB held by the running cgroup after 7 h and
+# the rest reparented into system.slice as each run was torn down, until
+# it had claimed most of RAM and pushed 194 MB of idle daemons to swap at
+# vm.swappiness=60.  MemoryHigh makes the kernel reclaim *this* cgroup
+# rather than pressure the whole box.
+#
+# MemoryHigh alone is not a backstop, which is why MemoryMax is here too.
+# High only *throttles*: it forces reclaim, and clean page cache -- the
+# problem above -- reclaims for free.  Anonymous memory does not, so a
+# genuine runaway (a leak, or an unbounded read of a malformed file)
+# would stall ever harder in reclaim while still allocating, until the
+# system OOM killer fired and picked a victim that might well be choco
+# or a login shell rather than the leaker.  MemoryMax gives the cgroup
+# its own OOM killer instead: the job dies, the rest of the box does not
+# notice.  It cannot fire on the memmap below, because clean file pages
+# are always reclaimable -- only unreclaimable anon reaches the limit.
+#
+# Being killed mid-append is safe by construction and was fuzzed that
+# way (400 crash-injection trials, byte-identical to clean runs): every
+# append writes at the offset index.json records and truncates first, so
+# a torn write is overwritten rather than repaired, the index is written
+# atomically and last, and the flock is an fd the kernel drops when the
+# process dies.  A killed run reports Result=oom-kill, which job_status
+# renders as a red WF badge -- a runaway needs a human, and the timer
+# retries in two minutes either way.
+#
+# The number tracks thumbs.dat, not the job's own footprint, which is
+# only ~150 MB anon.  update_thumbnails memmaps thumbs.dat and walks it
+# one product at a time, so consecutive reads sit n_prod*bins apart --
+# 646 kB at 100 elements -- and the pass only stays sequential-ish
+# because the whole file is in cache.  It is 107 MB at 32 elements but
+# 1 GB at 100, so a cap that excludes it would turn a rebuild into
+# n_prod re-reads of the entire file.  Raise this if the element count
+# grows past ~100, or make that walk read row-blocks instead of columns.
+MemoryHigh=2G
+MemoryMax=3G

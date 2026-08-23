@@ -14,8 +14,10 @@ import yaml
 from flask import Flask
 
 from .auth import init_auth
+from .datafiles import DataFileScan
+from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
-from .services import FpgaMonitor, PdbMonitor
+from .services import FpgaMonitor, GainArchive, PdbMonitor
 from .state import Registry
 from .sync import Orchestrator
 
@@ -44,6 +46,8 @@ _DEFAULT_CONFIG = {
     "eop": {},
     "bffs": {},
     "eigencal": {},
+    "waterfall": {},
+    "vis_files": {},
     "ldap": {},
 }
 
@@ -112,6 +116,8 @@ def load_config(path: str | Path) -> dict:
                        "rename it to pdb:.")
     config["bffs"] = raw.get("bffs") or {}
     config["eigencal"] = raw.get("eigencal") or {}
+    config["waterfall"] = raw.get("waterfall") or {}
+    config["vis_files"] = raw.get("vis_files") or {}
     config["ldap"] = raw.get("ldap") or {}
     return config
 
@@ -159,11 +165,27 @@ def create_app(
         port=fpga_cfg.get("port") or None,
         timeout=float(fpga_cfg.get("timeout") or 5.0),
     )
+    # The digital-gain archive is fetched on demand (and cached), not
+    # polled: it changes when someone recalibrates, and nothing in the
+    # header depends on it.
+    gain_archive = GainArchive(
+        fpga_monitor.base_url,
+        ttl_s=float(fpga_cfg.get("gain_ttl") or GainArchive.DEFAULT_TTL_S),
+    )
     pdb_cfg = config.get("pdb") or {}
     pdb_monitor = PdbMonitor(
         host=pdb_cfg.get("host") or None,
         port=pdb_cfg.get("port") or None,
         timeout=float(pdb_cfg.get("timeout") or 5.0),
+    )
+
+    # Data-file roots for /files.  Scanned on demand (and cached), never
+    # polled: nothing in the header depends on it, and the roots are NFS
+    # mounts we would rather not touch on a timer.
+    vis_cfg = config.get("vis_files") or {}
+    datafile_scan = DataFileScan(
+        vis_cfg.get("roots") or (),
+        ttl_s=float(vis_cfg.get("ttl") or DataFileScan.DEFAULT_TTL_S),
     )
 
     # The master dish-input <-> power-channel table.  Lives beside
@@ -178,12 +200,22 @@ def create_app(
     app.config["orchestrator"] = orchestrator
     app.config["fpga_monitor"] = fpga_monitor
     app.config["fpga_cfg"] = fpga_cfg
+    app.config["gain_archive"] = gain_archive
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)
     app.config["eop_cfg"] = config.get("eop") or {}
     app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["eigencal_cfg"] = config.get("eigencal") or {}
+    waterfall_cfg = config.get("waterfall") or {}
+    app.config["waterfall_cfg"] = waterfall_cfg
+    # Read-only view of the tree jobs/waterfall writes.  No greenlet: the
+    # images are read on demand from the /files page, not polled.
+    app.config["waterfall_store"] = WaterfallStore(
+        waterfall_cfg.get("images_dir"),
+        ttl_s=float(waterfall_cfg.get("ttl") or WaterfallStore.DEFAULT_TTL_S),
+    )
+    app.config["datafile_scan"] = datafile_scan
     app.config["configs_dir"] = configs_dir
     # Initialize authentication
     init_auth(app, config)
@@ -198,6 +230,8 @@ def create_app(
         gevent.spawn(fpga_monitor.run)
     if pdb_monitor.configured:
         gevent.spawn(pdb_monitor.run)
+    if datafile_scan.configured:
+        gevent.spawn(datafile_scan.run)
 
     return app
 

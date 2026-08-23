@@ -435,6 +435,57 @@ class TestPipelinePage:
         assert client.get("/partials/node-pipeline-svg/cx/nope").status_code == 404
 
 
+class TestPlotPage:
+    """Full-viewport single-buffer plot (/plot/<key>?buffer=)."""
+
+    def test_requires_login(self, client):
+        resp = client.get("/plot/cx/cx1?buffer=n2_buffer", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_unknown_node_redirects(self, client):
+        _login(client)
+        resp = client.get("/plot/cx/nope?buffer=n2_buffer", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_page_structure(self, client):
+        _login(client)
+        body = client.get("/plot/cx/cx1?buffer=n2_buffer").data.decode()
+        # Standalone page: the same container bufferplot.js renders into
+        # on the pipeline page, plus the attributes that name the source
+        # and make it open full screen instead of waiting for a click.
+        assert 'id="buffer-plot"' in body
+        assert 'data-source-url="/api/node-buffer-data/cx/cx1?buffer=n2_buffer"' in body
+        assert 'data-source-id="cx/cx1|n2_buffer"' in body
+        assert 'data-fullscreen="1"' in body
+        assert "bufferplot.js" in body
+        # Slim nav, no base.html chrome, dark by default.
+        assert 'class="brand-pill"' in body
+        assert "/pipeline/cx/cx1" in body and "/edit/cx/cx1" in body
+        assert 'data-theme="dark"' in body
+        # The view lives in the fragment, so the server renders nothing
+        # for it — no query-string plumbing to get wrong.
+        assert "pipeline.js" not in body
+
+    def test_bad_buffer_name_rejected(self, client):
+        _login(client)
+        # Same allowlist as the data API: a name that could break out of
+        # an attribute never reaches the template.
+        for name in ['"><script>', "../etc", "a b", ""]:
+            resp = client.get(
+                "/plot/cx/cx1", query_string={"buffer": name},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 302, name
+            assert "/pipeline/cx/cx1" in resp.headers["Location"]
+
+    def test_fragment_is_not_the_server_s_business(self, client):
+        _login(client)
+        # A fragment never reaches the server at all, but the route must
+        # not care if one is somehow passed through as a query either.
+        resp = client.get("/plot/cx/cx1?buffer=n2_buffer&dims=F:x,E:y&zoom=1:9")
+        assert resp.status_code == 200
+
+
 class TestNodeBufferDataApi:
     """The frame-data proxy behind the live buffer plots.
 
@@ -803,7 +854,8 @@ class TestServicePage:
         resp = client.get("/service/not-a-service")
         assert resp.status_code == 404
 
-    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal"])
+    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
+                                  "waterfall"])
     def test_job_pages_render(self, client, name):
         from unittest.mock import patch
         _login(client)
@@ -813,7 +865,8 @@ class TestServicePage:
         assert resp.status_code == 200
         assert name.upper() in resp.data.decode()
 
-    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal"])
+    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
+                                  "waterfall"])
     def test_status_partial_renders(self, client, name):
         from unittest.mock import patch
         _login(client)
@@ -943,6 +996,54 @@ class TestServicePage:
         assert "CYG_A" in body
         assert "87.0%" in body
 
+    def test_waterfall_detail_from_state_file(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state = {"updated": 1700000200.0, "roots": ["subset"],
+                 "waterfalls_dir": "/mnt/cs00/data/kotekan_vis_files/waterfalls",
+                 "files_rendered": 3, "acquisitions_touched": 2, "backlog": 17,
+                 "run_seconds": 24.5,
+                 "last_acquisition": "acq_20260723_232332_046022478",
+                 "last_file_idx": 4202415, "errors": []}
+        state_file = tmp_path / "waterfall-state.json"
+        state_file.write_text(json.dumps(state))
+        app.config["waterfall_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/waterfall")
+        body = resp.data.decode()
+        assert "17 files waiting" in body
+        assert "acq_20260723_232332_046022478" in body
+        assert "subset" in body
+
+    def test_waterfall_detail_reports_being_up_to_date(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state_file = tmp_path / "waterfall-state.json"
+        state_file.write_text(json.dumps(
+            {"backlog": 0, "files_rendered": 0, "acquisitions_touched": 0}))
+        app.config["waterfall_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/waterfall")
+        assert "up to date" in resp.data.decode()
+
+    def test_waterfall_detail_lists_skipped_files(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state_file = tmp_path / "waterfall-state.json"
+        state_file.write_text(json.dumps(
+            {"backlog": 0, "files_rendered": 1, "acquisitions_touched": 1,
+             "errors": [f"vis_{i}.h5: cannot be widened" for i in range(14)]}))
+        app.config["waterfall_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/waterfall")
+        body = resp.data.decode()
+        assert "Skipped" in body
+        assert "cannot be widened" in body
+        assert "14 in total" in body          # capped at 10, rest counted
+
     def test_raw_state_file_shown(self, client, app, tmp_path):
         from unittest.mock import patch
         _login(client)
@@ -995,6 +1096,9 @@ class TestServicePage:
                   "history": [42, {"time": "then", "bad_inputs": 3}]}),
         ("eigencal", {"updated": [], "transit_time": "noon",
                       "good_frac": "most", "sent": "yes"}),
+        ("waterfall", {"updated": "just now", "roots": 7, "errors": "none",
+                       "backlog": "lots"}),
+        ("waterfall", {"errors": [None, {"a": 1}], "roots": [None]}),
     ])
     def test_garbage_state_files_never_break_the_page(
             self, client, app, tmp_path, name, state):
@@ -1025,6 +1129,164 @@ class TestServicePage:
         assert "isn't currently readable" in body
         # grid still rendered from the last read
         assert "SPI bus 0" in body
+
+
+class TestFpgaGains:
+    """The digital-gain archive: manifest, data protocol, page, download."""
+
+    MANIFEST = {
+        "datasets": [
+            {"name": "gain_coeff", "value_type": "complex64",
+             "extents": [1, 8192, 128],
+             "dimnames": ["update_time", "freq", "input"], "bytes": 8388608},
+            {"name": "gain_exp", "value_type": "int32", "extents": [1, 128],
+             "dimnames": ["update_time", "input"], "bytes": 512},
+        ],
+        "attrs": {"acquisition_name": "20260808T053625Z_digitalgain"},
+        "scalars": {"update_id": ["digitalgain_20260808T053625.917371Z"],
+                    "index_map/update_time": [1786167385.917371]},
+        "index_map": {"freq": {"n": 8192, "first_mhz": 0.0,
+                               "last_mhz": 1599.8046875},
+                      "inputs": {"n": 128, "names": ["chord_pathfinder000000"]}},
+    }
+
+    def _configure(self, app, payload=b"\x01\x02\x03\x04"):
+        """A gain archive with its cache pre-filled — no chive, no h5py."""
+        archive = app.config["gain_archive"]
+        archive.base_url = "http://fpga.example:54321"
+        archive._manifest = self.MANIFEST
+        archive._data = {"gain_exp": payload}
+        archive._fetched_at = 1e12          # never stale during a test
+        monitor = app.config["fpga_monitor"]
+        monitor.host, monitor.port = "fpga.example", 54321
+        app.config["fpga_cfg"] = {"host": monitor.host, "port": monitor.port}
+        return archive
+
+    def test_requires_login(self, client):
+        resp = client.get("/api/fpga/gain-data?dataset=gain_exp",
+                          follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_descriptor_speaks_the_buffer_protocol(self, client, app):
+        self._configure(app)
+        _login(client)
+        body = client.get("/api/fpga/gain-data?dataset=gain_coeff&len=0").get_json()
+        # Exactly the shape bufferplot.js already understands, which is
+        # what lets the whole plotting stack work on an HDF5 dataset.
+        assert body["frame_desc"] == {
+            "value_type": "complex64", "extents": [1, 8192, 128],
+            "dimnames": ["update_time", "freq", "input"],
+        }
+        assert body["frame_id"] == "digitalgain_20260808T053625.917371Z"
+        assert body["frame_size"] == 8388608
+        assert body["metadata"]["index_map"]["freq"]["n"] == 8192
+
+    def test_data_is_raw_bytes_with_the_update_id(self, client, app):
+        self._configure(app, payload=b"abcdefgh")
+        _login(client)
+        resp = client.get("/api/fpga/gain-data?dataset=gain_exp&len=4")
+        assert resp.status_code == 200
+        assert resp.mimetype == "application/octet-stream"
+        assert resp.data == b"abcd"            # honours the len prefix
+        assert resp.headers["X-Frame-Id"] == "digitalgain_20260808T053625.917371Z"
+        assert resp.headers["X-Frame-Size"] == "8"
+        assert resp.headers["Cache-Control"] == "no-store"
+
+    def test_unknown_dataset_404(self, client, app):
+        self._configure(app)
+        _login(client)
+        assert client.get("/api/fpga/gain-data?dataset=nope&len=0").status_code == 404
+
+    def test_bad_dataset_name_rejected(self, client, app):
+        self._configure(app)
+        _login(client)
+        # The name reaches h5py, so it gets the same allowlist treatment
+        # as a buffer name or a journal unit.
+        for name in ['"><script>', "a b", "", "x;y"]:
+            resp = client.get("/api/fpga/gain-data",
+                              query_string={"dataset": name, "len": 0})
+            assert resp.status_code == 400, name
+
+    def test_negative_len_rejected(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.get("/api/fpga/gain-data?dataset=gain_exp&len=-1")
+        assert resp.status_code == 400
+
+    def test_unconfigured_is_404_not_a_crash(self, client, app):
+        _login(client)
+        assert client.get("/api/fpga/gain-data?dataset=x&len=0").status_code == 404
+
+    def test_page_defers_the_card(self, client, app):
+        self._configure(app)
+        _login(client)
+        body = client.get("/service/fpga").data.decode()
+        # Filling the card means pulling 8.4 MB from fpga_master, so the
+        # page must not wait for it — it asks for the card separately
+        # and loads the plot module ready for when it lands.
+        assert 'hx-get="/partials/fpga-gains"' in body
+        assert "bufferplot.js" in body
+        assert "digitalgain_20260808T053625.917371Z" not in body
+
+    def test_card_shows_the_archive(self, client, app):
+        self._configure(app)
+        _login(client)
+        body = client.get("/partials/fpga-gains").data.decode()
+        assert "Digital gains" in body
+        assert "digitalgain_20260808T053625.917371Z" in body
+        assert 'id="gain-dataset"' in body
+        assert "gain_coeff" in body and "gain_exp" in body
+        assert "1599.8" in body                       # the frequency span
+        assert "/service/fpga/gain.h5" in body        # download link
+
+    def test_card_reports_an_unreachable_archive(self, client, app):
+        archive = self._configure(app)
+        archive._manifest = None
+        archive._fetched_at = None
+        archive.error = "ConnectionError: no route to host"
+        # refresh() will try and fail; the card says so rather than 500.
+        archive.refresh = lambda force=False: False
+        _login(client)
+        body = client.get("/partials/fpga-gains").data.decode()
+        assert "unavailable" in body
+        assert "no route to host" in body
+
+    def test_page_without_an_archive_still_renders(self, client, app):
+        _login(client)
+        app.config["fpga_monitor"].host = "fpga.example"
+        app.config["fpga_monitor"].port = 54321
+        body = client.get("/service/fpga").data.decode()
+        card = client.get("/partials/fpga-gains").data.decode()
+        assert "Digital gains" not in card            # nothing to show
+        assert "F-engine" in body or "FPGA" in body   # ...page is fine
+
+    def test_fullscreen_page_reuses_the_plot_template(self, client, app):
+        self._configure(app)
+        _login(client)
+        body = client.get("/service/fpga/plot?dataset=gain_coeff").data.decode()
+        assert 'data-source-url="/api/fpga/gain-data?dataset=gain_coeff"' in body
+        assert 'data-source-id="fpga-gain|gain_coeff"' in body
+        assert 'data-fullscreen="1"' in body
+        assert "bufferplot.js" in body
+
+    def test_fullscreen_bad_dataset_redirects(self, client, app):
+        self._configure(app)
+        _login(client)
+        resp = client.get("/service/fpga/plot?dataset=a b",
+                          follow_redirects=False)
+        assert resp.status_code == 302
+        assert "/service/fpga" in resp.headers["Location"]
+
+    def test_download_serves_the_file(self, client, app, tmp_path):
+        archive = self._configure(app)
+        h5 = tmp_path / "gain.h5"
+        h5.write_bytes(b"\x89HDF\r\n\x1a\n rest")
+        archive._path = h5
+        _login(client)
+        resp = client.get("/service/fpga/gain.h5")
+        assert resp.status_code == 200
+        assert resp.data.startswith(b"\x89HDF")
+        assert "attachment" in resp.headers["Content-Disposition"]
 
 
 class TestFpgaControl:

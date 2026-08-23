@@ -31,6 +31,8 @@ dl.service-facts dd { margin: 0; }
     <p>Feed flagging — combines per-feed health sources and pushes the bad-input list to kotekan on change.</p>
     {% elif name == 'eigencal' %}
     <p>Point-source gain calibration — fits per-input complex gains once per calibrator transit, at night.</p>
+    {% elif name == 'waterfall' %}
+    <p>Visibility waterfalls — appends each new N&sup2; file to its acquisition's triangle of images. <a href="/files">Browse the data</a>.</p>
     {% endif %}
 </hgroup>
 

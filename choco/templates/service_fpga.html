@@ -34,6 +34,15 @@ dl.service-facts dd { margin: 0; }
 {% include "_service_fpga_status.html" %}
 </div>
 
+{# Filled in after the page paints: see web.partial_fpga_gains.  The
+   plot module loads here, before the card arrives, so the card's own
+   init script can count on window.chocoPlot existing. #}
+<script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
+<div id="fpga-gains" hx-get="/partials/fpga-gains" hx-trigger="load"
+     hx-swap="innerHTML">
+    <p style="font-size: 0.9em; opacity: 0.7;"><em>Loading digital gains…</em></p>
+</div>
+
 {% if control and fpga.configured %}
 <section>
     <h4 style="margin-bottom: 0.25em;">Controls</h4>

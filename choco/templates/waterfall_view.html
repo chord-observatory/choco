@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ label_a }} × {{ label_b }} — {{ acq }} — CHOCO{% endblock %}
+
+{% block styles %}
+.wfv-head { display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap;
+            margin-bottom: 0.3em; }
+.wfv-head h2 { margin: 0; font-size: 1.2em; }
+.wfv-head code { font-size: 0.9em; }
+.wfv-note { color: #666; font-size: 0.85em; margin: 0 0 0.8em; }
+
+.wfv { --railw: 5.4em; --cbarw: 6.6em; }
+
+/* The frequency ruler is sticky: the image is one pixel row per time
+   sample and can be tens of thousands of pixels tall, so the axis has to
+   travel with the reader rather than sit at one end of the scroll. */
+.wfv-freq-wrap { position: sticky; top: 0; z-index: 10;
+                 background: var(--pico-background-color, #fff);
+                 margin-left: var(--railw); margin-right: var(--cbarw);
+                 padding-top: 0.2em; }
+.wfv-freq { position: relative; height: 1.9em; font-size: 0.78em;
+            color: var(--pico-muted-color, #666);
+            border-bottom: 1px solid var(--pico-muted-border-color, #ccc); }
+.wfv-freq .t { position: absolute; bottom: 0; transform: translateX(-50%);
+               padding-bottom: 7px; white-space: nowrap; }
+.wfv-freq .t::after { content: ""; position: absolute; left: 50%; bottom: 0;
+                      height: 6px; border-left: 1px solid currentColor; }
+
+.wfv-body { display: flex; align-items: flex-start; }
+/* The rail hangs off the image box, not the flex row: the row is as tall
+   as its tallest member — the colorbar column, for a wide image — while
+   the time fractions must span exactly the image's own height.  The
+   rail's width is set where font-size is still 1em so it equals the
+   frequency ruler's margin and the two axes share one left edge. */
+.wfv-imgbox { flex: 1 1 auto; min-width: 0; position: relative;
+              margin-left: var(--railw); }
+.wfv-imgbox img { width: 100%; height: auto; display: block;
+                  image-rendering: pixelated; }
+.wfv-rail { position: absolute; top: 0; bottom: 0; right: 100%;
+            width: var(--railw); color: var(--pico-muted-color, #666);
+            border-right: 1px solid var(--pico-muted-border-color, #ccc); }
+.wfv-rail .t { position: absolute; right: 0.4em; transform: translateY(-50%);
+               white-space: nowrap; font-size: 0.78em; }
+.wfv-rail .t::after { content: ""; position: absolute; top: 50%;
+                      left: calc(100% + 0.05em); width: 5px;
+                      border-top: 1px solid currentColor; }
+
+.wfv-cwrap { flex: 0 0 var(--cbarw); }
+.wfv-csticky { position: sticky; top: 2.6em; padding-left: 0.9em; }
+.wfv-ctitle { font-size: 0.78em; color: var(--pico-muted-color, #666);
+              margin: 0 0 0.3em; }
+.wfv-cbar { position: relative; width: 1.1em; height: 260px;
+            border: 1px solid var(--pico-muted-border-color, #ccc); }
+.wfv-cbar .t { position: absolute; left: calc(100% + 0.35em);
+               transform: translateY(50%); font-size: 0.72em;
+               white-space: nowrap; color: var(--pico-muted-color, #666); }
+.wfv-cbar .t::before { content: ""; position: absolute; top: 50%;
+                       right: calc(100% + 0.1em); width: 4px;
+                       border-top: 1px solid currentColor; }
+{% endblock %}
+
+{% block content %}
+<div class="wfv-head">
+    <h2>{{ label_a }} × {{ label_b }}</h2>
+    <code>{{ acq }}</code>
+</div>
+
+<p class="wfv-note">
+    elements {{ a }}, {{ b }} ·
+    {{ rows }} scanline{{ '' if rows == 1 else 's' }} ×
+    {{ n_freq }} channel{{ '' if n_freq == 1 else 's' }} ·
+    {{ n_files }} source file{{ '' if n_files == 1 else 's' }}
+    {%- if time_axis.start %} · {{ time_axis.start }} → {{ time_axis.end }} {{ time_axis.unit }}{% endif %}
+    · <a href="/waterfall/{{ root }}/{{ acq }}/{{ shard }}/{{ name }}">raw PNG</a>
+    · <a href="/files/{{ root }}/{{ acq }}/triangle">back to the triangle</a>
+    <br>
+    Frequency across{% if freq_axis.unit == 'MHz' %} in MHz{% else %} in channel index{% endif %},
+    time down{% if time_axis.unit == 'scanline' %} in scanline number{% else %} in local time ({{ time_axis.unit }}){% endif %};
+    black is missing data.
+</p>
+
+<div class="wfv">
+    <div class="wfv-freq-wrap">
+        <div class="wfv-freq">
+            {%- for t in freq_axis.ticks %}
+            <span class="t" style="left: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
+            {%- endfor %}
+        </div>
+    </div>
+    <div class="wfv-body">
+        <div class="wfv-imgbox">
+            <div class="wfv-rail">
+                {%- for t in time_axis.ticks %}
+                <span class="t" style="top: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
+                {%- endfor %}
+            </div>
+            <img src="/waterfall/{{ root }}/{{ acq }}/{{ shard }}/{{ name }}"
+                 alt="{{ label_a }} × {{ label_b }} waterfall" decoding="async">
+        </div>
+        <div class="wfv-cwrap">
+            {%- if gradient %}
+            <div class="wfv-csticky">
+                <div class="wfv-ctitle">|V|</div>
+                <div class="wfv-cbar" style="background: {{ gradient }}">
+                    {%- for t in value_ticks %}
+                    <span class="t" style="bottom: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
+                    {%- endfor %}
+                </div>
+            </div>
+            {%- endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

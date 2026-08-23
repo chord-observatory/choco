@@ -7,6 +7,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import gevent
 
@@ -17,7 +18,14 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
+from .datafiles import human_bytes
 from .pdbmap import PdbMap, cross_check, kotekan_dish_labels
+from .waterfalls import (
+    IMAGE_RE as WF_IMAGE_RE, freq_ticks as wf_freq_ticks, open_stream,
+    palette_gradient as wf_palette_gradient, parse_elements,
+    time_ticks as wf_time_ticks, triangle as wf_triangle,
+    value_ticks as wf_value_ticks,
+)
 from .services import (
     job_status, job_logs, timer_status, read_state_json, render_dot_svg,
     sanitize_pipeline_svg, EOP_STALE_AFTER_S, PIPELINE_LAYOUTS,
@@ -237,6 +245,43 @@ def node_pipeline_page(node_key):
     return render_template(
         "pipeline.html", node=node, node_key=node_key,
         layout=layout, layouts=list(PIPELINE_LAYOUTS),
+    )
+
+
+@bp.route("/plot/<path:node_key>")
+@login_required
+def node_plot_page(node_key):
+    """Full-viewport live plot of one buffer.
+
+    The same panel the pipeline page opens in its corner overlay, given
+    the whole window: ``bufferplot.js`` renders into ``#buffer-plot``
+    either way, and the ``data-buffer`` attribute here is what tells it
+    to open full screen instead of waiting for a click.
+
+    The view — dimension dispositions, series selection, mode, zoom —
+    rides in the URL *fragment*, which is why nothing here parses it:
+    it never reaches the server, and the page is bookmarkable and
+    shareable without a round trip.  The buffer name is validated
+    against the same allowlist the data API uses before it is handed to
+    a template that puts it in an attribute.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        flash(f"Node {node_key} not found", "error")
+        return redirect(url_for("web.dashboard"))
+    buffer_name = request.args.get("buffer", "")
+    if not _BUFFER_NAME_RE.fullmatch(buffer_name):
+        flash("Invalid buffer name", "error")
+        return redirect(url_for("web.node_pipeline_page", node_key=node_key))
+    return render_template(
+        "plot.html", node=node, node_key=node_key, title=buffer_name,
+        subtitle=node.key,
+        source_url="/api/node-buffer-data/" + node_key
+                   + "?buffer=" + quote(buffer_name, safe=""),
+        source_id=node_key + "|" + buffer_name,
+        back_url=url_for("web.node_pipeline_page", node_key=node_key),
+        back_label="pipeline",
     )
 
 
@@ -598,11 +643,343 @@ def api_node_buffer_data(node_key):
     return resp
 
 
+_GAIN_DATASET_RE = re.compile(r"[A-Za-z0-9_./\-]+")
+# The archive changes when someone recalibrates, not every few seconds,
+# and gain_coeff is 8.4 MB — so the panel polls slowly and asks for the
+# whole dataset (a byte prefix would cut the frequency axis in half).
+GAIN_POLL_MS = 30000
+GAIN_FETCH_BYTES = 16 * 1024 * 1024
+
+
+@bp.route("/api/fpga/gain-data")
+@login_required
+def api_fpga_gain_data():
+    """The F-engine's digital gains, in the buffer-plot protocol.
+
+    Deliberately the *same* wire format as ``/api/node-buffer-data``:
+    ``?len=0`` returns a descriptor (``value_type`` / ``extents`` /
+    ``dimnames``) plus metadata, ``?len>0`` returns leading bytes as
+    ``application/octet-stream``.  An HDF5 dataset is already a C-order
+    array with named axes, so speaking this protocol means the whole
+    plotting stack — dimension table, folds, series, zoom, full-screen
+    page — works on gains with no client-side special case.
+
+    ``X-Frame-Id`` carries the archive's ``update_id``, so the plotter's
+    staleness note reads as "the gains have not changed" rather than
+    pretending to a liveness the file does not have.
+    """
+    archive = current_app.config.get("gain_archive")
+    if archive is None or not archive.configured:
+        return {"error": "fpga_master is not configured"}, 404
+    dataset = request.args.get("dataset", "")
+    if not _GAIN_DATASET_RE.fullmatch(dataset):
+        return {"error": "bad dataset name"}, 400
+    try:
+        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
+    except ValueError:
+        return {"error": "'len' must be a non-negative integer"}, 400
+    if length < 0:
+        return {"error": "'len' must be a non-negative integer"}, 400
+    length = min(length, _BUFFER_DATA_MAX_LEN)
+
+    desc = archive.describe(dataset)
+    if desc is None:
+        return {"error": archive.error or f"no dataset '{dataset}'"}, 404
+    info = archive.to_dict()
+    update_id = _first_scalar(info["scalars"].get("update_id"))
+
+    if length == 0:
+        return {
+            "frame_desc": {
+                "value_type": desc["value_type"],
+                "extents": desc["extents"],
+                "dimnames": desc["dimnames"],
+            },
+            "frame_id": update_id,
+            "frame_size": desc["bytes"],
+            "metadata": {
+                "dataset": dataset,
+                "attrs": info["attrs"],
+                "scalars": info["scalars"],
+                "index_map": info["index_map"],
+                "fetched_at": info["fetched_at"],
+            },
+        }
+
+    raw = archive.dataset(dataset)
+    if raw is None:
+        return {"error": archive.error or "gain archive unreadable"}, 502
+    resp = Response(raw[:length], mimetype="application/octet-stream")
+    resp.headers["X-Frame-Id"] = str(update_id or "")
+    resp.headers["X-Frame-Size"] = str(len(raw))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@bp.route("/partials/fpga-gains")
+@login_required
+def partial_fpga_gains():
+    """The gain card, loaded after the page paints.
+
+    Rendering it pulls the archive from fpga_master — 8.4 MB and a
+    subprocess on a cold cache.  That must not be in the way of a page
+    whose first job is showing whether the F-engine is up, so the card
+    arrives on its own (``hx-trigger="load"``) and a failure degrades to
+    a note inside it.
+    """
+    return render_template("_fpga_gains.html", gains=_gain_context(),
+                           poll_ms=GAIN_POLL_MS, fetch_bytes=GAIN_FETCH_BYTES)
+
+
+@bp.route("/service/fpga/gain.h5")
+@login_required
+def fpga_gain_file():
+    """The gain archive itself, proxied so the browser needs no chive route."""
+    archive = current_app.config.get("gain_archive")
+    if archive is None or not archive.configured:
+        abort(404)
+    raw = archive.file_bytes()
+    if raw is None:
+        flash(f"Gain file unavailable: {archive.error or 'unknown error'}",
+              "error")
+        return redirect(url_for("web.service_page", name="fpga"))
+    resp = Response(raw, mimetype="application/x-hdf5")
+    resp.headers["Content-Disposition"] = \
+        'attachment; filename="current_gain.h5"'
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@bp.route("/service/fpga/plot")
+@login_required
+def fpga_gain_plot_page():
+    """Full-viewport plot of one gain dataset.
+
+    The same ``plot.html`` the node buffers use — only the source
+    attributes on the container differ, which is the whole point of the
+    plot panel taking a source rather than a node and a buffer.
+    """
+    archive = current_app.config.get("gain_archive")
+    if archive is None or not archive.configured:
+        abort(404)
+    dataset = request.args.get("dataset", "")
+    if not _GAIN_DATASET_RE.fullmatch(dataset):
+        flash("Invalid dataset name", "error")
+        return redirect(url_for("web.service_page", name="fpga"))
+    return render_template("plot.html", title=dataset, subtitle="F-engine gains",
+                           source_url="/api/fpga/gain-data?dataset="
+                                      + quote(dataset, safe=""),
+                           source_id="fpga-gain|" + dataset,
+                           back_url=url_for("web.service_page", name="fpga"),
+                           back_label="fpga",
+                           poll_ms=GAIN_POLL_MS, fetch_bytes=GAIN_FETCH_BYTES)
+
+
+def _gain_context() -> dict:
+    """What the FPGA page shows about the gain archive.
+
+    Fetching is on demand and cached, so rendering the page is what
+    pulls the file the first time.  A failure degrades to a note: the
+    gains are an extra on this page, never the reason it loads.
+    """
+    archive = current_app.config.get("gain_archive")
+    if archive is None or not archive.configured:
+        return {"configured": False, "datasets": [], "attrs": {},
+                "index_map": {}, "error": None}
+    archive.refresh()          # to_dict reports the cache; this fills it
+    info = archive.to_dict()
+    update_time = _first_scalar(info["scalars"].get("index_map/update_time"))
+    info["update_id"] = _first_scalar(info["scalars"].get("update_id"))
+    info["update_fmt"] = (_fmt_utc(update_time)
+                          if isinstance(update_time, (int, float)) else None)
+    return info
+
+
+def _first_scalar(value):
+    """h5py hands back one-element lists for scalar datasets."""
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 @bp.route("/partials/dashboard-table")
 @login_required
 def partial_dashboard_table():
     registry = _registry()
     return render_template("_dashboard_table.html", nodes=registry.nodes)
+
+
+@bp.app_template_filter("filesize")
+def _filesize(n) -> str:
+    return human_bytes(n)
+
+
+def _datafile_scan():
+    return current_app.config.get("datafile_scan")
+
+
+@bp.route("/files")
+@login_required
+def files_page():
+    """What kotekan has written to the data roots.
+
+    The scan itself is a *lazily loaded partial*, for the same reason
+    the FPGA gain card is: walking an NFS mount takes a few hundred ms,
+    and the page has nothing to wait for it for.
+    """
+    scan = _datafile_scan()
+    return render_template(
+        "files.html",
+        configured=bool(scan is not None and scan.configured),
+        roots=[str(r) for r in (scan.roots if scan is not None else [])],
+    )
+
+
+def _waterfall_store():
+    return current_app.config.get("waterfall_store")
+
+
+@bp.route("/partials/files")
+@login_required
+def partial_files():
+    """The scan table.  ``?refresh=1`` bypasses the cache."""
+    scan = _datafile_scan()
+    if scan is None or not scan.configured:
+        result = {"configured": False, "roots": []}
+    else:
+        result = scan.get(force=request.args.get("refresh") == "1")
+
+    # What has been rendered, keyed the way the template can look it up:
+    # the scan knows a root by its path, the image tree by its last
+    # component, which is the name jobs/waterfall writes under.
+    # Keyed by the acquisition's own source path where the job recorded
+    # one, so two roots sharing a basename cannot collide; the name-based
+    # key stays as a fallback for trees rendered before that was written.
+    store = _waterfall_store()
+    rendered = {}
+    if store is not None and store.configured:
+        for (root_name, acq), summary in store.summaries(
+                force=request.args.get("refresh") == "1").items():
+            summary = {**summary, "root": root_name, "acq": acq}
+            rendered.setdefault(f"{root_name}/{acq}", summary)
+            if summary.get("source_path"):
+                rendered[f"{summary['source_path'].rstrip('/')}/{acq}"] = summary
+    return render_template("_files_table.html", scan=result,
+                           rendered=rendered, now_ts=time.time())
+
+
+@bp.route("/files/<root>/<acq>/triangle")
+@login_required
+def waterfall_triangle(root, acq):
+    """The upper-triangle contact sheet for one acquisition."""
+    store = _waterfall_store()
+    if store is None or not store.configured:
+        abort(404)
+    index = store.index(root, acq)
+    if index is None:
+        abort(404)
+    grid = wf_triangle(index, parse_elements(request.args.get("elements")))
+    return render_template(
+        "waterfall_triangle.html",
+        root=root, acq=acq, index=index, grid=grid,
+        n_files=len(index.get("files") or []),
+        elements_arg=request.args.get("elements") or "",
+    )
+
+
+@bp.route("/waterfall/<root>/<acq>/<shard>/<name>")
+@login_required
+def waterfall_image(root, acq, shard, name):
+    """One rendered image.
+
+    Every path component is matched against the pattern the writer uses
+    before it is joined — the caller's string never reaches the
+    filesystem unchecked.  A short max-age keeps a 500-cell contact
+    sheet from revalidating every thumbnail on each reload, while
+    staying far below the ~3 min cadence at which an image can grow.
+
+    The file is opened, stat-ed and streamed off the gevent hub: a
+    contact sheet is one request per cell (528 today, 5050 at 100
+    elements) and a full-resolution image can be a hundred megabytes, so
+    neither the NFS open nor the reads may block the sync loop, and the
+    response may not be buffered.
+    """
+    store = _waterfall_store()
+    if store is None or not store.configured:
+        abort(404)
+    resolved = store.image_file(root, acq, shard, name)
+    if resolved is None:
+        abort(404)
+    directory, filename = resolved
+    opened = open_stream(directory / filename)
+    if opened is None:
+        abort(404)
+    size, mtime, chunks = opened
+    resp = Response(chunks, mimetype="image/png")
+    resp.headers["Content-Length"] = str(size)
+    resp.last_modified = mtime
+    resp.cache_control.max_age = 30
+    return resp
+
+
+@bp.route("/waterfall/<root>/<acq>/view/<name>")
+@login_required
+def waterfall_view(root, acq, name):
+    """One full-resolution image with its axes drawn around it.
+
+    The axes live here, at display time, and never in the PNG: the image
+    is append-only data, and pixels spent on labels could not be revised
+    when the acquisition grows.  Time comes from times.bin, frequency
+    from freq.npy, and the |V| colorbar from the palette inside the PNG
+    itself plus the frozen lo/hi in the index — each read hub-safe and
+    each degrading to a plainer page rather than a 500 when missing.
+    """
+    store = _waterfall_store()
+    if store is None or not store.configured:
+        abort(404)
+    m = WF_IMAGE_RE.match(name or "")
+    if not m or not name.startswith("wf_"):
+        abort(404)
+    index = store.index(root, acq)
+    if index is None:
+        abort(404)
+    a, b = int(m.group(1)), int(m.group(2))
+    prod = next((p for p in index.get("products") or []
+                 if isinstance(p, dict)
+                 and p.get("name") == f"e{a:04d}xe{b:04d}"), None)
+    if prod is None or not prod.get("rows"):
+        abort(404)
+    shard = f"e{a:04d}"
+    n_freq = int(index.get("n_freq") or 0)
+
+    labels = index.get("labels") or []
+
+    def label(e: int) -> str:
+        return labels[e] if e < len(labels) else str(e)
+
+    head = store.image_head(root, acq, shard, name)
+    pal = head["palette"] if head else None
+    # The tick fractions must describe the pixels the browser shows: on a
+    # live acquisition the served PNG can be an append ahead of the
+    # index's committed row count, so its own IHDR height wins.
+    rows = int(head["height"]) if head and head.get("height") else int(prod["rows"])
+    # The image renders at page width, so its on-screen height scales
+    # with rows/width — a squat early-acquisition image has room for a
+    # handful of time labels where a night-long one fits dozens.
+    time_target = max(3, min(40, round(43 * rows / max(n_freq, 1))))
+    return render_template(
+        "waterfall_view.html",
+        root=root, acq=acq, shard=shard, name=name,
+        a=a, b=b, label_a=label(a), label_b=label(b),
+        rows=rows, n_freq=n_freq,
+        freq_axis=wf_freq_ticks(store.freq_axis(root, acq), n_freq),
+        time_axis=wf_time_ticks(
+            store.times(root, acq), rows, target=time_target,
+            tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone")),
+        value_ticks=wf_value_ticks(prod.get("lo"), prod.get("hi")),
+        gradient=wf_palette_gradient(pal),
+        n_files=len(index.get("files") or []),
+    )
 
 
 def _service_registry() -> dict[str, dict]:
@@ -616,6 +993,7 @@ def _service_registry() -> dict[str, dict]:
     eop_cfg = current_app.config.get("eop_cfg") or {}
     bffs_cfg = current_app.config.get("bffs_cfg") or {}
     eigencal_cfg = current_app.config.get("eigencal_cfg") or {}
+    waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
     configs_dir = current_app.config.get("configs_dir")
 
     # EOP rewrites its state file on every successful (daily) run, so
@@ -659,6 +1037,14 @@ def _service_registry() -> dict[str, dict]:
                         Path(str(eigencal_cfg["state_file"]))
                         if eigencal_cfg.get("state_file") else None,
                         None, "last calibration"),
+        # waterfall rewrites its state file on every run, but a run with
+        # nothing to render is the normal case between acquisitions, so
+        # the mtime is "last run" and never a health downgrade.
+        "waterfall": job(waterfall_cfg.get("service_unit")
+                         or "choco-waterfall.service",
+                         Path(str(waterfall_cfg["state_file"]))
+                         if waterfall_cfg.get("state_file") else None,
+                         None, "last run"),
     }
 
 
@@ -674,12 +1060,14 @@ def _services_health() -> dict:
     """
     fpga = current_app.config.get("fpga_monitor")
     pdb = current_app.config.get("pdb_monitor")
+    data = current_app.config.get("datafile_scan")
     registry = _service_registry()
     health = {
         "fpga": fpga.to_dict() if fpga is not None else None,
         "pdb": pdb.to_dict() if pdb is not None else None,
+        "data": data.to_dict() if data is not None else None,
     }
-    for name in ("eop", "bffs", "eigencal"):
+    for name in ("eop", "bffs", "eigencal", "waterfall"):
         svc = registry[name]
         health[name] = job_status(svc["unit"], state_file=svc["state_file"],
                                   stale_after_s=svc["stale_after_s"])
@@ -689,15 +1077,18 @@ def _services_health() -> dict:
 @bp.route("/partials/services")
 @login_required
 def partial_services():
-    """Render the monitor (FPGA, PDB) + job (EOP, bffs, eigencal) strip."""
+    """Render the monitor (FPGA, PDB, DATA) + job (EOP, bffs, eigencal,
+    waterfall) strip."""
     services = _services_health()
     return render_template(
         "_services_status.html",
         fpga=services["fpga"],
         pdb=services["pdb"],
+        data=services["data"],
         eop=services["eop"],
         bffs=services["bffs"],
         eigencal=services["eigencal"],
+        waterfall=services["waterfall"],
         now_ts=time.time(),
     )
 
@@ -815,6 +1206,22 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
             "source": state.get("source"),
             "good_frac": good_frac,
             "sent": state.get("sent"),
+        }
+
+    if name == "waterfall":
+        errors = [str(e) for e in (state.get("errors") or [])]
+        return {
+            "updated": _fmt_utc(state.get("updated")),
+            "roots": ", ".join(str(r) for r in (state.get("roots") or [])),
+            "waterfalls_dir": state.get("waterfalls_dir"),
+            "files_rendered": state.get("files_rendered"),
+            "acquisitions_touched": state.get("acquisitions_touched"),
+            "backlog": state.get("backlog"),
+            "run_seconds": state.get("run_seconds"),
+            "last_acquisition": state.get("last_acquisition"),
+            "last_file_idx": state.get("last_file_idx"),
+            "errors": errors[:10],
+            "errors_total": len(errors),
         }
 
     return None
@@ -1329,6 +1736,7 @@ _JOB_STATES = ("ok", "degraded", "stale", "failed", "never_run", "unknown")
 _MONITOR_STATES = {
     "fpga": ("ok", "no_timing", "down", "unconfigured", "unknown"),
     "pdb": ("ok", "no_states", "down", "unconfigured", "unknown"),
+    "data": ("ok", "degraded", "down", "unconfigured", "unknown"),
 }
 
 
@@ -1455,3 +1863,17 @@ def api_pdb_map():
         "channels": pdb_map.to_list(),
         "check": _pdb_cross_check(pdb_map),
     }
+
+
+@bp.route("/api/files", methods=["GET"])
+@localhost_or_login_required
+def api_files():
+    """The same scan as /files, as JSON.  ``?refresh=1`` bypasses the cache.
+
+    Sizes are bytes and times are unix timestamps — the page's own
+    formatting is display, not data.
+    """
+    scan = _datafile_scan()
+    if scan is None or not scan.configured:
+        return {"configured": False, "roots": []}
+    return scan.get(force=request.args.get("refresh") == "1")

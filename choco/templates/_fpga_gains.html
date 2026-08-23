@@ -1,0 +1,85 @@
+{# The F-engine's digital-gain archive: summary, dataset picker and
+   the shared live-plot panel.  Loaded on its own (see
+   web.partial_fpga_gains) because filling it means pulling 8.4 MB
+   from fpga_master, which must not delay the page. #}
+{% if gains.configured %}
+<section>
+    <hgroup style="margin-bottom: 0.4em;">
+        <h4 style="margin-bottom: 0.2em;">Digital gains</h4>
+        <p style="font-size: 0.85em; margin: 0;">
+        The F-engine's current gain archive, read from
+        <code>/get-current-gain-file</code>. Read-only.</p>
+    </hgroup>
+    {% if gains.error and not gains.datasets %}
+    <p class="pill-bad" style="font-size: 0.9em;">Gain file unavailable: {{ gains.error }}</p>
+    {% else %}
+    <table style="font-size: 0.85em;">
+        <tbody>
+        <tr><th scope="row">update id</th>
+            <td><code>{{ gains.update_id or "—" }}</code></td></tr>
+        <tr><th scope="row">computed</th><td>{{ gains.update_fmt or "—" }}</td></tr>
+        <tr><th scope="row">acquisition</th>
+            <td><code>{{ gains.attrs.get("acquisition_name", "—") }}</code></td></tr>
+        {% if gains.index_map.get("freq") %}
+        <tr><th scope="row">frequency</th>
+            <td>{{ "%.1f"|format(gains.index_map.freq.first_mhz) }} –
+                {{ "%.1f"|format(gains.index_map.freq.last_mhz) }} MHz
+                ({{ gains.index_map.freq.n }} channels)</td></tr>
+        {% endif %}
+        {% if gains.index_map.get("inputs") %}
+        <tr><th scope="row">inputs</th>
+            <td>{{ gains.index_map.inputs.n }}
+                (<code>{{ gains.index_map.inputs.names[0] }}</code> …)</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+    <p style="font-size: 0.82em; opacity: 0.8;">
+    <code>gain_coeff</code> holds the raw complex coefficients;
+    <code>gain_exp</code> is the per-input exponent and is <em>not</em>
+    folded into them here. Pick <code>part: mag</code> and
+    <code>log</code> — the coefficients span five orders of magnitude.</p>
+    <div style="display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap;
+                margin-bottom: 0.5em; font-size: 0.9em;">
+        <label style="display: flex; align-items: center; gap: 0.4em; margin: 0;">
+            dataset
+            <select id="gain-dataset" style="width: auto; margin: 0; padding: 0.1em 1.6em 0.1em 0.4em;">
+                {% for d in gains.datasets %}
+                <option value="{{ d.name }}">{{ d.name }}
+                    ({{ d.dimnames|join("×") }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <a id="gain-fullscreen" role="button" class="outline"
+           style="width: auto; margin: 0; padding: 0.1em 0.7em;"
+           href="/service/fpga/plot?dataset={{ gains.datasets[0].name if gains.datasets }}">full screen ⤢</a>
+        <a role="button" class="outline"
+           style="width: auto; margin: 0; padding: 0.1em 0.7em;"
+           href="/service/fpga/gain.h5">download .h5</a>
+    </div>
+    {# The same panel the pipeline page opens; only the source differs. #}
+    <div id="buffer-plot"></div>
+    <script>
+        (function () {
+            var sel = document.getElementById("gain-dataset");
+            var link = document.getElementById("gain-fullscreen");
+            var box = document.getElementById("buffer-plot");
+            if (!sel || !box || !window.chocoPlot) return;
+            function show() {
+                var name = sel.value;
+                var q = encodeURIComponent(name);
+                link.setAttribute("href", "/service/fpga/plot?dataset=" + q);
+                window.chocoPlot.open(
+                    window.chocoPlot.urlSource(
+                        "/api/fpga/gain-data?dataset=" + q,
+                        "fpga-gain|" + name, name,
+                        { page: "/service/fpga/plot?dataset=" + q,
+                          pollMs: {{ poll_ms }}, defaultFetch: {{ fetch_bytes }} }),
+                    { container: box, noScroll: true });
+            }
+            sel.addEventListener("change", show);
+            show();
+        })();
+    </script>
+    {% endif %}
+</section>
+{% endif %}

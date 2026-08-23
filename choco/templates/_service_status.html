@@ -102,4 +102,35 @@
     <dt>Processed</dt><dd>{{ detail.updated }}</dd>
     {% endif %}
 </dl>
+{% elif name == 'waterfall' and detail %}
+<dl class="service-facts">
+    <dt>Backlog</dt>
+    <dd>{% if detail.backlog %}{{ detail.backlog }} file{{ '' if detail.backlog == 1 else 's' }} waiting{% else %}up to date{% endif %}</dd>
+    <dt>Last run</dt>
+    <dd>{{ detail.files_rendered }} file{{ '' if detail.files_rendered == 1 else 's' }}
+        across {{ detail.acquisitions_touched }} acquisition{{ '' if detail.acquisitions_touched == 1 else 's' }}
+        {%- if detail.run_seconds is not none %} in {{ detail.run_seconds }}s{% endif %}</dd>
+    {% if detail.last_acquisition %}
+    <dt>Latest</dt>
+    <dd><code>{{ detail.last_acquisition }}</code>{% if detail.last_file_idx is not none %} &middot; file {{ detail.last_file_idx }}{% endif %}</dd>
+    {% endif %}
+    {% if detail.roots %}
+    <dt>Roots</dt><dd>{{ detail.roots }}</dd>
+    {% endif %}
+    {% if detail.waterfalls_dir %}
+    <dt>Images</dt><dd><code>{{ detail.waterfalls_dir }}</code></dd>
+    {% endif %}
+    {% if detail.updated %}
+    <dt>Updated</dt><dd>{{ detail.updated }}</dd>
+    {% endif %}
+</dl>
+{% if detail.errors %}
+<p style="font-size: 0.9em;"><strong>Skipped:</strong></p>
+<ul style="font-size: 0.85em;">
+    {% for e in detail.errors %}<li><code>{{ e }}</code></li>{% endfor %}
+</ul>
+{% if detail.errors_total > detail.errors | length %}
+<p style="font-size: 0.85em;"><em>{{ detail.errors_total }} in total; showing the first {{ detail.errors | length }}.</em></p>
+{% endif %}
+{% endif %}
 {% endif %}

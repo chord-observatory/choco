@@ -194,6 +194,18 @@ cmd_install() {
         echo "Seeded $CONFIG_DIR/eigencal_feeds.yaml -- fill in the real feed layout before use"
     fi
 
+    # Seed the waterfall config on first install; never overwrite an edited one
+    if [ ! -f "$CONFIG_DIR/waterfall.yaml" ]; then
+        cp "$SCRIPT_DIR/jobs/waterfall/waterfall.example.yaml" "$CONFIG_DIR/waterfall.yaml"
+        echo "Seeded $CONFIG_DIR/waterfall.yaml from jobs/waterfall/waterfall.example.yaml -- edit before use"
+    fi
+    # The unit runs as User=choco so the images it writes to NFS are not
+    # owned by the squashed root account; warn rather than create one.
+    if ! id choco >/dev/null 2>&1; then
+        echo "Note: choco-waterfall.service runs as User=choco, which does not exist."
+        echo "      Create it (useradd -r -s /usr/sbin/nologin choco) or edit the unit."
+    fi
+
     # Seed or overwrite kotekan configs from repo.  pdb_map.csv is excluded
     # from every copy here and handled separately below -- it is deployment
     # data, not a repo artifact, so even an explicit --overwrite-configs
@@ -254,6 +266,16 @@ cmd_install() {
         echo ""
         echo "Note: graphviz (dot) not found -- pipeline graphs on node pages"
         echo "  will show raw dot text.  apt install graphviz to render them."
+    fi
+
+    # The FPGA page reads the digital-gain archive through h5py, in a
+    # subprocess (choco.h5read).  It ships in the [jobs] extra, which
+    # this installer pulls in, so this only fires on an odd install.
+    if ! "$INSTALL_DIR/.venv/bin/python" -c "import h5py" >/dev/null 2>&1; then
+        echo ""
+        echo "Note: h5py not importable -- the FPGA page's digital-gain card"
+        echo "  will report the archive as unavailable.  Reinstall with the"
+        echo "  [jobs] extra to enable it."
     fi
 
     echo ""
@@ -420,6 +442,7 @@ cmd_test() {
     # the jobs have their own pytest.ini (pythonpath, testpaths)
     (cd "$SCRIPT_DIR/jobs/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
     (cd "$SCRIPT_DIR/jobs/eigencal" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    (cd "$SCRIPT_DIR/jobs/waterfall" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
 cmd_lock() {

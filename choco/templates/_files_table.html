@@ -1,0 +1,64 @@
+{% from "_service_macros.html" import since %}
+{% if not scan.get('configured') %}
+<p>No data roots configured.</p>
+{% else %}
+<p class="scan-note">
+    {{ scan.dirs }} director{{ 'y' if scan.dirs == 1 else 'ies' }},
+    {{ scan.files }} file{{ '' if scan.files == 1 else 's' }},
+    {{ scan.bytes | filesize }} total ·
+    scanned {{ since(scan.scanned_at, now_ts) }} in {{ '%.2f' % scan.duration_s }}s
+</p>
+
+{% for root in scan.roots %}
+{% set rname = root.path.rstrip('/').split('/')[-1] %}
+<div class="root-header">
+    <h4>{{ root.path }}</h4>
+    {% if not root.error %}
+    <small>{{ root.dirs | length }} director{{ 'y' if root.dirs | length == 1 else 'ies' }} ·
+           {{ root.files }} file{{ '' if root.files == 1 else 's' }} ·
+           {{ root.bytes | filesize }}</small>
+    {% endif %}
+</div>
+
+{% if root.error %}
+<div class="flash flash-error" role="alert"><span>{{ root.error }}</span></div>
+{% elif not root.dirs %}
+<p><small>No subdirectories.</small></p>
+{% else %}
+<table class="files">
+    <thead>
+        <tr>
+            <th>Directory</th>
+            <th style="text-align: right;">Files</th>
+            <th style="text-align: right;">Size</th>
+            <th style="text-align: right;">Newest</th>
+            <th style="text-align: right;">Waterfalls</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for d in root.dirs %}
+        <tr>
+            <td class="name">{{ d.name }}{% if d.error %}
+                <br><small style="color: #ff4136;">{{ d.error }}</small>{% endif %}</td>
+            <td class="num">{{ d.files }}</td>
+            <td class="num">{{ d.bytes | filesize }}</td>
+            <td class="num"><small>{{ since(d.newest, now_ts) }}</small></td>
+            {% set wf = rendered.get(root.path.rstrip('/') ~ '/' ~ d.name)
+            or rendered.get(rname ~ '/' ~ d.name) %}
+            <td class="num wf">
+            {%- if wf and wf.broken %}
+                <small style="color: #ff851b;" title="the acquisition's index could not be read">index unreadable</small>
+            {%- elif wf %}
+                <a href="/files/{{ wf.root or rname }}/{{ d.name }}/triangle"
+                   title="{{ wf.products }} products, {{ wf.rows }} scanlines">{{ wf.rendered }}{% if d.files %}/{{ d.files }}{% endif %}</a>
+            {%- else %}
+                <small style="color: #999;">&mdash;</small>
+            {%- endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endfor %}
+{% endif %}

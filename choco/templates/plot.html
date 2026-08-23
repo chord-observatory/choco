@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+{# Standalone full-viewport page, the same deliberate non-use of
+   base.html as pipeline.html: the plot wants every pixel, so the usual
+   container/nav chrome is a slim header instead.
+
+   There is no plot markup here at all — bufferplot.js builds the panel
+   into #buffer-plot exactly as it does for the pipeline page's overlay.
+   The only differences are the data-source-* attributes, which tell it
+   to open full screen rather than wait for a click and where to fetch
+   from, and the flex layout that lets the canvas take whatever the
+   header leaves.  A node buffer and an F-engine gain dataset both land
+   here; only the source URL differs. #}
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CHOCO - {{ title }}{% if subtitle %} ({{ subtitle }}){% endif %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='pico.min.css') }}">
+    {# Same key as the pipeline page, so the two agree on the theme. #}
+    <script>
+        try {
+            document.documentElement.dataset.theme =
+                localStorage.getItem("chocoPipelineTheme") || "dark";
+        } catch (e) {}
+    </script>
+    <style>
+        html, body { height: 100%; }
+        body {
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+            padding: 0.5em 0.75em 0.75em 0.75em;
+            box-sizing: border-box;
+        }
+        .pg-header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.6em;
+            margin-bottom: 0.4em;
+        }
+        .pg-header .brand-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25em 0.7em;
+            border-radius: 999px;
+            background: #5c3a21;
+            color: white;
+            font-weight: 600;
+            line-height: 1;
+            text-decoration: none;
+        }
+        .pg-header a[role="button"], .pg-header button {
+            width: auto;
+            margin: 0;
+            padding: 0.1em 0.7em;
+            font-size: 0.85em;
+        }
+        .pg-spacer { flex: 1; }
+        /* The panel is the page below the header: bufferplot.js gives
+           its <article> flex: 1 in full-screen mode and the canvas
+           min-height: 0, so the plot grows with the window. */
+        #buffer-plot {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="pg-header">
+        <a href="/" class="brand-pill">CHOCO</a>
+        <strong><code>{{ title }}</code></strong>
+        <small style="opacity: 0.7;">{% if subtitle %}{{ subtitle }} · {% endif %}scroll to zoom · drag to pan · double-click resets</small>
+        <a href="{{ back_url }}" role="button" class="outline">{{ back_label }}</a>
+        {% if node_key %}<a href="/edit/{{ node_key }}" role="button" class="outline">edit</a>{% endif %}
+        <span class="pg-spacer"></span>
+        <button type="button" id="pg-theme" class="outline" title="Toggle dark/light">◐</button>
+    </div>
+
+    {# data-source-url is the full-screen signal, and it is also what
+     makes this page source-agnostic: a node buffer and an F-engine gain
+     dataset differ only in the URL the panel fetches from.  The view
+     itself rides in the URL fragment, which the server never sees. #}
+    <div id="buffer-plot"
+         data-source-url="{{ source_url }}"
+         data-source-id="{{ source_id }}"
+         data-source-title="{{ title }}"
+         data-fullscreen="1"
+         {% if poll_ms %}data-poll-ms="{{ poll_ms }}"{% endif %}
+         {% if fetch_bytes %}data-fetch="{{ fetch_bytes }}"{% endif %}></div>
+
+    <script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
+    <script>
+        (function () {
+            var btn = document.getElementById("pg-theme");
+            if (!btn) return;
+            btn.addEventListener("click", function () {
+                var root = document.documentElement;
+                var next = root.dataset.theme === "dark" ? "light" : "dark";
+                root.dataset.theme = next;
+                try { localStorage.setItem("chocoPipelineTheme", next); } catch (e) {}
+            });
+        })();
+    </script>
+</body>
+</html>
