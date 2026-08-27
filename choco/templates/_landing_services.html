@@ -1,0 +1,129 @@
+{# The landing page's service table: one row per header badge, with the
+   detail the strip only carries in a tooltip.  Swapped in place by the
+   30 s htmx poll on #landing-services. #}
+{% from "_service_macros.html" import monitor_color, monitor_label, job_color, job_label, since, pill_style %}
+{% set now = now_ts %}
+{% macro status_pill(color, label) -%}
+<span style="{{ pill_style() }} background: {{ color }};">{{ label }}</span>
+{%- endmacro %}
+<table class="services">
+    <thead>
+        <tr>
+            <th>Service</th>
+            <th>Status</th>
+            <th>Detail</th>
+            <th>Last activity</th>
+            <th>Next run</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td class="svc"><a href="/service/choco"><strong>CHOCO</strong></a></td>
+            <td>{{ status_pill('#008000', 'up') }}</td>
+            <td>
+                {% if choco %}
+                configs in <code>{{ choco.configs_dir }}</code>{% if choco.queued %}
+                &middot; {{ choco.queued }} queued change{{ 's' if choco.queued != 1 }}{% endif %}
+                {% endif %}
+            </td>
+            <td>{% if choco %}up since {{ choco.started_at }}{% endif %}</td>
+            <td>&mdash;</td>
+        </tr>
+        {% if nodes %}
+        <tr>
+            <td class="svc"><a href="/nodes"><strong>NODES</strong></a></td>
+            <td>{{ status_pill(monitor_color(nodes.health), nodes.label) }}</td>
+            <td>
+                {{ nodes.total }} node{{ 's' if nodes.total != 1 }}
+                &mdash; {{ nodes.started }} started, {{ nodes.idle }} idle,
+                {{ nodes.down }} down{% if nodes.syncing %}, {{ nodes.syncing }} syncing{% endif %}{% if nodes.unknown %}, {{ nodes.unknown }} unknown{% endif %},
+                {{ nodes.maintenance }} in maintenance
+                &middot; <a href="/nodes">dashboard</a>
+            </td>
+            <td>&mdash;</td>
+            <td>&mdash;</td>
+        </tr>
+        {% endif %}
+        {% if services.fpga %}{% set fpga = services.fpga %}
+        <tr>
+            <td class="svc"><a href="/service/fpga"><strong>FPGA</strong></a></td>
+            <td>{{ status_pill(monitor_color(fpga.health), monitor_label(fpga.health)) }}</td>
+            <td>
+                {% if fpga.configured %}
+                fpga_master at {{ fpga.host }}:{{ fpga.port }}
+                {% if fpga.state %} &middot; state: {{ fpga.state }}{% endif %}
+                {% if fpga.error %}<br><small class="err">{{ fpga.error }}</small>{% endif %}
+                {% else %}
+                <small>set <code>fpga_master.host/port</code> in config.yaml</small>
+                {% endif %}
+            </td>
+            <td>{{ since(fpga.last_seen, now) }}</td>
+            <td>&mdash;</td>
+        </tr>
+        {% endif %}
+        {% if services.pdb %}{% set pdb = services.pdb %}
+        <tr>
+            <td class="svc"><a href="/service/pdb"><strong>PDB</strong></a></td>
+            <td>{{ status_pill(monitor_color(pdb.health), monitor_label(pdb.health)) }}</td>
+            <td>
+                {% if pdb.configured %}
+                power_db at {{ pdb.host }}:{{ pdb.port }}
+                {% if pdb.n_channels %} &middot; {{ pdb.n_on }} / {{ pdb.n_channels }} channels on{% endif %}
+                {% if pdb.error %}<br><small class="err">{{ pdb.error }}</small>{% endif %}
+                {% else %}
+                <small>set <code>pdb.host/port</code> in config.yaml</small>
+                {% endif %}
+            </td>
+            <td>{{ since(pdb.last_seen, now) }}</td>
+            <td>&mdash;</td>
+        </tr>
+        {% endif %}
+        {% if services.data %}{% set data = services.data %}
+        <tr>
+            <td class="svc"><a href="/files"><strong>DATA</strong></a></td>
+            <td>{{ status_pill(monitor_color(data.health), monitor_label(data.health)) }}</td>
+            <td>
+                {% if data.configured %}
+                {{ data.n_ok }} / {{ data.n_roots }} data root{{ 's' if data.n_roots != 1 }} reachable
+                {% for r in data.root_status if not r.ok %}
+                <br><small class="err"><code>{{ r.path }}</code>: {{ r.error }}</small>
+                {% endfor %}
+                {% if data.error %}<br><small class="err">{{ data.error }}</small>{% endif %}
+                {% else %}
+                <small>set <code>vis_files.roots</code> in config.yaml</small>
+                {% endif %}
+            </td>
+            <td>{{ since(data.last_seen, now) }}</td>
+            <td>&mdash;</td>
+        </tr>
+        {% endif %}
+        {% for name, label in [('eop', 'EOP'), ('bffs', 'BFFS'),
+                               ('eigencal', 'EIGENCAL'), ('waterfall', 'WF')] %}
+        {% set job = services[name] %}
+        {% set d = details.get(name) %}
+        {% set timer = timers.get(name) %}
+        <tr>
+            <td class="svc"><a href="/service/{{ name }}"><strong>{{ label }}</strong></a></td>
+            <td>{{ status_pill(job_color(job.health), job_label(job.health)) }}</td>
+            <td>
+                <code>{{ job.unit }}</code>
+                {% if job.result and job.result != 'success' %}
+                &middot; result: {{ job.result }}{% if job.exit_status %} (exit {{ job.exit_status }}){% endif %}
+                {% endif %}
+                {% if not job.systemd %} &middot; <small>systemd not reachable</small>{% endif %}
+                {% if name == 'eop' and d %}
+                <br><small>{{ d.entries }} EOP entries, {{ d.first }} &rarr; {{ d.last }}</small>
+                {% elif name == 'bffs' and d %}
+                <br><small>{{ d.bad_inputs | length }} feed{{ 's' if d.bad_inputs | length != 1 }} flagged</small>
+                {% elif name == 'eigencal' and d %}
+                <br><small>last transit {{ d.transit_time or '?' }}{% if d.source %} ({{ d.source }}){% endif %}{% if d.sent is not none %}, {{ 'sent' if d.sent else 'not sent' }}{% endif %}</small>
+                {% elif name == 'waterfall' and d %}
+                <br><small>last run: {{ d.files_rendered or 0 }} file{{ 's' if d.files_rendered != 1 }} rendered{% if d.backlog %}, backlog {{ d.backlog }}{% endif %}</small>
+                {% endif %}
+            </td>
+            <td>{{ svc[name].mtime_label }}: {{ since(job.state_mtime, now) }}</td>
+            <td>{% if timer and timer.next_elapse %}{{ timer.next_elapse }}{% else %}&mdash;{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

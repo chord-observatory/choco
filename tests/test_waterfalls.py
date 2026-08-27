@@ -282,7 +282,7 @@ class TestConfig:
         cfg.write_text(yaml.safe_dump({
             "configs_dir": str(tmp_path),
             "waterfall": {"images_dir": str(images), "ttl": 5,
-                          "state_file": "/var/lib/waterfall/state.json"},
+                          "state_file": "/var/lib/choco/waterfall/state.json"},
         }))
         loaded = load_config(cfg)
         assert loaded["waterfall"]["images_dir"] == str(images)

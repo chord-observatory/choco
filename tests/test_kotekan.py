@@ -154,34 +154,38 @@ class TestGetBufferFrame:
             "data_length": 0, "metadata": {"fpga_seq": 12345},
             "frame_desc": {"frame_desc_type": "N2"},
         }
-        responses.get(f"{BASE}/buffer/n2_buffer/frame", json=payload)
+        responses.get(f"{BASE}/buffer_frame", json=payload)
         assert node.get_buffer_frame("n2_buffer", length=0) == payload
-        assert responses.calls[0].request.url.endswith("?len=0")
+        url = responses.calls[0].request.url
+        assert "name=n2_buffer" in url
+        assert "len=0" in url
 
     @responses.activate
     def test_no_length_omits_len_param(self, node):
-        responses.get(f"{BASE}/buffer/n2_buffer/frame", json={"frame_id": 0})
+        responses.get(f"{BASE}/buffer_frame", json={"frame_id": 0})
         node.get_buffer_frame("n2_buffer")
-        assert "len=" not in responses.calls[0].request.url
+        url = responses.calls[0].request.url
+        assert "name=n2_buffer" in url
+        assert "len=" not in url
 
     @responses.activate
     def test_no_full_frame_is_error_reply_not_none(self, node):
         # kotekan reports a peek miss as HTTP 402; that's a meaningful
         # reply ("try again" / "enable peek_hold"), not an outage.
-        responses.get(f"{BASE}/buffer/n2_buffer/frame", status=402)
+        responses.get(f"{BASE}/buffer_frame", status=402)
         frame = node.get_buffer_frame("n2_buffer", length=0)
         assert frame is not None
         assert "no full frame" in frame["error"]
 
     @responses.activate
-    def test_missing_endpoint_is_error_reply_not_none(self, node):
-        # 404 = the endpoint isn't registered (idle kotekan, stale
-        # buffer name, or a kotekan without frame peeks) — must not
+    def test_unknown_buffer_is_error_reply_not_none(self, node):
+        # 404 = kotekan doesn't know the buffer (idle kotekan, stale
+        # buffer name, or a kotekan predating /buffer_frame) — must not
         # masquerade as "unreachable".
-        responses.get(f"{BASE}/buffer/gone_buffer/frame", status=404)
+        responses.get(f"{BASE}/buffer_frame", status=404)
         frame = node.get_buffer_frame("gone_buffer", length=0)
         assert frame is not None
-        assert "no buffer endpoint" in frame["error"]
+        assert "no buffer named" in frame["error"]
         assert "gone_buffer" in frame["error"]
 
     @responses.activate
@@ -191,7 +195,7 @@ class TestGetBufferFrame:
         # never-populated metadata object).  A reply about that frame,
         # not an outage — reporting it as "unreachable" sent operators
         # looking for a network problem that wasn't there.
-        responses.get(f"{BASE}/buffer/packet_bitmap/frame", status=500)
+        responses.get(f"{BASE}/buffer_frame", status=500)
         frame = node.get_buffer_frame("packet_bitmap", length=0)
         assert frame is not None
         assert "could not serialise" in frame["error"]
@@ -200,14 +204,14 @@ class TestGetBufferFrame:
     @responses.activate
     def test_one_quick_retry_on_transport_failure(self, node):
         payload = {"buffer": "n2_buffer", "frame_id": 3}
-        responses.get(f"{BASE}/buffer/n2_buffer/frame", body=ConnectionError())
-        responses.get(f"{BASE}/buffer/n2_buffer/frame", json=payload)
+        responses.get(f"{BASE}/buffer_frame", body=ConnectionError())
+        responses.get(f"{BASE}/buffer_frame", json=payload)
         assert node.get_buffer_frame("n2_buffer", length=0) == payload
         assert len(responses.calls) == 2
 
     @responses.activate
     def test_unreachable(self, node):
-        responses.get(f"{BASE}/buffer/n2_buffer/frame", body=ConnectionError())
+        responses.get(f"{BASE}/buffer_frame", body=ConnectionError())
         assert node.get_buffer_frame("n2_buffer") is None
 
 

@@ -18,7 +18,7 @@
         </tr>
         <tbody id="node-status"
                hx-ext="morph"
-               hx-get="/partials/node-status/{{ node_key }}"
+               hx-get="/nodes/partials/node-status/{{ node_key }}"
                hx-trigger="load, every 0.5s"
                hx-swap="morph:innerHTML">
             {% include "_node_status.html" %}

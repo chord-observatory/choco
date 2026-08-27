@@ -5,9 +5,9 @@ After=choco.service
 
 [Service]
 Type=oneshot
-# systemd owns /var/lib/eop (creates it with the right ownership); the
+# systemd owns /var/lib/choco/eop (creates it with the right ownership); the
 # default eop.state_file lives there.
-StateDirectory=eop
+StateDirectory=choco/eop
 ExecStart=/opt/choco/jobs/eop/eop-broadcast.sh /etc/choco/config.yaml
 # Retry forever so the job self-recovers when the FPGA master comes back.
 Restart=on-failure

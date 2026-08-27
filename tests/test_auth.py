@@ -61,7 +61,7 @@ class TestUnauthenticatedAccess:
         assert "/login" in resp.headers["Location"]
 
     def test_node_edit_redirects(self, client):
-        resp = client.get("/edit/cx/cx1", follow_redirects=False)
+        resp = client.get("/nodes/edit/cx/cx1", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
@@ -132,6 +132,71 @@ class TestLoginFlow:
         assert b"Invalid username or password" in resp.data
         # still locked out
         assert client.get("/", follow_redirects=False).status_code == 302
+
+
+class TestLoginNextRedirect:
+    """Login returns the user to the page they were trying to reach."""
+
+    def _login(self, client, app, url="/login"):
+        app.config["LDAP_ENABLED"] = True
+        authenticator = MagicMock(spec=LdapAuthenticator)
+        authenticator.authenticate.return_value = \
+            "uid=alice,cn=users,cn=accounts,dc=example"
+        app.config["ldap_authenticator"] = authenticator
+        client.get("/login")
+        with client.session_transaction() as sess:
+            token = sess["_csrf_token"]
+        return client.post(
+            url,
+            data={"username": "alice", "password": "pw", "_csrf_token": token},
+            follow_redirects=False,
+        )
+
+    def test_unauthorized_get_carries_next(self, client):
+        resp = client.get("/nodes", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/login?next=%2Fnodes"
+
+    def test_unauthorized_get_keeps_query(self, client):
+        resp = client.get("/nodes?a=b", follow_redirects=False)
+        assert resp.headers["Location"] == "/login?next=%2Fnodes%3Fa%3Db"
+
+    def test_unauthorized_post_gets_no_next(self, client):
+        # Replaying a POST-only URL as a GET after login would 405.
+        resp = client.post("/nodes/toggle-started/cx/cx1",
+                           follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/login"
+
+    def test_htmx_unauthorized_returns_to_the_page(self, client):
+        # The polled partial is not a place a person can be; the page
+        # they were on (HX-Current-URL) is.
+        resp = client.get(
+            "/partials/services",
+            headers={"HX-Request": "true",
+                     "HX-Current-URL": "https://choco.example/nodes"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["HX-Redirect"] == "/login?next=%2Fnodes"
+
+    def test_login_redirects_to_next(self, client, app):
+        resp = self._login(client, app, "/login?next=/nodes")
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/nodes"
+
+    def test_login_rejects_offsite_next(self, client, app):
+        for evil in ("https://evil.example", "//evil.example",
+                     "javascript:alert(1)"):
+            _users.clear()
+            resp = self._login(client, app, f"/login?next={evil}")
+            assert resp.headers["Location"] == "/"
+            client.get("/logout")
+
+    def test_already_logged_in_login_honors_next(self, client, app):
+        self._login(client, app)
+        resp = client.get("/login?next=/files", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/files"
 
 
 class TestLdapAuthenticator:

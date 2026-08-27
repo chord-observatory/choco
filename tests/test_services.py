@@ -995,7 +995,7 @@ class TestSanitizePipelineSvg:
           <g id="graph0" class="graph">
             <g id="node1" class="node">
               <title>n2_buffer</title>
-              <g id="a_node1"><a xlink:href="/buffer/n2_buffer/frame"
+              <g id="a_node1"><a xlink:href="/buffer_frame?name=n2_buffer"
                                  xlink:title="n2_buffer (ndarray buffer)">
                 <polygon fill="none" stroke="black" points="0,0 50,20"/>
                 <text x="25" y="10">n2_buffer</text>
@@ -1009,7 +1009,7 @@ class TestSanitizePipelineSvg:
         assert "<polygon" in out
         assert ">n2_buffer<" in out
         assert "href" not in out and "xlink" not in out
-        assert "/buffer/n2_buffer/frame" not in out
+        assert "/buffer_frame" not in out
         # ...and the node is still the clickable one.
         assert 'data-plot-buffer="n2_buffer"' in out
 

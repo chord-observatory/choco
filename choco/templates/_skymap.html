@@ -1,0 +1,14 @@
+{# The landing page's sky-map card: the current-sky strip PNG rendered by
+   jobs/skymap.  Swapped in place by the 5 min htmx poll on #skymap; the
+   ?v= mtime makes a swap fetch the new render exactly when one landed. #}
+{% from "_service_macros.html" import since %}
+{% if mtime %}
+<p class="svc-note" style="margin: 0 0 0.2em; text-align: center;">
+    Current sky over DRAO — beam, Sun and Moon positions as of the render,
+    {{ since(mtime, now_ts) }}.
+</p>
+<img src="/skymap.png?v={{ mtime }}" alt="Current-sky strip plot"
+     style="width: 100%; border-radius: 6px;">
+{% else %}
+<p class="svc-note">No sky map rendered yet — choco-skymap runs every 5 minutes.</p>
+{% endif %}

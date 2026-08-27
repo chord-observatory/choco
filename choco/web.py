@@ -13,7 +13,7 @@ import gevent
 
 from flask import (
     Blueprint, Response, render_template, request, redirect, url_for, flash,
-    current_app, session, abort,
+    current_app, session, abort, send_file,
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
@@ -92,10 +92,25 @@ def _orchestrator():
 
 # --- Authentication routes ---
 
+def _next_target() -> str:
+    """The post-login destination: ?next= when it is a same-site path.
+
+    Anything else — empty, scheme-relative (//host), or an absolute URL
+    — falls back to the landing page, so a crafted login link cannot
+    bounce a fresh session to another site.  The login form posts to
+    its own URL (no action attribute), so ?next= survives failed
+    attempts too.
+    """
+    next_page = request.args.get("next", "")
+    if not next_page.startswith("/") or next_page.startswith("//"):
+        return url_for("web.landing")
+    return next_page
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
-        return redirect(url_for("web.dashboard"))
+        return redirect(_next_target())
 
     if request.method == "POST":
         _check_csrf()
@@ -116,10 +131,7 @@ def login():
         if user_dn:
             user = save_user(user_dn, username)
             login_user(user)
-            next_page = request.args.get("next", "")
-            if not next_page or next_page.startswith(("//", "http:", "https:")):
-                next_page = url_for("web.dashboard")
-            return redirect(next_page)
+            return redirect(_next_target())
         else:
             logger.warning(f"Login failed for '{username}'")
             flash("Invalid username or password.", "error")
@@ -137,14 +149,105 @@ def logout():
 
 # --- Main routes (all require login) ---
 
+# Job services shown on the landing page (and their table order there).
+_LANDING_JOBS = ("eop", "bffs", "eigencal", "waterfall")
+
+
+def _landing_context() -> dict:
+    """Everything the landing page's service table shows.
+
+    The same health snapshots as the header strip, plus the per-service
+    facts the strip only carries in a tooltip: timer schedules and the
+    state-file summaries (both already tolerant of missing systemd or
+    unusable state files).
+    """
+    services = _services_health()
+    svc_registry = _service_registry()
+    timers = {}
+    details = {}
+    for name in _LANDING_JOBS:
+        svc = svc_registry[name]
+        timers[name] = timer_status(svc["timer"]) if svc["timer"] else None
+        details[name] = _service_detail(name, svc)
+    return {
+        "services": services,
+        "svc": svc_registry,
+        "timers": timers,
+        "details": details,
+        "choco": _service_detail("choco", svc_registry["choco"]),
+        "nodes": _nodes_health(),
+        "skymap_configured": _skymap_file() is not None,
+        "now_ts": time.time(),
+    }
+
+
 @bp.route("/")
+@login_required
+def landing():
+    """CHOCO landing page: the services overview table.
+
+    Node management lives under /nodes/*; this page is the front door.
+    """
+    return render_template("landing.html", **_landing_context())
+
+
+@bp.route("/partials/landing-services")
+@login_required
+def partial_landing_services():
+    """The landing page's service table, htmx-refreshed in place."""
+    return render_template("_landing_services.html", **_landing_context())
+
+
+def _skymap_file() -> Path | None:
+    """The rendered sky-map PNG, if the skymap config block names one."""
+    cfg = current_app.config.get("skymap_cfg") or {}
+    path = cfg.get("image_file")
+    return Path(path) if path else None
+
+
+@bp.route("/skymap.png")
+def skymap_png():
+    """The current-sky strip image, rendered by jobs/skymap.
+
+    Deliberately unauthenticated (like /metrics, and for the same
+    cross-host reason: wall displays and external dashboards can't do
+    LDAP sessions).  It is an aggregate sky rendering whose only
+    cluster fact is the pointing declination.  ``conditional`` +
+    ``max_age=0`` make the browser revalidate each time and get a 304
+    until the 5-minute job rewrites the file.
+    """
+    path = _skymap_file()
+    if path is None or not path.is_file():
+        abort(404)
+    return send_file(path, mimetype="image/png", conditional=True, max_age=0)
+
+
+@bp.route("/partials/skymap")
+@login_required
+def partial_skymap():
+    """The landing page's sky-map card, htmx-refreshed every 5 min.
+
+    The image URL carries the file's mtime, so a refresh swaps in a new
+    render exactly when one has landed and is a no-op otherwise.
+    """
+    path = _skymap_file()
+    mtime = None
+    if path is not None:
+        try:
+            mtime = int(path.stat().st_mtime)
+        except OSError:
+            mtime = None
+    return render_template("_skymap.html", mtime=mtime, now_ts=time.time())
+
+
+@bp.route("/nodes")
 @login_required
 def dashboard():
     registry = _registry()
     return render_template("dashboard.html", nodes=registry.nodes)
 
 
-@bp.route("/edit/<path:node_key>", methods=["GET", "POST"])
+@bp.route("/nodes/edit/<path:node_key>", methods=["GET", "POST"])
 @login_required
 def node_edit(node_key):
     """Edit base config or updatable config for a node."""
@@ -325,7 +428,7 @@ def partial_node_pipeline_svg(node_key):
 
 # --- Nodes-registry editor (nodes.yaml) ---
 
-@bp.route("/nodes", methods=["GET"])
+@bp.route("/nodes/edit", methods=["GET"])
 @login_required
 def nodes_edit():
     """Render the nodes.yaml editor with drag-and-drop groups."""
@@ -336,7 +439,7 @@ def nodes_edit():
     return render_template("nodes.html", groups=groups)
 
 
-@bp.route("/nodes", methods=["POST"])
+@bp.route("/nodes/edit", methods=["POST"])
 @login_required
 def nodes_save():
     """Validate the posted JSON structure, save nodes.yaml, and reload."""
@@ -396,7 +499,7 @@ def nodes_save():
 
 # --- Group config editor (push one config to every node in a group) ---
 
-@bp.route("/edit-group/<group>", methods=["GET", "POST"])
+@bp.route("/nodes/edit-group/<group>", methods=["GET", "POST"])
 @login_required
 def group_edit(group):
     """Edit a single config to broadcast to every node in *group*."""
@@ -430,7 +533,7 @@ def group_edit(group):
 
 # --- htmx partial endpoints for live updates ---
 
-@bp.route("/toggle-started/<path:node_key>", methods=["POST"])
+@bp.route("/nodes/toggle-started/<path:node_key>", methods=["POST"])
 @login_required
 def toggle_started(node_key):
     """Toggle the started/idle desired state for a node."""
@@ -449,7 +552,7 @@ def toggle_started(node_key):
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
-@bp.route("/set-started-all/<action>", methods=["POST"])
+@bp.route("/nodes/set-started-all/<action>", methods=["POST"])
 @login_required
 def set_started_all(action):
     """Set all nodes to started or stopped."""
@@ -468,7 +571,7 @@ def set_started_all(action):
     return redirect(url_for("web.dashboard"))
 
 
-@bp.route("/set-started-group/<group>/<action>", methods=["POST"])
+@bp.route("/nodes/set-started-group/<group>/<action>", methods=["POST"])
 @login_required
 def set_started_group(group, action):
     """Set every node in *group* to started or stopped."""
@@ -490,7 +593,7 @@ def set_started_group(group, action):
     return redirect(url_for("web.dashboard"))
 
 
-@bp.route("/toggle-maintenance/<path:node_key>", methods=["POST"])
+@bp.route("/nodes/toggle-maintenance/<path:node_key>", methods=["POST"])
 @login_required
 def toggle_maintenance(node_key):
     """Toggle maintenance mode for a single node."""
@@ -511,7 +614,7 @@ def toggle_maintenance(node_key):
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
-@bp.route("/set-maintenance-all/<action>", methods=["POST"])
+@bp.route("/nodes/set-maintenance-all/<action>", methods=["POST"])
 @login_required
 def set_maintenance_all(action):
     """Put every node into or out of maintenance mode."""
@@ -530,7 +633,7 @@ def set_maintenance_all(action):
     return redirect(url_for("web.dashboard"))
 
 
-@bp.route("/set-maintenance-group/<group>/<action>", methods=["POST"])
+@bp.route("/nodes/set-maintenance-group/<group>/<action>", methods=["POST"])
 @login_required
 def set_maintenance_group(group, action):
     """Put every node in *group* into or out of maintenance mode."""
@@ -552,7 +655,7 @@ def set_maintenance_group(group, action):
     return redirect(url_for("web.dashboard"))
 
 
-@bp.route("/partials/node-status/<path:node_key>")
+@bp.route("/nodes/partials/node-status/<path:node_key>")
 @login_required
 def partial_node_status(node_key):
     registry = _registry()
@@ -998,7 +1101,7 @@ def _service_registry() -> dict[str, dict]:
 
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.  The
-    # path is absolute (the /var/lib/eop default) or, for backward
+    # path is absolute (the /var/lib/choco/eop default) or, for backward
     # compatibility, relative to configs_dir (the legacy layout).
     eop_state = None
     if eop_cfg.get("state_file"):
@@ -1074,14 +1177,62 @@ def _services_health() -> dict:
     return health
 
 
+def _nodes_health() -> dict:
+    """Cluster-level roll-up of per-node status for the NODES badge.
+
+    Green when every node is STARTED, red when every node is DOWN, grey
+    when there are no nodes or nothing has been polled yet (all
+    UNKNOWN); anything in between — some up, all idle, a mix — is
+    yellow.  ``node.status`` is a plain attribute the sync loop keeps
+    fresh, so this is an in-memory sweep, not a probe.
+    """
+    registry = _registry()
+    counts = {s: 0 for s in NodeStatus}
+    for node in registry.nodes.values():
+        counts[node.status] += 1
+    total = len(registry.nodes)
+    started = counts[NodeStatus.STARTED]
+    idle = counts[NodeStatus.IDLE]
+    down = counts[NodeStatus.DOWN]
+    if total == 0:
+        health, label = "unknown", "no nodes"
+    elif started == total:
+        health, label = "ok", "all up"
+    elif down == total:
+        health, label = "down", "all down"
+    elif counts[NodeStatus.UNKNOWN] == total:
+        health, label = "unknown", "unknown"
+    elif started:
+        health, label = "degraded", f"{started}/{total} up"
+    elif idle == total:
+        health, label = "degraded", "idle"
+    else:
+        # No node started, not all idle: some mix of idle, down,
+        # syncing and unknown.  The tooltip carries the exact counts.
+        health, label = "degraded", "mixed"
+    return {
+        "health": health,
+        "label": label,
+        "total": total,
+        "started": started,
+        "idle": idle,
+        "down": down,
+        "unknown": counts[NodeStatus.UNKNOWN],
+        "syncing": counts[NodeStatus.SYNCING],
+        "maintenance": sum(
+            1 for n in registry.nodes.values() if n.maintenance),
+    }
+
+
 @bp.route("/partials/services")
 @login_required
 def partial_services():
-    """Render the monitor (FPGA, PDB, DATA) + job (EOP, bffs, eigencal,
-    waterfall) strip."""
+    """Render the NODES + monitor (FPGA, PDB, DATA) + job (EOP, bffs,
+    eigencal, waterfall) strip."""
     services = _services_health()
     return render_template(
         "_services_status.html",
+        nodes=_nodes_health(),
         fpga=services["fpga"],
         pdb=services["pdb"],
         data=services["data"],

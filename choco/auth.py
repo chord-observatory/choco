@@ -2,6 +2,7 @@
 
 import logging
 from functools import wraps
+from urllib.parse import urlencode, urlsplit
 
 import ldap3
 from ldap3.core.exceptions import LDAPException
@@ -121,9 +122,32 @@ def init_auth(app: Flask, config: dict):
 
     @login_manager.unauthorized_handler
     def unauthorized():
-        """Redirect to login; for htmx requests use HX-Redirect for a
-        full-page navigation instead of swapping login HTML into a partial."""
+        """Redirect to login, carrying the attempted URL as ?next= so a
+        successful login returns there (the login view validates it as
+        a same-site path).
+
+        For htmx requests, HX-Redirect makes the browser do a full-page
+        navigation instead of swapping login HTML into a partial — and
+        the place to return to is the *page* the user was on
+        (HX-Current-URL), not the polled partial that happened to hit
+        the 302.  Only the header's path+query are kept, so it cannot
+        smuggle in another host.  A plain POST (an expired session's
+        toggle) gets no next: replaying it as a GET after login would
+        just 405.
+        """
+        next_path = None
+        if request.headers.get("HX-Request"):
+            current = urlsplit(request.headers.get("HX-Current-URL", ""))
+            if current.path.startswith("/"):
+                next_path = current.path + (
+                    f"?{current.query}" if current.query else "")
+        elif request.method == "GET":
+            query = request.query_string.decode()
+            next_path = request.path + (f"?{query}" if query else "")
+
         login_url = url_for("web.login")
+        if next_path and next_path != "/" and not next_path.startswith("//"):
+            login_url += "?" + urlencode({"next": next_path})
         if request.headers.get("HX-Request"):
             return Response(status=200, headers={"HX-Redirect": login_url})
         return Response(status=302, headers={"Location": login_url})

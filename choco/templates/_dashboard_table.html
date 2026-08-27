@@ -7,7 +7,7 @@
     <div style="display: flex; gap: 1.5em; align-items: center;">
         {% with group=group %}{% include "_toggle_maintenance_all.html" %}{% endwith %}
         {% with group=group %}{% include "_toggle_started_all.html" %}{% endwith %}
-        <a href="/edit-group/{{ group }}" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;">Edit "{{ group }}" configs</a>
+        <a href="/nodes/edit-group/{{ group }}" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;">Edit "{{ group }}" configs</a>
     </div>
 </div>
 <table style="margin-top: 0.25em;">
@@ -62,7 +62,7 @@
             </td>
             <td style="white-space: nowrap;">
                 <a href="/pipeline/{{ key }}" role="button" class="outline">Pipeline</a>
-                <a href="/edit/{{ key }}" role="button" class="outline">Edit</a>
+                <a href="/nodes/edit/{{ key }}" role="button" class="outline">Edit</a>
             </td>
         </tr>
         {% endfor %}

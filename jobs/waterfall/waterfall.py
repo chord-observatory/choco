@@ -47,7 +47,7 @@ log = logging.getLogger("waterfall")
 
 DEFAULTS = {
     "waterfalls_dir": "/mnt/cs00/data/kotekan_vis_files/waterfalls",
-    "state_file": "/var/lib/waterfall/state.json",
+    "state_file": "/var/lib/choco/waterfall/state.json",
     "level": wfpng.DEFAULT_LEVEL,
     # ~5 min of work: enough to stay ahead of the ~3.2 min file cadence
     # with room left over for backfill, while still returning promptly.

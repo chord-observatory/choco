@@ -47,6 +47,7 @@ _DEFAULT_CONFIG = {
     "bffs": {},
     "eigencal": {},
     "waterfall": {},
+    "skymap": {},
     "vis_files": {},
     "ldap": {},
 }
@@ -117,6 +118,7 @@ def load_config(path: str | Path) -> dict:
     config["bffs"] = raw.get("bffs") or {}
     config["eigencal"] = raw.get("eigencal") or {}
     config["waterfall"] = raw.get("waterfall") or {}
+    config["skymap"] = raw.get("skymap") or {}
     config["vis_files"] = raw.get("vis_files") or {}
     config["ldap"] = raw.get("ldap") or {}
     return config
@@ -207,6 +209,7 @@ def create_app(
     app.config["eop_cfg"] = config.get("eop") or {}
     app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["eigencal_cfg"] = config.get("eigencal") or {}
+    app.config["skymap_cfg"] = config.get("skymap") or {}
     waterfall_cfg = config.get("waterfall") or {}
     app.config["waterfall_cfg"] = waterfall_cfg
     # Read-only view of the tree jobs/waterfall writes.  No greenlet: the
@@ -266,7 +269,7 @@ def _make_ssl_context(server_config: dict) -> ssl.SSLContext | None:
     browser's per-host (port-blind) cookie jar along with it.
     """
     if not server_config.get("ssl", True):
-        logger.warning("server.ssl is false — serving plain HTTP, no TLS")
+        logger.warning("server.ssl is false. Serving plain HTTP, no TLS")
         return None
 
     cert = server_config.get("ssl_cert")
@@ -306,7 +309,7 @@ def _make_ssl_context(server_config: dict) -> ssl.SSLContext | None:
             check=True, capture_output=True, text=True)
     except FileNotFoundError:
         raise RuntimeError(
-            "openssl not found — install it, or set server.ssl_cert / "
+            "openssl not found! Install it, or set server.ssl_cert / "
             "server.ssl_key to an existing certificate")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"openssl failed to generate a certificate: "
@@ -391,7 +394,7 @@ def main():
     scheme = "https" if ssl_context else "http"
     import socket
     display_host = socket.getfqdn() if host in ("0.0.0.0", "::") else host
-    logger.info(f"Listening on {host}:{port} — access at {scheme}://{display_host}")
+    logger.info(f"Listening on {host}:{port} - access at {scheme}://{display_host}")
     _sd_notify_ready()
 
     from gevent.pywsgi import WSGIServer, LoggingLogAdapter

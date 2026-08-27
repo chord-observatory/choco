@@ -130,7 +130,7 @@ reorder within a group or move it between groups.</small></p>
 <div class="editor-actions">
     <button type="button" id="add-group-btn" class="outline">Add group</button>
     <button type="button" id="save-btn">Save &amp; Reload</button>
-    <a href="/" role="button" class="outline">Cancel</a>
+    <a href="/nodes" role="button" class="outline">Cancel</a>
     <span id="save-status"></span>
 </div>
 
@@ -242,7 +242,7 @@ reorder within a group or move it between groups.</small></p>
         }
         status.textContent = 'Saving…';
         status.className = '';
-        fetch('/nodes', {
+        fetch('/nodes/edit', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -253,7 +253,7 @@ reorder within a group or move it between groups.</small></p>
             return r.json().then(function (body) { return { ok: r.ok, body: body }; });
         }).then(function (res) {
             if (res.ok) {
-                window.location.href = '/';
+                window.location.href = '/nodes';
             } else {
                 status.textContent = 'Error: ' + (res.body.error || 'save failed');
                 status.className = 'flash-error';

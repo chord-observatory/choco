@@ -27,6 +27,7 @@ jobs = [
     "numpy>=1.26",
     "h5py>=3.6",
     "hdf5plugin>=4.0",
+    "matplotlib>=3.8",
 ]
 dev = [
     "pytest>=8.0",

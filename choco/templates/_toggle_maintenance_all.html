@@ -1,5 +1,5 @@
 {% set _group = group|default(none) %}
-{% set _url = "/set-maintenance-group/" ~ _group if _group else "/set-maintenance-all" %}
+{% set _url = "/nodes/set-maintenance-group/" ~ _group if _group else "/nodes/set-maintenance-all" %}
 {% set _scope = '"' ~ _group ~ '"' if _group else "all" %}
 <span style="display: inline-flex; gap: 0.25em;" hx-ext="morph">
     <button class="outline" title="Put {{ _scope }} nodes in maintenance (choco will not push)" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #ff851b; color: white; border-color: #ff851b;"

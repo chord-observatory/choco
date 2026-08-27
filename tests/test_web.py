@@ -1,6 +1,7 @@
 """Tests for the nodes.yaml editor and group-config editor routes."""
 
 import json
+import re
 
 import pytest
 import yaml
@@ -59,23 +60,28 @@ def _login(client):
 
 
 def _csrf(client):
-    """Establish a session and return its CSRF token."""
-    client.get("/")
+    """Establish a session and return its CSRF token.
+
+    The token is seeded lazily by the ``csrf_token`` context processor,
+    so this must fetch a page that renders a CSRF-carrying form — the
+    dashboard, not the landing page.
+    """
+    client.get("/nodes")
     with client.session_transaction() as sess:
         return sess["_csrf_token"]
 
 
-# --- GET /nodes ---
+# --- GET /nodes/edit ---
 
 class TestNodesEditGet:
     def test_requires_login(self, client):
-        resp = client.get("/nodes", follow_redirects=False)
+        resp = client.get("/nodes/edit", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
     def test_renders_groups(self, client):
         _login(client)
-        resp = client.get("/nodes")
+        resp = client.get("/nodes/edit")
         assert resp.status_code == 200
         body = resp.data.decode()
         # Toolbar sanity + the seeded groups/nodes appear as editable rows.
@@ -90,13 +96,13 @@ class TestNodesEditGet:
         assert "rebuilds the node registry" in body_lower
 
 
-# --- POST /nodes ---
+# --- POST /nodes/edit ---
 
 class TestNodesSave:
     def test_requires_csrf(self, client):
         _login(client)
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps({"groups": {}}),
             content_type="application/json",
         )
@@ -106,7 +112,7 @@ class TestNodesSave:
         _login(client)
         _csrf(client)  # ensure session has a token
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps({"groups": {}}),
             content_type="application/json",
             headers={"X-CSRF-Token": "not-the-token"},
@@ -117,7 +123,7 @@ class TestNodesSave:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps({"groups": []}),
             content_type="application/json",
             headers={"X-CSRF-Token": token},
@@ -128,7 +134,7 @@ class TestNodesSave:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps({"groups": {"bad/name": []}}),
             content_type="application/json",
             headers={"X-CSRF-Token": token},
@@ -140,7 +146,7 @@ class TestNodesSave:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps({
                 "groups": {"g": [{"name": "n1", "host": "", "port": 12048}]}
             }),
@@ -153,7 +159,7 @@ class TestNodesSave:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps({
                 "groups": {
                     "g": [
@@ -178,7 +184,7 @@ class TestNodesSave:
             }
         }
         resp = client.post(
-            "/nodes",
+            "/nodes/edit",
             data=json.dumps(new_payload),
             content_type="application/json",
             headers={"X-CSRF-Token": token},
@@ -218,7 +224,7 @@ class TestNodesSave:
         # Make discovery deterministic: pretend cx1 is currently running.
         with patch.object(Node, "get_status", return_value=NodeStatus.STARTED):
             resp = client.post(
-                "/nodes",
+                "/nodes/edit",
                 data=json.dumps({
                     "groups": {
                         "cx": [{"name": "cx1", "host": "cx1.example", "port": 12048}],
@@ -237,7 +243,129 @@ class TestNodesSave:
         assert cx1.started is True
 
 
-# --- POST /set-started-group/<group>/<action> ---
+# --- Landing page (/) ---
+
+class TestLandingPage:
+    def test_requires_login(self, client):
+        resp = client.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_renders_service_table(self, client):
+        _login(client)
+        body = client.get("/").data.decode()
+        # One row per badge: choco itself, the cluster, and the jobs.
+        for label in ("CHOCO", "NODES", "EOP", "BFFS", "EIGENCAL", "WF"):
+            assert label in body
+        # The nodes row summarizes the registry (3 seeded nodes).
+        assert "3 nodes" in body
+        # The door to node management, now that the dashboard left /.
+        assert 'href="/nodes"' in body
+
+    def test_dashboard_no_longer_at_root(self, client):
+        _login(client)
+        body = client.get("/").data.decode()
+        assert "dashboard-table" not in body
+        # The dashboard still answers at /nodes.
+        nodes_body = client.get("/nodes").data.decode()
+        assert "dashboard-table" in nodes_body
+
+    def test_partial_refreshes_table(self, client):
+        _login(client)
+        body = client.get("/partials/landing-services").data.decode()
+        assert "<table" in body and "EOP" in body
+
+    def test_partial_requires_login(self, client):
+        resp = client.get("/partials/landing-services", follow_redirects=False)
+        assert resp.status_code == 302
+
+
+# --- Sky map: /skymap.png (unauthenticated) + landing card ---
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+class TestSkymap:
+    def _configure(self, app, tmp_path, write=True):
+        path = tmp_path / "skymap.png"
+        if write:
+            path.write_bytes(PNG_MAGIC + b"fake image data")
+        app.config["skymap_cfg"] = {"image_file": str(path)}
+        return path
+
+    def test_unconfigured_404(self, client):
+        # No login on purpose: the route must answer (with 404 here)
+        # without a session.
+        assert client.get("/skymap.png").status_code == 404
+
+    def test_serves_image_without_login(self, client, app, tmp_path):
+        path = self._configure(app, tmp_path)
+        resp = client.get("/skymap.png")
+        assert resp.status_code == 200
+        assert resp.mimetype == "image/png"
+        assert resp.data == path.read_bytes()
+
+    def test_missing_file_404(self, client, app, tmp_path):
+        self._configure(app, tmp_path, write=False)
+        assert client.get("/skymap.png").status_code == 404
+
+    def test_conditional_get_304(self, client, app, tmp_path):
+        self._configure(app, tmp_path)
+        first = client.get("/skymap.png")
+        etag = first.headers.get("ETag")
+        assert etag
+        resp = client.get("/skymap.png", headers={"If-None-Match": etag})
+        assert resp.status_code == 304
+
+    def test_partial_requires_login(self, client, app, tmp_path):
+        self._configure(app, tmp_path)
+        resp = client.get("/partials/skymap", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_partial_carries_mtime_busted_url(self, client, app, tmp_path):
+        path = self._configure(app, tmp_path)
+        _login(client)
+        body = client.get("/partials/skymap").data.decode()
+        assert f'/skymap.png?v={int(path.stat().st_mtime)}' in body
+
+    def test_partial_without_render_yet(self, client, app, tmp_path):
+        self._configure(app, tmp_path, write=False)
+        _login(client)
+        body = client.get("/partials/skymap").data.decode()
+        assert "No sky map rendered yet" in body
+
+    def test_landing_card_only_when_configured(self, client, app, tmp_path):
+        _login(client)
+        assert 'id="skymap"' not in client.get("/").data.decode()
+        self._configure(app, tmp_path)
+        assert 'id="skymap"' in client.get("/").data.decode()
+
+    def test_load_config_carries_skymap_block(self, configs_dir, tmp_path):
+        """The production path: config.yaml -> load_config -> create_app.
+
+        load_config copies each known section explicitly, so a section
+        missing from that list is parsed and then silently dropped --
+        exactly how a correct skymap: block in the deployed config.yaml
+        still 404'd /skymap.png.  Every other test reaches create_app
+        directly and never sees that filter.
+        """
+        from choco.app import load_config
+        png = tmp_path / "skymap.png"
+        png.write_bytes(PNG_MAGIC + b"fake")
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            f"configs_dir: {configs_dir}\n"
+            f"skymap:\n  image_file: {png}\n"
+        )
+        config = load_config(cfg_file)
+        assert config["skymap"] == {"image_file": str(png)}
+        app = create_app(config=config)
+        app.config["TESTING"] = True
+        resp = app.test_client().get("/skymap.png")
+        assert resp.status_code == 200
+
+
+# --- POST /nodes/set-started-group/<group>/<action> ---
 
 class TestSetStartedGroup:
     def test_start_scopes_to_group(self, client, app):
@@ -249,7 +377,7 @@ class TestSetStartedGroup:
             node.started = False
 
         resp = client.post(
-            "/set-started-group/cx/start",
+            "/nodes/set-started-group/cx/start",
             data={"_csrf_token": token},
             follow_redirects=False,
         )
@@ -263,7 +391,7 @@ class TestSetStartedGroup:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/set-started-group/nope/start",
+            "/nodes/set-started-group/nope/start",
             data={"_csrf_token": token},
         )
         assert resp.status_code == 404
@@ -272,7 +400,7 @@ class TestSetStartedGroup:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/set-started-group/cx/frobnicate",
+            "/nodes/set-started-group/cx/frobnicate",
             data={"_csrf_token": token},
         )
         assert resp.status_code == 400
@@ -281,7 +409,7 @@ class TestSetStartedGroup:
         _login(client)
         _csrf(client)
         resp = client.post(
-            "/set-started-group/cx/start",
+            "/nodes/set-started-group/cx/start",
             data={"_csrf_token": "bogus"},
         )
         assert resp.status_code == 403
@@ -320,7 +448,7 @@ class TestPipelinePage:
         assert 'id="pipeline-graph"' in body
         assert "/partials/node-pipeline-svg/cx/cx1" in body
         assert 'class="brand-pill"' in body and 'href="/"' in body
-        assert "/edit/cx/cx1" in body
+        assert "/nodes/edit/cx/cx1" in body
         # The status page is gone; nothing may still link to it.
         assert "/status/cx/cx1" not in body
         # Plot popup overlay + layout preset selector + theme toggle.
@@ -460,7 +588,7 @@ class TestPlotPage:
         assert "bufferplot.js" in body
         # Slim nav, no base.html chrome, dark by default.
         assert 'class="brand-pill"' in body
-        assert "/pipeline/cx/cx1" in body and "/edit/cx/cx1" in body
+        assert "/pipeline/cx/cx1" in body and "/nodes/edit/cx/cx1" in body
         assert 'data-theme="dark"' in body
         # The view lives in the fragment, so the server renders nothing
         # for it — no query-string plumbing to get wrong.
@@ -627,6 +755,58 @@ class TestServicesPartial:
         assert '/service/eop' in body
         assert '/service/fpga' in body
         assert '/service/pdb' in body
+        # The cluster itself is a badge too, linking to the dashboard.
+        assert "NODES" in body
+
+    # --- The NODES badge: green all up, red all down, yellow between ---
+
+    _JOB_STUB = {"health": "ok", "state_mtime": None, "result": "success",
+                 "systemd": True, "active_state": None, "sub_state": None,
+                 "exit_status": None, "state_file": None,
+                 "unit": "test.service"}
+
+    def _nodes_badge(self, client):
+        """(background colour, label) of the strip's NODES badge."""
+        from unittest.mock import patch
+        with patch("choco.web.job_status", return_value=dict(self._JOB_STUB)):
+            body = client.get("/partials/services").data.decode()
+        color = re.search(
+            r'<a href="/nodes"[^>]*background: (#[0-9a-f]{3,6})', body)
+        label = re.search(r'<strong>NODES</strong> <span>([^<]*)</span>', body)
+        assert color and label
+        return color.group(1), label.group(1)
+
+    def _set_statuses(self, app, statuses):
+        from choco.state import NodeStatus
+        nodes = list(app.config["registry"].nodes.values())
+        assert len(statuses) == len(nodes)
+        for node, status in zip(nodes, statuses):
+            node.status = NodeStatus[status]
+
+    def test_nodes_badge_all_up_is_green(self, client, app):
+        _login(client)
+        self._set_statuses(app, ["STARTED", "STARTED", "STARTED"])
+        assert self._nodes_badge(client) == ("#008000", "all up")
+
+    def test_nodes_badge_all_down_is_red(self, client, app):
+        _login(client)
+        self._set_statuses(app, ["DOWN", "DOWN", "DOWN"])
+        assert self._nodes_badge(client) == ("#ff4136", "all down")
+
+    def test_nodes_badge_partial_up_is_yellow(self, client, app):
+        _login(client)
+        self._set_statuses(app, ["STARTED", "DOWN", "IDLE"])
+        assert self._nodes_badge(client) == ("#ffdc00", "1/3 up")
+
+    def test_nodes_badge_all_idle_is_yellow(self, client, app):
+        _login(client)
+        self._set_statuses(app, ["IDLE", "IDLE", "IDLE"])
+        assert self._nodes_badge(client) == ("#ffdc00", "idle")
+
+    def test_nodes_badge_unpolled_is_grey(self, client, app):
+        # Fresh registry: every node still UNKNOWN until the first poll.
+        _login(client)
+        assert self._nodes_badge(client) == ("#aaa", "unknown")
 
 
 class TestMaintenanceToggles:
@@ -638,7 +818,7 @@ class TestMaintenanceToggles:
         node.maintenance = False
 
         resp = client.post(
-            "/toggle-maintenance/cx/cx1",
+            "/nodes/toggle-maintenance/cx/cx1",
             data={"_csrf_token": token},
             follow_redirects=False,
         )
@@ -653,7 +833,7 @@ class TestMaintenanceToggles:
             n.maintenance = False
 
         resp = client.post(
-            "/set-maintenance-group/cx/on",
+            "/nodes/set-maintenance-group/cx/on",
             data={"_csrf_token": token},
             follow_redirects=False,
         )
@@ -671,13 +851,13 @@ class TestMaintenanceToggles:
             n.maintenance = False
 
         client.post(
-            "/set-maintenance-all/on",
+            "/nodes/set-maintenance-all/on",
             data={"_csrf_token": token},
         )
         assert all(n.maintenance for n in registry.nodes.values())
 
         client.post(
-            "/set-maintenance-all/off",
+            "/nodes/set-maintenance-all/off",
             data={"_csrf_token": token},
         )
         assert not any(n.maintenance for n in registry.nodes.values())
@@ -686,7 +866,7 @@ class TestMaintenanceToggles:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/set-maintenance-all/frobnicate",
+            "/nodes/set-maintenance-all/frobnicate",
             data={"_csrf_token": token},
         )
         assert resp.status_code == 400
@@ -718,19 +898,19 @@ class TestMaintenanceToggles:
 
 class TestGroupEdit:
     def test_requires_login(self, client):
-        resp = client.get("/edit-group/cx", follow_redirects=False)
+        resp = client.get("/nodes/edit-group/cx", follow_redirects=False)
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
     def test_unknown_group_redirects(self, client):
         _login(client)
-        resp = client.get("/edit-group/nope", follow_redirects=False)
+        resp = client.get("/nodes/edit-group/nope", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["Location"].rstrip("/").endswith("")  # → "/"
 
     def test_get_renders_empty_textarea(self, client):
         _login(client)
-        resp = client.get("/edit-group/cx")
+        resp = client.get("/nodes/edit-group/cx")
         assert resp.status_code == 200
         body = resp.data.decode()
         # The seeded cx1.yaml has `num_elements` — it must NOT leak into the form.
@@ -742,7 +922,7 @@ class TestGroupEdit:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/edit-group/cx",
+            "/nodes/edit-group/cx",
             data={"config_content": "not_a_mapping", "_csrf_token": token},
         )
         assert resp.status_code == 200
@@ -753,7 +933,7 @@ class TestGroupEdit:
         _login(client)
         token = _csrf(client)
         resp = client.post(
-            "/edit-group/cx",
+            "/nodes/edit-group/cx",
             data={"config_content": "num_elements: 512\n", "_csrf_token": token},
             follow_redirects=False,
         )
@@ -774,7 +954,7 @@ class TestGroupEdit:
         _login(client)
         _csrf(client)
         resp = client.post(
-            "/edit-group/cx",
+            "/nodes/edit-group/cx",
             data={"config_content": "num_elements: 1\n", "_csrf_token": "bogus"},
         )
         assert resp.status_code == 403

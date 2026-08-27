@@ -43,6 +43,7 @@
             line-height: 1;
             text-decoration: none;
         }
+        .pg-header .brand-pill.secondary { background: #8a6746; font-weight: 500; }
         .pg-header a[role="button"], .pg-header button {
             width: auto;
             margin: 0;
@@ -214,9 +215,10 @@
 <body>
     <div class="pg-header">
         <a href="/" class="brand-pill">CHOCO</a>
+        <a href="/nodes" class="brand-pill secondary">Nodes</a>
         <strong>{{ node.key }} pipeline</strong>
         <small style="opacity: 0.7;">scroll to zoom · drag to pan · amber buffers are plottable — click one</small>
-        <a href="/edit/{{ node_key }}" role="button" class="outline">edit</a>
+        <a href="/nodes/edit/{{ node_key }}" role="button" class="outline">edit</a>
         <span class="pg-spacer"></span>
         <button type="button" id="pg-theme" class="outline" title="Toggle dark/light">◐</button>
         <button type="button" id="pg-fit" class="outline">Fit</button>

@@ -1,0 +1,33 @@
+[Unit]
+Description=choco job: render the current-sky strip plot
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+# systemd owns /var/lib/choco/skymap (creates it with the right ownership);
+# the rendered PNG and the state file live there, and choco's
+# /skymap.png route reads the PNG back.
+StateDirectory=choco/skymap
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/skymap/skymap.sh /etc/choco/skymap.yaml
+# No Restart: a failed render (choco unreachable, no pointing in any
+# config) exits 2 and leaves the previous image up; the next timer tick
+# retries.  Exit 1 = config error / bug.
+Nice=10
+IOSchedulingClass=idle
+# One matplotlib figure plus astropy: a few seconds of CPU and a few
+# hundred MB.  The caps are backstops, sized like the other jobs' —
+# CPUWeight so an interactive shell always wins, MemoryMax so a runaway
+# dies inside its own cgroup instead of waking the system OOM killer.
+CPUQuota=100%
+CPUWeight=20
+MemoryHigh=1G
+MemoryMax=2G
+
+[Install]
+# Also render once whenever choco (re)starts: a fresh install shows an
+# image immediately instead of waiting for the timer, and a restart
+# re-reads a possibly-changed pointing config.
+WantedBy=choco.service

@@ -1,5 +1,5 @@
 {% set _group = group|default(none) %}
-{% set _url = "/set-started-group/" ~ _group if _group else "/set-started-all" %}
+{% set _url = "/nodes/set-started-group/" ~ _group if _group else "/nodes/set-started-all" %}
 {% set _scope = '"' ~ _group ~ '"' if _group else "all" %}
 <span style="display: inline-flex; gap: 0.25em;" hx-ext="morph">
     <button class="outline" title="Set {{ _scope }} nodes to idle" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em; background: #ffdc00; color: #333; border-color: #ffdc00;"

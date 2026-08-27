@@ -50,6 +50,7 @@
             line-height: 1;
             text-decoration: none;
         }
+        .pg-header .brand-pill.secondary { background: #8a6746; font-weight: 500; }
         .pg-header a[role="button"], .pg-header button {
             width: auto;
             margin: 0;
@@ -71,10 +72,11 @@
 <body>
     <div class="pg-header">
         <a href="/" class="brand-pill">CHOCO</a>
+        <a href="/nodes" class="brand-pill secondary">Nodes</a>
         <strong><code>{{ title }}</code></strong>
         <small style="opacity: 0.7;">{% if subtitle %}{{ subtitle }} · {% endif %}scroll to zoom · drag to pan · double-click resets</small>
         <a href="{{ back_url }}" role="button" class="outline">{{ back_label }}</a>
-        {% if node_key %}<a href="/edit/{{ node_key }}" role="button" class="outline">edit</a>{% endif %}
+        {% if node_key %}<a href="/nodes/edit/{{ node_key }}" role="button" class="outline">edit</a>{% endif %}
         <span class="pg-spacer"></span>
         <button type="button" id="pg-theme" class="outline" title="Toggle dark/light">◐</button>
     </div>

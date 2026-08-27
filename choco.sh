@@ -199,11 +199,19 @@ cmd_install() {
         cp "$SCRIPT_DIR/jobs/waterfall/waterfall.example.yaml" "$CONFIG_DIR/waterfall.yaml"
         echo "Seeded $CONFIG_DIR/waterfall.yaml from jobs/waterfall/waterfall.example.yaml -- edit before use"
     fi
-    # The unit runs as User=choco so the images it writes to NFS are not
-    # owned by the squashed root account; warn rather than create one.
+
+    # Seed the skymap config on first install; never overwrite an edited one
+    if [ ! -f "$CONFIG_DIR/skymap.yaml" ]; then
+        cp "$SCRIPT_DIR/jobs/skymap/skymap.example.yaml" "$CONFIG_DIR/skymap.yaml"
+        echo "Seeded $CONFIG_DIR/skymap.yaml from jobs/skymap/skymap.example.yaml -- edit before use"
+    fi
+
+    # The waterfall and skymap units run as User=choco (waterfall so the
+    # images it writes to NFS are not owned by the squashed root account);
+    # warn rather than create one.
     if ! id choco >/dev/null 2>&1; then
-        echo "Note: choco-waterfall.service runs as User=choco, which does not exist."
-        echo "      Create it (useradd -r -s /usr/sbin/nologin choco) or edit the unit."
+        echo "Note: choco-waterfall.service and choco-skymap.service run as User=choco, which does not exist."
+        echo "      Create it (useradd -r -s /usr/sbin/nologin choco) or edit the units."
     fi
 
     # Seed or overwrite kotekan configs from repo.  pdb_map.csv is excluded
@@ -237,6 +245,25 @@ cmd_install() {
     apt install -y iptables-persistent
     netfilter-persistent save
 
+    # One-time migration: job state moved from /var/lib/<job> to the shared
+    # /var/lib/choco/<job> namespace (units use StateDirectory=choco/<job>).
+    # Move an old directory only when its new home does not exist yet --
+    # never merge; systemd fixes ownership on the next unit start.
+    for job in eop bffs eigencal waterfall skymap; do
+        if [ -d "/var/lib/$job" ] && [ ! -e "/var/lib/choco/$job" ]; then
+            mkdir -p /var/lib/choco
+            mv "/var/lib/$job" "/var/lib/choco/$job"
+            echo "Moved /var/lib/$job -> /var/lib/choco/$job"
+        fi
+    done
+    # The deployed configs are hand-managed, so point out stale paths
+    # rather than editing them.
+    for f in "$CONFIG_DIR"/*.yaml; do
+        if [ -f "$f" ] && grep -qE '/var/lib/(eop|bffs|eigencal|waterfall|skymap)/' "$f"; then
+            echo "NOTE: $f still references /var/lib/<job> paths -- update them to /var/lib/choco/<job>"
+        fi
+    done
+
     # systemd units: main service + any job units (jobs/<name>/choco-*.{service,timer})
     cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/
     cp "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer} /etc/systemd/system/ 2>/dev/null || true
@@ -250,7 +277,13 @@ cmd_install() {
     # timeout) — and a job failing for environmental reasons (data file
     # not there yet, FPGA master unreachable) must not abort an install.
     for unit in "$SCRIPT_DIR"/jobs/*/choco-*.service; do
-        [ -f "$unit" ] && systemctl enable "$(basename "$unit")"
+        # Only units that declare [Install] (WantedBy=choco.service, i.e.
+        # "run on choco start") can be enabled; timer-only units such as
+        # choco-waterfall.service are static, and systemctl enable on one
+        # just prints a long "no installation config" notice.
+        if [ -f "$unit" ] && grep -q '^\[Install\]' "$unit"; then
+            systemctl enable "$(basename "$unit")"
+        fi
     done
     # Timers are safe to start: that only schedules the job.
     for unit in "$SCRIPT_DIR"/jobs/*/choco-*.timer; do
@@ -443,6 +476,7 @@ cmd_test() {
     (cd "$SCRIPT_DIR/jobs/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
     (cd "$SCRIPT_DIR/jobs/eigencal" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
     (cd "$SCRIPT_DIR/jobs/waterfall" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    (cd "$SCRIPT_DIR/jobs/skymap" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
 cmd_lock() {

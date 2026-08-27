@@ -11,6 +11,17 @@
     <strong>{{ label }}</strong> <span>{{ job_label(job.health) }}</span>
 </a>
 {%- endmacro %}
+{% if nodes %}
+{% set tip = 'kotekan nodes (' ~ nodes.total ~ ')'
+             ~ '\nstarted: ' ~ nodes.started ~ ' · idle: ' ~ nodes.idle ~ ' · down: ' ~ nodes.down
+             ~ ('\nsyncing: ' ~ nodes.syncing if nodes.syncing else '')
+             ~ ('\nunknown: ' ~ nodes.unknown if nodes.unknown else '')
+             ~ '\nin maintenance: ' ~ nodes.maintenance
+             ~ '\n\nclick for the dashboard' %}
+<a href="/nodes" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(nodes.health) }};">
+    <strong>NODES</strong> <span>{{ nodes.label }}</span>
+</a>
+{% endif %}
 {% if fpga %}
 {% set tip = 'fpga_master at ' ~ (fpga.host or '?') ~ ':' ~ (fpga.port or '?')
              ~ '\nhealth: ' ~ fpga.health

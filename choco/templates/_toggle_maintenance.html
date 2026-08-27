@@ -1,4 +1,4 @@
-<label class="toggle-switch" hx-post="/toggle-maintenance/{{ key }}" hx-swap="outerHTML"
+<label class="toggle-switch" hx-post="/nodes/toggle-maintenance/{{ key }}" hx-swap="outerHTML"
        hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'
        title="{{ 'In maintenance (choco will not push)\nToggle to take out of maintenance (choco may push)' if node.maintenance else 'Normal (choco may push)\nToggle to put in maintenance (choco will not push)' }}">
     <input type="checkbox" {{ "checked" if not node.maintenance }}>

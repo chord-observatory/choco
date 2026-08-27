@@ -56,18 +56,18 @@ eop:
   intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
   intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
-  state_file: /var/lib/eop/state.json   # State file (absolute; rewritten on every successful run). A relative path is resolved against configs_dir (legacy layout).
+  state_file: /var/lib/choco/eop/state.json   # State file (absolute; rewritten on every successful run). A relative path is resolved against configs_dir (legacy layout).
   service_unit: choco-eop-broadcast.service  # systemd unit to query for last-run status
 
 # bffs feed-flagging job (BFFS badge in the web UI header).
 bffs:
   service_unit: choco-bffs-flag.service  # systemd unit to query for last-run status
-  state_file: /var/lib/bffs/state.json   # bffs state.path (absolute; "last change" in the badge tooltip)
+  state_file: /var/lib/choco/bffs/state.json   # bffs state.path (absolute; "last change" in the badge tooltip)
 
 # eigencal gain-calibration job (EIGENCAL badge in the web UI header).
 eigencal:
   service_unit: choco-eigencal.service       # systemd unit to query for last-run status
-  state_file: /var/lib/eigencal/state.json   # eigencal run.state_file (absolute; written once per processed transit)
+  state_file: /var/lib/choco/eigencal/state.json   # eigencal run.state_file (absolute; written once per processed transit)
 
 # waterfall image-rendering job (WF badge, /files column, contact sheet).
 # What to render is configured in /etc/choco/waterfall.yaml; these keys are
@@ -75,10 +75,18 @@ eigencal:
 # reads "-" for every acquisition and the contact sheet 404s.
 waterfall:
   service_unit: choco-waterfall.service       # systemd unit to query for last-run status
-  state_file: /var/lib/waterfall/state.json   # waterfall state_file (absolute; rewritten every run)
+  state_file: /var/lib/choco/waterfall/state.json   # waterfall state_file (absolute; rewritten every run)
   images_dir: /mnt/cs00/data/kotekan_vis_files/waterfalls   # must match waterfall.yaml's waterfalls_dir
   ttl: 30                                     # seconds to cache the per-acquisition summary sweep
   timezone: America/Vancouver                 # IANA zone for the viewer's time axis (default shown)
+
+# Current-sky strip plot rendered by the skymap job (jobs/skymap, every
+# 5 min; configured in /etc/choco/skymap.yaml).  image_file is where choco
+# reads the finished PNG back -- it must match skymap.yaml's output.  The
+# image is served unauthenticated at /skymap.png and shown on the landing
+# page.  Omit the block to disable both.
+skymap:
+  image_file: /var/lib/choco/skymap/skymap.png
 
 # Data-file roots shown on /files.  Each root is scanned one level deep:
 # its immediate subdirectories are listed with the number, total size and

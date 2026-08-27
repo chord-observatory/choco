@@ -1,0 +1,37 @@
+# Configuration for the skymap job (jobs/skymap/skymap.py), which renders
+# the current-sky strip plot every 5 minutes for choco's landing page.
+# All keys are optional; the defaults shown are what an absent key means.
+
+# choco's JSON API (localhost bypasses auth; TLS is unverified on purpose,
+# the cert is self-signed).  The pointing declination comes from the
+# rendered kotekan config: DRAO latitude + dish_coelev_deg.
+choco_url: https://localhost:5000
+
+# Which kotekan group's config carries the pointing.  Unset = try every
+# group choco knows, in registry order, and use the first that has
+# dish_coelev_deg.
+#group: recv
+
+# Beams to draw, in order (the first gets the primary green palette and
+# the strip's clock labels).  Each entry is one of:
+#   pointing       - the live pointing(s) read from choco (dish_coelev_deg;
+#                    each group pointed differently becomes its own beam)
+#   a source name  - from the plot's major-source catalog
+#                    (Tau A, Cas A, Cyg A, Vir A, Sgr A*)
+#   a number       - an explicit declination in degrees
+# Beams within 0.1 degrees of an earlier one are drawn once.
+beams: [pointing]
+#beams: [pointing, Cyg A]
+
+# Where the rendered image and the job state land.  choco's skymap block
+# in config.yaml must point image_file at the same PNG.
+output: /var/lib/choco/skymap/skymap.png
+state_file: /var/lib/choco/skymap/state.json
+
+# Faded radio-sky background behind the projection.  The default is the
+# image shipped with the job; set to an empty string for plain white.
+#background_image: /opt/choco/jobs/skymap/sky_background.png
+background_fade: 0.42     # 0 = full white; 1 = full sky image
+
+dpi: 130                  # ~1900 px wide; the page shows it at width 100%
+timezone: America/Vancouver   # IANA zone for the strip's clock labels

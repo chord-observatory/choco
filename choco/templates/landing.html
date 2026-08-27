@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}CHOCO{% endblock %}
+
+{% block styles %}
+table.services td, table.services th { padding: 0.45em 0.7em; vertical-align: top; }
+table.services td.svc a { text-decoration: none; }
+table.services small.err { color: #b00; }
+table.services code { font-size: 0.85em; }
+.svc-note { color: #666; font-size: 0.85em; }
+{% endblock %}
+
+{% block content %}
+<h2 style="margin: 0 0 0.25em;">Services</h2>
+<p class="svc-note" style="margin: 0 0 0.75em;">Each service links to its detail
+page; the header badges carry the same health from any page.</p>
+
+<div id="landing-services"
+     hx-get="/partials/landing-services"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML">
+    {% include "_landing_services.html" %}
+</div>
+
+{% if skymap_configured %}
+<div id="skymap"
+     hx-get="/partials/skymap"
+     hx-trigger="load, every 300s"
+     hx-swap="innerHTML"></div>
+{% endif %}
+{% endblock %}

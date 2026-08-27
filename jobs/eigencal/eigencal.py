@@ -69,8 +69,8 @@ DEFAULTS = {
     "daytime": {"skip": True, "sun_alt_max_deg": -10.0},
     "run": {
         "max_age_s": 7200.0,       # process only transits completed this recently
-        "archive_dir": "/var/lib/eigencal",
-        "state_file": "/var/lib/eigencal/state.json",
+        "archive_dir": "/var/lib/choco/eigencal",
+        "state_file": "/var/lib/choco/eigencal/state.json",
         "gate_freq_mhz": 300.0,    # widest beam in the band, for gate sizing
     },
     "telescope": {

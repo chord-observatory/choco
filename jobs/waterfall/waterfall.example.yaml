@@ -18,12 +18,12 @@ roots:
 waterfalls_dir: /mnt/cs00/data/kotekan_vis_files/waterfalls
 
 # Job state, read back by choco's WF badge and /service/waterfall page.
-state_file: /var/lib/waterfall/state.json
+state_file: /var/lib/choco/waterfall/state.json
 
 # Exclusive run lock.  Defaults to waterfall.lock beside the state file.
 # Two runs appending to the same image would interleave their deflate
 # segments, so a second run exits 0 immediately rather than waiting.
-# lock_file: /var/lib/waterfall/waterfall.lock
+# lock_file: /var/lib/choco/waterfall/waterfall.lock
 
 # Deflate level.  6 is the balance point (level 9 costs 3.5x the CPU for
 # 0.58% fewer bytes); 4 is worth passing for a long backfill.

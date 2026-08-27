@@ -35,7 +35,7 @@ state:
   # A JSON file recording the feed change history (every transition, by label).
   # When set, bffs sends to choco only when the bad list changes. Omit the whole
   # block to run stateless (send every invocation).
-  path: /var/lib/bffs/state.json
+  path: /var/lib/choco/bffs/state.json
   max_history: 0                 # cap on history entries (0 = keep all)
 
 # A feed is bad if any source flags it. Each source is one entry below.

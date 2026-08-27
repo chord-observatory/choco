@@ -464,7 +464,7 @@ class Node:
         array layouts, so a re-fetch is a fresh snapshot, not a static
         picture.  Returns None if the node is unreachable.
 
-        ``urls=0`` drops the ``/buffer/<name>/frame`` link kotekan puts on
+        ``urls=0`` drops the ``/buffer_frame?name=…`` link kotekan puts on
         every frame buffer.  Those paths are relative to the *node*, so they
         resolve against choco and 404; graphviz renders them as an ``<a>``
         wrapping the node's shape, which would fight the inline view's own
@@ -510,40 +510,44 @@ class Node:
         return data if isinstance(data, dict) else None
 
     def get_buffer_frame(self, name: str, length: int | None = None) -> dict | None:
-        """Peek the newest full frame of a buffer (``GET /buffer/<name>/frame``).
+        """Peek the newest full frame of a buffer (``GET /buffer_frame?name=``).
 
         ``length`` bounds the data bytes copied out of the frame
         (``0`` = metadata and frame descriptor only); None copies the
         whole frame.  Returns the parsed JSON reply; ``{"error": ...}``
         when kotekan has no full frame to serve (HTTP 402 — expected on
-        fast-draining buffers without ``peek_hold``) or when the buffer
-        endpoint doesn't exist (HTTP 404 — idle kotekan with no pipeline
-        running, a stale buffer name, or a kotekan too old for frame
-        peeks; without this, a 404 would masquerade as "unreachable");
-        or when kotekan itself fails to serialise the frame (HTTP 500 —
-        seen on dpdk-produced buffers whose metadata object is attached
-        but never populated, so ``chordMetadata::to_json`` reads
+        fast-draining buffers without ``peek_hold``) or when kotekan
+        doesn't know the buffer (HTTP 404 — idle kotekan with no
+        pipeline running, a stale buffer name, or a kotekan from before
+        the per-buffer ``/buffer/<name>/frame`` endpoints were folded
+        into ``/buffer_frame``, the only form spoken here; without
+        this, a 404 would masquerade as "unreachable"); or when kotekan
+        itself fails to serialise the frame (HTTP 500 — seen on
+        dpdk-produced buffers whose metadata object is attached but
+        never populated, so ``chordMetadata::to_json`` reads
         uninitialised dims: a reply about *that* frame, not an outage);
         or None if the node is unreachable or the reply is malformed.
         """
-        params = {} if length is None else {"len": length}
+        params: dict = {"name": name}
+        if length is not None:
+            params["len"] = length
         accept = (402, 404, 500)
         resp = self._request(
-            "GET", f"/buffer/{name}/frame", accept_statuses=accept, params=params
+            "GET", "/buffer_frame", accept_statuses=accept, params=params
         )
         if resp is None:
             # One quick retry, same rule as get_buffers.
             resp = self._request(
-                "GET", f"/buffer/{name}/frame", accept_statuses=accept,
-                params=params,
+                "GET", "/buffer_frame", accept_statuses=accept, params=params
             )
         if resp is None:
             return None
         if resp.status_code == 402:
             return {"error": "no full frame currently in buffer"}
         if resp.status_code == 404:
-            return {"error": f"no buffer endpoint for '{name}' on this kotekan "
-                             "(pipeline not running, or stale buffer name)"}
+            return {"error": f"kotekan has no buffer named '{name}' "
+                             "(pipeline not running, stale buffer name, or a "
+                             "kotekan predating the /buffer_frame endpoint)"}
         if resp.status_code == 500:
             return {"error": f"kotekan could not serialise a frame of '{name}' "
                              "(internal error — often uninitialised frame metadata)"}

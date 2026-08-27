@@ -31,8 +31,8 @@ daytime:
 
 run:
   max_age_s: 7200                # only process transits completed this recently
-  archive_dir: /var/lib/eigencal # one HDF5 per transit; doubles as "already done"
-  state_file: /var/lib/eigencal/state.json   # tiny JSON for the service badge
+  archive_dir: /var/lib/choco/eigencal # one HDF5 per transit; doubles as "already done"
+  state_file: /var/lib/choco/eigencal/state.json   # tiny JSON for the service badge
   gate_freq_mhz: 300.0           # widest beam in the band (transit-complete gate)
 
 telescope:
