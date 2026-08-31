@@ -157,9 +157,8 @@ class Node:
         self._base_load_error: str | None = None
         self._updatable_load_error: str | None = None
 
-        # Change queue (used by the sync worker pool)
+        # Change queue (drained by the node's sync worker)
         self._queue: deque = deque()
-        self._queue_lock: object | None = None  # set by Orchestrator (gevent semaphore)
 
     @property
     def key(self) -> str:
@@ -193,20 +192,13 @@ class Node:
         except IndexError:
             return None
 
-    def queue_try_lock(self) -> bool:
-        """Try to acquire exclusive access to this node's queue."""
-        if self._queue_lock is None:
-            return False
-        return self._queue_lock.acquire(blocking=False)
-
-    def queue_unlock(self):
-        """Release exclusive access to this node's queue."""
-        if self._queue_lock is not None:
-            self._queue_lock.release()
-
     @property
     def queue_empty(self) -> bool:
         return len(self._queue) == 0
+
+    @property
+    def queue_depth(self) -> int:
+        return len(self._queue)
 
     # --- Config state ---
 

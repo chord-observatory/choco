@@ -3,6 +3,7 @@
 import os
 import time
 
+import gevent
 import pytest
 from unittest.mock import MagicMock
 
@@ -10,7 +11,7 @@ import yaml
 
 from choco.state import Registry, Node, NodeStatus
 from choco.sync import (
-    ChangeType, ChangeItem, Orchestrator,
+    ChangeType, ChangeItem, Orchestrator, NodeWorker, WorkerPhase,
 )
 
 
@@ -60,7 +61,7 @@ def registry(configs_dir):
 
 @pytest.fixture
 def orchestrator(registry):
-    return Orchestrator(registry, poll_interval=1, num_workers=2)
+    return Orchestrator(registry, poll_interval=1, max_concurrent_pushes=2)
 
 
 class TestNodeQueue:
@@ -88,13 +89,13 @@ class TestNodeQueue:
         for expected in items:
             assert node.queue_pop() is expected
 
-    def test_try_lock_and_unlock(self, orchestrator):
+    def test_queue_depth(self, orchestrator):
         node = orchestrator.registry.get_node("cx/cx1")
-        assert node.queue_try_lock() is True
-        assert node.queue_try_lock() is False
-        node.queue_unlock()
-        assert node.queue_try_lock() is True
-        node.queue_unlock()
+        assert node.queue_depth == 0
+        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        assert node.queue_depth == 1
+        node.queue_pop()
+        assert node.queue_depth == 0
 
 
 class TestSubmissions:
@@ -545,7 +546,7 @@ class TestPushBlockedByLoadError:
         registry = Registry(configs_dir)
         for node in registry.nodes.values():
             node.maintenance = False
-        orchestrator = Orchestrator(registry, poll_interval=1, num_workers=2)
+        orchestrator = Orchestrator(registry, poll_interval=1, max_concurrent_pushes=2)
         return registry, orchestrator
 
     def test_drift_does_not_push_when_updatable_broken(self, configs_dir):
@@ -853,3 +854,178 @@ class TestConfigFileScan:
         orchestrator.check_config_files()
         for node in orchestrator.registry.nodes.values():
             assert node.queue_empty
+
+
+class TestNodeWorker:
+    """The per-node owner greenlet: wake-on-submit, backoff, lifecycle."""
+
+    def _wait_until(self, cond, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if cond():
+                return True
+            gevent.sleep(0.01)
+        return False
+
+    def _healthy(self, node):
+        """Mock the REST surface of a reachable, in-sync node."""
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_version_info = MagicMock(return_value={})
+        node.get_config = MagicMock(return_value=node.desired_config)
+
+    def _start_worker(self, orchestrator, node):
+        orchestrator._running = True
+        worker = NodeWorker(node, orchestrator)
+        orchestrator._workers[node.key] = worker
+        worker.start()
+        return worker
+
+    def test_submit_wakes_parked_worker(self, orchestrator):
+        """A submitted change is drained promptly, not at the next check."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        self._healthy(node)
+        worker = self._start_worker(orchestrator, node)
+        # poll_interval=1: after the first cycle the worker parks.
+        assert self._wait_until(lambda: worker.cycles >= 1)
+
+        submitted = time.time()
+        orchestrator.submit_node(
+            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        assert self._wait_until(lambda: node.queue_empty and
+                                worker.cycles >= 2)
+        assert time.time() - submitted < 0.5  # not the 1s poll interval
+        orchestrator.stop()
+
+    def test_poll_item_forces_cycle_during_backoff(self, orchestrator):
+        """The toggle routes' POLL cuts through a down node's backoff."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        worker = self._start_worker(orchestrator, node)
+        assert self._wait_until(lambda: worker.consecutive_failures >= 1)
+        assert worker.next_check > time.time() + 1  # parked in backoff
+
+        before = worker.cycles
+        orchestrator.submit_node(
+            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        assert self._wait_until(lambda: worker.cycles > before)
+        orchestrator.stop()
+
+    def test_backoff_doubles_to_ceiling_and_resets(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        worker = NodeWorker(node, orchestrator)  # not started; pure math
+        # orchestrator fixture: poll_interval=1, max_retry_interval=60.
+        seq = []
+        for _ in range(8):
+            worker.consecutive_failures += 1
+            seq.append(worker._interval())
+        assert seq == [2, 4, 8, 16, 32, 60, 60, 60]
+        worker.consecutive_failures = 0
+        assert worker._interval() == 1
+
+    def test_unreachable_node_counts_failures(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        worker = self._start_worker(orchestrator, node)
+        assert self._wait_until(lambda: worker.consecutive_failures >= 1)
+        assert worker.phase in (WorkerPhase.DOWN, WorkerPhase.PROBING)
+        orchestrator.stop()
+
+    def test_load_error_node_is_not_treated_as_unreachable(self, orchestrator):
+        """A reachable node with a broken config keeps status + cadence.
+
+        The load_error early-return in _sync_node must record this
+        cycle's probe, so the worker neither backs off nor reports the
+        node down when the real problem is a bad file on disk.
+        """
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        node.status = NodeStatus.DOWN  # stale, from before the node came up
+        node._updatable_load_error = "Bad updatable store"
+        self._healthy(node)
+
+        orchestrator._process_node(node)
+
+        assert node.status == NodeStatus.STARTED  # this cycle's probe
+        assert "Bad updatable store" in node.error
+
+        worker = NodeWorker(node, orchestrator)
+        worker.consecutive_failures = 3
+        worker._cycle()
+        assert worker.consecutive_failures == 0  # answered: no backoff
+
+    def test_stop_exits_parked_worker_promptly(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        self._healthy(node)
+        worker = self._start_worker(orchestrator, node)
+        assert self._wait_until(lambda: worker.cycles >= 1)
+
+        orchestrator.stop()
+        assert worker.greenlet.join(timeout=1) is not None or \
+            worker.greenlet.dead
+        assert orchestrator._workers == {}
+
+    def test_item_queued_before_worker_starts_is_drained(self, orchestrator):
+        """A submission with no worker yet stays queued, not lost."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        self._healthy(node)
+        orchestrator.submit_node(
+            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        assert not node.queue_empty
+
+        worker = self._start_worker(orchestrator, node)
+        assert self._wait_until(lambda: node.queue_empty and
+                                worker.cycles >= 1)
+        orchestrator.stop()
+
+    def test_apply_nodes_update_replaces_workers(self, orchestrator,
+                                                 monkeypatch):
+        monkeypatch.setattr(Node, "get_status",
+                            lambda self: NodeStatus.IDLE)
+        orchestrator._running = True
+        with orchestrator._submit_lock:
+            orchestrator._respawn_workers()
+        old = dict(orchestrator._workers)
+        assert len(old) == 3
+
+        orchestrator.apply_nodes_update()
+
+        assert set(orchestrator._workers) == set(old)
+        for key, worker in orchestrator._workers.items():
+            assert worker is not old[key]        # fresh worker
+            assert worker.node is orchestrator.registry.get_node(key)
+        for worker in old.values():
+            assert worker._stop                  # old set signalled
+            assert worker.greenlet is None or worker.greenlet.join(timeout=1) \
+                is not None or worker.greenlet.dead
+        orchestrator.stop()
+
+    def test_push_semaphore_bounds_concurrent_restarts(self, registry):
+        orchestrator = Orchestrator(registry, poll_interval=1,
+                                    max_concurrent_pushes=1)
+        peak = {"now": 0, "max": 0}
+
+        def make_node(key):
+            node = registry.get_node(key)
+            node.started = True
+
+            def probing():
+                peak["now"] += 1
+                peak["max"] = max(peak["max"], peak["now"])
+                gevent.sleep(0.02)
+                peak["now"] -= 1
+                return NodeStatus.IDLE
+            node.get_status = MagicMock(side_effect=probing)
+            node.start = MagicMock(return_value=True)
+            return node
+
+        nodes = [make_node("cx/cx1"), make_node("cx/cx2")]
+        greenlets = [
+            gevent.spawn(orchestrator._push_config, n, {"cfg": 1})
+            for n in nodes
+        ]
+        gevent.joinall(greenlets, timeout=5)
+        assert all(g.value is True for g in greenlets)
+        assert peak["max"] == 1

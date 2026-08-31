@@ -23,9 +23,10 @@ kotekan:
 
 # Sync system settings.
 sync:
-  poll_interval: 5                  # Seconds between polling all nodes for drift
+  poll_interval: 5                  # Seconds between each node's drift check
   restart_timeout: 10               # Seconds to wait for kotekan to restart after /kill
-  num_workers: 4                    # Number of worker greenlets processing node queues
+  max_concurrent_pushes: 4          # Max nodes restarting (kill -> start) at once
+  max_retry_interval: 60            # Unreachable nodes back off to this check interval
 
 # FPGA master daemon — serves /status and /get-frame0-time over HTTP.
 # Used by choco's service-status strip and by the EOP broadcast job.

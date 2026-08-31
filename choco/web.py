@@ -1946,7 +1946,9 @@ def metrics():
 def api_nodes_status():
     """Per-node runtime status plus an aggregate summary."""
     registry = _registry()
-    nodes = [_node_to_dict(n) for n in registry.nodes.values()]
+    orchestrator = _orchestrator()
+    nodes = [_node_to_dict(n) | {"worker": orchestrator.worker_status(n.key)}
+             for n in registry.nodes.values()]
     summary = {s.value: 0 for s in NodeStatus}
     summary["total"] = len(nodes)
     summary["started_desired"] = sum(1 for n in registry.nodes.values() if n.started)

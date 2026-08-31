@@ -39,7 +39,8 @@ _DEFAULT_CONFIG = {
     "sync": {
         "poll_interval": 5,
         "restart_timeout": 10,
-        "num_workers": 4,
+        "max_concurrent_pushes": 4,
+        "max_retry_interval": 60,
     },
     "fpga_master": {},
     "pdb": {},
@@ -91,6 +92,16 @@ def load_config(path: str | Path) -> dict:
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
     config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
+    # num_workers used to size a scanning worker pool; with one worker
+    # per node the only remaining knob of that shape is how many nodes
+    # may restart at once.  Keep reading the old key so a deployed
+    # config.yaml keeps working, and say so once at startup.
+    legacy_workers = config["sync"].pop("num_workers", None)
+    if legacy_workers is not None:
+        if "max_concurrent_pushes" not in (raw.get("sync") or {}):
+            config["sync"]["max_concurrent_pushes"] = legacy_workers
+        logger.warning("Config: sync.num_workers is deprecated; "
+                       "rename it to sync.max_concurrent_pushes.")
     config["fpga_master"] = raw.get("fpga_master") or {}
     config["eop"] = raw.get("eop") or {}
     # Backwards-compat: fpga_master_host/port used to live under eop:.
@@ -155,7 +166,8 @@ def create_app(
         registry,
         poll_interval=int(sync_cfg["poll_interval"]),
         restart_timeout=int(sync_cfg["restart_timeout"]),
-        num_workers=int(sync_cfg["num_workers"]),
+        max_concurrent_pushes=int(sync_cfg["max_concurrent_pushes"]),
+        max_retry_interval=int(sync_cfg["max_retry_interval"]),
     )
 
     # Hardware service monitors: separate concern from kotekan polling,
