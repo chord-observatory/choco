@@ -77,6 +77,9 @@ def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
     expand like any other (``FakeX``/``FakeY``); duplicates are the
     caller's problem (bffs uniquifies by element index).
     """
+    if int(num_polarizations) == 1:
+        # One polarization: the dish is the element; no suffix to add.
+        return np.array([str(label) for label in dish_labels])
     out = []
     for pol in range(int(num_polarizations)):
         suffix = POL_SUFFIXES[pol] if pol < len(POL_SUFFIXES) else f"P{pol}"
@@ -85,19 +88,25 @@ def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
-    """The element-axis labels of *f*, per-dish labels expanded.
+    """The element-axis labels of *f*, expanded from its per-dish labels.
 
-    CHIME-style files (``index_map/input``) are per-element by
-    definition.  CHORD files (``index_map/label``) carry kotekan's
-    ``fill_input_maps`` output, which the 2026-08 layout made per-dish —
-    one label per dish for a num_polarizations × num_dishes element axis
-    — so those are expanded to per-element labels in [P][D] order, with
-    the polarization count taken from the file's ``num_elements``
-    attribute (default 2).  Pre-2026-08 files keep their labels as-is.
+    Only the 2026-08 per-dish layout is accepted: ``index_map/label``
+    with one label per dish for a num_polarizations × num_dishes element
+    axis, expanded to per-element labels in [P][D] order with the
+    polarization count taken from the file's ``num_elements`` attribute
+    (default 2).  Pre-2026-08 files — CHIME-style ``index_map/input``,
+    or labels carrying a polarization marker — are REFUSED: their
+    element ordering was wrong, so flagging feeds against their labels
+    would flag the wrong feeds.  Raises ``OSError`` so the job reports
+    degraded (exit 2) and heals on its own once post-migration files
+    land, with no job-side action needed.
     """
     labels = input_labels(f)
     if "input" in f["index_map"] or labels_are_per_element(labels):
-        return labels
+        raise OSError(
+            "N2 file predates the per-dish dish_inputs layout (per-element "
+            "labels) — its element ordering is untrustworthy; waiting for "
+            "post-migration files")
     num_elements = int(f.attrs.get("num_elements", 0) or 0)
     npol = 2
     if labels.size and num_elements >= labels.size and num_elements % labels.size == 0:
@@ -108,8 +117,8 @@ def element_labels(f: h5py.File) -> np.ndarray:
 def read_labels(path: str | Path) -> np.ndarray:
     """The element-axis labels from the kotekan file's index map.
 
-    Per-dish labels (the 2026-08 CHORD layout) come back expanded to
-    per-element labels — see :func:`element_labels`.
+    Per-dish labels come back expanded to per-element labels; a
+    pre-2026-08 per-element file raises — see :func:`element_labels`.
     """
     with h5py.File(path, "r") as f:
         return element_labels(f)

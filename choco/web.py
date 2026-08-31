@@ -1538,7 +1538,14 @@ def _pdb_cross_check(pdb_map: PdbMap) -> dict:
         result["reason"] = (sample.load_error
                             or f"no config file ({sample.config_filename})")
         return result
-    labels = kotekan_dish_labels(desired)
+    try:
+        labels = kotekan_dish_labels(desired)
+    except ValueError as e:
+        # A pre-2026-08 per-element table: its element ordering was
+        # wrong, so checking against it would be checking against
+        # untrustworthy data.  Reported as a migrate-this-config nudge.
+        result["reason"] = str(e)
+        return result
     if not labels:
         result["reason"] = f"the {group} kotekan config has no dish_inputs " \
                            f"table to check against"

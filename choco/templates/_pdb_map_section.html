@@ -36,11 +36,12 @@
     kotekan indexes its bad-input mask with.
     {% if check.ok %}
     <span style="color: #008000;"><strong>&#10003; agreed</strong></span> —
-    all {{ check.n_matched }} dish inputs are mapped to exactly one channel.
+    all {{ check.n_matched }} connected dish inputs are mapped to exactly
+    one channel.
     {% else %}
     <span style="color: #b8860b;"><strong>&#9888; disagreements</strong></span>
-    — {{ check.n_matched }} of {{ check.n_kotekan }} kotekan dish inputs
-    matched.
+    — {{ check.n_matched }} of {{ check.n_kotekan }} connected kotekan
+    dish inputs matched.
     {% endif %}
 </p>
 

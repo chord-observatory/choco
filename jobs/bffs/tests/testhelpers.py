@@ -11,9 +11,18 @@ _STR = h5py.string_dtype(encoding="utf-8")
 
 
 def write_normalized(path, labels, freq, auto, weight=None):
+    """`auto`-layout file with a per-dish label map, one polarization.
+
+    *labels* must be bare dish labels (no pol marker): with
+    ``num_elements == len(labels)`` the expansion is x1, so the element
+    axis equals the label count and each label gains the pol-0 suffix
+    (``f0`` -> ``f0X``).  Pre-2026-08 ``index_map/input`` files are
+    refused by ``element_labels`` and only appear in refusal tests.
+    """
     with h5py.File(path, "w") as f:
+        f.attrs["num_elements"] = len(labels)
         im = f.create_group("index_map")
-        im.create_dataset("input", data=np.array(labels, dtype=object), dtype=_STR)
+        im.create_dataset("label", data=np.array(labels, dtype=object), dtype=_STR)
         im.create_dataset("freq", data=np.asarray(freq, dtype="f4"))
         f.create_dataset("auto", data=np.asarray(auto, dtype="f4"))
         if weight is not None:
@@ -21,7 +30,10 @@ def write_normalized(path, labels, freq, auto, weight=None):
 
 
 def write_visibility(path, labels, freq, power):
-    """power: (ntime, nfreq, nfeed) autocorrelation diagonal values."""
+    """Time-first visibility file (vis[time, freq, prod]), per-dish label
+    map with one polarization — the same label convention as
+    :func:`write_normalized`.  power: (ntime, nfreq, nfeed) diagonal values.
+    """
     nfeed = len(labels)
     pairs = [(i, j) for i in range(nfeed) for j in range(i, nfeed)]
     ntime, nfreq, _ = power.shape
@@ -30,8 +42,9 @@ def write_visibility(path, labels, freq, power):
         if i == j:
             vis[:, :, k] = power[:, :, i]
     with h5py.File(path, "w") as f:
+        f.attrs["num_elements"] = nfeed
         im = f.create_group("index_map")
-        im.create_dataset("input", data=np.array(labels, dtype=object), dtype=_STR)
+        im.create_dataset("label", data=np.array(labels, dtype=object), dtype=_STR)
         im.create_dataset("freq", data=np.asarray(freq, dtype="f4"))
         prod = np.zeros(len(pairs), dtype=[("input_a", "i4"), ("input_b", "i4")])
         prod["input_a"] = [p[0] for p in pairs]

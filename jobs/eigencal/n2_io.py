@@ -63,6 +63,9 @@ def labels_are_per_element(labels) -> bool:
 
 def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
     """Per-element labels from per-dish labels, in the CHORD [P][D] order."""
+    if int(num_polarizations) == 1:
+        # One polarization: the dish is the element; no suffix to add.
+        return np.array([str(label) for label in dish_labels])
     out = []
     for pol in range(int(num_polarizations)):
         suffix = POL_SUFFIXES[pol] if pol < len(POL_SUFFIXES) else f"P{pol}"
@@ -71,15 +74,22 @@ def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
-    """The element-axis labels of *f*, per-dish labels expanded.
+    """The element-axis labels of *f*, expanded from its per-dish labels.
 
-    The polarisation count comes from the file's ``num_elements``
-    attribute (default 2); CHIME-style ``index_map/input`` files are
-    per-element by definition and pass through untouched.
+    Only the 2026-08 per-dish layout is accepted (the polarisation count
+    comes from the file's ``num_elements`` attribute, default 2).
+    Pre-2026-08 per-element files — CHIME-style ``index_map/input``, or
+    labels carrying a polarisation marker — are REFUSED: their element
+    ordering was wrong, and feeds selected by label against them would
+    be the wrong elements.  Raises ``OSError`` so the run reports
+    degraded (exit 2) and heals once post-migration files land.
     """
     labels = input_labels(f)
     if "input" in f["index_map"] or labels_are_per_element(labels):
-        return labels
+        raise OSError(
+            "N2 file predates the per-dish dish_inputs layout (per-element "
+            "labels) — its element ordering is untrustworthy; waiting for "
+            "post-migration files")
     num_elements = int(f.attrs.get("num_elements", 0) or 0)
     npol = 2
     if labels.size and num_elements >= labels.size and num_elements % labels.size == 0:

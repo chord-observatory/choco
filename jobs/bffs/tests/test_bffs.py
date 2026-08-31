@@ -300,7 +300,7 @@ def test_main_partial_skip_exits_degraded(tmp_path, monkeypatch, caplog):
     """File-based sources skipped but others still flagging: the run
     completes (flags computed) yet exits 2 so the badge shows degraded."""
     monkeypatch.setattr(bffs, "choco_group_config",
-                        lambda url, group: _DISH_CONFIG)
+                        lambda url, group: _PER_DISH_CONFIG)
     manualf = tmp_path / "manual.yaml"
     write_manual(manualf, ["A3X"])
     cfg_file = tmp_path / "cfg.yaml"
@@ -405,24 +405,16 @@ _DISH_CONFIG = {
 }
 
 
-def test_dish_input_labels_builds_element_table():
-    # Slots without a dish_inputs entry are implicit Fake dishes.
-    assert bffs.dish_input_labels(_DISH_CONFIG) == ["A1X", "Fake", "A3X"]
-    assert bffs.dish_input_labels(_DISH_CONFIG, n_elements=5) == [
-        "A1X", "Fake", "A3X", "Fake", "Fake"]
-
-
-def test_dish_input_labels_out_of_range_raises():
+def test_per_element_config_table_is_refused():
+    """Pre-2026-08 tables carried a wrong element ordering; flagging
+    against one would flag the wrong feeds.  OSError -> exit 2: the
+    badge reads degraded and heals when the config is migrated."""
     try:
-        bffs.dish_input_labels(_DISH_CONFIG, n_elements=2)
-    except ValueError as e:
-        assert "ambiguous" in str(e)
+        bffs.element_labels_from_config(_DISH_CONFIG)
+    except OSError as e:
+        assert "migrated" in str(e)
         return
-    raise AssertionError("expected ValueError for dish_idx beyond the axis")
-
-
-def test_dish_input_labels_absent_is_none():
-    assert bffs.dish_input_labels({"num_elements": 8}) is None
+    raise AssertionError("expected OSError for a per-element table")
 
 
 def test_uniquify_labels_suffixes_duplicates():
@@ -451,13 +443,6 @@ def test_element_labels_per_dish_expands_pol_blocks():
     # element = dish_idx + pol * num_dishes: the X block first, then Y,
     # placeholder dishes included in both.
     assert bffs.element_labels_from_config(_PER_DISH_CONFIG) == _PER_DISH_LABELS
-
-
-def test_element_labels_per_element_dispatches_to_old_path():
-    # Pol-suffixed labels mark the pre-2026-08 layout: positions are
-    # element indices, no expansion.
-    assert bffs.element_labels_from_config(_DISH_CONFIG) == \
-        ["A1X", "Fake", "A3X"]
 
 
 def test_element_labels_per_dish_file_agreement():
@@ -528,9 +513,10 @@ def test_per_dish_config_and_file_end_to_end(tmp_path, monkeypatch):
     assert good.shape == (4,)
 
 
-def test_labels_from_choco_config_win(tmp_path, monkeypatch):
-    """With choco available, dish_inputs names the elements; the file
-    fixes the axis length (implicit Fake dishes beyond the entries)."""
+def test_per_element_choco_config_refuses_end_to_end(tmp_path, monkeypatch):
+    """The refusal propagates out of combine_sources: an unmigrated
+    kotekan config must stop the run (degraded), not fall back to
+    file labels as if choco had no table."""
     monkeypatch.setattr(bffs, "choco_group_config",
                         lambda url, group: _DISH_CONFIG)
     n2 = tmp_path / "n2.h5"
@@ -538,15 +524,19 @@ def test_labels_from_choco_config_win(tmp_path, monkeypatch):
                      np.ones((1, 1, 4), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx")
-    labels, good, _, _ = bffs.combine_sources(cfg)
-    assert list(labels) == ["A1X", "Fake[1]", "A3X", "Fake[3]"]
+    try:
+        bffs.combine_sources(cfg)
+    except OSError as e:
+        assert "migrated" in str(e)
+        return
+    raise AssertionError("expected OSError for a per-element table")
 
 
 def test_config_file_element_mismatch_refuses(tmp_path, monkeypatch):
-    """A file shorter than the config's dish_idx range means the file
-    predates the running config — refuse rather than send wrong indices."""
+    """A file whose axis disagrees with the per-dish config predates
+    the running config — refuse rather than send wrong indices."""
     monkeypatch.setattr(bffs, "choco_group_config",
-                        lambda url, group: _DISH_CONFIG)
+                        lambda url, group: _PER_DISH_CONFIG)
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["x0", "x1"], [400.0], np.ones((1, 1, 2), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
@@ -554,9 +544,9 @@ def test_config_file_element_mismatch_refuses(tmp_path, monkeypatch):
     try:
         bffs.combine_sources(cfg)
     except ValueError as e:
-        assert "ambiguous" in str(e)
+        assert "disagrees" in str(e)
         return
-    raise AssertionError("expected ValueError on element-count mismatch")
+    raise AssertionError("expected ValueError on element-axis mismatch")
 
 
 def test_choco_config_fetch_failure_falls_back_to_file(tmp_path, monkeypatch):
@@ -578,7 +568,7 @@ def test_missing_file_skips_file_sources_but_still_flags(tmp_path, monkeypatch):
     """No usable N² file: power-outlier is skipped, manual still flags,
     labels come from the kotekan config via choco."""
     monkeypatch.setattr(bffs, "choco_group_config",
-                        lambda url, group: _DISH_CONFIG)
+                        lambda url, group: _PER_DISH_CONFIG)
     manualf = tmp_path / "manual.yaml"
     write_manual(manualf, ["A3X"])
     cfg = bffs.Config(
@@ -588,15 +578,15 @@ def test_missing_file_skips_file_sources_but_still_flags(tmp_path, monkeypatch):
                  {"kind": "manual", "path": str(manualf)}],
     )
     labels, good, flagged_by, degraded = bffs.combine_sources(cfg)
-    assert list(labels) == ["A1X", "Fake", "A3X"]
-    assert list(good) == [True, True, False]
+    assert list(labels) == ["A1X", "FakeX", "A3X", "A1Y", "FakeY", "A3Y"]
+    assert list(good) == [True, True, False, True, True, True]
     assert flagged_by == {"A3X": ["manual"]}
 
 
 def test_all_sources_skipped_fails(tmp_path, monkeypatch):
     """Only file-based sources configured and no usable file: red badge."""
     monkeypatch.setattr(bffs, "choco_group_config",
-                        lambda url, group: _DISH_CONFIG)
+                        lambda url, group: _PER_DISH_CONFIG)
     cfg = bffs.Config(
         kotekan_file=str(tmp_path / "nope_*.h5"),
         url="https://localhost:5000", group="cx",

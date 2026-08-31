@@ -26,19 +26,22 @@ NFEED = 2 * NDISH
 FREQ_MHZ = np.array([500.0, 520.0, 540.0, 560.0])
 TSTEP = 60.0
 
-LABELS = [f"d{d:04d}_p{p}" for d in range(NDISH) for p in "AB"]
-POS_EW = np.repeat(np.array([0.0, 9.0, 21.0, 40.0]), 2)   # metres
-POS_NS = np.repeat(np.array([0.0, 4.0, -7.0, 11.0]), 2)
-FLAGGED_FEED = 7               # kotekan marks this input bad
+# Per-dish labels (2026-08 layout); the element axis is [P][D]:
+# element = dish + pol * NDISH, pol 0 = X — the X block, then the Y block.
+DISH_LABELS = [f"d{d:04d}" for d in range(NDISH)]
+ELEM_LABELS = [f"{lbl}{p}" for p in "XY" for lbl in DISH_LABELS]
+POS_EW = np.tile(np.array([0.0, 9.0, 21.0, 40.0]), 2)     # metres, per element
+POS_NS = np.tile(np.array([0.0, 4.0, -7.0, 11.0]), 2)
+FLAGGED_FEED = 7               # kotekan marks this input bad (d0003Y)
 
 
 @pytest.fixture
 def setup(tmp_path):
     layout = {
-        "phase_reference": {"A": "d0000_pA", "B": "d0000_pB"},
+        "phase_reference": {"X": "d0000X", "Y": "d0000Y"},
         "feeds": [{"label": lbl, "pol": lbl[-1],
                    "ew_m": float(POS_EW[i]), "ns_m": float(POS_NS[i])}
-                  for i, lbl in enumerate(LABELS)],
+                  for i, lbl in enumerate(ELEM_LABELS)],
     }
     layout_path = tmp_path / "feeds.yaml"
     layout_path.write_text(yaml.safe_dump(layout))
@@ -96,7 +99,7 @@ def _make_file(cfg, eph, transit, tmp_path, rng):
     # noise well below the source but well above numerical zero (it sets the
     # off-source eigenvalue floor for the dynamic-range gate).
     a, b = np.triu_indices(NFEED)
-    same_pol = (a % 2) == (b % 2)
+    same_pol = (a // NDISH) == (b // NDISH)   # [P][D]: pol blocks of NDISH
     vis = np.where(same_pol[None, None, :],
                    resp[..., a] * np.conj(resp[..., b]), 0.0)
     noise_amp = 1e-3 * flux.mean()
@@ -106,8 +109,9 @@ def _make_file(cfg, eph, transit, tmp_path, rng):
 
     path = tmp_path / "n2_0000.h5"
     with h5py.File(path, "w") as f:
+        f.attrs["num_elements"] = NFEED
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(LABELS, dtype="S16"))
+        im.create_dataset("label", data=np.array(DISH_LABELS, dtype="S16"))
         freq = np.zeros(len(FREQ_MHZ), dtype=[("centre", "<f8"), ("width", "<f8")])
         freq["centre"], freq["width"] = FREQ_MHZ, 20.0
         im.create_dataset("freq", data=freq)
@@ -146,7 +150,7 @@ def test_process_transit_recovers_gains(setup):
     # g_out * gain_in should be a constant per (freq, pol): the reference
     # feed's gain phase (unit magnitude times any per-pol phase).
     prod = g_out * gain_in
-    for pol_feeds in (np.arange(0, NFEED, 2), np.arange(1, NFEED, 2)):
+    for pol_feeds in (np.arange(NDISH), np.arange(NDISH, NFEED)):
         pf = pol_feeds[pol_feeds != FLAGGED_FEED]
         for ff in range(len(FREQ_MHZ)):
             vals = prod[ff, pf][good[ff, pf]]

@@ -7,7 +7,12 @@ import pytest
 import n2_io
 
 NFEED, NFREQ, NTIME = 4, 3, 6
-LABELS = [b"d0_pA", b"d0_pB", b"d1_pA", b"d1_pB"]
+# Per-dish labels (the 2026-08 layout): 2 dishes x 2 pol = NFEED elements,
+# [P][D] order, so the element axis reads d0X, d1X, d0Y, d1Y.
+DISH_LABELS = [b"d0", b"d1"]
+ELEMENT_LABELS = ["d0X", "d1X", "d0Y", "d1Y"]
+# Pre-2026-08 per-element labels, used only by the refusal tests.
+OLD_LABELS = [b"d0_pA", b"d0_pB", b"d1_pA", b"d1_pB"]
 
 
 def _prods(n):
@@ -25,12 +30,13 @@ def _vis_values(a, b):
 
 @pytest.fixture
 def chord_file(tmp_path):
-    """CHORD hdf5N2Write flavour: label index map, vis[freq, prod, time]."""
+    """CHORD hdf5N2Write flavour: per-dish label map, vis[freq, prod, time]."""
     a, b = _prods(NFEED)
     path = tmp_path / "chord.h5"
     with h5py.File(path, "w") as f:
+        f.attrs["num_elements"] = NFEED
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(LABELS, dtype="S10"))
+        im.create_dataset("label", data=np.array(DISH_LABELS, dtype="S10"))
         freq = np.zeros(NFREQ, dtype=[("centre", "<f8"), ("width", "<f8")])
         freq["centre"] = [400.0, 500.0, 600.0]
         freq["width"] = 100.0
@@ -51,14 +57,14 @@ def chord_file(tmp_path):
 
 @pytest.fixture
 def chime_file(tmp_path):
-    """CHIME flavour: compound input index map, vis[time, freq, prod]."""
+    """Pre-2026-08 CHIME flavour (index_map/input) — refused by the reader."""
     a, b = _prods(NFEED)
     path = tmp_path / "chime.h5"
     with h5py.File(path, "w") as f:
         im = f.create_group("index_map")
         inp = np.zeros(NFEED, dtype=[("chan_id", "<u2"), ("correlator_input", "S10")])
         inp["chan_id"] = np.arange(NFEED)
-        inp["correlator_input"] = LABELS
+        inp["correlator_input"] = OLD_LABELS
         im.create_dataset("input", data=inp)
         im.create_dataset("freq", data=np.array([400.0, 500.0, 600.0]))
         im.create_dataset("time", data=1000.0 + 10.0 * np.arange(NTIME))
@@ -72,17 +78,27 @@ def chime_file(tmp_path):
 def test_read_meta_chord(chord_file):
     m = n2_io.read_meta(chord_file)
     assert not m.time_first
-    assert list(m.labels) == [l.decode() for l in LABELS]
+    assert list(m.labels) == ELEMENT_LABELS
     assert np.allclose(m.freq_mhz, [400.0, 500.0, 600.0])
     assert np.allclose(m.freq_width_mhz, 100.0)
     assert np.allclose(m.time, 1005.0 + 10.0 * np.arange(NTIME))  # centred
     assert m.prod_a.size == NFEED * (NFEED + 1) // 2
 
 
-def test_read_meta_chime(chime_file):
-    m = n2_io.read_meta(chime_file)
-    assert m.time_first
-    assert list(m.labels) == [l.decode() for l in LABELS]
+def test_chime_style_file_is_refused(chime_file):
+    """Pre-2026-08 files carried a wrong element ordering; feeds
+    selected by label against them would be the wrong elements."""
+    with pytest.raises(OSError, match="predates"):
+        n2_io.read_meta(chime_file)
+
+
+def test_per_element_labels_are_refused(tmp_path, chord_file):
+    with h5py.File(chord_file, "r+") as f:
+        del f["index_map"]["label"]
+        f["index_map"].create_dataset(
+            "label", data=np.array(OLD_LABELS, dtype="S10"))
+    with pytest.raises(OSError, match="predates"):
+        n2_io.read_meta(chord_file)
 
 
 def test_read_meta_per_dish_expands_labels(tmp_path):
@@ -109,10 +125,8 @@ def test_read_meta_per_dish_expands_labels(tmp_path):
     assert prod_idx.size == a.size
 
 
-@pytest.mark.parametrize("fixture", ["chord_file", "chime_file"])
-def test_read_products_matches_both_layouts(fixture, request):
-    path = request.getfixturevalue(fixture)
-    m = n2_io.read_meta(path)
+def test_read_products(chord_file):
+    m = n2_io.read_meta(chord_file)
     a, b = _prods(NFEED)
     expect = _vis_values(a, b)                    # (freq, prod, time)
 
@@ -137,8 +151,12 @@ def test_read_valid_and_flags(chord_file):
     assert not flags[:, 3].any() and flags[:, :3].all()
 
 
-def test_valid_and_flags_default_to_good(chime_file):
-    m = n2_io.read_meta(chime_file)
+def test_valid_and_flags_default_to_good(chord_file):
+    # A file without frames_added / flags datasets defaults to all-good.
+    with h5py.File(chord_file, "r+") as f:
+        del f["frames_added"]
+        del f["flags"]
+    m = n2_io.read_meta(chord_file)
     time_sel = np.arange(3)
     assert n2_io.read_valid(m, time_sel, slice(0, NFREQ)).all()
     assert n2_io.read_input_flags(m, time_sel).all()

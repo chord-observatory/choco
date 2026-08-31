@@ -1876,9 +1876,9 @@ class TestPdbChannelMap:
         assert "A1X" in body           # the good rows still label the grid
 
     def test_cross_check_agreement(self, client, app, configs_dir):
+        # One connected dish (A1): the map's A1X/A1Y rows cover it.
         self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
-            {"dish_idx": 0, "label": "A1X"},
-            {"dish_idx": 1, "label": "A1Y"},
+            {"dish_idx": 0, "label": "A1", "type": "ArrayDish"},
         ])
         _login(client)
         body = client.get("/service/pdb").data.decode()
@@ -1886,17 +1886,41 @@ class TestPdbChannelMap:
 
     def test_cross_check_reports_disagreements(self, client, app,
                                                configs_dir):
+        # A2 is connected but unmapped (both pols); the map's rows are
+        # for A1, which kotekan has never heard of -> stale.
         self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
-            {"dish_idx": 0, "label": "A1X"},
-            {"dish_idx": 1, "label": "A2X"},     # map has A1Y instead
+            {"dish_idx": 0, "label": "A2", "type": "ArrayDish"},
         ])
         _login(client)
         body = client.get("/service/pdb").data.decode()
         assert "disagreements" in body
-        assert "1 in kotekan but not in the map" in body
-        assert "1 in the map but not in kotekan" in body
+        assert "2 in kotekan but not in the map" in body
+        assert "2 in the map but not in kotekan" in body
         assert "A2X" in body           # kotekan knows it, the map doesn't
         assert "A1Y" in body           # the map knows it, kotekan doesn't
+
+    def test_unconnected_dish_wiring_is_not_stale(self, client, app,
+                                                  configs_dir):
+        """Map rows for a dish that exists but is not on the correlator
+        (type Fake, real label) are legitimate, not disagreements."""
+        self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
+            {"dish_idx": 0, "label": "A1", "type": "Fake"},
+        ])
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert "agreed" in body
+
+    def test_old_style_table_reports_a_migration_reason(self, client, app,
+                                                        configs_dir):
+        """A pre-2026-08 per-element table is refused, never checked."""
+        self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
+            {"dish_idx": 0, "label": "A1X"},
+            {"dish_idx": 1, "label": "A1Y"},
+        ])
+        _login(client)
+        body = client.get("/service/pdb").data.decode()
+        assert "Not cross-checked against kotekan" in body
+        assert "migrate the config" in body
 
     def test_no_dish_inputs_degrades_to_a_reason(self, client, app,
                                                  configs_dir):
@@ -1922,8 +1946,7 @@ class TestPdbChannelMap:
 
     def test_api_includes_the_cross_check(self, client, app, configs_dir):
         self._configure(app, configs_dir, map_text=self.MAP, dish_inputs=[
-            {"dish_idx": 0, "label": "A1X"},
-            {"dish_idx": 1, "label": "A1Y"},
+            {"dish_idx": 0, "label": "A1", "type": "ArrayDish"},
         ])
         data = client.get("/api/pdb/map").get_json()
         assert data["check"]["available"] is True

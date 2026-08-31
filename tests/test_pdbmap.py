@@ -127,33 +127,55 @@ class TestPdbMapFile:
 
 
 class TestKotekanDishLabels:
-    def test_reads_a_nested_table(self):
+    def test_per_dish_table_expands_to_element_labels(self):
         config = {"telescope": {"dish_inputs": [
-            {"dish_idx": 0, "label": "A1X"},
-            {"dish_idx": 1, "label": "A1Y"},
+            {"dish_idx": 0, "label": "B4", "type": "ArrayDish"},
+            {"dish_idx": 1, "label": "C1", "type": "Fake"},
         ]}}
-        assert kotekan_dish_labels(config) == {"A1X", "A1Y"}
+        sets = kotekan_dish_labels(config)
+        # live = connected dishes only; known = every real position.
+        assert sets["live"] == {"B4X", "B4Y"}
+        assert sets["known"] == {"B4X", "B4Y", "C1X", "C1Y"}
 
-    def test_placeholders_dropped(self):
+    def test_placeholder_labels_dropped(self):
         config = {"dish_inputs": [
-            {"dish_idx": 0, "label": "A1X"},
+            {"dish_idx": 0, "label": "A1", "type": "ArrayDish"},
             {"dish_idx": 1, "label": "Fake"},
         ]}
-        assert kotekan_dish_labels(config) == {"A1X"}
+        sets = kotekan_dish_labels(config)
+        assert sets["known"] == {"A1X", "A1Y"}
 
     def test_entries_without_a_dish_idx_still_count(self):
         """Only the names matter; the element-axis position is bffs's problem."""
-        config = {"dish_inputs": [{"label": "A1X"}, {"label": "A1Y"}]}
-        assert kotekan_dish_labels(config) == {"A1X", "A1Y"}
+        config = {"dish_inputs": [{"label": "A1", "type": "ArrayDish"}]}
+        assert kotekan_dish_labels(config)["live"] == {"A1X", "A1Y"}
 
-    def test_no_table_is_empty(self):
-        assert kotekan_dish_labels({"a": 1}) == set()
-        assert kotekan_dish_labels(None) == set()
+    def test_no_table_is_none(self):
+        assert kotekan_dish_labels({"a": 1}) is None
+        assert kotekan_dish_labels(None) is None
 
     def test_garbage_entries_tolerated(self):
-        config = {"dish_inputs": [{"dish_idx": "x", "label": "A1X"}, "junk",
+        config = {"dish_inputs": [{"dish_idx": "x", "label": "A1"}, "junk",
                                   {"no_label": 1}]}
-        assert kotekan_dish_labels(config) == {"A1X"}
+        assert kotekan_dish_labels(config)["known"] == {"A1X", "A1Y"}
+
+    def test_per_element_table_is_refused(self):
+        """Pre-2026-08 tables carried a wrong element ordering.
+
+        The check must not run against them: it raises, and the page
+        reports a migrate-this-config reason instead of a verdict.
+        """
+        config = {"dish_inputs": [
+            {"dish_idx": 0, "label": "A1X"},
+            {"dish_idx": 1, "label": "A1Y"},
+        ]}
+        with pytest.raises(ValueError, match="per-element"):
+            kotekan_dish_labels(config)
+
+
+def _sets(live=(), known=()):
+    """cross_check input: known always includes the live set."""
+    return {"live": set(live), "known": set(known) | set(live)}
 
 
 class TestCrossCheck:
@@ -163,27 +185,31 @@ class TestCrossCheck:
 
     def test_agreement(self, tmp_path):
         m = self._map(tmp_path, "0,0,A,0,A1X,,", "0,0,A,1,A1Y,,")
-        result = cross_check(m, ["A1X", "A1Y"])
+        result = cross_check(m, _sets(live=["A1X", "A1Y"]))
         assert result["ok"] is True
         assert result["n_matched"] == 2
         assert result["missing_in_map"] == []
         assert result["unknown_to_kotekan"] == []
 
-    def test_missing_in_map(self, tmp_path):
-        m = self._map(tmp_path, "0,0,A,0,A1X,,")
-        result = cross_check(m, ["A1X", "A1Y"])
-        assert result["ok"] is False
-        assert result["missing_in_map"] == ["A1Y"]
+    def test_missing_in_map_counts_live_feeds_only(self):
+        """A connected feed with no breaker is a problem; an unbuilt
+        dish is not."""
+        m = PdbMap()
+        result = cross_check(m, _sets(live=["A1X"], known=["C1X"]))
+        assert result["missing_in_map"] == ["A1X"]
 
-    def test_unknown_to_kotekan(self, tmp_path):
-        m = self._map(tmp_path, "0,0,A,0,A1X,,", "0,0,A,1,GHOST,,")
-        result = cross_check(m, ["A1X"])
+    def test_unknown_to_kotekan_checks_all_known_positions(self, tmp_path):
+        """Wiring for an existing-but-unconnected dish is legitimate;
+        only a position kotekan has never heard of is stale."""
+        m = self._map(tmp_path, "0,0,A,0,A1X,,", "0,0,A,1,C1X,,",
+                      "0,0,A,2,GHOST,,")
+        result = cross_check(m, _sets(live=["A1X"], known=["C1X"]))
         assert result["ok"] is False
         assert result["unknown_to_kotekan"] == ["GHOST"]
 
     def test_duplicate_labels(self, tmp_path):
         m = self._map(tmp_path, "0,0,A,0,A1X,,", "0,1,B,3,A1X,,")
-        result = cross_check(m, ["A1X"])
+        result = cross_check(m, _sets(live=["A1X"]))
         assert result["ok"] is False
         assert list(result["duplicate_labels"]) == ["A1X"]
         assert result["duplicate_labels"]["A1X"] == [
@@ -192,9 +218,9 @@ class TestCrossCheck:
     def test_no_kotekan_labels_is_not_ok(self, tmp_path):
         """Nothing to check against is not the same as agreement."""
         m = self._map(tmp_path, "0,0,A,0,A1X,,")
-        assert cross_check(m, [])["ok"] is False
+        assert cross_check(m, _sets())["ok"] is False
 
     def test_empty_map(self):
-        result = cross_check(PdbMap(), ["A1X"])
+        result = cross_check(PdbMap(), _sets(live=["A1X"]))
         assert result["n_mapped"] == 0
         assert result["missing_in_map"] == ["A1X"]

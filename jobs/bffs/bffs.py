@@ -152,58 +152,34 @@ def _config_int(config, key, default=None):
             f"(a kotekan expression?) — cannot size the element axis")
 
 
-def dish_input_labels(config: dict, n_elements: int | None = None) -> list[str] | None:
-    """Element labels from a pre-2026-08 per-element ``dish_inputs`` table.
-
-    Mirrors the old ``CHORDTelescope``: an ``n_elements``-slot table,
-    all ``Fake``, with each ``dish_inputs`` entry's ``label`` placed at
-    its ``dish_idx`` — that table's positions are the indices kotekan's
-    bad-input mask consumes.  Without ``n_elements`` the table is just
-    big enough for the highest ``dish_idx``; a ``dish_idx`` beyond
-    ``n_elements`` raises (the config and the data disagree about the
-    element axis, so indexing would be ambiguous).  Returns None when
-    the config has no usable ``dish_inputs``.  For the 2026-08 per-dish
-    layout see :func:`element_labels_from_config`, which dispatches.
-    """
-    table = find_dish_inputs(config)
-    if not table or not all(isinstance(e, dict) for e in table):
-        return None
-    by_idx = {}
-    for i, entry in enumerate(table):
-        idx = int(entry.get("dish_idx", i))
-        by_idx[idx] = str(entry.get("label", f"dish{idx}"))
-    n = max(by_idx) + 1 if n_elements is None else int(n_elements)
-    if max(by_idx) >= n:
-        raise ValueError(
-            f"dish_idx {max(by_idx)} in the kotekan config exceeds the "
-            f"{n}-element axis — config and data disagree; refusing to "
-            f"flag with ambiguous indexing")
-    return [by_idx.get(i, "Fake") for i in range(n)]
-
-
 def element_labels_from_config(config: dict, file_labels=None) -> list[str] | None:
-    """Element labels from a kotekan config, whichever ``dish_inputs`` layout.
+    """Element labels from a kotekan config's per-dish ``dish_inputs`` table.
 
-    Dispatches on the table's label convention (see
-    ``kotekan_io.labels_are_per_element``): pre-2026-08 tables name every
-    element (``A1X``) and their positions are element indices
-    (:func:`dish_input_labels`); 2026-08 tables name each dish once
-    (``A1``) and the element axis is [P][D] — ``num_polarizations``
-    blocks of ``num_dishes``, ``element = dish_idx + pol * num_dishes``
-    — so per-element labels are derived as label + X/Y.
+    Only the 2026-08 per-dish layout is accepted: the table names each
+    dish once (``A1``) and the element axis is [P][D] —
+    ``num_polarizations`` blocks of ``num_dishes``, ``element = dish_idx
+    + pol * num_dishes`` — so per-element labels are derived as label +
+    X/Y.  A pre-2026-08 per-element table (labels like ``A1X``, see
+    ``kotekan_io.labels_are_per_element``) is REFUSED: its element
+    ordering was wrong, and indexing kotekan's bad-input mask with it
+    would flag the wrong feeds.  Raises ``OSError`` so the run reports
+    degraded (exit 2) and heals once the config is migrated, with no
+    job-side action needed.
 
     ``file_labels`` is the N² file's element axis
-    (``kotekan_io.read_labels``).  The config is the naming authority;
-    for the per-element layout the file fixes the axis length, for the
-    per-dish layout it is a cross-check — a file whose axis disagrees
-    with the config predates it, and positions would be ambiguous.
+    (``kotekan_io.read_labels``); the config is the naming authority and
+    the file is a cross-check — a file whose axis disagrees with the
+    config predates it, and positions would be ambiguous.
     """
     table = find_dish_inputs(config)
     if not table or not all(isinstance(e, dict) for e in table):
         return None
     if labels_are_per_element(str(e.get("label", "")) for e in table):
-        n = len(file_labels) if file_labels is not None else None
-        return dish_input_labels(config, n_elements=n)
+        raise OSError(
+            "the kotekan config still carries a pre-2026-08 per-element "
+            "dish_inputs table — its element ordering is untrustworthy; "
+            "refusing to flag until the config is migrated to the "
+            "per-dish layout")
     by_idx = {}
     for i, entry in enumerate(table):
         idx = int(entry.get("dish_idx", i))

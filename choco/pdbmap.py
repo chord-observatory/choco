@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,15 @@ DEFAULT_MAP_FILENAME = "pdb_map.csv"
 
 # kotekan's dish_inputs table pads unpopulated slots with this label.
 PLACEHOLDER_LABEL = "Fake"
+
+# Per-element vs per-dish label layouts — mirrors jobs/bffs/kotekan_io.py
+# (labels_are_per_element / expand_dish_labels); keep the two in step.
+# A polarization marker in the text (``A1X``, ``d0_pA``) means the
+# pre-2026-08 per-element layout, whose element ordering was wrong; the
+# 2026-08 layout names each dish once (``A1``) and derives per-element
+# labels as label + X/Y (pol 0 = X).
+_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
+_POL_SUFFIXES = "XY"
 
 # The dish-input column has gone by a few names (bffs's vendored
 # power_map.csv calls it correlator_input); accept them all, write the
@@ -239,33 +249,61 @@ def find_dish_inputs(config):
     return None
 
 
-def kotekan_dish_labels(config) -> set[str]:
-    """The real dish-input labels named by a kotekan config.
+def kotekan_dish_labels(config) -> dict | None:
+    """Per-element label sets from a per-dish ``dish_inputs`` table.
 
-    Placeholder (``Fake``) slots are dropped — they are unpopulated
-    positions in the element axis, not feeds anyone can power.  Only the
-    names matter here: the cross-check compares *which* feeds exist, not
-    where they sit on the element axis (that indexing is bffs's problem,
-    and bffs reads the table itself).
+    Returns ``{"live", "known"}``, each a set of per-element labels
+    (dish label + X/Y): ``live`` covers the connected dishes (``type:
+    ArrayDish``) — feeds that must have a known breaker — while
+    ``known`` covers every real-labeled entry, connected or not, so a
+    map row for a dish that exists but is not on the correlator yet
+    (the pathfinder's C/D rows) is not flagged as stale.  Placeholder
+    entries (label ``Fake``) are dropped from both.  Only the names
+    matter here: the cross-check compares *which* feeds exist, not
+    where they sit on the element axis (that indexing is bffs's
+    problem, and bffs reads the table itself).
+
+    Returns ``None`` when the config has no usable table.  Raises
+    ``ValueError`` for a pre-2026-08 per-element table (labels like
+    ``A1X``): its element ordering was wrong, so the check reports it
+    as unavailable with a migrate-this-config reason instead of
+    checking against untrustworthy data.
     """
+    entries = [(str(e.get("label", "")).strip(), str(e.get("type", "")).strip())
+               for e in (find_dish_inputs(config) or [])
+               if isinstance(e, dict)]
+    entries = [(label, typ) for label, typ in entries
+               if label and label != PLACEHOLDER_LABEL]
+    if not entries:
+        return None
+    if any(_PER_ELEMENT_LABEL.search(label) for label, _ in entries):
+        raise ValueError(
+            "pre-2026-08 per-element dish_inputs table (labels like A1X) — "
+            "its element ordering is untrustworthy; migrate the config to "
+            "the per-dish layout")
+
+    def expand(labels):
+        return {label + pol for label in labels for pol in _POL_SUFFIXES}
+
     return {
-        label
-        for entry in (find_dish_inputs(config) or [])
-        if isinstance(entry, dict)
-        and (label := str(entry.get("label", "")).strip())
-        and label != PLACEHOLDER_LABEL
+        "live": expand(l for l, typ in entries if typ == "ArrayDish"),
+        "known": expand(l for l, _ in entries),
     }
 
 
-def cross_check(pdb_map: PdbMap, dish_labels) -> dict:
-    """Compare the master map against the labels kotekan reports.
+def cross_check(pdb_map: PdbMap, label_sets: dict) -> dict:
+    """Compare the master map against a config's dish-input label sets.
 
-    Three ways they can disagree, all worth seeing:
-      * ``missing_in_map``     — kotekan knows a feed the map doesn't
-        place, so nobody can find its breaker.
-      * ``unknown_to_kotekan`` — the map names a feed kotekan doesn't
-        have; usually a stale row, but it could be a typo that hides a
-        real channel.
+    *label_sets* is :func:`kotekan_dish_labels` output.  The two sides
+    deliberately use different sets:
+      * ``missing_in_map``     — a **live** (ArrayDish) feed the map
+        doesn't place, so nobody can find its breaker.  Dishes that are
+        not on the correlator don't count: an unbuilt row is not a
+        missing breaker.
+      * ``unknown_to_kotekan`` — the map names a position kotekan has
+        never heard of under any type; a stale row, or a typo that
+        hides a real channel.  Wiring recorded for a dish that exists
+        but is not connected yet is legitimate, not stale.
       * ``duplicate_labels``   — one dish input claimed by two channels;
         at most one can be right.
     """
@@ -276,17 +314,18 @@ def cross_check(pdb_map: PdbMap, dish_labels) -> dict:
         label: sorted(e.address_label for e in entries)
         for label, entries in by_label.items() if len(entries) > 1
     }
-    kotekan = {str(label) for label in (dish_labels or ())}
+    live = {str(label) for label in (label_sets or {}).get("live", ())}
+    known = {str(label) for label in (label_sets or {}).get("known", ())} | live
     mapped = set(by_label)
-    missing = sorted(kotekan - mapped)
-    unknown = sorted(mapped - kotekan)
+    missing = sorted(live - mapped)
+    unknown = sorted(mapped - known)
     return {
-        "n_kotekan": len(kotekan),
+        "n_kotekan": len(live),
         "n_mapped": len(mapped),
-        "n_matched": len(kotekan & mapped),
+        "n_matched": len(live & mapped),
         "missing_in_map": missing,
         "unknown_to_kotekan": unknown,
         "duplicate_labels": duplicates,
-        "ok": bool(kotekan) and not missing and not unknown
+        "ok": bool(known) and not missing and not unknown
         and not duplicates,
     }

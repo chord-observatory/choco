@@ -44,8 +44,9 @@ def make_file(path, n_freq=64, n_elem=4, n_time=6, seed=0, dead_cells=()):
         g.create_dataset("freq", data=np.array(
             [(300.0 + i, 1.0) for i in range(n_freq)],
             dtype=[("centre", "<f8"), ("width", "<f8")]))
+        # Per-dish labels (2026-08 layout): n_elem // 2 dishes x 2 pol.
         g.create_dataset("label", data=np.array(
-            [f"A{i}X".encode() for i in range(n_elem)]))
+            [f"A{i}".encode() for i in range(n_elem // 2)]))
         f.attrs["num_elements"] = n_elem
         f.attrs["num_prod"] = n_prod
         f.attrs["abs_file_idx"] = 4202415
@@ -70,6 +71,20 @@ def test_read_axes(vis_file):
     assert ax.freq_mhz[0] == 300.0 and len(ax.freq_mhz) == 64
     assert ax.labels[:2] == ["A0X", "A1X"]
     assert ax.times_ns.shape == (6,)
+
+
+def test_read_axes_per_element_labels_store_nothing(tmp_path, caplog):
+    """Pre-2026-08 per-element labels carried a wrong element ordering:
+    they are dropped, and the viewer falls back to element indices."""
+    path = tmp_path / "vis_0004202415_x.h5"
+    make_file(path)
+    with h5py.File(path, "r+") as f:
+        del f["index_map/label"]
+        f["index_map"].create_dataset(
+            "label", data=np.array([b"A0X", b"A1X", b"A0Y", b"A1Y"]))
+    ax = R.read_axes(path)
+    assert ax.labels == []
+    assert "pre-2026-08" in caplog.text
 
 
 def test_read_axes_per_dish_labels_expand(tmp_path):

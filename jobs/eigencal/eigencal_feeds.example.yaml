@@ -14,20 +14,22 @@
 # a sample where the reference is flagged cannot be phase-referenced and is
 # dropped from the fit.
 #
-# Label convention: use the labels of the file's *element* axis.  For
-# pre-2026-08 files that is index_map/label verbatim; files written from a
-# 2026-08 per-dish dish_inputs table carry one label per dish (A1), and
-# n2_io expands them to per-element labels as dish label + X/Y in the
-# [P][D] element order (A1X ... A1Y ...) -- list those derived names here,
-# one entry per element, both polarisations of every dish.
+# Label convention: use the labels of the file's *element* axis.  N² files
+# carry one label per dish (index_map/label, e.g. A1) and n2_io expands
+# them to per-element labels as dish label + X/Y (pol 0 = X) in the [P][D]
+# element order (A1X ... A1Y ...) -- list those derived names here, one
+# entry per element, both polarisations of every dish.  (Pre-2026-08
+# per-element files are refused by n2_io: their element ordering was
+# wrong, so a label here would select the wrong element.)
 
 phase_reference:
-  A: d0000_pA
-  B: d0000_pB
+  X: A1X
+  Y: A1Y
 
 feeds:
-  - {label: d0000_pA, pol: A, ew_m: 0.000, ns_m: 0.000}
-  - {label: d0000_pB, pol: B, ew_m: 0.000, ns_m: 0.000}
-  - {label: d0001_pA, pol: A, ew_m: 6.300, ns_m: 0.000}
-  - {label: d0001_pB, pol: B, ew_m: 6.300, ns_m: 0.000}
-  # ... one entry per cabled input, labels exactly as in the N² file ...
+  - {label: A1X, pol: X, ew_m: 0.000, ns_m: 0.000}
+  - {label: A2X, pol: X, ew_m: 6.300, ns_m: 0.000}
+  # ... the X block, one entry per dish ...
+  - {label: A1Y, pol: Y, ew_m: 0.000, ns_m: 0.000}
+  - {label: A2Y, pol: Y, ew_m: 6.300, ns_m: 0.000}
+  # ... then the Y block, same dishes ...

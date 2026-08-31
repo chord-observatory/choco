@@ -51,12 +51,24 @@ _POL_SUFFIXES = "XY"
 
 
 def _element_labels(labels: list, n_elements: int) -> list:
-    """Per-element labels: per-dish labels expanded, others untouched."""
-    if not labels or any(_PER_ELEMENT_LABEL.search(l) for l in labels):
+    """Per-element labels from per-dish labels; old layouts get none.
+
+    A pre-2026-08 per-element label set (a polarisation marker in the
+    text) is dropped rather than stored: its element ordering was wrong,
+    so the names would sit on the wrong axes.  The viewer already falls
+    back to element indices when an acquisition has no labels.
+    """
+    if not labels:
         return labels
+    if any(_PER_ELEMENT_LABEL.search(l) for l in labels):
+        log.warning("per-element (pre-2026-08) labels in the source file; "
+                    "storing element indices instead of labels")
+        return []
     npol = 2
     if n_elements >= len(labels) and n_elements % len(labels) == 0:
         npol = n_elements // len(labels)
+    if npol == 1:
+        return list(labels)   # one polarization: the dish is the element
     return [f"{label}{_POL_SUFFIXES[p] if p < len(_POL_SUFFIXES) else f'P{p}'}"
             for p in range(npol) for label in labels]
 

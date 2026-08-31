@@ -51,23 +51,32 @@ def test_read_autocorr_missing_file(tmp_path):
     assert kotekan_io.read_autocorr(tmp_path / "absent.h5") is None
 
 
-def test_read_labels_chord_label_fallback(tmp_path):
+def test_per_element_chord_file_is_refused(tmp_path):
+    # Pre-2026-08 files (pol-marked labels) carried a wrong element
+    # ordering; flagging feeds against them would flag the wrong feeds.
     path = tmp_path / "chord.h5"
     write_chord_n2(path, ["A1X", "A2X", "B1X"], [400.0], np.ones((1, 1, 3), "f4"))
-    assert list(kotekan_io.read_labels(path)) == ["A1X", "A2X", "B1X"]
+    try:
+        kotekan_io.read_labels(path)
+    except OSError as e:
+        assert "predates" in str(e)
+        return
+    raise AssertionError("expected OSError for a per-element file")
 
 
-def test_read_autocorr_chord_layout(tmp_path):
-    # vis[freq, prod, time], compound freq, phantom elements beyond the labels
-    path = tmp_path / "chord.h5"
-    power = np.ones((3, 2, 4), "f4") * 5.0
-    power[..., 2] = 50.0
-    write_chord_n2(path, ["A1X", "A2X", "B1X", "B2X"], [400.0, 500.0], power)
-    frame = kotekan_io.read_autocorr(path, chunk=2)
-    assert (frame.nfeed, frame.ntime) == (4, 2)  # phantoms dropped, recent rows
-    np.testing.assert_allclose(frame.auto[0, 0], [5, 5, 50, 5])
-    np.testing.assert_allclose(frame.freq, [400.0, 500.0])
-    assert frame.weight.min() == 1.0 and frame.valid.all()
+def test_chime_style_input_map_is_refused(tmp_path):
+    # index_map/input marks a pre-2026-08 file regardless of label text.
+    path = tmp_path / "chime.h5"
+    with h5py.File(path, "w") as f:
+        im = f.create_group("index_map")
+        im.create_dataset("input", data=np.array(["f0", "f1"], dtype=object),
+                          dtype=h5py.string_dtype(encoding="utf-8"))
+    try:
+        kotekan_io.read_labels(path)
+    except OSError as e:
+        assert "predates" in str(e)
+        return
+    raise AssertionError("expected OSError for an index_map/input file")
 
 
 def test_labels_are_per_element_conventions():
@@ -125,6 +134,7 @@ def test_read_autocorr_chord_frames_added_validity(tmp_path):
     power = np.ones((3, 2, 2), "f4")
     frames_added = np.ones((2, 3), "u1")  # [freq, time]
     frames_added[:, 2] = 0                # newest time column never arrived
-    write_chord_n2(path, ["A1X", "A1Y"], [400.0, 500.0], power, frames_added=frames_added)
+    write_chord_n2(path, ["A1"], [400.0, 500.0], power, num_elements=2,
+                   frames_added=frames_added)
     frame = kotekan_io.read_autocorr(path, chunk=2)
     np.testing.assert_array_equal(frame.valid, [[True, True], [False, False]])
