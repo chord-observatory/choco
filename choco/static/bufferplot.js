@@ -167,13 +167,20 @@
     // blocks, no padding.  Offsets validated against live cx19 frames
     // (n2_buffer 100756 B, n2_eigen_buffer 7292 B — exact size matches,
     // and the decoded autocorrelations come out real and positive).
+    // Subset layouts (DishInputs, GeneralSubset, InputORMasked, ...)
+    // carry an explicit product list in the descriptor; per-element
+    // blocks stay at full num_elements width — only the product space
+    // compacts.
     function n2LayoutFromDesc(desc) {
         var n = desc.num_elements, nev = desc.num_ev || 0;
         var layout = desc.n2_layout;
-        var numProd;
+        var numProd, prods = null;
         if (layout === "FullUpperTri") numProd = n * (n + 1) / 2;
         else if (layout === "Autocorrelations") numProd = n;
-        else if (Array.isArray(desc.product_list)) numProd = desc.product_list.length;
+        else if (Array.isArray(desc.product_list)) {
+            prods = desc.product_list;
+            numProd = prods.length;
+        }
         else return null; // unknown layout: generic fallback rendering
         var defs = [
             ["vis", 8 * numProd, "c64"],
@@ -193,18 +200,33 @@
             off += d[1];
         });
         return { n: n, nev: nev, layout: layout, numProd: numProd,
-                 blocks: blocks, total: off };
+                 prods: prods, blocks: blocks, total: off };
     }
 
-    // Unpack the packed upper triangle into a full n×n grid; the lower
-    // triangle is the conjugate mirror, so the odd parts flip sign.
-    function n2Grid(tri, n, part) {
-        var grid = new Float64Array(n * n);
+    // Unpack the packed products into a full n×n grid; the lower triangle
+    // is the conjugate mirror, so the odd parts flip sign.  A dense
+    // FullUpperTri frame walks the triangle in order; a subset layout
+    // hands over its product list and the values are scattered by it —
+    // cells no product covers stay NaN, the missing-data grey, so an
+    // unwired baseline reads as absent rather than as zero correlation.
+    function n2Grid(tri, n, part, prods) {
+        var grid, i, j, k, v;
         var neg = part === "phase" || part === "imag";
-        var k = 0;
-        for (var i = 0; i < n; i++)
-            for (var j = i; j < n; j++, k++) {
-                var v = tri[k];
+        if (prods) {
+            grid = new Float64Array(n * n).fill(NaN);
+            for (k = 0; k < prods.length && k < tri.length; k++) {
+                i = prods[k][0]; j = prods[k][1];
+                v = tri[k];
+                grid[i * n + j] = v;
+                grid[j * n + i] = neg ? -v : v;
+            }
+            return grid;
+        }
+        grid = new Float64Array(n * n);
+        k = 0;
+        for (i = 0; i < n; i++)
+            for (j = i; j < n; j++, k++) {
+                v = tri[k];
                 grid[i * n + j] = v;
                 grid[j * n + i] = neg ? -v : v;
             }
@@ -1107,8 +1129,11 @@
     // Default selection: every line while that is still readable,
     // otherwise an evenly spaced subset.  The stride is forced odd
     // (`| 1` sets the low bit) because num_elements = 2 × num_dishes —
-    // an even stride over a pol-fastest axis samples one polarization
-    // and never shows the other.
+    // on a pol-fastest ([D][P], kotekan's CHORDEarly) element axis an
+    // even stride samples one polarization and never shows the other.
+    // The 2026-08 fiducial order is [P][D] (pol slowest), where any
+    // stride below num_dishes crosses both blocks and the odd stride is
+    // merely harmless; it stays for buffers still in the old order.
     function resetSeries() {
         var n = seriesCount(), i;
         plot.series = [];
@@ -1806,10 +1831,13 @@
                                    plot.controls.log.checked);
         else if (mode === "lines")
             note = drawSingleLine(plot.canvas, vals);
-        else if ((key === "vis" || key === "weight") && n2.layout === "FullUpperTri")
-            note = drawN2Grid(n2Grid(vals, n2.n, b.type === "c64" ? part : null),
+        else if ((key === "vis" || key === "weight") &&
+                 (n2.layout === "FullUpperTri" || n2.prods))
+            note = drawN2Grid(n2Grid(vals, n2.n, b.type === "c64" ? part : null,
+                                     n2.prods),
                               n2.n, n2.n, { x: "input", y: "input" }) +
-                   ", " + n2.n + "×" + n2.n + " inputs";
+                   ", " + n2.n + "×" + n2.n + " inputs" +
+                   (n2.prods ? " (" + n2.numProd + " products)" : "");
         else if (key === "evec")
             note = drawN2Grid(vals, n2.nev, n2.n, { x: "input", y: "ev" }) +
                    ", ev × input";

@@ -5,6 +5,7 @@ Read-only. Shared by bffs (for the feed axis) and the power-outlier source.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,15 +21,14 @@ except ImportError:  # uncompressed files remain readable without it
 
 
 def input_labels(f: h5py.File) -> np.ndarray:
-    """Return ordered feed labels from the kotekan file's index map.
+    """Return ordered feed labels from the kotekan file's index map, as-is.
 
     CHIME-style files carry ``index_map/input``, written as a compound dtype
     (e.g. ``(chan_id, correlator_input)``), so the labels are a field of the
     record, not the record itself: use the ``correlator_input`` serial when
     present, else the first field. CHORD N² files (hdf5N2Write) carry
-    ``index_map/label`` instead — one plain string per dish entry, in element
-    order (on the pathfinder every cabled input is its own dish entry at
-    polarization 0, so a label's position is its element index).
+    ``index_map/label`` instead — one plain string per dish entry (see
+    :func:`element_labels` for what "dish entry" means per layout).
     """
     im = f["index_map"]
     arr = (im["input"] if "input" in im else im["label"])[()]
@@ -39,10 +39,80 @@ def input_labels(f: h5py.File) -> np.ndarray:
     return np.array([s.decode("utf-8", "replace") if isinstance(s, bytes) else str(s) for s in arr])
 
 
+# -- element axis: per-element vs per-dish label layouts --------------------
+
+#: A label that names a polarization is a per-element label: the wiring
+#: convention's trailing X/Y after the dish number (``A1X``), or a ``_p<pol>``
+#: marker (``d0_pA``, simulated configs).  A label without one names a whole
+#: dish (``A1``, ``CHORD-A01``) — the 2026-08 kotekan layout.
+_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
+
+#: Polarization suffixes for derived per-element labels, by polarization
+#: index: 0 = X, 1 = Y.  Matches the pre-2026-08 per-element labels, so the
+#: label-keyed hardware maps (pdb_map.csv, fpga_map.csv, manual overrides)
+#: keep working unchanged across the layout change.
+POL_SUFFIXES = "XY"
+
+
+def labels_are_per_element(labels) -> bool:
+    """True when *labels* use the pre-2026-08 per-element convention.
+
+    Old ``dish_inputs`` tables (and the N² files written from them) name
+    every correlator input separately, carrying a polarization marker;
+    the 2026-08 kotekan layout names each *dish* once, with the
+    polarizations as separate element blocks.  The two layouts are
+    structurally identical — same table shape, same label count — so the
+    label text is the only distinguishing mark.
+    """
+    return any(_PER_ELEMENT_LABEL.search(str(label)) for label in labels)
+
+
+def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
+    """Per-element labels from per-dish labels, in the CHORD [P][D] order.
+
+    Mirrors ``CHORDTelescope::encode_station_id``: ``element = dish_idx +
+    pol * num_dishes``, so all of polarization 0 (X) comes first, then
+    polarization 1 (Y) — ``A1`` at dish index i expands to ``A1X`` at
+    element i and ``A1Y`` at element i + num_dishes.  Placeholder dishes
+    expand like any other (``FakeX``/``FakeY``); duplicates are the
+    caller's problem (bffs uniquifies by element index).
+    """
+    out = []
+    for pol in range(int(num_polarizations)):
+        suffix = POL_SUFFIXES[pol] if pol < len(POL_SUFFIXES) else f"P{pol}"
+        out.extend(f"{label}{suffix}" for label in dish_labels)
+    return np.array(out)
+
+
+def element_labels(f: h5py.File) -> np.ndarray:
+    """The element-axis labels of *f*, per-dish labels expanded.
+
+    CHIME-style files (``index_map/input``) are per-element by
+    definition.  CHORD files (``index_map/label``) carry kotekan's
+    ``fill_input_maps`` output, which the 2026-08 layout made per-dish —
+    one label per dish for a num_polarizations × num_dishes element axis
+    — so those are expanded to per-element labels in [P][D] order, with
+    the polarization count taken from the file's ``num_elements``
+    attribute (default 2).  Pre-2026-08 files keep their labels as-is.
+    """
+    labels = input_labels(f)
+    if "input" in f["index_map"] or labels_are_per_element(labels):
+        return labels
+    num_elements = int(f.attrs.get("num_elements", 0) or 0)
+    npol = 2
+    if labels.size and num_elements >= labels.size and num_elements % labels.size == 0:
+        npol = num_elements // labels.size
+    return expand_dish_labels(labels, npol)
+
+
 def read_labels(path: str | Path) -> np.ndarray:
-    """Feed labels (the axis) from the kotekan file's ``index_map/input``."""
+    """The element-axis labels from the kotekan file's index map.
+
+    Per-dish labels (the 2026-08 CHORD layout) come back expanded to
+    per-element labels — see :func:`element_labels`.
+    """
     with h5py.File(path, "r") as f:
-        return input_labels(f)
+        return element_labels(f)
 
 
 @dataclass(frozen=True)
@@ -53,6 +123,13 @@ class Frame:
     weight: np.ndarray  # (ntime, nfreq, nfeed)
     valid: np.ndarray   # (ntime, nfreq) bool
     freq: np.ndarray    # (nfreq,)
+    # (nfeed,) bool: which feeds the file's product list carries an
+    # autocorrelation for.  None means all of them (the `auto` layout,
+    # and dense-triangle files).  A subset layout (kotekan's DishInputs)
+    # only correlates the wired elements — the rest have no data *by
+    # construction*, which is different from a wired feed gone silent,
+    # and sources must not read the gap as "dead".
+    measured: np.ndarray | None = None
 
     @property
     def ntime(self) -> int:
@@ -70,14 +147,17 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
     use) or kotekan's visibility products, whose autocorrelation diagonal is
     extracted — laid out either ``vis[time, freq, prod]`` (CHIME-style) or
     ``vis[freq, prod, time]`` (CHORD hdf5N2Write; told apart by matching the
-    axes against the index map). Products beyond the labelled feeds (e.g.
-    CHORD's phantom second-polarization elements) are dropped. Returns
+    axes against the index map). The feed axis is the element axis
+    (:func:`element_labels`): products beyond it are dropped — for
+    pre-2026-08 CHORD files that is the phantom second-polarization
+    elements, while 2026-08 per-dish files expand to the full element
+    count first, so both polarizations' autos are kept. Returns
     ``None`` if the file is missing or has no time rows.
     """
     if not Path(path).exists():
         return None
     with h5py.File(path, "r") as f:
-        labels = input_labels(f)
+        labels = element_labels(f)
         freq = f["index_map"]["freq"][()]
         if freq.dtype.names:  # kotekan freq_ctype: (centre MHz, width MHz)
             freq = freq["centre"]
@@ -145,4 +225,7 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         auto[..., feed_idx] = power
         weight = np.zeros_like(auto)
         weight[..., feed_idx] = 1.0 if wdiag is None else wdiag
-    return Frame(auto=auto, weight=weight, valid=valid, freq=freq)
+        measured = np.zeros(nfeed, dtype=bool)
+        measured[feed_idx] = True
+    return Frame(auto=auto, weight=weight, valid=valid, freq=freq,
+                 measured=measured)

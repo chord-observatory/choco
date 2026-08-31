@@ -28,6 +28,7 @@ stored, a ~45% surcharge on the I/O that dominates this job.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 import h5py
@@ -37,6 +38,27 @@ import numpy as np
 import wfpng
 
 log = logging.getLogger("waterfall.reduce")
+
+# Per-element vs per-dish label layouts — mirrors jobs/bffs/kotekan_io.py
+# (labels_are_per_element / expand_dish_labels); keep the two in step.
+# Pre-2026-08 dish_inputs tables label every element (A1X, d0_pA — a
+# polarisation marker in the text); the 2026-08 layout labels each dish
+# once (A1) and the element axis is [P][D]: element = dish_idx +
+# pol * num_dishes, pol 0 = X.  The stored index labels the *element*
+# axis, so per-dish tables are expanded on the way in.
+_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
+_POL_SUFFIXES = "XY"
+
+
+def _element_labels(labels: list, n_elements: int) -> list:
+    """Per-element labels: per-dish labels expanded, others untouched."""
+    if not labels or any(_PER_ELEMENT_LABEL.search(l) for l in labels):
+        return labels
+    npol = 2
+    if n_elements >= len(labels) and n_elements % len(labels) == 0:
+        npol = n_elements // len(labels)
+    return [f"{label}{_POL_SUFFIXES[p] if p < len(_POL_SUFFIXES) else f'P{p}'}"
+            for p in range(npol) for label in labels]
 
 #: Frequency rows per streamed block, a multiple of the 16-row chunk.
 #: Peak memory tracks this and nothing else; 64 rows measured no slower
@@ -87,16 +109,17 @@ def read_axes(path) -> Axes:
             labels = [b.decode() if isinstance(b, bytes) else str(b)
                       for b in f["index_map/label"][:]]
         times = f["time_center_ut1_ns"][:] if "time_center_ut1_ns" in f else None
+        n_elements = int(attrs.get("num_elements", 0))
         return Axes(
             n_freq=vis.shape[0],
             n_prod=vis.shape[1],
             n_time=vis.shape[2],
-            n_elements=int(attrs.get("num_elements", 0)),
+            n_elements=n_elements,
             file_idx=int(attrs.get("abs_file_idx", -1)),
             input_a=prod["input_a"].astype(int),
             input_b=prod["input_b"].astype(int),
             freq_mhz=f["index_map/freq"]["centre"][:].astype(float),
-            labels=labels,
+            labels=_element_labels(labels, n_elements),
             times_ns=times,
         )
 

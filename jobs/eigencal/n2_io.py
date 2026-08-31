@@ -10,12 +10,16 @@ autocorrelation rows.  Both file flavours are handled:
   compound freq, ``frames_added[freq, time]`` validity, root-level
   ``flags`` (kotekan's per-input flag state) and ``vis_weight``.
 
-Products beyond the labelled feeds (CHORD's phantom second-polarisation
-elements) are ignored throughout.
+The label axis is the *element* axis: a 2026-08 per-dish label table
+(one label per dish, ``A1``) is expanded to per-element labels in the
+CHORD [P][D] order (``A1X`` … ``A1Y`` …), while pre-2026-08 per-element
+tables are used as-is — and there products beyond the labelled feeds
+(the phantom second-polarisation elements) are ignored throughout.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +46,47 @@ def input_labels(f: h5py.File) -> np.ndarray:
                      for s in arr])
 
 
+# Per-element vs per-dish label layouts — mirrors jobs/bffs/kotekan_io.py
+# (labels_are_per_element / expand_dish_labels / element_labels); keep the
+# two in step.  A label carrying a polarisation marker (``A1X``, ``d0_pA``)
+# is per-element (pre-2026-08); a bare dish label (``A1``) is the 2026-08
+# per-dish layout, whose element axis is [P][D]: element = dish_idx +
+# pol * num_dishes, pol 0 = X.
+_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
+POL_SUFFIXES = "XY"
+
+
+def labels_are_per_element(labels) -> bool:
+    """True when *labels* use the pre-2026-08 per-element convention."""
+    return any(_PER_ELEMENT_LABEL.search(str(label)) for label in labels)
+
+
+def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
+    """Per-element labels from per-dish labels, in the CHORD [P][D] order."""
+    out = []
+    for pol in range(int(num_polarizations)):
+        suffix = POL_SUFFIXES[pol] if pol < len(POL_SUFFIXES) else f"P{pol}"
+        out.extend(f"{label}{suffix}" for label in dish_labels)
+    return np.array(out)
+
+
+def element_labels(f: h5py.File) -> np.ndarray:
+    """The element-axis labels of *f*, per-dish labels expanded.
+
+    The polarisation count comes from the file's ``num_elements``
+    attribute (default 2); CHIME-style ``index_map/input`` files are
+    per-element by definition and pass through untouched.
+    """
+    labels = input_labels(f)
+    if "input" in f["index_map"] or labels_are_per_element(labels):
+        return labels
+    num_elements = int(f.attrs.get("num_elements", 0) or 0)
+    npol = 2
+    if labels.size and num_elements >= labels.size and num_elements % labels.size == 0:
+        npol = num_elements // labels.size
+    return expand_dish_labels(labels, npol)
+
+
 @dataclass(frozen=True)
 class N2Meta:
     """Axis information for one N² file, cheap to read (index maps only)."""
@@ -58,7 +103,7 @@ class N2Meta:
 
 def read_meta(path: str | Path) -> N2Meta:
     with h5py.File(path, "r") as f:
-        labels = input_labels(f)
+        labels = element_labels(f)
 
         freq = f["index_map"]["freq"][()]
         if freq.dtype.names:  # kotekan freq_ctype: (centre MHz, width MHz)

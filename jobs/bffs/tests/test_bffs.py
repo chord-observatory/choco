@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 import bffs
-from testhelpers import write_manual, write_normalized
+from testhelpers import write_chord_n2, write_manual, write_normalized
 
 
 # -- config ---------------------------------------------------------------
@@ -428,6 +428,104 @@ def test_dish_input_labels_absent_is_none():
 def test_uniquify_labels_suffixes_duplicates():
     out = list(bffs.uniquify_labels(["A1X", "Fake", "Fake", "B2Y"]))
     assert out == ["A1X", "Fake[1]", "Fake[2]", "B2Y"]
+
+
+# -- labels from a 2026-08 per-dish dish_inputs table ------------------------
+
+
+_PER_DISH_CONFIG = {
+    "num_dishes": 3,
+    "num_polarizations": 2,
+    "telescope": {
+        "dish_inputs": [
+            {"dish_idx": 0, "type": "ArrayDish", "label": "A1"},
+            {"dish_idx": 2, "type": "ArrayDish", "label": "A3"},
+        ],
+    },
+}
+
+_PER_DISH_LABELS = ["A1X", "FakeX", "A3X", "A1Y", "FakeY", "A3Y"]
+
+
+def test_element_labels_per_dish_expands_pol_blocks():
+    # element = dish_idx + pol * num_dishes: the X block first, then Y,
+    # placeholder dishes included in both.
+    assert bffs.element_labels_from_config(_PER_DISH_CONFIG) == _PER_DISH_LABELS
+
+
+def test_element_labels_per_element_dispatches_to_old_path():
+    # Pol-suffixed labels mark the pre-2026-08 layout: positions are
+    # element indices, no expansion.
+    assert bffs.element_labels_from_config(_DISH_CONFIG) == \
+        ["A1X", "Fake", "A3X"]
+
+
+def test_element_labels_per_dish_file_agreement():
+    got = bffs.element_labels_from_config(
+        _PER_DISH_CONFIG, file_labels=_PER_DISH_LABELS)
+    assert got == _PER_DISH_LABELS
+
+
+def test_element_labels_per_dish_stale_file_refuses():
+    # An old per-element file (unexpanded axis) against a per-dish
+    # config means the file predates the cutover — refuse.
+    try:
+        bffs.element_labels_from_config(
+            _PER_DISH_CONFIG, file_labels=["A1X", "Fake", "A3X"])
+    except ValueError as e:
+        assert "ambiguous" in str(e)
+        return
+    raise AssertionError("expected ValueError on a pre-cutover file")
+
+
+def test_element_labels_per_dish_idx_beyond_num_dishes_refuses():
+    cfg = {"num_dishes": 2, "telescope": _PER_DISH_CONFIG["telescope"]}
+    try:
+        bffs.element_labels_from_config(cfg)
+    except ValueError as e:
+        assert "ambiguous" in str(e)
+        return
+    raise AssertionError("expected ValueError for dish_idx >= num_dishes")
+
+
+def test_element_labels_per_dish_num_dishes_fallback():
+    # No num_dishes in the config: the table's own extent sizes the axis.
+    cfg = {"telescope": _PER_DISH_CONFIG["telescope"]}
+    assert bffs.element_labels_from_config(cfg) == _PER_DISH_LABELS
+
+
+def test_element_labels_expression_num_dishes_refuses():
+    # kotekan evaluates expressions in config values; bffs must not guess.
+    cfg = {"num_dishes": "num_polarizations * 32",
+           "telescope": _PER_DISH_CONFIG["telescope"]}
+    try:
+        bffs.element_labels_from_config(cfg)
+    except ValueError as e:
+        assert "plain integer" in str(e)
+        return
+    raise AssertionError("expected ValueError for an expression num_dishes")
+
+
+def test_per_dish_config_and_file_end_to_end(tmp_path, monkeypatch):
+    """A per-dish config with a matching per-dish file resolves to the
+    derived [P][D] element axis."""
+    cfg_dict = {
+        "num_dishes": 2, "num_polarizations": 2,
+        "telescope": {"dish_inputs": [
+            {"dish_idx": 0, "type": "ArrayDish", "label": "A1"},
+            {"dish_idx": 1, "type": "ArrayDish", "label": "B1"},
+        ]},
+    }
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: cfg_dict)
+    n2 = tmp_path / "n2.h5"
+    write_chord_n2(n2, ["A1", "B1"], [400.0], np.ones((1, 1, 4), "f4"),
+                   num_elements=4)
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx")
+    labels, good, _, _ = bffs.combine_sources(cfg)
+    assert list(labels) == ["A1X", "B1X", "A1Y", "B1Y"]
+    assert good.shape == (4,)
 
 
 def test_labels_from_choco_config_win(tmp_path, monkeypatch):

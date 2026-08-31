@@ -72,6 +72,20 @@ def test_read_axes(vis_file):
     assert ax.times_ns.shape == (6,)
 
 
+def test_read_axes_per_dish_labels_expand(tmp_path):
+    """2026-08 layout: index_map/label is one label per dish; the stored
+    labels must cover the whole [P][D] element axis (X block then Y),
+    so the contact sheet can name the second-polarisation elements."""
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    with h5py.File(path, "a") as f:
+        del f["index_map/label"]
+        f["index_map"].create_dataset(
+            "label", data=np.array([b"A1", b"B1"]))  # 2 dishes, 4 elements
+    ax = R.read_axes(path)
+    assert ax.labels == ["A1X", "B1X", "A1Y", "B1Y"]
+
+
 def test_product_names_are_sortable_and_padded(vis_file):
     path, _ = vis_file
     names = R.read_axes(path).product_names()

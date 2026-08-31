@@ -90,21 +90,35 @@ unreachable, the run fails (red badge) and, because the state file is
 written only after a successful send, the next timer tick retries.
 
 **Feed labels** come from the kotekan config's `dish_inputs` table, fetched
-through choco (`GET /api/config/<group>`): bffs rebuilds the same element
-table kotekan does — every slot `Fake` by default, each `dish_inputs` entry's
-`label` at its `dish_idx` — so the labels shown (`A1X`, `RFI01`, ...) name
+through choco (`GET /api/config/<group>`), and both table layouts are
+handled. Pre-2026-08 tables name every element: bffs rebuilds the same
+element table kotekan did — every slot `Fake` by default, each `dish_inputs`
+entry's `label` at its `dish_idx`. The 2026-08 kotekan layout names each
+*dish* once (`A1`) and the element axis is `[P][D]` (`element = dish_idx +
+pol * num_dishes`, `num_dishes`/`num_polarizations` read from the config),
+so bffs derives per-element labels as label + `X`/`Y` (pol 0 = X) —
+reproducing the old names, which keeps the label-keyed hardware maps
+(pdb_map.csv, fpga_map.csv, manual overrides) working unchanged. The two
+layouts are structurally identical, so they are told apart by the label
+text: a polarization marker (`A1X`, `d0_pA`) means per-element
+(`kotekan_io.labels_are_per_element`). Either way the labels shown name
 exactly the elements the `bad_inputs` indices address. The N² file's own
 index map is the fallback (dry runs, choco down); when both are available
-the file fixes the axis length and must agree with the config — a mismatch
-(the file predates the running config) fails the run rather than sending
-ambiguous indices. Duplicate placeholder labels are made per-element
-(`Fake[7]`) so label-keyed state stays exact.
+they must agree — a mismatch (the file predates the running config) fails
+the run rather than sending ambiguous indices. Duplicate placeholder labels
+are made per-element (`Fake[7]`) so label-keyed state stays exact.
 
 bffs reads both N² file flavours: CHIME-style (`index_map/input` labels,
 `vis[time, freq, prod]`) and CHORD `hdf5N2Write` output (`index_map/label`,
-`vis[freq, prod, time]`, compound freq, `frames_added` validity). Products
-beyond the labelled feeds (CHORD's phantom second-polarization elements) are
-ignored. `kotekan_file` may be a glob, spanning directories if needed
+`vis[freq, prod, time]`, compound freq, `frames_added` validity). A CHORD
+file's per-dish label table is expanded to the element axis the same way as
+the config's. Products beyond the element axis (the pre-2026-08 files'
+phantom second-polarization elements) are ignored, and elements the file's
+product list never correlates (unwired slots in a `DishInputs`-layout file)
+are reported as unmeasured — `power-outlier` leaves them good rather than
+flagging 96 unwired slots as "dead" (kotekan's baseline mask already covers
+them; a feed the products *do* cover but that reads nothing is still
+dead-and-bad). `kotekan_file` may be a glob, spanning directories if needed
 (e.g. `full/acq_*/*.h5`) — each run reads the newest match by mtime, i.e.
 the most recently written file of the current acquisition. If that newest
 file is missing or older than `max_age` seconds (default 3600; 0 disables),

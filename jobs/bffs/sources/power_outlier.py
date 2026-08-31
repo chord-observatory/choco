@@ -38,7 +38,10 @@ def power_outlier_mask(
     and a frequency band), then flag any feed sitting more than ``nsigma`` away
     from the median of the other feeds (using the median absolute deviation as
     the spread, so a few bad feeds don't skew the threshold). Also flag dead
-    feeds (no valid/positive data) and any feed outside the absolute bounds.
+    feeds (no valid/positive data) and any feed outside the absolute bounds —
+    except feeds the file never correlates (``frame.measured`` False; unwired
+    slots in a subset layout), which stay good: no data by construction is
+    not a dead feed.
     """
     band = np.ones(frame.freq.shape[0], dtype=bool)
     if freq_lo is not None:
@@ -80,6 +83,12 @@ def power_outlier_mask(
         good &= ~(live & (power < abs_lo))
     if abs_hi is not None:
         good &= ~(live & (power > abs_hi))
+    if frame.measured is not None:
+        # Feeds the file's product list never correlates (unwired slots
+        # in a subset layout) have no data by construction — this source
+        # only flags what it can measure, so they stay good.  A feed
+        # that *is* in the products but silent is still dead-and-bad.
+        good |= ~frame.measured
     return good
 
 

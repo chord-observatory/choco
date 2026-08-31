@@ -85,6 +85,30 @@ def test_read_meta_chime(chime_file):
     assert list(m.labels) == [l.decode() for l in LABELS]
 
 
+def test_read_meta_per_dish_expands_labels(tmp_path):
+    """2026-08 layout: index_map/label is per dish; the element axis is
+    [P][D] (X block then Y block), sized by the num_elements attribute."""
+    a, b = _prods(4)
+    path = tmp_path / "chord_per_dish.h5"
+    with h5py.File(path, "w") as f:
+        f.attrs["num_elements"] = 4
+        im = f.create_group("index_map")
+        im.create_dataset("label", data=np.array([b"A1", b"B1"], dtype="S10"))
+        freq = np.zeros(1, dtype=[("centre", "<f8"), ("width", "<f8")])
+        freq["centre"], freq["width"] = 400.0, 100.0
+        im.create_dataset("freq", data=freq)
+        im.create_dataset("time", data=np.array([1000.0]))
+        prod = np.zeros(a.size, dtype=[("input_a", "<u2"), ("input_b", "<u2")])
+        prod["input_a"], prod["input_b"] = a, b
+        im.create_dataset("prod", data=prod)
+        f.create_dataset("vis", data=np.zeros((1, a.size, 1), np.complex64))
+    m = n2_io.read_meta(path)
+    assert list(m.labels) == ["A1X", "B1X", "A1Y", "B1Y"]
+    # every product is now in range of the label axis — nothing phantom
+    prod_idx, ai, bi = n2_io.pol_products(m, np.arange(4))
+    assert prod_idx.size == a.size
+
+
 @pytest.mark.parametrize("fixture", ["chord_file", "chime_file"])
 def test_read_products_matches_both_layouts(fixture, request):
     path = request.getfixturevalue(fixture)
