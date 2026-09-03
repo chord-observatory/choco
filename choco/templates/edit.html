@@ -37,6 +37,8 @@
     <div style="display: flex; gap: 0.5em; margin-top: 0.5em;">
         <button type="submit">Save</button>
         <button type="submit" name="action" value="push_config" class="outline">Re-push Current</button>
+        <button type="submit" name="action" value="oneshot" class="outline secondary"
+                onclick="return confirm('Start the text above on {{ node_key }} as a one-off?\n\nNothing is saved. The node must be in maintenance and idle, and lifting maintenance later reverts it to the saved config.')">Start as one-off</button>
     </div>
 </form>
 

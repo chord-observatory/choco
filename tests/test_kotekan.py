@@ -67,6 +67,24 @@ class TestLifecycle:
         assert node.start({"config": "data"}) is True
 
     @responses.activate
+    def test_start_blocked_in_maintenance(self, node):
+        responses.post(f"{BASE}/start", json={"status": "ok"})
+        node.maintenance = True
+        assert node.start({"config": "data"}) is False
+        assert len(responses.calls) == 0
+
+    @responses.activate
+    def test_start_override_maintenance(self, node):
+        """The one-off route's explicit override reaches kotekan; the
+        default path above stays blocked."""
+        responses.post(f"{BASE}/start", json={"status": "ok"})
+        node.maintenance = True
+        assert node.start({"config": "data"},
+                          override_maintenance=True) is True
+        assert len(responses.calls) == 1
+        assert json.loads(responses.calls[0].request.body) == {"config": "data"}
+
+    @responses.activate
     def test_version(self, node):
         responses.get(f"{BASE}/version", json={"kotekan_version": "2024.11"})
         assert node.get_version() == "2024.11"

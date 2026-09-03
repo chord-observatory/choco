@@ -418,12 +418,17 @@ class Node:
             return False
         return self._request("POST", path, json=values) is not None
 
-    def start(self, desired_config: dict) -> bool:
+    def start(self, desired_config: dict, *,
+              override_maintenance: bool = False) -> bool:
         """Start kotekan with the desired config via POST /start.
 
-        A no-op (returns ``False``) when the node is in maintenance mode.
+        A no-op (returns ``False``) when the node is in maintenance mode,
+        unless *override_maintenance* is set.  The override is for an
+        operator's explicit one-off start (``web._run_oneshot``), never
+        for the sync loop — maintenance constrains choco's automation,
+        not the operator acting through it.
         """
-        if self.maintenance:
+        if self.maintenance and not override_maintenance:
             logger.info(f"Maintenance: skipping /start of {self.key}")
             return False
         return self._request("POST", "/start", json=desired_config) is not None

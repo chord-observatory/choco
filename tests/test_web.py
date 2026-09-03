@@ -1,6 +1,9 @@
 """Tests for the nodes.yaml editor and group-config editor routes."""
 
+import contextlib
+import hashlib
 import json
+import logging
 import re
 
 import pytest
@@ -892,6 +895,215 @@ class TestMaintenanceToggles:
             json={"action": "set_maintenance", "maintenance": "yes"},
         )
         assert resp.status_code == 400
+
+
+# --- POST /oneshot/<group>[/<node>] ---
+
+class TestOneshot:
+    """Start a config on paused, idle nodes without recording it.
+
+    Requests come from 127.0.0.1 so the localhost bypass applies; tests
+    log in anyway so the audit line names a user.  Node REST methods are
+    patched class-wide rather than per instance: the route's fan-out
+    yields to the hub, which lets the real sync workers run a cycle, and
+    those must not reach the network either.
+    """
+
+    CONTENT = "num_elements: 4096\nlog_level: debug\n"
+    RENDERED = {"num_elements": 4096, "log_level": "debug"}
+
+    @contextlib.contextmanager
+    def _cluster(self, app, statuses=None, start_ok=True):
+        """Probe answers per node key (default IDLE); every REST write
+        is recorded instead of sent.
+
+        Only writes from *this* app's nodes are recorded: every test
+        builds an app whose sync workers outlive it, and those stale
+        workers see the class-level patch too -- a leftover, unpaused
+        cx1 told it is "running" would /kill itself and pollute the
+        record.
+        """
+        from unittest.mock import patch
+        from choco.state import Node, NodeStatus
+        statuses = statuses or {}
+        mine = {id(n) for n in app.config["registry"].nodes.values()}
+        calls = {"start": [], "kill": []}
+
+        def get_status(node):
+            return statuses.get(node.key, NodeStatus.IDLE)
+
+        def start(node, config, *, override_maintenance=False):
+            if id(node) in mine:
+                calls["start"].append((node.key, config, override_maintenance))
+            return start_ok
+
+        def kill(node):
+            if id(node) in mine:
+                calls["kill"].append(node.key)
+            return True
+
+        with patch.object(Node, "get_status", get_status), \
+             patch.object(Node, "start", start), \
+             patch.object(Node, "kill", kill), \
+             patch.object(Node, "get_version_info", lambda self: None):
+            yield calls
+
+    @staticmethod
+    def _pause(app, *keys):
+        registry = app.config["registry"]
+        for n in registry.nodes.values():
+            n.maintenance = n.key in keys
+
+    def test_unknown_targets_404(self, client):
+        _login(client)
+        assert client.post("/oneshot/nope",
+                           json={"config_content": self.CONTENT}).status_code == 404
+        assert client.post("/oneshot/cx/nope",
+                           json={"config_content": self.CONTENT}).status_code == 404
+
+    def test_unrenderable_text_is_400_and_contacts_nothing(self, client, app):
+        _login(client)
+        self._pause(app, "cx/cx1")
+        with self._cluster(app) as calls:
+            resp = client.post("/oneshot/cx/cx1",
+                               json={"config_content": "not: [valid"})
+        assert resp.status_code == 400
+        assert "Invalid config" in resp.get_json()["error"]
+        assert calls["start"] == []
+
+    def test_empty_body_is_400(self, client, app):
+        _login(client)
+        self._pause(app, "cx/cx1")
+        with self._cluster(app) as calls:
+            resp = client.post("/oneshot/cx/cx1", json={})
+        assert resp.status_code == 400
+        assert calls["start"] == []
+
+    def test_skips_node_not_in_maintenance(self, client, app):
+        _login(client)
+        self._pause(app)  # nobody paused
+        with self._cluster(app) as calls:
+            resp = client.post("/oneshot/cx/cx1",
+                               json={"config_content": self.CONTENT})
+        assert resp.status_code == 409
+        body = resp.get_json()
+        assert body["started"] == []
+        assert body["skipped"] == {"cx/cx1": "not in maintenance"}
+        assert calls["start"] == []
+
+    def test_skips_running_and_unreachable_never_kills(self, client, app):
+        from choco.state import NodeStatus
+        _login(client)
+        self._pause(app, "cx/cx1", "cx/cx2")
+        with self._cluster(app, {"cx/cx1": NodeStatus.STARTED,
+                            "cx/cx2": NodeStatus.DOWN}) as calls:
+            resp = client.post("/oneshot/cx",
+                               json={"config_content": self.CONTENT})
+        assert resp.status_code == 409
+        assert resp.get_json()["skipped"] == {"cx/cx1": "running",
+                                              "cx/cx2": "unreachable"}
+        assert calls["start"] == []
+        assert calls["kill"] == []
+
+    def test_starts_idle_node_and_records_nothing(self, client, app, configs_dir, caplog):
+        _login(client)
+        self._pause(app, "cx/cx1")
+        node = app.config["registry"].get_node("cx/cx1")
+        file_before = (configs_dir / "cx" / "cx1.yaml").read_text()
+        base_before, rendered_before = node.base_content, node.rendered_config
+        submitted = []
+        app.config["orchestrator"].submit_node = submitted.append
+
+        with self._cluster(app) as calls, \
+             caplog.at_level(logging.WARNING, logger="choco.web"):
+            resp = client.post("/oneshot/cx/cx1",
+                               json={"config_content": self.CONTENT})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["started"] == ["cx/cx1"]
+        assert body["skipped"] == {}
+
+        # The rendered text reached kotekan, through the override.
+        assert calls["start"] == [("cx/cx1", self.RENDERED, True)]
+        assert calls["kill"] == []
+
+        # Nothing recorded: file, updatable store, in-memory config.
+        assert (configs_dir / "cx" / "cx1.yaml").read_text() == file_before
+        assert not (configs_dir / "cx" / ".updatable").exists()
+        assert node.base_content == base_before
+        assert node.rendered_config == rendered_before
+        assert node.started is False
+
+        # The audit line is the only trace, so it carries the hash.
+        digest = hashlib.sha256(self.CONTENT.encode()).hexdigest()[:12]
+        assert body["sha256"] == digest
+        line = next(r.getMessage() for r in caplog.records
+                    if "oneshot by" in r.getMessage())
+        assert "oneshot by tester" in line
+        assert digest in line and "cx/cx1" in line
+
+        # The worker is asked to look, not told what it will see.
+        assert [(i.type, i.node_key) for i in submitted] == \
+            [(ChangeType.POLL, "cx/cx1")]
+
+    def test_group_fans_out_per_node(self, client, app):
+        from choco.state import NodeStatus
+        _login(client)
+        self._pause(app, "cx/cx1", "cx/cx2", "recv/recv1")
+        with self._cluster(app, {"cx/cx2": NodeStatus.STARTED}) as calls:
+            resp = client.post("/oneshot/cx",
+                               json={"config_content": self.CONTENT})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["started"] == ["cx/cx1"]
+        assert body["skipped"] == {"cx/cx2": "running"}
+        # Only the group's idle node; recv1 is paused and idle but not asked.
+        assert [c[0] for c in calls["start"]] == ["cx/cx1"]
+
+    def test_start_failure_is_reported(self, client, app):
+        _login(client)
+        self._pause(app, "cx/cx1")
+        with self._cluster(app, start_ok=False):
+            resp = client.post("/oneshot/cx/cx1",
+                               json={"config_content": self.CONTENT})
+        assert resp.status_code == 409
+        assert resp.get_json()["skipped"] == {"cx/cx1": "/start failed"}
+
+    def test_edit_page_offers_the_button(self, client):
+        _login(client)
+        body = client.get("/nodes/edit/cx/cx1").data.decode()
+        assert 'value="oneshot"' in body
+
+    def test_edit_page_button_starts_without_saving(self, client, app, configs_dir):
+        _login(client)
+        token = _csrf(client)
+        self._pause(app, "cx/cx1")
+        file_before = (configs_dir / "cx" / "cx1.yaml").read_text()
+        with self._cluster(app) as calls:
+            resp = client.post(
+                "/nodes/edit/cx/cx1",
+                data={"_csrf_token": token, "action": "oneshot",
+                      "config_content": self.CONTENT},
+                follow_redirects=True,
+            )
+        assert resp.status_code == 200
+        assert calls["start"] == [("cx/cx1", self.RENDERED, True)]
+        assert (configs_dir / "cx" / "cx1.yaml").read_text() == file_before
+        assert "One-off config started on cx/cx1" in resp.data.decode()
+
+    def test_edit_page_button_explains_a_skip(self, client, app):
+        _login(client)
+        token = _csrf(client)
+        self._pause(app)  # cx1 not paused
+        with self._cluster(app) as calls:
+            resp = client.post(
+                "/nodes/edit/cx/cx1",
+                data={"_csrf_token": token, "action": "oneshot",
+                      "config_content": self.CONTENT},
+                follow_redirects=True,
+            )
+        assert calls["start"] == []
+        assert "not in maintenance" in resp.data.decode()
 
 
 # --- GET / POST /edit-group/<group> ---

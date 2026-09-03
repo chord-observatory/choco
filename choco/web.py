@@ -1,6 +1,7 @@
 """Flask routes for the choco web UI."""
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -280,6 +281,23 @@ def node_edit(node_key):
                 config_content=content,
             ))
             flash(f"Config change queued for {node_key}.", "success")
+
+        elif action == "oneshot":
+            # The textarea's text, started but never saved (see
+            # _run_oneshot).  The helper's JSON body is folded into a
+            # flash message since this caller is a form post.
+            body, status = _run_oneshot(
+                [node], request.form.get("config_content", ""),
+                _audit_user())
+            if status == 400:
+                flash(body["error"], "error")
+            elif node_key in body["started"]:
+                flash(f"One-off config started on {node_key} "
+                      f"(sha256 {body['sha256']}); nothing saved.",
+                      "success")
+            else:
+                flash(f"One-off not started on {node_key}: "
+                      f"{body['skipped'][node_key]}", "error")
 
         elif action == "update_config":  # updatable_config change
             endpoint = request.form.get("endpoint", "")
@@ -1828,6 +1846,114 @@ def update_node(group, node):
         return {"status": "ok", "node": node_key, "maintenance": maintenance}
 
     return {"error": f"Unknown action '{action}'"}, 400
+
+
+# --- One-off configs: start without recording ---
+
+_ONESHOT_SKIP_REASONS = {
+    NodeStatus.DOWN: "unreachable",
+    NodeStatus.STARTED: "running",
+    NodeStatus.UNKNOWN: "unknown state",
+}
+
+
+def _audit_user() -> str:
+    """Who to name in an audit line: the session user, else the caller's
+    address (the localhost bypass has no session)."""
+    return getattr(current_user, "username", None) or request.remote_addr
+
+
+def _run_oneshot(nodes: list, content: str, user: str) -> tuple[dict, int]:
+    """Start *content* on every node in *nodes* that is paused and idle,
+    recording nothing.
+
+    This is a control, not a config change: the text is rendered, POSTed
+    to ``/start`` on each eligible node, and forgotten -- no base file,
+    no updatable store, no in-memory desired state.  The only trace is
+    the audit line, which carries the config's sha256 because nothing
+    else does.  Two preconditions, both checked per node:
+
+    - **maintenance on** -- outside it the next poll would see base
+      drift and restart the node onto its recorded config within one
+      poll interval, so the one-off could not stick.  Lifting
+      maintenance later reverts it the same way, which scopes a one-off
+      to the maintenance window by construction.
+    - **kotekan IDLE**, from a fresh probe rather than the cached status
+      (up to a poll interval stale, or ``max_retry_interval`` for a node
+      that was backing off) -- a one-off never kills, so the "no
+      destructive writes while paused" rule holds.
+
+    The fan-out is spawn-and-join like startup discovery, not bounded by
+    the restart semaphore: that semaphore limits kill-and-start
+    sequences because they are disruptive, and there is no kill here.
+    Each started node gets a POLL item so its worker observes the new
+    state now rather than a poll interval from now; the route never sets
+    ``node.status`` itself -- if kotekan accepted the POST but the
+    pipeline failed to come up, the poll is what tells the truth.
+
+    Returns ``(body, status)``: 400 if the text does not render (nothing
+    contacted), 409 if every node was skipped, 200 otherwise; the body
+    carries ``started`` and per-node ``skipped`` reasons either way.
+    """
+    try:
+        rendered = nodes[0].render(content)  # template vars are shared
+    except Exception as e:
+        return {"error": f"Invalid config: {e}"}, 400
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+    started: list[str] = []
+    skipped: dict[str, str] = {}
+
+    def one(node):
+        if not node.maintenance:
+            skipped[node.key] = "not in maintenance"
+            return
+        probe = node.get_status()
+        if probe != NodeStatus.IDLE:
+            skipped[node.key] = _ONESHOT_SKIP_REASONS.get(probe, probe.value)
+            return
+        if node.start(rendered, override_maintenance=True):
+            started.append(node.key)
+        else:
+            skipped[node.key] = "/start failed"
+
+    gevent.joinall([gevent.spawn(one, n) for n in nodes])
+    started.sort()
+
+    logger.warning(
+        f"oneshot by {user}: sha256 {digest}, {len(content)} bytes; "
+        f"started {started}; skipped {skipped}"
+    )
+    orchestrator = _orchestrator()
+    for key in started:
+        orchestrator.submit_node(ChangeItem(type=ChangeType.POLL, node_key=key))
+
+    body = {"started": started, "skipped": skipped, "sha256": digest}
+    return body, (200 if started else 409)
+
+
+@bp.route("/oneshot/<group>", methods=["POST"])
+@localhost_or_login_required
+def oneshot_group(group):
+    """Start a config on the group's paused, idle nodes without recording it."""
+    nodes = [n for n in _registry().nodes.values() if n.group == group]
+    if not nodes:
+        return {"error": f"Group '{group}' not found"}, 404
+    data = request.get_json(silent=True) or {}
+    return _run_oneshot(nodes, data.get("config_content", ""), _audit_user())
+
+
+@bp.route("/oneshot/<group>/<node>", methods=["POST"])
+@localhost_or_login_required
+def oneshot_node(group, node):
+    """Start a config on one paused, idle node without recording it."""
+    node_key = f"{group}/{node}"
+    node_obj = _registry().get_node(node_key)
+    if node_obj is None:
+        return {"error": f"Node '{node_key}' not found"}, 404
+    data = request.get_json(silent=True) or {}
+    return _run_oneshot([node_obj], data.get("config_content", ""),
+                        _audit_user())
 
 
 # --- JSON API endpoints for read-only status (localhost bypass) ---
