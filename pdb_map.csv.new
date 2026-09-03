@@ -1,0 +1,109 @@
+# Master PDB channel map: which power channel feeds which dish input.
+#
+# This file is the authority for the wiring between the analog power
+# distribution boards (driven by power_db) and the correlator's dish
+# inputs.  choco labels the /service/pdb grid from it, serves it as JSON
+# at /api/pdb/map (where the bad-feed flagger reads it), and cross-checks
+# its dish_input values against the labels kotekan reports in its own
+# dish_inputs table -- a disagreement is shown on the PDB page.
+#
+# Columns:
+#   spi_bus, board, chip, channel  the power channel address; chip is A or
+#                                  B, channel 0-7 (see power_db)
+#   dish_input                     per-element feed label: dish grid label
+#                                  (letter = grid row, number = grid column
+#                                  + 1) plus polarization suffix (X = pol 0,
+#                                  Y = pol 1), e.g. A1X.  correlator_input /
+#                                  label are accepted as column aliases.
+#   amplifier, notes               free text, shown on the page only
+#
+# Label convention across the 2026-08 kotekan dish_inputs change: older
+# configs name every correlator input in this same per-element form
+# (A1X ... D8Y); the per-dish tables that replaced them name each dish
+# once (A1 ... H8) with the polarizations as separate element blocks, and
+# consumers derive per-element labels as dish label + X/Y.  Both use grid-
+# positional labels and the derived names reproduce the old ones exactly
+# (verified 2026-08-31 by joining old and new tables on grid_x/grid_y:
+# all 64 labels identical, none moved), so THIS FILE'S LABELS ARE VALID
+# AGAINST BOTH and did not change at the migration.  A power channel
+# feeds one polarization's amplifier chain, so rows here stay per-element
+# (A1X and A1Y are different breakers) -- never collapse them to bare
+# dish labels.
+#
+# Blank lines and #-comments are ignored, so keep section headings here.
+# Rows are validated one at a time: a bad row is reported on the PDB page
+# and skipped, the rest still load.  Edits are picked up on the next page
+# render -- no choco restart needed.
+#
+# THIS FILE IS DEPLOYMENT DATA.  There may be no upstream source for this
+# wiring (it is not certain padloper will carry it), so the deployed copy
+# may be the only authoritative record of it.  Treat it accordingly:
+# edit it in place, keep the history in your own notes, and do not let an
+# install overwrite it (choco.sh install stages a differing repo copy as
+# pdb_map.csv.new instead of replacing this file).
+
+spi_bus,board,chip,channel,dish_input,amplifier,notes
+0,4,A,0,D8Y,AMP-0000,provisional
+0,4,A,1,D7Y,AMP-0000,provisional
+0,4,A,2,D6Y,AMP-0000,provisional
+0,4,A,3,D5Y,AMP-0000,provisional
+0,4,A,4,C8Y,AMP-0000,provisional
+0,4,A,5,C7Y,AMP-0000,provisional
+0,4,A,6,C6Y,AMP-0000,provisional
+0,4,A,7,C5Y,AMP-0000,provisional
+0,4,B,0,D8X,AMP-0000,provisional
+0,4,B,1,D7X,AMP-0000,provisional
+0,4,B,2,D6X,AMP-0000,provisional
+0,4,B,3,D5X,AMP-0000,provisional
+0,4,B,4,C8X,AMP-0000,provisional
+0,4,B,5,C7X,AMP-0000,provisional
+0,4,B,6,C6X,AMP-0000,provisional
+0,4,B,7,C5X,AMP-0000,provisional
+0,5,A,0,D4Y,AMP-0000,provisional
+0,5,A,1,D3Y,AMP-0000,provisional
+0,5,A,2,D2Y,AMP-0000,provisional
+0,5,A,3,D1Y,AMP-0000,provisional
+0,5,A,4,C4Y,AMP-0000,provisional
+0,5,A,5,C3Y,AMP-0000,provisional
+0,5,A,6,C2Y,AMP-0000,provisional
+0,5,A,7,C1Y,AMP-0000,provisional
+0,5,B,0,D4X,AMP-0000,provisional
+0,5,B,1,D3X,AMP-0000,provisional
+0,5,B,2,D2X,AMP-0000,provisional
+0,5,B,3,D1X,AMP-0000,provisional
+0,5,B,4,C4X,AMP-0000,provisional
+0,5,B,5,C3X,AMP-0000,provisional
+0,5,B,6,C2X,AMP-0000,provisional
+0,5,B,7,C1X,AMP-0000,provisional
+0,6,A,0,B8Y,AMP-0000,provisional
+0,6,A,1,B7Y,AMP-0000,provisional
+0,6,A,2,B6Y,AMP-0000,provisional
+0,6,A,3,B5Y,AMP-0000,provisional
+0,6,A,4,A8Y,AMP-0000,provisional
+0,6,A,5,A7Y,AMP-0000,provisional
+0,6,A,6,A6Y,AMP-0000,provisional
+0,6,A,7,A5Y,AMP-0000,provisional
+0,6,B,0,B8X,AMP-0000,provisional
+0,6,B,1,B7X,AMP-0000,provisional
+0,6,B,2,B6X,AMP-0000,provisional
+0,6,B,3,B5X,AMP-0000,provisional
+0,6,B,4,A8X,AMP-0000,provisional
+0,6,B,5,A7X,AMP-0000,provisional
+0,6,B,6,A6X,AMP-0000,provisional
+0,6,B,7,A5X,AMP-0000,provisional
+0,7,A,0,B4Y,AMP-0000,provisional
+0,7,A,1,B3Y,AMP-0000,provisional
+0,7,A,2,B2Y,AMP-0000,provisional
+0,7,A,3,B1Y,AMP-0000,provisional
+0,7,A,4,A4Y,AMP-0000,provisional
+0,7,A,5,A3Y,AMP-0000,provisional
+0,7,A,6,A2Y,AMP-0000,provisional
+0,7,A,7,A1Y,AMP-0000,provisional
+0,7,B,0,B4X,AMP-0000,provisional
+0,7,B,1,B3X,AMP-0000,provisional
+0,7,B,2,B2X,AMP-0000,provisional
+0,7,B,3,B1X,AMP-0000,provisional
+0,7,B,4,A4X,AMP-0000,provisional
+0,7,B,5,A3X,AMP-0000,provisional
+0,7,B,6,A2X,AMP-0000,provisional
+0,7,B,7,A1X,AMP-0000,provisional

@@ -167,13 +167,20 @@
     // blocks, no padding.  Offsets validated against live cx19 frames
     // (n2_buffer 100756 B, n2_eigen_buffer 7292 B — exact size matches,
     // and the decoded autocorrelations come out real and positive).
-    // Subset layouts (DishInputs, GeneralSubset, InputORMasked, ...)
-    // carry an explicit product list in the descriptor; per-element
-    // blocks stay at full num_elements width — only the product space
-    // compacts.
+    // Subset layouts come in two wire forms and both are spoken (the
+    // fleet is mixed).  Older kotekans keep the per-element blocks at
+    // full num_elements width and send an explicit sparse product_list
+    // — only the product space compacts.  Newer ones compact DishInputs
+    // outright: num_elements *is* the subset size, the frame is a dense
+    // upper triangle over it, and input_list maps each compact element
+    // to its fiducial input number (labels only — the byte layout is
+    // exactly FullUpperTri's; sizes verified against live cx52 frames,
+    // 6772 B / 7292 B exact).
     function n2LayoutFromDesc(desc) {
         var n = desc.num_elements, nev = desc.num_ev || 0;
         var layout = desc.n2_layout;
+        var inputs = Array.isArray(desc.input_list) &&
+                     desc.input_list.length === n ? desc.input_list : null;
         var numProd, prods = null;
         if (layout === "FullUpperTri") numProd = n * (n + 1) / 2;
         else if (layout === "Autocorrelations") numProd = n;
@@ -181,6 +188,8 @@
             prods = desc.product_list;
             numProd = prods.length;
         }
+        else if (layout === "DishInputs" && inputs)
+            numProd = n * (n + 1) / 2; // compact form: dense over the subset
         else return null; // unknown layout: generic fallback rendering
         var defs = [
             ["vis", 8 * numProd, "c64"],
@@ -200,7 +209,7 @@
             off += d[1];
         });
         return { n: n, nev: nev, layout: layout, numProd: numProd,
-                 prods: prods, blocks: blocks, total: off };
+                 prods: prods, inputs: inputs, blocks: blocks, total: off };
     }
 
     // Unpack the packed products into a full n×n grid; the lower triangle
@@ -682,9 +691,17 @@
     }
 
     // opts.range fixes the colour range (masks: [0, 1] — never
-    // percentile-stretched); opts.color swaps the palette.  The same
-    // opts object is handed to reduceToGrid, which reads blankZeros
-    // from it and ignores the rest.
+    // percentile-stretched); opts.color swaps the palette.  opts.log
+    // switches to a log colour scale: cells and the percentile range
+    // are mapped through log10, non-positive cells joining the
+    // missing-data grey — the same rule the line renderer applies to a
+    // log y axis.  Linear percentile stretch drowns a matrix whose
+    // diagonal sits decades above its off-diagonal (a subset frame's
+    // autocorrelations against its crosses); log spreads the decades
+    // evenly.  A pinned range ignores it — a mask's [0, 1] is pinned
+    // precisely so the mapping can't move.  The same opts object is
+    // handed to reduceToGrid, which reads blankZeros from it and
+    // ignores the rest.
     //
     // The cells are painted at grid resolution on an offscreen canvas
     // and blitted into the data rect with smoothing off, so one cell is
@@ -693,6 +710,13 @@
     // for the axes.
     function drawGrid(f, grid, h, w, opts) {
         opts = opts || {};
+        var logC = !!opts.log && !opts.range;
+        if (logC) {
+            var lg = new Float64Array(grid.length);
+            for (var k = 0; k < grid.length; k++)
+                lg[k] = grid[k] > 0 ? Math.log10(grid[k]) : NaN;
+            grid = lg;
+        }
         var range = opts.range || robustRange(grid);
         var lo = range[0], hi = range[1];
         var color = opts.color || viridis;
@@ -716,6 +740,11 @@
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(off, 0, 0, w, h, r.l, r.t, r.w, r.h);
         ctx.imageSmoothingEnabled = true;
+        // The note reports real values either way — the log is how the
+        // ramp is spread, not what the numbers are.
+        if (logC)
+            return "color " + fmtVal(Math.pow(10, lo)) + " … " +
+                   fmtVal(Math.pow(10, hi)) + " (log)";
         return "color " + fmtVal(lo) + " … " + fmtVal(hi);
     }
 
@@ -723,8 +752,11 @@
     // this the canvas is sized to the grid and the browser's downscaler
     // decides which cells survive — it drops whole columns, so a narrow
     // spike in a 6550-wide heatmap disappears at exactly the moment it
-    // matters.  This is the same pixel rule the line renderer applies.
-    function collapseGrid(grid, h, w, maxH, maxW, how) {
+    // matters.  This is the same pixel rule the line renderer applies —
+    // dropNonPos included, mirroring collapseRow: with a log colour
+    // scale a 0 sharing a cell would pin min and drag mean before the
+    // log ever sees the cell.
+    function collapseGrid(grid, h, w, maxH, maxW, how, dropNonPos) {
         if (h <= maxH && w <= maxW) return { grid: grid, h: h, w: w };
         var H = Math.min(h, maxH), W = Math.min(w, maxW);
         var out = new Float64Array(H * W), cnt = new Int32Array(H * W);
@@ -735,7 +767,7 @@
             var ry = H === h ? y : Math.floor(y * H / h);
             for (x = 0; x < w; x++) {
                 var v = grid[y * w + x];
-                if (!isFinite(v)) continue;
+                if (!isFinite(v) || (dropNonPos && v <= 0)) continue;
                 c = ry * W + (W === w ? x : Math.floor(x * W / w));
                 if (how === "max") { if (v > out[c]) out[c] = v; }
                 else if (how === "min") { if (v < out[c]) out[c] = v; }
@@ -775,7 +807,8 @@
         // that is twice the cells across the same rect.
         var g = collapseGrid(s.grid, s.h, s.w,
                              Math.round(f.rect.h * f.dpr),
-                             Math.round(f.rect.w * f.dpr), how);
+                             Math.round(f.rect.w * f.dpr), how,
+                             !!opts.log && !opts.range);
         var note = drawGrid(f, g.grid, g.h, g.w, opts);
         var xAt = function (v) {
             return f.rect.l + ((v + 0.5 - win.x0) / (win.x1 - win.x0)) * f.rect.w;
@@ -1720,6 +1753,7 @@
                 return;
             }
             var opts = { blankZeros: blankZeros(),
+                         log: plot.controls.log.checked,
                          names: { x: axisLabel(plot.axisX),
                                   y: axisLabel(plot.axisY) } };
             if (plot.dec.mask) { opts.range = [0, 1]; opts.color = maskColor; }
@@ -1753,6 +1787,8 @@
             (plot.frameSize ? " of " + fmtBytes(plot.frameSize) : "");
         if (plot.shapeNote)
             frameText += ", " + plot.shapeNote;
+        if (plot.descNote)
+            frameText += ", " + plot.descNote;
         // For a mask the single most useful number is how much of it is
         // set, over everything fetched — and the polarity has to be
         // spelled out, since "100% set" is the *healthy* reading.
@@ -1798,18 +1834,68 @@
             fmtVal(c[0]) + "/" + fmtVal(c[1]) + "/" + fmtVal(c[2]);
     }
 
+    // Ticks for a compact-element axis labelled through input_list.
+    // The positions stay compact — that is the geometry of the grid —
+    // and only the labels speak fiducial, so a label is always the
+    // input truly at that spot: compact index 20 silently reading as
+    // input 20 (it is 68 on the pathfinder subset) is the lie the list
+    // exists to prevent.  But a tick sequence chosen over compact
+    // positions and merely relabelled reads 0, 5, 10, 15, 68, 73, 78:
+    // odd numbers after the break, and the break itself falling
+    // between two ticks.  So the axis is ticked per contiguous run of
+    // the list (0-15, then 64-79): a mandatory tick at every run's
+    // first element, so the jump is drawn at the cell where it happens,
+    // plus nice round *fiducial* values inside the run mapped back to
+    // their compact positions; a round tick that would crowd a boundary
+    // label yields to it.  Runs are shorter than the axis, so the
+    // spacing is tighter than a plain index axis's.  Without a list
+    // this is that plain index axis.
+    function inputTicks(inputs, n, pixels) {
+        if (!inputs) return indexTicks(0, n, pixels);
+        var spacing = 60, minGap = spacing / 2, px = pixels / n;
+        var runs = [], i = 0;
+        while (i < n) {
+            var j = i;
+            while (j + 1 < n && inputs[j + 1] === inputs[j] + 1) j++;
+            runs.push([i, j]);
+            i = j + 1;
+        }
+        var bounds = runs.map(function (r) { return r[0]; });
+        var crowded = function (v) {
+            return bounds.some(function (b) {
+                return Math.abs(b - v) * px < minGap;
+            });
+        };
+        var out = [];
+        runs.forEach(function (r) {
+            var i0 = r[0], i1 = r[1], v0 = inputs[i0];
+            out.push({ v: i0, text: String(v0) });
+            var target = Math.max(1, Math.round((i1 - i0 + 1) * px / spacing));
+            niceTicks(v0, inputs[i1], target, true).forEach(function (val) {
+                var v = i0 + (val - v0);
+                if (v <= i0 || v > i1 || crowded(v)) return;
+                out.push({ v: v, text: String(val) });
+            });
+        });
+        return out;
+    }
+
     // An N2 block has a fixed shape, so it gets the frame and its index
-    // ticks but none of the dimension machinery.
-    function drawN2Grid(grid, h, w, names) {
+    // ticks but none of the dimension machinery.  The log toggle still
+    // applies — as a log colour scale, which is what lets the crosses
+    // show against a diagonal sitting decades above them.
+    function drawN2Grid(grid, h, w, names, xInputs, yInputs) {
         var f = beginPlot(plot.canvas);
-        var note = drawGrid(f, grid, h, w, {});
+        var note = drawGrid(f, grid, h, w,
+                            { log: plot.controls.log.checked });
         var xAt = function (v) {
             return f.rect.l + ((v + 0.5) / w) * f.rect.w;
         };
         var yAt = function (v) {
             return f.rect.t + ((v + 0.5) / h) * f.rect.h;
         };
-        drawFrame(f, indexTicks(0, w, f.rect.w), indexTicks(0, h, f.rect.h),
+        drawFrame(f, inputTicks(xInputs, w, f.rect.w),
+                  inputTicks(yInputs, h, f.rect.h),
                   xAt, yAt, names, false);
         setMapping(f, null, false, null);
         return note;
@@ -1832,18 +1918,24 @@
         else if (mode === "lines")
             note = drawSingleLine(plot.canvas, vals);
         else if ((key === "vis" || key === "weight") &&
-                 (n2.layout === "FullUpperTri" || n2.prods))
+                 n2.layout !== "Autocorrelations")
             note = drawN2Grid(n2Grid(vals, n2.n, b.type === "c64" ? part : null,
                                      n2.prods),
-                              n2.n, n2.n, { x: "input", y: "input" }) +
+                              n2.n, n2.n, { x: "input", y: "input" },
+                              n2.inputs, n2.inputs) +
                    ", " + n2.n + "×" + n2.n + " inputs" +
                    (n2.prods ? " (" + n2.numProd + " products)" : "");
         else if (key === "evec")
-            note = drawN2Grid(vals, n2.nev, n2.n, { x: "input", y: "ev" }) +
+            note = drawN2Grid(vals, n2.nev, n2.n, { x: "input", y: "ev" },
+                              n2.inputs, null) +
                    ", ev × input";
         else
             note = drawSingleLine(plot.canvas, vals);
-        return label + " — " + note + n2Scalars(buf);
+        // A compact subset frame names the fiducial inputs it actually
+        // correlates — reported for every block, since the per-element
+        // lines (flags, gain, mask) index compactly too.
+        var subset = n2.inputs ? " — inputs " + formatRanges(n2.inputs) : "";
+        return label + " — " + note + n2Scalars(buf) + subset;
     }
 
     // Build decoded dims from the descriptor extents and the bytes
@@ -2219,6 +2311,20 @@
                     plot.frameSize = frame.frame_size;
                 plot.n2 = desc.frame_desc_type === "N2"
                     ? n2LayoutFromDesc(desc) : null;
+                // The layout mirror has been bitten by a wire-format
+                // change once (DishInputs went from sparse product_list
+                // to compact + input_list), so don't trust it blindly:
+                // a frame whose real size disagrees with the computed
+                // block layout would decode every block at the wrong
+                // offset.  Fall back to generic rendering and say why.
+                plot.descNote = null;
+                if (plot.n2 && typeof frame.frame_size === "number" &&
+                        frame.frame_size !== plot.n2.total) {
+                    plot.descNote = "N2 layout mismatch (computed " +
+                        plot.n2.total + " B, frame " + frame.frame_size +
+                        " B) — generic rendering";
+                    plot.n2 = null;
+                }
                 if (plot.n2) {
                     var bsel = plot.controls.block;
                     bsel.textContent = "";
@@ -2408,7 +2514,10 @@
         // says otherwise (applyViewState runs right after this).
 
         fetchLen.value = String(source.defaultFetch || DEFAULT_FETCH);
-        var logWrap = el("label", { style: "display: flex; align-items: center; gap: 0.3em; margin: 0;" });
+        var logWrap = el("label", {
+            style: "display: flex; align-items: center; gap: 0.3em; margin: 0;",
+            title: "lines: log y — heatmaps: log color scale — histogram: log counts",
+        });
         var log = el("input", { type: "checkbox", style: "margin: 0;" });
         logWrap.appendChild(log);
         logWrap.appendChild(document.createTextNode("log"));

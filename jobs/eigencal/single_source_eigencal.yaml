@@ -1,0 +1,131 @@
+pipeline:
+
+    logging:
+        root: DEBUG
+        peewee: INFO
+        matplotlib: INFO
+
+    save_versions:
+        - caput
+        - cora
+        - draco
+        - drift
+        - numpy
+        - scipy
+        - h5py
+        - mpi4py
+        - chord_pipeline
+
+    tasks:
+
+        - type: caput.pipeline.tasklib.base.SetMPILogging
+          params:
+            level_rank0: INFO
+            level_all: WARNING
+
+        # Load the telescope class containing feed positions and polarisations,
+        # as well as ephemeris functions.
+        - type: draco.core.io.LoadProductManager
+          out: manager
+          params:
+            product_directory: "/project/rrg-kmsmith/ssiegel/bt/chord64_airy_rfsoc4k/taua/freqa/"
+
+        # Load the N2 visibilities
+        - type: caput.pipeline.tasklib.io.LoadFilesFromParams
+          out: sstream_no_lsd
+          params:
+            files: "/scratch/mwilensk/eigencal_to_chord/sims/20251117/nside_2048_pol_zero/freqa/taua/vis_sky/vis_n2_wnoise_jy_taua.h5"
+
+        # Generate a timestream
+        - type: draco.synthesis.stream.MakeSiderealDayStream
+          requires: [manager, sstream_no_lsd]
+          out: sstream
+          params:
+            start_time: "20000101T120000Z"
+            end_time: "20000102T130000Z"
+
+        # Perform eigendecomposition of visibility matrix
+        - type: draco.analysis.calibration.PerformEigenDecomp
+          requires: manager
+          in: sstream
+          out: eigendecomp
+          params:
+            max_ev_rms: 2
+            nev: 4
+            rank: 4
+            niter: 10
+            save: true
+            output_name: "eigendecomp_{tag}.h5"
+
+        # Convert the eigen-decomposition into the response of
+        # each feed to the point source.
+        - type: draco.analysis.calibration.EigenCalibration
+          requires: manager
+          in: eigendecomp
+          out: resp
+          params:
+            source: "TAU_A"
+            eigen_ref: 0
+            phase_ref: [1, 0]
+            med_phase_ref: false
+            neigen: 2
+            window: 0.75
+            dyn_rng_threshold: 5.0
+            save: true
+            output_name: "response_{tag}.h5"
+
+        # Fit the source transit to a model for the primary beam response.
+        - type: draco.analysis.calibration.TransitFit
+          requires: manager
+          in: resp
+          out: fit
+          params:
+            model: 'poly_log_amp_poly_phase'
+            nsigma: 0.60
+            absolute_sigma: false
+            poly_type: "standard"
+            poly_deg_amp: 5
+            poly_deg_phi: 5
+            niter: 1
+            moving_window: 0.30
+            save: true
+            output_name: "fit_{tag}.h5"
+
+        # Evaluate the model at hour angle = 0 to extract the gain.
+        - type: draco.analysis.calibration.GainFromTransitFit
+          in: fit
+          out: gtrans
+          params:
+            evaluate: "transit"
+            chisq_per_dof_threshold: 10.0
+            alpha: 0.32
+            save: true
+            output_name: "gain_transit_{tag}.h5"
+
+        # # Flag bad inputs and RFI.
+        # # Not necessary if working with simulations.
+        # - type: draco.analysis.calibration.FlagAmplitude
+        #   requires: manager
+        #   in: gtrans
+        #   out: gflag
+        #   params:
+        #     min_amp_scale_factor: 0.05
+        #     max_amp_scale_factor: 20.0
+        #     nsigma_outlier: 10.0
+        #     nsigma_med_outlier: 10.0
+        #     window_med_outlier: 24
+        #     threshold_good_freq: 0.70
+        #     threshold_good_input: 0.80
+        #     valid_gains_frac_good_freq: 0.50
+        #     save: true
+        #     output_name: "gain_transit_flagged_{tag}.h5"
+        #
+        # # Interpolate the gain over frequency.
+        # # Not necessary if working with simulations.
+        # - type: draco.analysis.calibration.InterpolateGainOverFrequency
+        #   in: gflag
+        #   out: ginterp
+        #   params:
+        #     interp_scale: 30.0
+        #     save: true
+        #     output_name: "gain_transit_interp_{tag}.h5"
