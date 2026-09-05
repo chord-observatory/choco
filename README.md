@@ -6,7 +6,7 @@ choco provides a web UI that shows the live status of every kotekan instance, de
 
 Kotekan itself is deployed and managed on nodes by Ansible. choco only handles monitoring and config management.
 
-Around that core, choco also fronts the observatory's companion services: header badges and `/service/<name>` pages for the **fpga_master** daemon (with start/stop controls) and the **power_db** power distribution boards (with per-channel and bulk power toggles), plus a family of timer-driven **jobs** that push through choco's API — EOP broadcast, bad-feed flagging (bffs), and point-source gain calibration (eigencal).
+Around that core, choco also fronts the observatory's companion services: header badges and `/service/<name>` pages for the **fpga_master** daemon (with start/stop controls) and the **power_db** power distribution boards (with per-channel and bulk power toggles), plus a family of timer-driven **jobs** — EOP broadcast, bad-feed flagging (bffs), point-source gain calibration (eigencal), visibility waterfall rendering, and a current-sky map. A `/files` page reports what kotekan has written to disk, and every node has a live pipeline view with buffer plots.
 
 ## Requirements
 
@@ -45,8 +45,8 @@ The install script also:
 - Symlinks the `choco` command-line client (the venv's `choco` console script; see JSON API below) to `/usr/local/bin/choco`; the daemon's entry point is `choco-server`
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
-- Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal), enabling the services and starting the timers
-- Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`bffs.yaml`, `eigencal.yaml`, `eigencal_feeds.yaml`) from its example file; on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
+- Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal, waterfall, skymap), enabling the services and starting the timers
+- Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`bffs.yaml`, `eigencal.yaml`, `eigencal_feeds.yaml`, `waterfall.yaml`, `skymap.yaml`) from its example file; on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
 
 Re-running `sudo ./choco.sh install` is safe — **it never overwrites a deployed `/etc/choco/config.yaml`**. On first install the config is seeded from the repo's local `config.yaml` (or the template) with `configs_dir` rewritten to `/etc/choco/configs`; on later installs, if the repo copy differs from what's deployed, the incoming version is staged as `/etc/choco/config.yaml.new` for manual merging and the deployed file is left alone. Kotekan configs prompt before overwriting; `configs/pdb_map.csv` — the master PDB channel map, which may be the only authoritative record of that wiring — is excluded from that overwrite entirely and gets the same seed-once-then-stage-a-`.new` treatment as `config.yaml`; iptables rules are deduplicated.
 
@@ -80,65 +80,19 @@ choco is configured via a `config.yaml` file and a config directory containing n
 
 ### `config.yaml`
 
-The install script creates `/etc/choco/config.yaml` from the template. Edit it:
+The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](config.yaml.template), which documents every key. The sections are:
 
-```yaml
-server:
-  host: 0.0.0.0
-  port: 5000
-  secret_key: change-me           # Placeholder: choco refuses to start with it (install seeds a random key)
-  log_level: INFO
-  ssl_cert:                       # Leave empty to auto-generate a self-signed cert
-  ssl_key:
-  http_redirect_port: 8080        # HTTP listener that redirects to HTTPS
-
-configs_dir: configs
-
-kotekan:
-  timeout: 10                     # HTTP request timeout (seconds) for kotekan REST calls
-
-sync:
-  poll_interval: 5                # Seconds between polling all nodes for drift
-  restart_timeout: 10             # Seconds to wait for kotekan to restart after /kill
-  num_workers: 4                  # Worker greenlets processing node queues
-
-fpga_master:
-  host: chive.site.chord-observatory.ca
-  port: 54321
-  timeout: 5                      # HTTP request timeout (seconds)
-  control: true                   # show Start/Stop controls on /service/fpga
-
-pdb:                              # power_db power distribution boards
-  host: 10.222.0.30
-  port: 5000
-  timeout: 5
-  control: true                   # allow power toggles on /service/pdb
-  map_file: pdb_map.csv           # master dish-input <-> channel table (in configs_dir)
-  # kotekan_group: cx             # group whose dish_inputs the map is checked against
-
-eop:
-  intervals_before: 2             # Days of past entries (older stored entries are truncated on merge)
-  intervals_after: 2              # Days of future entries (later stored entries are kept, never overwritten)
-  endpoint: earth_rotation_data   # Kotekan updatable config endpoint name
-  state_file: /var/lib/eop/state.json  # Absolute; rewritten on every successful run (a relative path resolves against configs_dir — legacy layout)
-  service_unit: choco-eop-broadcast.service  # systemd unit for last-run status
-
-bffs:
-  service_unit: choco-bffs-flag.service
-  state_file: /var/lib/bffs/state.json
-
-eigencal:
-  service_unit: choco-eigencal.service
-  state_file: /var/lib/eigencal/state.json
-
-ldap:
-  host:                           # e.g. ldaps://ipa1.auth.chord-observatory.ca
-  port: 636
-  use_ssl: true
-  base_dn:                        # e.g. dc=auth,dc=chord-observatory,dc=ca
-  user_dn: cn=users,cn=accounts
-  user_login_attr: uid
-```
+| Section | What it configures |
+|---|---|
+| `server` | bind address, port, `secret_key`, TLS cert/key or self-signed fallback, HTTP redirect port, `ssl`, `dev_auth` |
+| `configs_dir` | the config directory below |
+| `kotekan` | REST timeout for node calls |
+| `sync` | `poll_interval`, `restart_timeout`, `max_concurrent_pushes`, `max_retry_interval` |
+| `fpga_master`, `pdb` | the two hardware monitors: host, port, timeout, `control`; `pdb.map_file`, `pdb.kotekan_group` |
+| `eop`, `bffs`, `eigencal`, `waterfall` | each job's `service_unit` and `state_file` for its badge; EOP's table window and endpoint; `waterfall.images_dir` and `timezone` |
+| `skymap` | `image_file`, where the sky-map job writes its PNG |
+| `vis_files` | the data roots `/files` scans |
+| `ldap` | FreeIPA host, port, `use_ssl`, `ca_cert`, `base_dn`, `user_dn`, `user_login_attr` |
 
 `config.yaml` contains secrets and is chmod 600. Only `config.yaml.template` is checked into the repo.
 
@@ -231,7 +185,7 @@ To run manually (e.g. for debugging):
 
 ```bash
 sudo systemctl stop choco
-/opt/choco/.venv/bin/choco /etc/choco/config.yaml
+/opt/choco/.venv/bin/choco-server /etc/choco/config.yaml
 ```
 
 ## Web UI
@@ -240,23 +194,26 @@ sudo systemctl stop choco
 
 Every page (for logged-in users) shows a thin strip above the nav with pill badges:
 
+- **NODES** — cluster roll-up linking to the `/nodes` dashboard: green when every node is started, red when every node is down, yellow for anything between; the tooltip carries the started/idle/down/maintenance counts.
 - **FPGA** — colour-coded readout from the `fpga_master` daemon. Green when `/status` responds and `/get-frame0-time` parses (timing is good); yellow when `/status` is reachable but timing can't be read; red when the daemon is unreachable; grey when no `fpga_master` block is configured. The tooltip carries the host, last-seen, error, and current `frame0_ns`.
 - **PDB** — colour-coded readout from the power_db power distribution boards. Green when `/status` responds and `/channel_states` decodes (the tooltip shows how many channels are powered); yellow when the controller is up but channel states can't be read; red when it's unreachable; grey when no `pdb` block is configured.
 - **EOP** — health of the EOP broadcast job. Green (`ok`) when the last run succeeded and the EOP state file is fresh; yellow `degraded` when the run couldn't do its job for external reasons (fpga_master unreachable for `frame0`, IERS download down, choco not accepting); yellow `stale` when the state file is older than ~25 hours (the job rewrites it on every successful daily run); red `failed` for config errors or bugs; grey when the unit has never run.
 - **BFFS** — health of the bffs feed-flagging job (`choco-bffs-flag.service`). Green `ok`, yellow `degraded` when flagging ran with reduced coverage or couldn't run for external reasons (no/stale kotekan data, nodes or choco unreachable), red `failed` for config errors. The state-file mtime is "last change" in the tooltip but doesn't age the badge, since bffs only rewrites its state when the bad-feed list changes.
 - **EIGENCAL** — health of the eigencal gain-calibration job (`choco-eigencal.service`). Yellow `degraded` covers both dependency trouble and a solution that failed its quality gate (archived, not sent); red `failed` means a real error. The state-file mtime is "last calibration" in the tooltip but doesn't age the badge, since daytime transits are skipped by design.
+- **DATA** — whether the configured data roots (`vis_files.roots`, NFS mounts) answer a one-entry `readdir`; yellow when some do, red when none do. Links to `/files`.
+- **WF** — health of the waterfall renderer (`choco-waterfall.service`). Because it reads the same mounts, DATA red + WF yellow means a mount problem, DATA green + WF red means a renderer bug.
 
 Job health combines the unit's `Result` and `ExecMainStatus` from `systemctl show` with the job state file's mtime — no timestamp parsing. All jobs share one exit-code convention: **0 = ok, 2 = degraded (the job is fine, a dependency or input wasn't — retries self-heal), 1 = failed (config error or bug — needs a human)**. The strip is refreshed every 30 seconds via htmx; the FPGA poller runs as a single gevent greenlet on the same cadence.
 
 ### Service pages
 
-**Clicking a badge** opens that service's detail page at `/service/<name>` (`choco`, `eop`, `bffs`, `eigencal`, `fpga`, `pdb` — an allowlist, not arbitrary units). Each job page shows the unit's last result, the timer's last/next run, a summary from the job's state file — the current bad-feed list and recent transitions for bffs, the EOP table's time span, the last processed transit for eigencal — and the unit's recent journal lines (`journalctl -u <unit>`, auto-refreshed, 50–1000 lines), so a red badge can be diagnosed without leaving the browser. Every service page's status block refreshes itself every ~5 s while the page is open (the journal refreshes every 30 s). The FPGA page shows the monitor's live view of the `fpga_master` daemon (health, run state, `frame0`, last start result) plus **Start/Stop controls**: Start hands fpga_master its own launch config (initialization runs in the background; the state block follows the progress), Stop waits out the F-engine shutdown in the background. Both ask for confirmation and are logged with the requesting username; set `fpga_master.control: false` to hide them. A **Recent actions** table on the page records each start/stop with who requested it and the outcome (a stop shows up first as in-flight, then as its completion) — note that fpga_master acknowledges a start before checking its state, so starting an already-running F-engine is a silent no-op whose "already started" verdict appears under *Last start result*. The page warns that a restart assigns a new `frame0`, which kotekan and the EOP table are anchored to. The PDB page shows the full per-bus board/chip/channel power grid, with **bulk power buttons** for a chip (8 channels, at the end of each row) and for a whole SPI bus (in the bus heading). Every cell is itself a toggle. All of it is logged with the requesting username, and `pdb.control: false` makes the grid read-only. Writes go over htmx and swap the grid in place, so the page never reloads or jumps; the outcome appears as a notice above the grid and stays there until the next action. A single-channel toggle asks for confirmation once per browsing session; **every** bulk write asks each time (a bus-wide power-up is hundreds of amplifiers at once). A toggle re-reads the chip's output register immediately before writing (other tools can also drive the controller), writes the changed byte, and confirms with a fresh read — if the state changed underneath, it reports the conflict instead of retrying. Bulk writes work the same way, one whole-byte write per chip, skipping chips already in the wanted state; if some writes fail the rest still go out and the message names what didn't take.
+**Clicking a badge** opens that service's detail page at `/service/<name>` (`choco`, `eop`, `bffs`, `eigencal`, `waterfall`, `fpga`, `pdb` — an allowlist, not arbitrary units). Each job page shows the unit's last result, the timer's last/next run, a summary from the job's state file — the current bad-feed list and recent transitions for bffs, the EOP table's time span, the last processed transit for eigencal — and the unit's recent journal lines (`journalctl -u <unit>`, auto-refreshed, 50–1000 lines), so a red badge can be diagnosed without leaving the browser. Every service page's status block refreshes itself every ~5 s while the page is open (the journal refreshes every 30 s). The FPGA page shows the monitor's live view of the `fpga_master` daemon (health, run state, `frame0`, last start result) plus **Start/Stop controls**: Start hands fpga_master its own launch config (initialization runs in the background; the state block follows the progress), Stop waits out the F-engine shutdown in the background. Both ask for confirmation and are logged with the requesting username; set `fpga_master.control: false` to hide them. A **Recent actions** table on the page records each start/stop with who requested it and the outcome (a stop shows up first as in-flight, then as its completion) — note that fpga_master acknowledges a start before checking its state, so starting an already-running F-engine is a silent no-op whose "already started" verdict appears under *Last start result*. The page warns that a restart assigns a new `frame0`, which kotekan and the EOP table are anchored to. The PDB page shows the full per-bus board/chip/channel power grid, with **bulk power buttons** for a chip (8 channels, at the end of each row) and for a whole SPI bus (in the bus heading). Every cell is itself a toggle. All of it is logged with the requesting username, and `pdb.control: false` makes the grid read-only. Writes go over htmx and swap the grid in place, so the page never reloads or jumps; the outcome appears as a notice above the grid and stays there until the next action. A single-channel toggle asks for confirmation once per browsing session; **every** bulk write asks each time (a bus-wide power-up is hundreds of amplifiers at once). A toggle re-reads the chip's output register immediately before writing (other tools can also drive the controller), writes the changed byte, and confirms with a fresh read — if the state changed underneath, it reports the conflict instead of retrying. Bulk writes work the same way, one whole-byte write per chip, skipping chips already in the wanted state; if some writes fail the rest still go out and the message names what didn't take.
 
 Below the grid, the page shows the **master channel map** — the dish-input ↔ power-channel wiring table (`configs/pdb_map.csv`, a CSV alongside `nodes.yaml`). Its `dish_input` values label the grid cells, so a channel reads `● A1X` rather than just `on`. choco re-reads the file whenever it changes and **cross-checks it against the `dish_inputs` table of a kotekan group's config** — the same table kotekan indexes its bad-input mask with — reporting dish inputs kotekan knows but the map doesn't place, rows naming feeds kotekan doesn't have, and any dish input claimed by two channels. Bad rows in the CSV are listed and skipped rather than taking the page down. The deployed copy is **treated as data, not as a repo artifact**: since there may be no upstream source for this wiring, `choco.sh install` seeds it once and then never replaces it — not even with `--overwrite-configs` — staging a differing repo copy alongside as `pdb_map.csv.new` for manual merging, exactly as it does for `config.yaml`. Back it up with the rest of `/etc/choco`. The table is served as JSON at `/api/pdb/map` (with the cross-check attached), which is where bffs's `power` source reads it from, so the file is the single authority instead of every consumer keeping a copy.
 
-### Dashboard
+### Dashboard (`/nodes`)
 
-The main page shows a table of all registered nodes with live-updating columns: node name, status, config, sync state, and Pipeline/Edit links.
+`/` is the landing page: one table row per header badge with the detail the strip only carries in a tooltip, plus the sky-map card. The **NODES** badge leads to the dashboard at `/nodes`, a table of all registered nodes with live-updating columns: node name, status, config, sync state, and Pipeline/Edit links.
 
 Status indicators:
 - **Green (started)** — kotekan is running and config matches the desired state
@@ -277,8 +234,7 @@ The dashboard table refreshes itself every 2 seconds via htmx polling - no need 
 ### Node Edit
 
 Click Edit on a node to manage its settings:
-- **Config selector** — which base config file to use for this node.
-- **Config editor** — edit the base config YAML. Save queues a base-config change (write to disk + restart). "Re-push Current" queues a forced re-push.
+- **Config editor** — edit the base config YAML. Save queues a base-config change (write to disk + restart). "Re-push Current" queues a forced re-push. "Start as one-off" starts the textarea's text on a node that is in maintenance and idle without saving it anywhere (lifting maintenance later reverts it).
 - **Updatable config** — edit individual updatable blocks. Changes are queued and pushed to kotekan's updatable endpoints without a restart.
 
 ### Node Pipeline (`/pipeline/<group>/<node>`)
@@ -293,7 +249,7 @@ Buffers with `peek_hold` carry a persistent amber outline marking them clickable
 
 ### Edit Nodes (registry)
 
-The **Edit nodes** button on the dashboard opens `/nodes`, a drag-and-drop editor for `nodes.yaml`. Saving rewrites the YAML, rebuilds the in-memory registry from scratch (dropping queued changes), then automatically puts **every** node into maintenance mode and re-runs state discovery so each node's started/idle flag is set from the live kotekan runtime rather than a cold default. Take nodes back out of maintenance individually or via the cluster-wide toggle once you've reviewed the new layout. Config files on disk are *not* moved when nodes change groups — that's an operator task.
+The **Edit nodes** button on the dashboard opens `/nodes/edit`, a drag-and-drop editor for `nodes.yaml`. Saving rewrites the YAML, rebuilds the in-memory registry from scratch (dropping queued changes), then automatically puts **every** node into maintenance mode and re-runs state discovery so each node's started/idle flag is set from the live kotekan runtime rather than a cold default. Take nodes back out of maintenance individually or via the cluster-wide toggle once you've reviewed the new layout. Config files on disk are *not* moved when nodes change groups — that's an operator task.
 
 ### JSON API
 
@@ -309,11 +265,12 @@ Both accept JSON with:
 - `{"action": "set_maintenance", "maintenance": true}` — put the node(s) into or out of maintenance mode
 
 Read-only status endpoints:
-- `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `pdb`, `eop`, `bffs`, `eigencal`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
+- `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `pdb`, `data`, `eop`, `bffs`, `eigencal`, `waterfall`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
 - `GET /api/nodes/status` — per-node runtime status plus an aggregate summary
 - `GET /api/nodes` — the node registry (groups/hosts/ports) as JSON
 - `GET /api/config/<group>` — a sample node's desired kotekan config for the group (jobs use this to learn the `dish_inputs` element layout)
 - `GET /api/pdb/map` — the master dish-input ↔ power-channel table plus its cross-check against kotekan's `dish_inputs` (bffs's `power` source reads it from here)
+- `GET /api/files` — the `/files` scan as JSON (`?refresh=1` bypasses the cache)
 - `GET /metrics` — the same overall health in Prometheus exposition format (see below)
 
 One-off configs go the same way: `POST /oneshot/<group>` or `POST /oneshot/<group>/<node>` with `{"config_content": "..."}` starts the supplied config on nodes that are in maintenance and idle, recording nothing (200 with `started`/`skipped` per node, 409 if nothing started, 400 if the text does not render).
@@ -337,9 +294,9 @@ Every reply is printed as JSON. Exit status: 0 ok, 1 rejected (the server's erro
 
 ### Prometheus metrics
 
-`GET /metrics` serves Prometheus exposition text and is the one **unauthenticated**
-endpoint (Prometheus scrapes from another host and speaks neither LDAP sessions
-nor CSRF tokens). It deliberately exposes only aggregate health — no node names,
+`GET /metrics` serves Prometheus exposition text and is **unauthenticated** (Prometheus
+scrapes from another host and speaks neither LDAP sessions nor CSRF tokens); the
+only other unauthenticated route is `/skymap.png`, for wall displays. It deliberately exposes only aggregate health — no node names,
 hosts, or configs:
 
 - `choco_up` — 1 while choco is serving requests (Prometheus's own `up` metric
@@ -349,7 +306,8 @@ hosts, or configs:
   (worth alerting on)
 - `choco_service_state{service,state}` — one-hot health per service (`fpga`:
   ok / no_timing / down / unconfigured / unknown; `pdb`: ok / no_states / down /
-  unconfigured / unknown; `eop`, `bffs`, `eigencal`: ok / degraded / stale /
+  unconfigured / unknown; `data`: ok / degraded / down / unconfigured / unknown;
+  `eop`, `bffs`, `eigencal`, `waterfall`: ok / degraded / stale /
   failed / never_run / unknown — degraded = the job exited 2, meaning a
   dependency or input problem rather than a broken job)
 - `choco_nodes{status}`, `choco_nodes_total`, `choco_nodes_started_desired`,
@@ -364,31 +322,29 @@ day, `choco_nodes{status="down"} > 0`, or `changes(choco_start_time_seconds[1h])
 
 ## How Sync Works
 
-Changes flow through a two-tier queue system:
-
 ```
-Producers (web UI, API, config-file scan, poll timer)
+Producers (web UI, API, CLI, config-file scan)
     → Serialized submit (one lock — one submission at a time)
-        → Node Queues (FIFO, each Node holds its own)
-            → Worker Pool (locks a node's queue, drains items, syncs to remote)
+        → Node queues (FIFO, each Node holds its own)
+            → One NodeWorker greenlet per node (drains the queue, syncs to kotekan)
 ```
 
-**Serialized submit** — the orchestrator's `submit_node` / `submit_group` / `submit_all` methods all share a single lock, so only one caller modifies the queues at a time (and a registry rebuild can pause submissions by holding the same lock). Group and all submissions fan one change out to every matching node.
+**Serialized submit** — the orchestrator's `submit_node` / `submit_group` / `submit_all` methods share a single lock, so only one caller modifies the queues at a time (a registry rebuild pauses submissions by holding the same lock). Group and all submissions fan one change out to every matching node, and each submission wakes the node's worker so the change is picked up immediately.
 
-**Node queues** — each Node holds a FIFO change queue. A pool of worker greenlets scans nodes for unlocked, non-empty queues. A worker locks a node's queue, drains all pending items (writing base config or updatable values to disk), then syncs to the remote kotekan instance:
-- **Base config changes** — kill kotekan, wait for stopped, start with new config via `POST /start`
+**One worker per node** — each node has exactly one owner greenlet. It drains all pending items (writing base config or updatable values to disk), then syncs to the remote kotekan instance:
+- **Base config changes** — kill kotekan, wait for idle, start with the new config via `POST /start`
 - **Updatable-only changes** — POST new values directly to updatable endpoints (no restart)
 - **Poll (no changes)** — compare desired config vs. running config; push if drift is detected
 
-**Periodic polling** — every 5 seconds, a poll item is submitted for every node. This detects drift and unreachable nodes even when no local changes are made.
+Each worker schedules its own drift check: every `sync.poll_interval` while the node answers, backing off towards `sync.max_retry_interval` while it is unreachable. How many nodes may *restart* at once is bounded by `sync.max_concurrent_pushes`; polling concurrency is not. Per-node worker state (phase, failures, next check) is visible in `/api/nodes/status` and in `choco nodes`.
 
-**Config-file scan** — the same 5-second tick compares the mtime of every config file against the previous scan (a plain stat sweep — no inotify, works on NFS). Changed, created, or deleted files are handled by type:
+**Config-file scan** — every `poll_interval` the orchestrator compares the mtime of every config file against the previous scan (a plain stat sweep — no inotify, works on NFS). Changed, created, or deleted files are handled by type:
 - **YAML/J2 files** — reloads the affected node's config and queues a poll for it (``vars.yaml`` changes re-render all nodes; ``nodes.yaml`` changes rebuild the registry)
 - **`.updatable/` JSON files** — reloads the affected node's updatable store and queues a poll
 
 **Load errors are surfaced, not fatal.** If a base config or updatable JSON file fails to parse, the affected node loads with a ``load_error`` and the service still starts. The dashboard shows the specific error (including the file name), and the sync loop **refuses to push any config to that node** until the error clears — pushing an incomplete `desired_config` could silently regress kotekan's runtime state. Errors clear automatically when the file becomes parseable again (file watcher reload) or when a fresh config is submitted via the UI / API (`save_base` / `save_updatable`). Stopped nodes (`started: false`) are still killed normally — load errors don't override the user's intent to stop a node.
 
-**Startup state discovery.** When choco starts, `Orchestrator.discover_node_states()` probes every node in parallel and sets each `node.started` from the actual runtime state (STARTED → `True`, IDLE → `False`, unreachable → `False`). This happens before the regular poll loop and worker pool engage, so choco never "resets" a running node back to idle just because the local default was `False`.
+**Startup state discovery.** When choco starts, `Orchestrator.discover_node_states()` probes every node in parallel and sets each `node.started` from the actual runtime state (STARTED → `True`, IDLE → `False`, unreachable → `False`). This happens before the node workers start, so choco never "resets" a running node back to idle just because the local default was `False`.
 
 **Maintenance mode.** Every node has a `maintenance` flag that defaults to **on** at startup. When maintenance is on, all REST calls that mutate the node — `Node.push_updatable`, `Node.start`, and `Node.kill` — are no-ops (they log and return `False`), and `Orchestrator._sync_node` short-circuits before reaching them. Drift is still observed and the dashboard reflects the node's actual state, but choco never writes to a paused node, even to enforce `started=False`. Operators flip nodes out of maintenance once they're ready for choco to reconcile. Maintenance state is ephemeral; a choco restart puts everything back into maintenance and re-runs state discovery.
 
@@ -401,17 +357,11 @@ A companion oneshot service generates an Earth Orientation Parameter (EOP) table
 **Pipeline** (`jobs/eop/eop_update.py`):
 1. Read `frame0_ns` from `fpga_master` over TCP.
 2. Build a fresh EOP table on the UTC-midnight grid using `astropy` + IERS auto-download, covering `(now − intervals_before, now + intervals_after)` days.
-3. If the state file (`eop.state_file`, default `/var/lib/eop/state.json`; a relative path resolves against `configs_dir`) exists, merge with stored state (policy below).
+3. If the state file (`eop.state_file`, default `/var/lib/choco/eop/state.json`) exists, merge with stored state (policy below).
 4. Wait for choco's web port, then `POST /update/<group>` for every group in `nodes.yaml`.
 5. If *all* groups succeed, write the merged table back to the state file. On any failure, it is left alone so the next run merges from a known-good baseline.
 
-**Merge policy** — the state file is the source of truth for what kotekan has been told; the merge protects continuity of any value that has already been pushed:
-
-- **No overwrite.** Stored entries are never replaced, even if IERS data has been refined since they were committed. Past *and* future values are immutable once stored.
-- **No gap filling, no prepending.** Fresh entries are added only when their timestamp is strictly greater than the latest surviving stored entry. We never insert between two existing stored entries — kotekan may be interpolating across that segment — and we never insert before the first stored entry.
-- **Conditional truncation.** Stored entries older than `intervals_before` days are dropped, but **only if** the surviving stored set still contains at least one entry on either side of "now". If truncation would leave the table without an anchor before or after now, no truncation happens — preserving kotekan's ability to interpolate at the current instant takes priority over tidy bookkeeping.
-
-The net effect is that the on-disk table grows forward over time (one new entry per day) and is trimmed from the past only when it's safe to do so.
+**Merge policy** — stored entries are never overwritten, fresh entries are only ever appended after the latest stored one, and old entries are truncated only when the surviving table still brackets "now". The full policy and its reasoning are in [docs/design/jobs.md](docs/design/jobs.md).
 
 ## Bad-feed flag broadcast (bffs)
 
@@ -475,57 +425,49 @@ sudo systemctl status choco-eigencal.timer   # cadence
 sudo journalctl -u choco-eigencal -f          # per-run logs
 ```
 
+## Visibility waterfalls and the data-file page
+
+`/files` lists every acquisition under the configured data roots with its file count, size and newest mtime, and a **Waterfalls** column linking to a per-acquisition contact sheet. The images are rendered by the [waterfall job](jobs/waterfall/) (`choco-waterfall.timer`, every 2 minutes): one append-only PNG per correlation product, grown as kotekan's files land, never recomputed. Its config is `/etc/choco/waterfall.yaml`; choco's `waterfall.images_dir` must match the job's `waterfalls_dir`. See [jobs/waterfall/README.md](jobs/waterfall/README.md).
+
+## Sky map
+
+The [skymap job](jobs/skymap/) (`choco-skymap.timer`, every 5 minutes) renders a Mollweide all-sky view of the CHORD drift-scan strip with the current Sun, Moon and beam position, reading the pointing live from `/api/config/<group>`. The PNG is served unauthenticated at `/skymap.png` and shown on the landing page. Its config is `/etc/choco/skymap.yaml`.
+
 ## Tests
 
 ```bash
 ./choco.sh test
 ```
 
-Or manually:
-
-```bash
-source .venv/bin/activate
-pytest tests/ -v
-```
+This runs the main suite in `tests/` and then each job's own suite (`jobs/*/tests/`, each with its own `pytest.ini`). Arguments are forwarded to every invocation.
 
 ## Project Structure
 
 ```
 choco/
-├── app.py          # Flask app factory, gevent WSGI server, entry point
-├── cli.py          # `choco` command: stdlib client for the localhost JSON API
-├── auth.py         # LDAP authentication (Flask-Login sessions + direct ldap3 bind)
-├── web.py          # Flask routes: dashboard, node edit, /service/* pages, /update/* JSON API
-├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry
-├── sync.py         # Queue-based sync: ChangeItem, Orchestrator (serialized submit + worker pool)
-├── services.py     # FpgaMonitor + PdbMonitor (polls, control wrappers) + job-status helpers
-├── pdbmap.py       # Master dish-input <-> PDB channel table (CSV load, kotekan cross-check)
-├── templates/      # Jinja2 templates (Pico CSS + htmx)
-└── static/         # Vendored assets: pico.min.css, htmx.min.js, idiomorph-ext.min.js, Sortable.min.js
-jobs/                               # One subdir per job: units, wrapper, code
-├── choco.service               # Main systemd service (Type=notify)
-├── eop/                        # EOP broadcast job
-│   ├── choco-eop-broadcast.service # Runs on choco start + daily timer
-│   ├── choco-eop-broadcast.timer   # Daily at 12:00 UTC
-│   ├── eop-broadcast.sh            # Wrapper: finds venv, calls eop_update.py
-│   ├── eop_update.py               # EOP pipeline: generate table, merge with state, push to choco
-│   └── eop_utils.py                # Vendored from kotekan (do not modify — update from upstream)
-├── bffs/                       # Feed-flagging job
-│   ├── choco-bffs-flag.service     # Runs on choco start + 30 s timer
-│   ├── choco-bffs-flag.timer       # Every 30 s
-│   ├── bffs-flag.sh                # Wrapper: finds venv, calls bffs.py
-│   ├── bffs.py                     # The feed-flagging script (see jobs/bffs/README.md)
-│   ├── kotekan_io.py               # kotekan N² file reader
-│   ├── sources/                    # Flagging sources (manual, power-outlier, power, fpga, rfi)
-│   └── tests/                      # bffs test suite (run by ./choco.sh test)
-└── eigencal/                   # Point-source gain calibration
-    ├── choco-eigencal.service      # Runs every 10 min; self-gates to one real run per transit
-    ├── choco-eigencal.timer
-    ├── eigencal.sh                 # Wrapper: finds venv, calls eigencal.py
-    ├── eigencal.py                 # Orchestration: gates, ephemeris, fit, send (see jobs/eigencal/README.md)
-    ├── n2_io.py                    # kotekan N² reader (full products)
-    ├── transit_fit.py              # The batched transit fit (pure numpy)
-    └── tests/                      # eigencal test suite (run by ./choco.sh test)
+├── app.py          # load_config, create_app, TLS, gevent server, `choco-server`
+├── cli.py          # `choco`: stdlib client for the localhost JSON API
+├── web.py          # Flask blueprint: all routes and partials
+├── state.py        # Node (config state, queue, kotekan REST client), Registry
+├── sync.py         # ChangeItem, NodeWorker, Orchestrator
+├── services.py     # FpgaMonitor, GainArchive, PdbMonitor, job/systemd helpers, dot + SVG sanitizer
+├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check
+├── datafiles.py    # /files scan and the DATA badge probe
+├── waterfalls.py   # Read side of the waterfall image tree
+├── h5read.py       # h5py subprocess for the gain archive
+├── auth.py         # Flask-Login + direct ldap3 bind, localhost bypass decorator
+├── templates/      # Jinja2; _*.html are htmx partials
+└── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
+jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
+├── choco.service   # Main service (Type=notify)
+├── eop/            # EOP table broadcast; eop_utils.py is vendored from kotekan
+├── bffs/           # Bad-feed flagging; sources/ = one module per signal
+├── eigencal/       # Point-source gain calibration
+├── waterfall/      # Append-only visibility waterfall PNGs
+└── skymap/         # Current-sky Mollweide plot
+configs/            # nodes.yaml, vars.yaml, pdb_map.csv, <group>/<node>.yaml|.j2
+tests/              # pytest; test_<module>.py per module, test_web.py for routes
+docs/design/        # Design rationale, one file per subsystem
 ```
 
 `eop_utils.py` is vendored from [kotekan](https://github.com/kotekan/kotekan/) (`tools/earth_orientation/eop_utils.py`). It should not be modified in this repo.

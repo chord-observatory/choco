@@ -352,8 +352,7 @@ def node_pipeline_page(node_key):
     Fit/1:1 buttons) and buffer nodes with ``peek_hold`` are clickable —
     a click opens the live plot in a popup overlay pinned to the
     bottom-right corner, so the graph keeps the whole viewport.  The SVG
-    is inlined after ``sanitize_pipeline_svg`` whitelist reconstruction,
-    unlike the status page's inert base64 ``<img>``.
+    is inlined after ``sanitize_pipeline_svg`` whitelist reconstruction.
 
     ``?layout=`` preselects an edge-routing preset (allowlisted against
     PIPELINE_LAYOUTS) so a layout choice survives a refresh and can be

@@ -310,7 +310,7 @@ class Orchestrator:
         """Detect changed / created / deleted config files by mtime.
 
         Called once per poll tick.  Each detected path is handed to
-        :meth:`on_file_changed`, exactly as the old inotify watcher did.
+        :meth:`on_file_changed`.
         """
         current = self._config_file_mtimes()
         changed = [p for p, m in current.items()

@@ -936,11 +936,10 @@ def render_dot_svg(dot_text: str, timeout: float = 10.0,
 
 # --- Pipeline SVG sanitizer (clickable inline graph) ---
 #
-# The status page embeds the pipeline SVG as an inert base64 <img> so
-# kotekan-supplied content can never execute script in choco's
-# authenticated UI.  The full-page pipeline view needs the SVG *live*
-# in the DOM to make buffer nodes clickable, so it goes through this
-# whitelist RECONSTRUCTION instead: a brand-new tree is built and only
+# The pipeline page needs the SVG *live* in the DOM to make buffer
+# nodes clickable, which means kotekan-supplied markup lands in choco's
+# authenticated UI.  It goes through this whitelist RECONSTRUCTION: a
+# brand-new tree is built and only
 # known-inert graphviz output elements/attributes are copied over —
 # <script>, event handlers, <foreignObject>, xlink:href and anything
 # else unexpected can't survive because nothing is copied by default.

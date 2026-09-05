@@ -96,7 +96,7 @@ class Node:
 
     Each node owns its identity (name, group, host, port), its config
     state (base config file on disk, rendered config, updatable overrides),
-    a FIFO change queue (used by the sync worker pool), and an HTTP
+    a FIFO change queue (drained by its ``sync.NodeWorker``), and an HTTP
     client for the kotekan REST API.
 
     Config lifecycle:
@@ -211,8 +211,8 @@ class Node:
     def desired_config(self) -> dict | None:
         """Rendered config with updatable overrides applied.
 
-        Computed from the current ``_rendered_config`` and ``_updatable``
-        on every access — no separate cache.  Returns a fresh deep copy
+        Computed from ``rendered_config`` and ``updatable_config`` on
+        every access — no separate cache.  Returns a fresh deep copy
         safe to mutate, or None if no base config exists.
         """
         if self.rendered_config is None:
@@ -599,9 +599,9 @@ class Registry:
 
         Clears and repopulates the registry; all existing :class:`Node`
         objects are discarded along with any pending queue items or
-        runtime state.  Callers that need to synchronise with the sync
-        worker pool should hold the orchestrator's submit lock around
-        this call.
+        runtime state.  Callers that need to synchronise with the node
+        workers should hold the orchestrator's submit lock around this
+        call.
 
         If ``nodes.yaml`` is missing or unparseable the registry is left
         empty and the error is logged — the service comes up so it can
