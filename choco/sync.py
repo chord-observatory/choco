@@ -605,8 +605,10 @@ class Orchestrator:
                 logger.info(f"Waiting for {key} to reach idle state")
                 if worker:
                     worker.set_phase(WorkerPhase.AWAITING_IDLE)
+                # A float step: with integer division a timeout under
+                # ten seconds slept zero and probed ten times back to back.
                 for _ in range(10):
-                    gevent.sleep(self.restart_timeout // 10)
+                    gevent.sleep(self.restart_timeout / 10)
                     if node.get_status() == NodeStatus.IDLE:
                         break
                 else:

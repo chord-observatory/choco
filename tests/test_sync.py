@@ -1029,3 +1029,24 @@ class TestNodeWorker:
         gevent.joinall(greenlets, timeout=5)
         assert all(g.value is True for g in greenlets)
         assert peak["max"] == 1
+
+
+class TestRestartWait:
+    def test_short_restart_timeout_still_sleeps_between_probes(self, registry, monkeypatch):
+        """With restart_timeout < 10 the idle wait used integer division and
+        slept 0 s, turning the wait loop into ten back-to-back probes."""
+        orchestrator = Orchestrator(registry, poll_interval=1, restart_timeout=5)
+        node = registry.get_node("cx/cx1")
+        node.started = True
+        node.get_status = MagicMock(side_effect=[
+            NodeStatus.STARTED,   # _push_config probe (not idle, so kill)
+            NodeStatus.IDLE,      # wait loop
+            NodeStatus.IDLE,      # post-loop check
+        ])
+        node.kill = MagicMock(return_value=True)
+        node.start = MagicMock(return_value=True)
+        sleeps = []
+        monkeypatch.setattr("choco.sync.gevent.sleep", lambda s: sleeps.append(s))
+
+        assert orchestrator._push_config(node, {"cfg": 1}) is True
+        assert sleeps == [0.5]
