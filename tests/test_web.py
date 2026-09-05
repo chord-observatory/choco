@@ -2297,3 +2297,27 @@ class TestMetrics:
         assert "choco_nodes_maintenance 3" in body
         # One-hot node counts by status are present for every status.
         assert 'choco_nodes{status="unknown"} 3' in body
+
+
+class TestNodeStatusPartial:
+    def test_renders_cached_status_without_probing(self, client, app):
+        """The worker is the only writer of node.status; the partial
+        must render what it last recorded, not probe kotekan itself."""
+        from unittest.mock import patch
+        from choco.state import Node, NodeStatus
+
+        _login(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.status = NodeStatus.STARTED
+        node.version = "2026.09"
+        with patch.object(Node, "get_status") as probe:
+            resp = client.get("/nodes/partials/node-status/cx/cx1")
+        assert resp.status_code == 200
+        probe.assert_not_called()
+        body = resp.data.decode()
+        assert "status-started" in body
+        assert "2026.09" in body
+
+    def test_unknown_node_404s(self, client):
+        _login(client)
+        assert client.get("/nodes/partials/node-status/cx/nope").status_code == 404

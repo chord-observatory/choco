@@ -679,17 +679,16 @@ def set_maintenance_group(group, action):
 @bp.route("/nodes/partials/node-status/<path:node_key>")
 @login_required
 def partial_node_status(node_key):
+    """The edit page's status rows, rendered from the worker's last probe.
+
+    Deliberately no probe of its own: the node's worker is the only
+    writer of ``node.status``, and its cadence (``poll_interval`` while
+    reachable) already bounds how fresh this can be.
+    """
     registry = _registry()
     node = registry.get_node(node_key)
     if node is None:
         abort(404)
-    # Light probe so the status/edit pages get fresh data between sync
-    # loop polls.
-    probe = node.get_status()
-    if probe != node.status:
-        node.status = probe
-    if probe not in (NodeStatus.DOWN, NodeStatus.UNKNOWN):
-        node.last_seen = time.time()
     return render_template("_node_status.html", node=node)
 
 
