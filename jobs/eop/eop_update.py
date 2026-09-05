@@ -201,30 +201,24 @@ def main() -> int:
     missing = [k for k in EOP_REQUIRED_KEYS if k not in eop_cfg]
     if missing:
         raise ValueError(f"missing eop config keys: {', '.join(missing)}")
-    # fpga_master moved to its own top-level block; accept the legacy
-    # eop.fpga_master_* keys for now and warn.
     fpga_cfg = config.get("fpga_master") or {}
-    fpga_host = fpga_cfg.get("host") or eop_cfg.get("fpga_master_host")
-    fpga_port = fpga_cfg.get("port") or eop_cfg.get("fpga_master_port")
+    fpga_host, fpga_port = fpga_cfg.get("host"), fpga_cfg.get("port")
     if fpga_host is None or fpga_port is None:
         raise ValueError("fpga_master.host / fpga_master.port not set in config")
-    if "fpga_master_host" in eop_cfg or "fpga_master_port" in eop_cfg:
-        log.warning("eop.fpga_master_host/port is deprecated; "
-                    "move it to a top-level fpga_master block.")
     fpga_port = int(fpga_port)
     n_before = int(eop_cfg["intervals_before"])
     n_after = int(eop_cfg["intervals_after"])
     endpoint = eop_cfg["endpoint"]
 
-    # The state file lives at an absolute path (the /var/lib/choco/eop
-    # default); a relative path is resolved against configs_dir (the
-    # legacy layout).
+    # The table is append-only across runs, so where it lives is not a
+    # detail: a relative path would resolve against whatever the current
+    # directory happens to be and quietly start a fresh table.
     state_file = Path(eop_cfg["state_file"])
     if not state_file.is_absolute():
-        configs_dir = Path(config.get("configs_dir", "configs"))
-        if not configs_dir.is_absolute():
-            configs_dir = Path(config_path).parent / configs_dir
-        state_file = configs_dir / state_file
+        raise ValueError(
+            f"eop.state_file must be an absolute path, not {state_file!s}; "
+            f"move the table to /var/lib/choco/eop/state.json and point the "
+            f"key there")
 
     # Frame0
     log.info("Reading frame0 from fpga_master at %s:%d ...", fpga_host, fpga_port)

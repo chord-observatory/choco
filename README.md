@@ -98,7 +98,7 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 
 #### LDAP Authentication (FreeIPA)
 
-choco authenticates against a FreeIPA LDAP directory by **direct bind**: the user's DN is strung together as `<user_login_attr>=<username>,<user_dn>,<base_dn>` and bound with their own password — the bind itself proves the credentials, so **no service account is needed**. The defaults are tuned for FreeIPA (`cn=users,cn=accounts` user DN, `uid` login attribute, LDAPS on port 636). Legacy keys from the old search-bind implementation (`bind_dn`, `bind_password`, `user_object_filter`, `user_search_scope`) are ignored if present, so an existing `config.yaml` keeps working — and the bind account's credential can be removed from it.
+choco authenticates against a FreeIPA LDAP directory by **direct bind**: the user's DN is strung together as `<user_login_attr>=<username>,<user_dn>,<base_dn>` and bound with their own password — the bind itself proves the credentials, so **no service account is needed**. The defaults are tuned for FreeIPA (`cn=users,cn=accounts` user DN, `uid` login attribute, LDAPS on port 636).
 
 The LDAPS connection **verifies the server's certificate and hostname** (ldap3's own default would accept any certificate, which lets anyone on the path to the IPA server answer "bind succeeded" to any password). By default it verifies against the system CA store, where `ipa-client-install` has already placed the IPA CA; `ldap.ca_cert` points at a PEM bundle instead, and a path to a missing file is a startup error rather than a silent fallback. `use_ssl: false` is allowed but logged as a warning, since passwords would then cross the network in cleartext.
 
@@ -315,10 +315,6 @@ hosts, or configs:
 
 Example alerts: `choco_service_state{service="eop",state="ok"} != 1` for a
 day, `choco_nodes{status="down"} > 0`, or `changes(choco_start_time_seconds[1h]) > 0`.
-
-> **Note:** the power controller's service label changed from `psu` to `pdb`
-> when the service was renamed. Any dashboard or alert matching
-> `service="psu"` needs updating; the old series simply stops being reported.
 
 ## How Sync Works
 

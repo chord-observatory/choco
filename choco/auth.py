@@ -48,12 +48,6 @@ class LdapAuthenticator:
     (``uid=<user>,cn=users,cn=accounts,<base_dn>``) and bound directly
     with their password — the bind itself proves the credentials, no
     service account involved.
-
-    This replaces flask-ldap3-login with the one code path choco ever
-    exercised: with the RDN attribute always set equal to the login
-    attribute, the wrapper's search-bind mode (the reason for its
-    ``bind_dn`` service account) was unreachable dead weight, along with
-    its Flask-WTF/WTForms dependencies.
     """
 
     def __init__(self, host: str, port: int = 636, use_ssl: bool = True,
@@ -195,11 +189,7 @@ def init_auth(app: Flask, config: dict):
             if not current_user.is_authenticated:
                 login_user(save_user(f"dev:{dev_user}", dev_user))
 
-    # LDAP setup.  Legacy keys from the flask-ldap3-login era (bind_dn,
-    # bind_password, user_object_filter, user_search_scope) are simply
-    # ignored — they only fed the search-bind path choco never took, so
-    # a deployed config.yaml keeps working (and the bind account's
-    # credential can be deleted from it).
+    # LDAP setup: direct bind, so no service account and no search filter.
     ldap = config.get("ldap", {}) or {}
     ldap_host = ldap.get("host")
     if not ldap_host:

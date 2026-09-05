@@ -184,11 +184,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Peeks speak only `GET /buffer_frame?name=&len=`; 402/404/500 from kotekan
   are meaningful replies, not outages.
 
-**Compatibility shims still in place** (remove once the deployed
-`config.yaml` is migrated): `sync.num_workers`, `eop.fpga_master_host/port`,
-the `psu:` block and `/service/psu`, a relative `eop.state_file`, the
-`/var/lib/<job>` migration in `choco.sh`, and the ignored flask-ldap3-login
-keys.
+**Retired config keys are refused, not read.** `load_config` raises on
+`sync.num_workers`, a `psu:` block, `eop.fpga_master_*` and a relative
+`eop.state_file`, naming the replacement.  Do not add a silent fallback for
+a renamed key; extend `_RETIRED_KEYS` instead.
 
 ## Design docs
 

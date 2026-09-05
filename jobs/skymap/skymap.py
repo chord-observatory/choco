@@ -767,11 +767,6 @@ def main(argv=None):
     # Resolve the beams: list.  A malformed list is a config statement,
     # so exit 1; the live pointing lookup (a "pointing" entry) degrades
     # (exit 2, previous image stays up) when choco is unreachable.
-    if cfg.get("dec") is not None or cfg.get("extra_beams"):
-        print("Config error: dec/extra_beams were replaced by beams: — "
-              "a list of 'pointing', source names, and/or declinations",
-              file=sys.stderr)
-        return 1
     try:
         parsed = parse_beams(cfg["beams"])
     except ValueError as e:

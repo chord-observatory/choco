@@ -1086,19 +1086,11 @@ def _service_registry() -> dict[str, dict]:
     eigencal_cfg = current_app.config.get("eigencal_cfg") or {}
     waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
     skymap_cfg = current_app.config.get("skymap_cfg") or {}
-    configs_dir = current_app.config.get("configs_dir")
 
     # EOP rewrites its state file on every successful (daily) run, so
-    # the mtime doubles as "last successful run" and goes stale.  The
-    # path is absolute (the /var/lib/choco/eop default) or, for backward
-    # compatibility, relative to configs_dir (the legacy layout).
-    eop_state = None
-    if eop_cfg.get("state_file"):
-        p = Path(str(eop_cfg["state_file"]))
-        if p.is_absolute():
-            eop_state = p
-        elif configs_dir:
-            eop_state = Path(configs_dir) / p
+    # the mtime doubles as "last successful run" and goes stale.
+    eop_state = (Path(str(eop_cfg["state_file"]))
+                 if eop_cfg.get("state_file") else None)
 
     def job(label: str, unit: str, state_file, stale_after_s=None,
             mtime_label="last run") -> dict:
@@ -1375,16 +1367,6 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
         }
 
     return None
-
-
-@bp.route("/service/psu")
-def legacy_psu_page():
-    """The PDB page lived at /service/psu before the rename.
-
-    A URL alias, not a service page — kept out of ``service_page`` so
-    that function stays "render the page for this service".
-    """
-    return redirect(url_for("web.service_page", name="pdb"))
 
 
 @bp.route("/service/<name>")

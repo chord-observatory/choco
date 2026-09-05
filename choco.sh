@@ -60,8 +60,7 @@ check_config() {
     if grep -qE '^\s*secret_key:\s*(change-me|dev-key-change-me)?\s*(#.*)?$' "$config" 2>/dev/null; then
         warnings+=("server.secret_key is a placeholder -- choco refuses to start with it; set it to the output of: python3 -c 'import secrets; print(secrets.token_hex(32))'")
     fi
-    # bind_dn/bind_password deliberately absent: direct-bind LDAP needs
-    # no service account, so those legacy keys are ignored if present.
+    # Direct-bind LDAP: no bind_dn / bind_password to check for.
     for field in host base_dn; do
         if grep -qE "^\s*${field}:\s*(#.*)?$" "$config" 2>/dev/null; then
             warnings+=("ldap.$field is not set")
@@ -257,25 +256,6 @@ cmd_install() {
     ensure_iptables
     apt install -y iptables-persistent
     netfilter-persistent save
-
-    # One-time migration: job state moved from /var/lib/<job> to the shared
-    # /var/lib/choco/<job> namespace (units use StateDirectory=choco/<job>).
-    # Move an old directory only when its new home does not exist yet --
-    # never merge; systemd fixes ownership on the next unit start.
-    for job in eop bffs eigencal waterfall skymap; do
-        if [ -d "/var/lib/$job" ] && [ ! -e "/var/lib/choco/$job" ]; then
-            mkdir -p /var/lib/choco
-            mv "/var/lib/$job" "/var/lib/choco/$job"
-            echo "Moved /var/lib/$job -> /var/lib/choco/$job"
-        fi
-    done
-    # The deployed configs are hand-managed, so point out stale paths
-    # rather than editing them.
-    for f in "$CONFIG_DIR"/*.yaml; do
-        if [ -f "$f" ] && grep -qE '/var/lib/(eop|bffs|eigencal|waterfall|skymap)/' "$f"; then
-            echo "NOTE: $f still references /var/lib/<job> paths -- update them to /var/lib/choco/<job>"
-        fi
-    done
 
     # systemd units: main service + any job units (jobs/<name>/choco-*.{service,timer})
     cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/

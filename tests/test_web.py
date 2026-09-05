@@ -1302,13 +1302,6 @@ class TestServicePage:
         assert body.count('class="chan on unmapped"') == 1
         assert body.count('class="chan off unmapped"') == 15
 
-    def test_psu_page_redirects_to_pdb(self, client):
-        """The page was /service/psu before the rename."""
-        _login(client)
-        resp = client.get("/service/psu", follow_redirects=False)
-        assert resp.status_code == 302
-        assert resp.headers["Location"].endswith("/service/pdb")
-
     def test_timer_facts_shown(self, client):
         from unittest.mock import patch
         _login(client)
@@ -1454,9 +1447,10 @@ class TestServicePage:
         _login(client)
         table = [{"t_inst_ns": 1700000000_000000000},
                  {"t_inst_ns": 1700345600_000000000}]
-        (configs_dir / "eop-state.json").write_text(
+        state_file = configs_dir / "eop-state.json"
+        state_file.write_text(
             json.dumps({"earth_orientation_parameter_table": table}))
-        app.config["eop_cfg"] = {"state_file": "eop-state.json"}
+        app.config["eop_cfg"] = {"state_file": str(state_file)}
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/eop")
@@ -1494,11 +1488,7 @@ class TestServicePage:
         _login(client)
         state_file = tmp_path / "state.json"
         state_file.write_text(json.dumps(state))
-        if name == "eop":
-            app.config["eop_cfg"] = {"state_file": state_file.name}
-            app.config["configs_dir"] = tmp_path
-        else:
-            app.config[f"{name}_cfg"] = {"state_file": str(state_file)}
+        app.config[f"{name}_cfg"] = {"state_file": str(state_file)}
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get(f"/service/{name}")

@@ -61,6 +61,38 @@ _PLACEHOLDER_SECRETS = frozenset({
 })
 _MIN_SECRET_LEN = 16
 
+# Config keys that were renamed or moved.  They are refused, not read: a
+# key that is silently ignored, or quietly folded into its successor,
+# leaves a config.yaml that lies about what is running.  Each entry
+# names the fix; extend this table rather than adding a fallback.
+_RETIRED_KEYS = (
+    (("sync", "num_workers"), "rename it to sync.max_concurrent_pushes"),
+    (("psu",), "rename the block to pdb:"),
+    (("eop", "fpga_master_host"), "move it to a top-level fpga_master.host"),
+    (("eop", "fpga_master_port"), "move it to a top-level fpga_master.port"),
+)
+
+
+def _refuse_retired_keys(raw: dict) -> None:
+    problems = []
+    for path, fix in _RETIRED_KEYS:
+        node = raw
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if node is not None:
+            problems.append(f"{'.'.join(path)}: {fix}")
+    state_file = (raw.get("eop") or {}).get("state_file")
+    if state_file and not Path(str(state_file)).is_absolute():
+        problems.append(
+            f"eop.state_file: must be an absolute path; move the table to "
+            f"/var/lib/choco/eop/state.json (it is at "
+            f"<configs_dir>/{state_file}) and point the key there")
+    if problems:
+        raise ValueError("config.yaml carries retired keys: "
+                         + "; ".join(problems))
+
 
 def load_config(path: str | Path) -> dict:
     """Load configuration from a YAML file, filling in defaults."""
@@ -111,43 +143,13 @@ def load_config(path: str | Path) -> dict:
                 "so a guessable one lets anyone log in.  Generate one with: "
                 "python3 -c 'import secrets; print(secrets.token_hex(32))'"
             )
+    _refuse_retired_keys(raw)
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
     config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
-    # num_workers used to size a scanning worker pool; with one worker
-    # per node the only remaining knob of that shape is how many nodes
-    # may restart at once.  Keep reading the old key so a deployed
-    # config.yaml keeps working, and say so once at startup.
-    legacy_workers = config["sync"].pop("num_workers", None)
-    if legacy_workers is not None:
-        if "max_concurrent_pushes" not in (raw.get("sync") or {}):
-            config["sync"]["max_concurrent_pushes"] = legacy_workers
-        logger.warning("Config: sync.num_workers is deprecated; "
-                       "rename it to sync.max_concurrent_pushes.")
     config["fpga_master"] = raw.get("fpga_master") or {}
     config["eop"] = raw.get("eop") or {}
-    # Backwards-compat: fpga_master_host/port used to live under eop:.
-    # If the new top-level block is missing them but the old keys are
-    # present, fold them in and warn so the operator can migrate.
-    eop_block = config["eop"]
-    legacy_host = eop_block.get("fpga_master_host")
-    legacy_port = eop_block.get("fpga_master_port")
-    if legacy_host and not config["fpga_master"].get("host"):
-        config["fpga_master"]["host"] = legacy_host
-        logger.warning("Config: eop.fpga_master_host is deprecated; "
-                       "move it to a top-level fpga_master.host block.")
-    if legacy_port and not config["fpga_master"].get("port"):
-        config["fpga_master"]["port"] = legacy_port
-    # The power controller block was called psu: before it was renamed
-    # PDB (power distribution boards) to disambiguate it from the
-    # supplies themselves.  Keep reading the old key so a deployed
-    # config.yaml keeps working, and say so once at startup.
     config["pdb"] = raw.get("pdb") or {}
-    legacy_pdb = raw.get("psu") or {}
-    if legacy_pdb and not config["pdb"]:
-        config["pdb"] = legacy_pdb
-        logger.warning("Config: the psu: block is deprecated; "
-                       "rename it to pdb:.")
     config["bffs"] = raw.get("bffs") or {}
     config["eigencal"] = raw.get("eigencal") or {}
     config["waterfall"] = raw.get("waterfall") or {}
