@@ -3,7 +3,7 @@
 
 server:
   host: 0.0.0.0
-  port: 5000                     # Use iptables to redirect 443 -> 5000 (see ./choco.sh setup-ports)
+  port: 5000                     # iptables redirects 443 -> 5000 (installed by ./choco.sh install)
   secret_key: change-me           # Signs the session cookie, so a guessable key is a login bypass.  choco
                                   # REFUSES TO START with this placeholder or anything under 16 characters.
                                   # `choco.sh install` seeds a random key; by hand:

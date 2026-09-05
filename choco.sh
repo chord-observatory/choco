@@ -87,8 +87,8 @@ check_config() {
 PDB_MAP_NAME="pdb_map.csv"
 
 copy_repo_configs() {
-    # tar rather than cp -r so the map can be excluded; "." carries the
-    # hidden .updatable/ tree along with the group directories.
+    # tar rather than cp -r so the map can be excluded.  configs/.updatable
+    # is runtime state and untracked, so a checkout has none to copy.
     tar -C "$SCRIPT_DIR/configs" --exclude="./$PDB_MAP_NAME" -cf - . \
         | tar -C "$CONFIG_DIR/configs" -xf -
 }
@@ -431,7 +431,7 @@ kotekan:
 sync:
   poll_interval: 5
   restart_timeout: 10
-  num_workers: 2
+  max_concurrent_pushes: 2
 
 # fpga_master / pdb are deliberately absent: a dev instance should not
 # poll (let alone control) the real F-engine or the power boards.  Their
