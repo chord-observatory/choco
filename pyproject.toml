@@ -14,6 +14,7 @@ requires-python = ">=3.10"
 # still carries everything.
 dependencies = [
     "flask>=3.0",
+    "jinja2>=3.1",        # imported directly by state.py (config rendering); a flask dep anyway
     "flask-login>=0.6",
     "ldap3>=2.9",
     "gevent>=24.0",
@@ -31,12 +32,12 @@ jobs = [
 ]
 dev = [
     "pytest>=8.0",
-    "pytest-mock>=3.12",
-    "responses>=0.25",
+    "responses>=0.25",    # mocks `requests` in test_kotekan / test_services
 ]
 
 [project.scripts]
-choco = "choco.app:main"
+choco = "choco.cli:main"          # CLI client (choco/cli.py)
+choco-server = "choco.app:main"   # the daemon
 
 [tool.setuptools.packages.find]
 include = ["choco*"]

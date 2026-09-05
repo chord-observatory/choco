@@ -281,6 +281,7 @@ class TestConfig:
         cfg = tmp_path / "config.yaml"
         cfg.write_text(yaml.safe_dump({
             "configs_dir": str(tmp_path),
+            "server": {"secret_key": "k" * 32},  # a placeholder key is refused at load
             "waterfall": {"images_dir": str(images), "ttl": 5,
                           "state_file": "/var/lib/choco/waterfall/state.json"},
         }))
@@ -291,7 +292,8 @@ class TestConfig:
     def test_missing_waterfall_block_defaults_to_empty(self, tmp_path):
         from choco.app import load_config
         cfg = tmp_path / "config.yaml"
-        cfg.write_text(yaml.safe_dump({"configs_dir": str(tmp_path)}))
+        cfg.write_text(yaml.safe_dump({"configs_dir": str(tmp_path),
+                                        "server": {"secret_key": "k" * 32}}))
         assert load_config(cfg)["waterfall"] == {}
 
 

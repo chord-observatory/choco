@@ -358,6 +358,7 @@ class TestSkymap:
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(
             f"configs_dir: {configs_dir}\n"
+            "server: {secret_key: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk}\n"
             f"skymap:\n  image_file: {png}\n"
         )
         config = load_config(cfg_file)
@@ -895,6 +896,39 @@ class TestMaintenanceToggles:
             json={"action": "set_maintenance", "maintenance": "yes"},
         )
         assert resp.status_code == 400
+
+
+    def test_json_api_flags_wake_the_worker(self, client, app):
+        """set_started / set_maintenance through /update enqueue a POLL,
+        exactly as the dashboard toggles do, so the change takes effect
+        now rather than at the node's next scheduled check (which for a
+        backed-off node is up to max_retry_interval away)."""
+        submitted = []
+        orch = app.config["orchestrator"]
+        orch.submit_node = submitted.append
+        orch.submit_group = lambda group, factory: submitted.extend(
+            factory(n.key) for n in app.config["registry"].nodes.values()
+            if n.group == group)
+
+        assert client.post("/update/cx/cx1", json={
+            "action": "set_started", "started": True}).status_code == 200
+        assert client.post("/update/cx", json={
+            "action": "set_maintenance", "maintenance": False}).status_code == 200
+        assert client.post("/update/recv/recv1", json={
+            "action": "set_maintenance", "maintenance": False}).status_code == 200
+        assert client.post("/update/recv", json={
+            "action": "set_started", "started": False}).status_code == 200
+        assert [(i.type, i.node_key) for i in submitted] == [
+            (ChangeType.POLL, "cx/cx1"),
+            (ChangeType.POLL, "cx/cx1"), (ChangeType.POLL, "cx/cx2"),
+            (ChangeType.POLL, "recv/recv1"),
+            (ChangeType.POLL, "recv/recv1"),
+        ]
+        # A rejected value wakes nothing.
+        submitted.clear()
+        assert client.post("/update/cx", json={
+            "action": "set_started", "started": "yes"}).status_code == 400
+        assert submitted == []
 
 
 # --- POST /oneshot/<group>[/<node>] ---

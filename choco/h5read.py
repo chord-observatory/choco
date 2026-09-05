@@ -49,6 +49,28 @@ def _value_type(dtype):
     return _VALUE_TYPES.get((dtype.kind, dtype.itemsize))
 
 
+def _as_served(dset, np):
+    """The dataset as the plotter will receive it: ``(array, value_type)``.
+
+    One rule lives here, used by both ``manifest`` and ``data`` so the two
+    cannot disagree: a complex dataset whose imaginary part is identically
+    zero is served as its real part -- float32 for complex64, float64 for
+    complex128, half the bytes.  fpga_master's gain archive is the case in
+    point: its *format* is complex (``DigitalGainArchive`` allows complex
+    gains) but its *content* is real -- verified against the live file,
+    every imaginary part exactly 0 -- and a part selector over data that
+    has no parts is noise.  The check is kept rather than stripping
+    unconditionally because it costs one scan of an array already in
+    hand and turns the premise failing into the correct behaviour: a
+    dataset that does carry imaginary content is served complex exactly
+    as before, and the plotter's part selector reappears on its own.
+    """
+    arr = np.ascontiguousarray(dset[()])
+    if arr.dtype.kind == "c" and not np.any(arr.imag):
+        arr = np.ascontiguousarray(arr.real)
+    return arr, _value_type(arr.dtype)
+
+
 def _dimnames(dset, ndim):
     """Axis names, from the CHIME/CHORD-style ``axis`` attribute."""
     axis = dset.attrs.get("axis")
@@ -103,6 +125,8 @@ def _index_map_summary(h5py, f):
 
 
 def manifest(h5py, path):
+    import numpy as np
+
     datasets, attrs, scalars = [], {}, {}
     with h5py.File(path, "r") as f:
         for key, value in f.attrs.items():
@@ -120,12 +144,18 @@ def manifest(h5py, path):
                 return
             if obj.size and obj.size <= 8 and obj.ndim <= 1:
                 scalars[name] = _scalar(obj[()])
+            nbytes = int(obj.dtype.itemsize) * int(obj.size)
+            if obj.dtype.kind == "c" and nbytes <= MAX_DATASET_BYTES:
+                # The real-content rule needs the values; only complex
+                # datasets that ``data`` could serve pay for the read.
+                arr, value_type = _as_served(obj, np)
+                nbytes = int(arr.nbytes)
             datasets.append({
                 "name": name,
                 "value_type": value_type,
                 "extents": [int(n) for n in obj.shape],
                 "dimnames": _dimnames(obj, obj.ndim),
-                "bytes": int(obj.dtype.itemsize) * int(obj.size),
+                "bytes": nbytes,
             })
 
         f.visititems(visit)
@@ -146,7 +176,7 @@ def data(h5py, path, name):
             raise LookupError(f"dataset '{name}' has no plottable dtype")
         if dset.dtype.itemsize * dset.size > MAX_DATASET_BYTES:
             raise LookupError(f"dataset '{name}' is too large to serve")
-        arr = np.ascontiguousarray(dset[()])
+        arr, _ = _as_served(dset, np)
     # Little-endian on the wire: the browser reads it with typed arrays,
     # which are native-endian, and every platform choco serves is LE.
     if arr.dtype.byteorder == ">":

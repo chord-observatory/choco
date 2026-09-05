@@ -103,11 +103,60 @@ class TestDevAuthOn:
         assert client.get("/").status_code == 200
 
 
+def _write(tmp_path, server, *, real_key=True):
+    """A config.yaml with just a server: block.  A real secret_key is
+    filled in unless the test is about the key itself."""
+    if real_key:
+        server = {"secret_key": "k" * 32, **server}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"server": server}))
+    return path
+
+
+class TestSecretKeyGuard:
+    """A placeholder key is refused at startup: it signs the session
+    cookie, and a forged cookie is a complete login bypass."""
+
+    @pytest.mark.parametrize("key", ["change-me", "dev-key-change-me",
+                                     "dev-only-not-a-secret", "", "short"])
+    def test_refuses_placeholder_or_short_key(self, tmp_path, key):
+        path = _write(tmp_path, {"secret_key": key}, real_key=False)
+        with pytest.raises(ValueError, match="secret_key"):
+            load_config(path)
+
+    def test_missing_key_is_the_default_placeholder(self, tmp_path):
+        path = _write(tmp_path, {"host": "0.0.0.0"}, real_key=False)
+        with pytest.raises(ValueError, match="secret_key"):
+            load_config(path)
+
+    def test_accepts_a_real_key(self, tmp_path):
+        import secrets
+        key = secrets.token_hex(32)
+        path = _write(tmp_path, {"secret_key": key}, real_key=False)
+        assert load_config(path)["server"]["secret_key"] == key
+
+    def test_dev_mode_is_exempt(self, tmp_path):
+        """No login to bypass -- and ./choco.sh develop seeds a placeholder."""
+        path = _write(tmp_path, {"host": "127.0.0.1", "dev_auth": "dev",
+                                 "secret_key": "dev-only-not-a-secret"},
+                      real_key=False)
+        assert load_config(path)["server"]["dev_auth"] == "dev"
+
+
+class TestSessionCookieFlags:
+    def test_secure_follows_ssl(self, prod_app, dev_app):
+        assert prod_app.config["SESSION_COOKIE_SECURE"] is True
+        assert dev_app.config["SESSION_COOKIE_SECURE"] is False  # plain HTTP over a tunnel
+
+    def test_httponly_and_samesite_always(self, prod_app, dev_app):
+        for app in (prod_app, dev_app):
+            assert app.config["SESSION_COOKIE_HTTPONLY"] is True
+            assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+
+
 class TestDevModeGuardrails:
     def _write(self, tmp_path, server):
-        path = tmp_path / "config.yaml"
-        path.write_text(yaml.safe_dump({"server": server}))
-        return path
+        return _write(tmp_path, server)
 
     def test_refuses_non_loopback_bind(self, tmp_path):
         path = self._write(tmp_path, {"host": "0.0.0.0", "dev_auth": "dev"})

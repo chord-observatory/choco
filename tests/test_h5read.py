@@ -55,6 +55,18 @@ def gain_file(tmp_path):
     return path
 
 
+@pytest.fixture
+def complex_file(tmp_path):
+    """A complex dataset that genuinely has an imaginary part -- the case
+    the real-content rule must leave alone."""
+    path = tmp_path / "complex.h5"
+    z = (np.arange(6, dtype=np.float32) + 1j * np.float32(0.5)) \
+        .astype(np.complex64).reshape(2, 3)
+    with h5py.File(path, "w") as f:
+        f.create_dataset("z", data=z)
+    return path
+
+
 def run(*args):
     return subprocess.run([sys.executable, "-m", "choco.h5read", *args],
                           capture_output=True)
@@ -66,13 +78,21 @@ class TestManifest:
         assert proc.returncode == 0, proc.stderr
         m = json.loads(proc.stdout)
         by_name = {d["name"]: d for d in m["datasets"]}
-        assert by_name["gain_coeff"]["value_type"] == "complex64"
+        # Stored complex64 with no imaginary content (as the real archive
+        # is), so served as its real part: float32, half the bytes.
+        assert by_name["gain_coeff"]["value_type"] == "float32"
         assert by_name["gain_coeff"]["extents"] == [1, 4, 3]
         # The axis attribute is what gives the plot its dimension names.
         assert by_name["gain_coeff"]["dimnames"] == \
             ["update_time", "freq", "input"]
         assert by_name["gain_exp"]["value_type"] == "int32"
-        assert by_name["gain_coeff"]["bytes"] == 1 * 4 * 3 * 8
+        assert by_name["gain_coeff"]["bytes"] == 1 * 4 * 3 * 4
+
+    def test_complex_with_imaginary_content_stays_complex(self, complex_file):
+        m = json.loads(run("manifest", str(complex_file)).stdout)
+        by_name = {d["name"]: d for d in m["datasets"]}
+        assert by_name["z"]["value_type"] == "complex64"
+        assert by_name["z"]["bytes"] == 6 * 8
 
     def test_biggest_dataset_first(self, gain_file):
         m = json.loads(run("manifest", str(gain_file)).stdout)
@@ -113,15 +133,26 @@ class TestManifest:
 
 
 class TestData:
-    def test_bytes_match_the_array_exactly(self, gain_file):
+    def test_real_valued_complex_is_served_as_its_real_part(self, gain_file):
         proc = run("data", str(gain_file), "gain_coeff")
         assert proc.returncode == 0, proc.stderr
         with h5py.File(gain_file, "r") as f:
-            expected = np.ascontiguousarray(f["gain_coeff"][()])
+            stored = np.ascontiguousarray(f["gain_coeff"][()])
+        assert stored.dtype == np.complex64          # what the file holds
+        expected = np.ascontiguousarray(stored.real)  # what the plotter gets
+        assert proc.stdout == expected.tobytes()
+        assert len(proc.stdout) == stored.size * 4
+        got = np.frombuffer(proc.stdout, dtype="<f4")
+        assert got.tolist() == expected.ravel().tolist()
+
+    def test_complex_with_imaginary_content_is_served_complex(self, complex_file):
+        proc = run("data", str(complex_file), "z")
+        assert proc.returncode == 0, proc.stderr
+        with h5py.File(complex_file, "r") as f:
+            expected = np.ascontiguousarray(f["z"][()])
         assert proc.stdout == expected.tobytes()
         # C-order with the pairs interleaved is what the plotter decodes
-        # complex64 as: 24 values -> 8 complex -> 12 floats... check the
-        # first complex value survives the trip.
+        # complex64 as; the first value survives the trip intact.
         got = np.frombuffer(proc.stdout, dtype="<c8")
         assert got[0] == expected.ravel()[0]
 

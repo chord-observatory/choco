@@ -42,6 +42,7 @@ This installs choco as a system service with the following layout:
 The install script also:
 - Creates a local `.venv` in the repo directory (editable install, owned by invoking user) for development
 - Installs Python dependencies **pinned and hash-locked by `requirements.lock`** — pip runs with `--require-hashes`, and each pin lists the sha256 of every artifact PyPI serves for that version, so a deploy gets exactly the reviewed versions and refuses a substituted or tampered file even at the same version number (choco itself goes on top with `--no-deps`); regenerate the lock with `./choco.sh lock` after changing `pyproject.toml`, review the diff, and commit it. `./choco.sh audit` checks every pin (including pip itself, which is in the lock) against the latest PyPI releases and the OSV vulnerability database without changing anything — it exits non-zero if a pinned version has a known advisory, so it can run from cron or CI
+- Symlinks the `choco` command-line client (the venv's `choco` console script; see JSON API below) to `/usr/local/bin/choco`; the daemon's entry point is `choco-server`
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
 - Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal), enabling the services and starting the timers
@@ -85,7 +86,7 @@ The install script creates `/etc/choco/config.yaml` from the template. Edit it:
 server:
   host: 0.0.0.0
   port: 5000
-  secret_key: change-me           # Change this in production!
+  secret_key: change-me           # Placeholder: choco refuses to start with it (install seeds a random key)
   log_level: INFO
   ssl_cert:                       # Leave empty to auto-generate a self-signed cert
   ssl_key:
@@ -144,6 +145,10 @@ ldap:
 #### LDAP Authentication (FreeIPA)
 
 choco authenticates against a FreeIPA LDAP directory by **direct bind**: the user's DN is strung together as `<user_login_attr>=<username>,<user_dn>,<base_dn>` and bound with their own password — the bind itself proves the credentials, so **no service account is needed**. The defaults are tuned for FreeIPA (`cn=users,cn=accounts` user DN, `uid` login attribute, LDAPS on port 636). Legacy keys from the old search-bind implementation (`bind_dn`, `bind_password`, `user_object_filter`, `user_search_scope`) are ignored if present, so an existing `config.yaml` keeps working — and the bind account's credential can be removed from it.
+
+The LDAPS connection **verifies the server's certificate and hostname** (ldap3's own default would accept any certificate, which lets anyone on the path to the IPA server answer "bind succeeded" to any password). By default it verifies against the system CA store, where `ipa-client-install` has already placed the IPA CA; `ldap.ca_cert` points at a PEM bundle instead, and a path to a missing file is a startup error rather than a silent fallback. `use_ssl: false` is allowed but logged as a warning, since passwords would then cross the network in cleartext.
+
+Two other startup-time guardrails sit alongside: `server.secret_key` may not be a placeholder or shorter than 16 characters (it signs the session cookie, so a guessable key is a login bypass; `choco.sh install` generates one), and the session cookie is issued `Secure` (when `server.ssl` is on), `HttpOnly` and `SameSite=Lax`.
 
 ### Config Directory
 
@@ -311,25 +316,24 @@ Read-only status endpoints:
 - `GET /api/pdb/map` — the master dish-input ↔ power-channel table plus its cross-check against kotekan's `dish_inputs` (bffs's `power` source reads it from here)
 - `GET /metrics` — the same overall health in Prometheus exposition format (see below)
 
-The `/update/*` and `/api/*` endpoints bypass auth when called from `localhost`, so from the choco host you can use curl directly (use `-k` since the cert is typically self-signed):
+One-off configs go the same way: `POST /oneshot/<group>` or `POST /oneshot/<group>/<node>` with `{"config_content": "..."}` starts the supplied config on nodes that are in maintenance and idle, recording nothing (200 with `started`/`skipped` per node, 409 if nothing started, 400 if the text does not render).
+
+The `/update/*`, `/oneshot/*` and `/api/*` endpoints bypass auth when called from `localhost`, and the `choco` command wraps them — `choco/cli.py`, stdlib only, installed to `/usr/local/bin/choco` by `choco.sh install` (the daemon itself is `choco-server`):
 
 ```bash
-# Start a single node
-curl -ks -X POST https://localhost:5000/update/<group>/<node> -H 'Content-Type: application/json' -d '{"action":"set_started","started":true}'
-
-# Stop (idle) a single node
-curl -ks -X POST https://localhost:5000/update/<group>/<node> -H 'Content-Type: application/json' -d '{"action":"set_started","started":false}'
-
-# Start a whole group
-curl -ks -X POST https://localhost:5000/update/<group> -H 'Content-Type: application/json' -d '{"action":"set_started","started":true}'
-
-# Stop a whole group
-curl -ks -X POST https://localhost:5000/update/<group> -H 'Content-Type: application/json' -d '{"action":"set_started","started":false}'
-
-# Check status
-curl -ks https://localhost:5000/api/status | jq .        # overall health
-curl -ks https://localhost:5000/api/nodes/status | jq .  # per-node detail
+choco status                        # overall health
+choco nodes                         # per-node table (-j for the JSON)
+choco get /api/config/cx            # any GET endpoint: /api/pdb/map, /api/files, /metrics, ...
+choco stop cx recv/recv1            # desired state -> idle; targets are <group> or <group>/<node>
+choco start cx/cx19
+choco maint off cx                  # leave maintenance mode (on = pause)
+choco push cx/cx19 new.yaml         # queue a base config (- reads stdin)
+choco set cx updatable_config/bad_inputs '{"bad_inputs": [3, 7]}'   # or @values.json, or -
+choco oneshot cx/cx19 once.yaml     # start an unrecorded config on a paused, idle node
+choco help [command]                # usage (bare `choco` prints it too)
 ```
+
+Every reply is printed as JSON. Exit status: 0 ok, 1 rejected (the server's error on stderr) or misused, 2 choco unreachable. `--url` or `CHOCO_URL` point it elsewhere (a `./choco.sh develop` instance prints the line to use). By hand it is plain `curl -ks` against `https://localhost:5000` with a JSON body, e.g. `-d '{"action":"set_started","started":false}'`.
 
 ### Prometheus metrics
 
@@ -489,6 +493,7 @@ pytest tests/ -v
 ```
 choco/
 ├── app.py          # Flask app factory, gevent WSGI server, entry point
+├── cli.py          # `choco` command: stdlib client for the localhost JSON API
 ├── auth.py         # LDAP authentication (Flask-Login sessions + direct ldap3 bind)
 ├── web.py          # Flask routes: dashboard, node edit, /service/* pages, /update/* JSON API
 ├── state.py        # Node (identity, config state, change queue, kotekan REST client), Registry

@@ -53,6 +53,14 @@ _DEFAULT_CONFIG = {
     "ldap": {},
 }
 
+# Secret keys that ship in a template or a default and were never meant
+# to sign anything.  A key this weak is refused at startup, not warned
+# about: forging a session cookie needs nothing but the key.
+_PLACEHOLDER_SECRETS = frozenset({
+    "change-me", "dev-key-change-me", "dev-only-not-a-secret",
+})
+_MIN_SECRET_LEN = 16
+
 
 def load_config(path: str | Path) -> dict:
     """Load configuration from a YAML file, filling in defaults."""
@@ -88,6 +96,20 @@ def load_config(path: str | Path) -> dict:
                 f"server.dev_auth is set but server.host is {host!r}. "
                 f"Dev mode has no authentication, so it may only bind "
                 f"loopback (127.0.0.1). Reach it over an ssh tunnel."
+            )
+    else:
+        # A forged session cookie is a complete login bypass, and forging
+        # one needs only the secret key -- so a placeholder is refused on
+        # the same reasoning as the bind check above.  Dev mode is exempt:
+        # it has no login for a cookie to bypass.  ``choco.sh install``
+        # seeds a random key so a fresh install never trips this.
+        key = str(config["server"].get("secret_key") or "")
+        if key in _PLACEHOLDER_SECRETS or len(key) < _MIN_SECRET_LEN:
+            raise ValueError(
+                "server.secret_key is a placeholder or shorter than "
+                f"{_MIN_SECRET_LEN} characters; it signs the session cookie, "
+                "so a guessable one lets anyone log in.  Generate one with: "
+                "python3 -c 'import secrets; print(secrets.token_hex(32))'"
             )
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
@@ -152,6 +174,15 @@ def create_app(
         config = _DEFAULT_CONFIG
 
     app.config["SECRET_KEY"] = config["server"]["secret_key"]
+    # Session-cookie hardening.  Secure follows server.ssl: choco also runs
+    # a plain-HTTP listener that only redirects to HTTPS, and without the
+    # flag a browser sends the cookie there in cleartext first; a dev
+    # instance is plain HTTP over an ssh tunnel, where a Secure cookie
+    # would never be sent back at all.  SameSite=Lax is defence in depth
+    # behind the CSRF token; HttpOnly is Flask's default, stated anyway.
+    app.config["SESSION_COOKIE_SECURE"] = bool(config["server"].get("ssl", True))
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     if configs_dir is None:
         configs_dir = config.get("configs_dir", "configs")

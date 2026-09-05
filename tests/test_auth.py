@@ -4,6 +4,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from ldap3.core.exceptions import LDAPInvalidCredentialsResult
+import copy
+import ssl
+from urllib.parse import quote
+
+from choco.app import _DEFAULT_CONFIG, create_app
 
 from choco.app import create_app
 from choco.auth import LdapAuthenticator, User, save_user, _users
@@ -120,6 +125,23 @@ class TestLoginFlow:
         # the session is live: a protected page now renders
         assert client.get("/").status_code == 200
 
+    def test_session_cookie_is_hardened(self, client, app):
+        """Secure (server.ssl is on by default), HttpOnly, SameSite=Lax."""
+        authenticator = self._enable_ldap(app)
+        authenticator.authenticate.return_value = \
+            "uid=alice,cn=users,cn=accounts,dc=example"
+        token = self._get_csrf(client)
+        resp = client.post(
+            "/login",
+            data={"username": "alice", "password": "pw", "_csrf_token": token},
+            follow_redirects=False,
+        )
+        cookie = next(h for h in resp.headers.getlist("Set-Cookie")
+                      if h.startswith("session="))
+        assert "Secure" in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=Lax" in cookie
+
     def test_login_failure_flashes_error(self, client, app):
         authenticator = self._enable_ldap(app)
         authenticator.authenticate.return_value = None
@@ -186,10 +208,14 @@ class TestLoginNextRedirect:
 
     def test_login_rejects_offsite_next(self, client, app):
         for evil in ("https://evil.example", "//evil.example",
-                     "javascript:alert(1)"):
+                     "javascript:alert(1)",
+                     # browsers resolve these as //evil.example
+                     "/\\evil.example", "/\\/evil.example",
+                     "/\t/evil.example", "/\r\n/evil.example"):
             _users.clear()
-            resp = self._login(client, app, f"/login?next={evil}")
-            assert resp.headers["Location"] == "/"
+            resp = self._login(client, app,
+                               f"/login?next={quote(evil, safe='')}")
+            assert resp.headers["Location"] == "/", repr(evil)
             client.get("/logout")
 
     def test_already_logged_in_login_honors_next(self, client, app):
@@ -206,6 +232,33 @@ class TestLdapAuthenticator:
                         user_dn="cn=users,cn=accounts", login_attr="uid")
         defaults.update(kwargs)
         return LdapAuthenticator(**defaults)
+
+    def test_tls_verifies_the_server_certificate(self):
+        """ldap3's own default, Server(use_ssl=True) with no tls=, is
+        Tls(validate=CERT_NONE): any certificate from any host, so an
+        on-path attacker could answer "bind succeeded" to any password."""
+        auth = self._auth()
+        assert auth.server.ssl is True
+        assert auth.server.tls.validate == ssl.CERT_REQUIRED
+        assert auth.server.tls.ca_certs_file is None  # the system CA store
+
+    def test_ca_cert_is_passed_through(self, tmp_path):
+        pem = tmp_path / "ipa-ca.pem"
+        pem.write_text("not a real certificate\n")
+        assert self._auth(ca_cert=str(pem)).server.tls.ca_certs_file == str(pem)
+
+    def test_ldaps_url_overrides_use_ssl_false_and_still_verifies(self):
+        """ldap3 lets the URL scheme win.  The first version built the
+        strict Tls only when use_ssl was true, so this exact config got
+        ldap3's CERT_NONE default back -- the test that caught it."""
+        auth = self._auth(host="ldaps://ipa.example", use_ssl=False)
+        assert auth.server.ssl is True
+        assert auth.server.tls.validate == ssl.CERT_REQUIRED
+
+    def test_plain_ldap_is_plain(self):
+        auth = self._auth(host="ldap://ipa.example", use_ssl=False, port=389)
+        assert auth.server.ssl is False
+        assert auth.server.tls.validate == ssl.CERT_REQUIRED  # inert, but never CERT_NONE
 
     def test_user_dn_construction(self):
         auth = self._auth()
@@ -285,3 +338,44 @@ class TestAuthenticatedAccess:
         resp = client.get("/login", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["Location"] == "/"
+
+
+class TestInitAuthLdapConfig:
+    """init_auth's handling of the ldap: block."""
+
+    def _app(self, tmp_path, **ldap):
+        (tmp_path / "nodes.yaml").write_text("groups: {}\n")
+        cfg = copy.deepcopy(_DEFAULT_CONFIG)
+        cfg["ldap"] = {"host": "ldaps://ipa.example", **ldap}
+        return create_app(configs_dir=tmp_path, config=cfg)
+
+    def test_ca_cert_reaches_the_authenticator(self, tmp_path):
+        pem = tmp_path / "ipa-ca.pem"
+        pem.write_text("not a real certificate\n")
+        app = self._app(tmp_path, ca_cert=str(pem))
+        tls = app.config["ldap_authenticator"].server.tls
+        assert tls.validate == ssl.CERT_REQUIRED
+        assert tls.ca_certs_file == str(pem)
+
+    def test_missing_ca_cert_file_refuses_to_start(self, tmp_path):
+        """ldap3 would log an error and silently verify against the system
+        store instead -- the operator asked for a specific CA."""
+        with pytest.raises(ValueError, match="ldap.ca_cert"):
+            self._app(tmp_path, ca_cert=str(tmp_path / "nope.pem"))
+
+    def test_empty_ca_cert_means_system_store(self, tmp_path):
+        app = self._app(tmp_path, ca_cert="")
+        assert app.config["ldap_authenticator"].server.tls.ca_certs_file is None
+
+    def test_plain_ldap_is_loud(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="choco.auth"):
+            app = self._app(tmp_path, host="ldap://ipa.example",
+                            use_ssl=False, port=389)
+        assert app.config["ldap_authenticator"].server.ssl is False
+        assert any("cleartext" in r.getMessage() for r in caplog.records)
+
+    def test_ldaps_url_with_use_ssl_false_is_not_plaintext(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="choco.auth"):
+            app = self._app(tmp_path, use_ssl=False)  # host is ldaps://
+        assert app.config["ldap_authenticator"].server.ssl is True
+        assert not any("cleartext" in r.getMessage() for r in caplog.records)

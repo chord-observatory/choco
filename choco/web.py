@@ -96,14 +96,18 @@ def _orchestrator():
 def _next_target() -> str:
     """The post-login destination: ?next= when it is a same-site path.
 
-    Anything else — empty, scheme-relative (//host), or an absolute URL
-    — falls back to the landing page, so a crafted login link cannot
-    bounce a fresh session to another site.  The login form posts to
-    its own URL (no action attribute), so ?next= survives failed
-    attempts too.
+    Anything else — empty, scheme-relative (//host), an absolute URL, or
+    a path carrying a backslash or control character — falls back to the
+    landing page, so a crafted login link cannot bounce a fresh session
+    to another site.  The backslash rule is what makes the ``//`` rule
+    hold: browsers resolve ``/\\host`` in a Location header exactly as
+    ``//host``.  The login form posts to its own URL (no action
+    attribute), so ?next= survives failed attempts too.
     """
     next_page = request.args.get("next", "")
-    if not next_page.startswith("/") or next_page.startswith("//"):
+    if (not next_page.startswith("/") or next_page.startswith("//")
+            or "\\" in next_page
+            or any(ord(c) < 0x20 or c == "\x7f" for c in next_page)):
         return url_for("web.landing")
     return next_page
 
@@ -1779,6 +1783,10 @@ def update_group(group):
         for node in registry.nodes.values():
             if node.group == group:
                 node.started = started
+        # Wake the workers, as the dashboard toggles do, so the change
+        # takes effect now rather than at the next scheduled check.
+        orchestrator.submit_group(
+            group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key))
         return {"status": "ok", "group": group, "started": started}
 
     if action == "set_maintenance":
@@ -1788,6 +1796,8 @@ def update_group(group):
         for node in registry.nodes.values():
             if node.group == group:
                 node.maintenance = maintenance
+        orchestrator.submit_group(
+            group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key))
         return {"status": "ok", "group": group, "maintenance": maintenance}
 
     return {"error": f"Unknown action '{action}'"}, 400
@@ -1836,6 +1846,8 @@ def update_node(group, node):
         if not isinstance(started, bool):
             return {"error": "started must be a boolean"}, 400
         node_obj.started = started
+        orchestrator.submit_node(
+            ChangeItem(type=ChangeType.POLL, node_key=node_key))
         return {"status": "ok", "node": node_key, "started": started}
 
     if action == "set_maintenance":
@@ -1843,6 +1855,8 @@ def update_node(group, node):
         if not isinstance(maintenance, bool):
             return {"error": "maintenance must be a boolean"}, 400
         node_obj.maintenance = maintenance
+        orchestrator.submit_node(
+            ChangeItem(type=ChangeType.POLL, node_key=node_key))
         return {"status": "ok", "node": node_key, "maintenance": maintenance}
 
     return {"error": f"Unknown action '{action}'"}, 400

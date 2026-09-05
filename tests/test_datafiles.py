@@ -212,6 +212,7 @@ class TestFilesRoutes:
 def test_load_config_reads_vis_files(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(yaml.safe_dump({
+        "server": {"secret_key": "k" * 32},  # a placeholder key is refused at load
         "vis_files": {"roots": ["/data/full", "/data/subset"], "ttl": 5},
     }))
     config = load_config(cfg)
@@ -221,7 +222,7 @@ def test_load_config_reads_vis_files(tmp_path):
 
 def test_load_config_defaults_vis_files_empty(tmp_path):
     cfg = tmp_path / "config.yaml"
-    cfg.write_text("configs_dir: configs\n")
+    cfg.write_text("configs_dir: configs\nserver: {secret_key: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk}\n")
     assert load_config(cfg)["vis_files"] == {}
 
 

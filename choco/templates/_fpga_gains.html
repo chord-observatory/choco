@@ -34,10 +34,11 @@
         </tbody>
     </table>
     <p style="font-size: 0.82em; opacity: 0.8;">
-    <code>gain_coeff</code> holds the raw complex coefficients;
-    <code>gain_exp</code> is the per-input exponent and is <em>not</em>
-    folded into them here. Pick <code>part: mag</code> and
-    <code>log</code> — the coefficients span five orders of magnitude.</p>
+    <code>gain_coeff</code> holds the raw coefficients (stored complex,
+    served as their real part &mdash; the imaginary part is identically
+    zero); <code>gain_exp</code> is the per-input exponent and is
+    <em>not</em> folded into them here. Pick <code>log</code> &mdash; the
+    coefficients span five orders of magnitude.</p>
     <div style="display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap;
                 margin-bottom: 0.5em; font-size: 0.9em;">
         <label style="display: flex; align-items: center; gap: 0.4em; margin: 0;">

@@ -281,7 +281,9 @@ class GainArchive:
 
     fpga_master serves ``/get-current-gain-file`` as an HDF5 archive
     (``pychfpga.digital_gain.DigitalGainArchive``): ``gain_coeff``
-    [update_time, freq, input] complex64 plus small per-input datasets
+    [update_time, freq, input] -- complex64 in the file, served as
+    float32 because its imaginary part is identically zero (the rule
+    lives in ``h5read._as_served``) -- plus small per-input datasets
     and an ``index_map``.  Its datasets are C-order arrays with named
     axes, which is exactly the shape the buffer-plot API already speaks,
     so the web layer can hand them to the existing plotter untouched.
