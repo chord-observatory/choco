@@ -15,37 +15,7 @@ import pytest
 import yaml
 
 from choco import cli
-from choco.app import create_app
 from choco.sync import ChangeType
-
-
-@pytest.fixture
-def configs_dir(tmp_path):
-    nodes = {
-        "groups": {
-            "cx": {
-                "cx1": {"host": "cx1.example", "port": 12048},
-                "cx2": {"host": "cx2.example", "port": 12048},
-            },
-            "recv": {
-                "recv1": {"host": "recv1.example", "port": 12048},
-            },
-        }
-    }
-    (tmp_path / "nodes.yaml").write_text(yaml.safe_dump(nodes))
-    (tmp_path / "cx").mkdir()
-    (tmp_path / "cx" / "cx1.yaml").write_text("num_elements: 2048\n")
-    (tmp_path / "cx" / "cx2.yaml").write_text("num_elements: 2048\n")
-    (tmp_path / "recv").mkdir()
-    (tmp_path / "recv" / "recv1.yaml").write_text("buffer_depth: 12\n")
-    return tmp_path
-
-
-@pytest.fixture
-def app(configs_dir):
-    app = create_app(configs_dir=configs_dir)
-    app.config["TESTING"] = True
-    return app
 
 
 @pytest.fixture
@@ -190,25 +160,22 @@ def test_unknown_group_is_exit_1_with_the_servers_error(run):
 def test_push_from_file_and_stdin(run, app, tmp_path, monkeypatch):
     submitted = []
     orch = app.config["orchestrator"]
-    orch.submit_node = submitted.append
-    orch.submit_group = lambda group, factory: submitted.extend(
-        factory(n.key) for n in app.config["registry"].nodes.values()
-        if n.group == group)
-
+    orch.submit_node = lambda key, item: submitted.append((key, item))
+    orch
     text = "num_elements: 4096\nlog_level: debug\n"
     path = tmp_path / "new.yaml"
     path.write_text(text)
     code, out, err = run("push", "cx/cx1", str(path))
     assert code == 0 and err == ""
     assert json.loads(out)["status"] == "queued"
-    assert [(i.type, i.node_key, i.config_content) for i in submitted] == \
+    assert [(i.type, k, i.config_content) for k, i in submitted] == \
         [(ChangeType.BASE_CONFIG, "cx/cx1", text)]
 
     submitted.clear()
     monkeypatch.setattr("sys.stdin", io.StringIO(text))
     code, out, err = run("push", "cx", "-")
     assert code == 0
-    assert [(i.node_key, i.config_content) for i in submitted] == \
+    assert [(k, i.config_content) for k, i in submitted] == \
         [("cx/cx1", text), ("cx/cx2", text)]
 
     submitted.clear()
@@ -224,13 +191,13 @@ def test_push_from_file_and_stdin(run, app, tmp_path, monkeypatch):
 
 def test_set_takes_a_literal_a_file_or_stdin(run, app, tmp_path, monkeypatch):
     submitted = []
-    app.config["orchestrator"].submit_node = submitted.append
+    app.config["orchestrator"].submit_node = lambda key, item: submitted.append((key, item))
     values = {"bad_inputs": [1, 2], "update_id": "x"}
 
     code, out, err = run("set", "cx/cx1", "updatable_config/bad_inputs",
                          json.dumps(values))
     assert code == 0 and err == ""
-    item = submitted.pop()
+    _, item = submitted.pop()
     assert (item.type, item.endpoint, item.values) == \
         (ChangeType.UPDATABLE_CONFIG, "updatable_config/bad_inputs", values)
 
@@ -239,12 +206,12 @@ def test_set_takes_a_literal_a_file_or_stdin(run, app, tmp_path, monkeypatch):
     code, out, err = run("set", "cx/cx1", "updatable_config/bad_inputs",
                          "@" + str(path))
     assert code == 0
-    assert submitted.pop().values == values
+    assert submitted.pop()[1].values == values
 
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(values)))
     code, out, err = run("set", "cx/cx1", "updatable_config/bad_inputs", "-")
     assert code == 0
-    assert submitted.pop().values == values
+    assert submitted.pop()[1].values == values
 
     code, out, err = run("set", "cx/cx1", "updatable_config/bad_inputs",
                          "{not json")

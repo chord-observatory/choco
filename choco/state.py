@@ -350,43 +350,46 @@ class Node:
     # --- Kotekan REST API ---
 
     def _request(
-        self, method: str, path: str, accept_statuses: tuple[int, ...] = (), **kwargs
+        self, method: str, path: str, accept_statuses: tuple[int, ...] = (),
+        retries: int = 0, **kwargs,
     ) -> requests.Response | None:
         """One kotekan REST call.  Returns None on any transport or HTTP
         error, except that statuses in ``accept_statuses`` are returned to
         the caller (for endpoints where an error status is a meaningful
-        reply, e.g. the frame peek's 402 "no full frame")."""
+        reply, e.g. the frame peek's 402 "no full frame").
+
+        ``retries`` extra attempts follow a failure.  The status probe and
+        the buffer reads use one: a single dropped request would otherwise
+        read as an outage for a whole poll interval (the same rule as the
+        service monitors).  A genuinely down node fails every attempt, and
+        connection-refused is instant, so a retry only costs time in the
+        blackhole case.
+        """
         url = f"{self._base_url}/{path.lstrip('/')}"
-        try:
-            resp = requests.request(method, url, timeout=self.timeout, **kwargs)
-            if resp.status_code in accept_statuses:
+        for _attempt in range(retries + 1):
+            try:
+                resp = requests.request(method, url, timeout=self.timeout, **kwargs)
+                if resp.status_code in accept_statuses:
+                    return resp
+                resp.raise_for_status()
                 return resp
-            resp.raise_for_status()
-            return resp
-        except (requests.ConnectionError, ConnectionError):
-            logger.debug(f"Connection failed: {url}")
-        except requests.Timeout:
-            logger.debug(f"Timeout: {url}")
-        except requests.HTTPError as e:
-            logger.warning(f"HTTP error from {url}: {e}")
-        except requests.RequestException as e:
-            # Catch-all for the rarer transport failures (chunked-encoding
-            # errors, protocol errors on a mid-body disconnect, ...) so
-            # they degrade like any other failed request instead of
-            # bubbling a 500 out of whatever route made the call.
-            logger.warning(f"Request failed: {url}: {e}")
+            except (requests.ConnectionError, ConnectionError):
+                logger.debug(f"Connection failed: {url}")
+            except requests.Timeout:
+                logger.debug(f"Timeout: {url}")
+            except requests.HTTPError as e:
+                logger.warning(f"HTTP error from {url}: {e}")
+            except requests.RequestException as e:
+                # Catch-all for the rarer transport failures (chunked-encoding
+                # errors, protocol errors on a mid-body disconnect, ...) so
+                # they degrade like any other failed request instead of
+                # bubbling a 500 out of whatever route made the call.
+                logger.warning(f"Request failed: {url}: {e}")
         return None
 
     def get_status(self) -> NodeStatus:
         """Probe kotekan: returns DOWN, IDLE, STARTED, or UNKNOWN."""
-        resp = self._request("GET", "/status")
-        if resp is None:
-            # One quick retry before declaring DOWN: a single dropped
-            # request otherwise flips the node red for a whole poll
-            # cycle (and skips its sync tick).  A genuinely down node
-            # fails both attempts; connection-refused is instant, so
-            # the retry only costs time in the blackhole case.
-            resp = self._request("GET", "/status")
+        resp = self._request("GET", "/status", retries=1)
         if resp is None:
             return NodeStatus.DOWN
         try:
@@ -504,12 +507,8 @@ class Node:
         being up is not the same as buffers existing); None if the
         node is unreachable or the reply is malformed.
         """
-        resp = self._request("GET", "/buffers", accept_statuses=(404,))
-        if resp is None:
-            # One quick retry — the service-monitor rule: a single
-            # dropped request shouldn't read as an outage for a whole
-            # poll interval.
-            resp = self._request("GET", "/buffers", accept_statuses=(404,))
+        resp = self._request("GET", "/buffers", accept_statuses=(404,),
+                             retries=1)
         if resp is None:
             return None
         if resp.status_code == 404:
@@ -543,14 +542,8 @@ class Node:
         if length is not None:
             params["len"] = length
         accept = (402, 404, 500)
-        resp = self._request(
-            "GET", "/buffer_frame", accept_statuses=accept, params=params
-        )
-        if resp is None:
-            # One quick retry, same rule as get_buffers.
-            resp = self._request(
-                "GET", "/buffer_frame", accept_statuses=accept, params=params
-            )
+        resp = self._request("GET", "/buffer_frame", accept_statuses=accept,
+                             retries=1, params=params)
         if resp is None:
             return None
         if resp.status_code == 402:
@@ -657,3 +650,7 @@ class Registry:
 
     def get_node(self, key: str) -> Node | None:
         return self.nodes.get(key)
+
+    def in_group(self, group: str) -> list[Node]:
+        """The nodes of *group* in registry order; empty for an unknown group."""
+        return [n for n in self.nodes.values() if n.group == group]

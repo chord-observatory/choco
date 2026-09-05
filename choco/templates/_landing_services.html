@@ -97,8 +97,8 @@
             <td>&mdash;</td>
         </tr>
         {% endif %}
-        {% for name, label in [('eop', 'EOP'), ('bffs', 'BFFS'),
-                               ('eigencal', 'EIGENCAL'), ('waterfall', 'WF')] %}
+        {% for name, s in svc.items() if s.kind == 'job' %}
+        {% set label = s.label %}
         {% set job = services[name] %}
         {% set d = details.get(name) %}
         {% set timer = timers.get(name) %}

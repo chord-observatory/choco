@@ -67,7 +67,7 @@ def orchestrator(registry):
 class TestNodeQueue:
     def test_put_and_pop(self, orchestrator):
         node = orchestrator.registry.get_node("cx/cx1")
-        item = ChangeItem(type=ChangeType.POLL, node_key="cx/cx1")
+        item = ChangeItem(type=ChangeType.POLL)
         node.queue_put(item)
         assert not node.queue_empty
         assert node.queue_pop() is item
@@ -80,9 +80,9 @@ class TestNodeQueue:
     def test_fifo_order(self, orchestrator):
         node = orchestrator.registry.get_node("cx/cx1")
         items = [
-            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"),
-            ChangeItem(type=ChangeType.RESYNC, node_key="cx/cx1"),
-            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"),
+            ChangeItem(type=ChangeType.POLL),
+            ChangeItem(type=ChangeType.RESYNC),
+            ChangeItem(type=ChangeType.POLL),
         ]
         for item in items:
             node.queue_put(item)
@@ -92,7 +92,7 @@ class TestNodeQueue:
     def test_queue_depth(self, orchestrator):
         node = orchestrator.registry.get_node("cx/cx1")
         assert node.queue_depth == 0
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
         assert node.queue_depth == 1
         node.queue_pop()
         assert node.queue_depth == 0
@@ -102,8 +102,8 @@ class TestSubmissions:
     """The orchestrator's serialized submit entry point."""
 
     def test_submit_node(self, orchestrator):
-        item = ChangeItem(type=ChangeType.POLL, node_key="cx/cx1")
-        orchestrator.submit_node(item)
+        item = ChangeItem(type=ChangeType.POLL)
+        orchestrator.submit_node("cx/cx1", item)
 
         cx1 = orchestrator.registry.get_node("cx/cx1")
         cx2 = orchestrator.registry.get_node("cx/cx2")
@@ -113,12 +113,12 @@ class TestSubmissions:
         assert recv1.queue_empty
 
     def test_submit_node_unknown_key(self, orchestrator):
-        item = ChangeItem(type=ChangeType.POLL, node_key="nonexistent/node")
-        orchestrator.submit_node(item)  # should not raise
+        item = ChangeItem(type=ChangeType.POLL)
+        orchestrator.submit_node("nonexistent/node", item)  # should not raise
 
     def test_submit_node_preserves_payload(self, orchestrator):
-        orchestrator.submit_node(ChangeItem(
-            type=ChangeType.UPDATABLE_CONFIG, node_key="cx/cx1",
+        orchestrator.submit_node("cx/cx1", ChangeItem(
+            type=ChangeType.UPDATABLE_CONFIG,
             endpoint="updatable_config/gains", values={"start_time": 100},
         ))
         item = orchestrator.registry.get_node("cx/cx1").queue_pop()
@@ -129,8 +129,8 @@ class TestSubmissions:
     def test_submit_group(self, orchestrator):
         orchestrator.submit_group(
             "cx",
-            lambda key: ChangeItem(
-                type=ChangeType.BASE_CONFIG, node_key=key,
+            ChangeItem(
+                type=ChangeType.BASE_CONFIG,
                 config_content="num_elements: 512\n",
             ),
         )
@@ -141,21 +141,20 @@ class TestSubmissions:
         for node in (cx1, cx2):
             item = node.queue_pop()
             assert item.type == ChangeType.BASE_CONFIG
-            assert item.node_key == node.key
             assert item.config_content == "num_elements: 512\n"
         assert recv1.queue_empty
 
     def test_submit_group_nonexistent(self, orchestrator):
         orchestrator.submit_group(
             "nonexistent",
-            lambda key: ChangeItem(type=ChangeType.POLL, node_key=key),
+            ChangeItem(type=ChangeType.POLL),
         )
         for node in orchestrator.registry.nodes.values():
             assert node.queue_empty
 
     def test_submit_all(self, orchestrator):
         orchestrator.submit_all(
-            lambda key: ChangeItem(type=ChangeType.POLL, node_key=key),
+            ChangeItem(type=ChangeType.POLL),
         )
         for node in orchestrator.registry.nodes.values():
             assert not node.queue_empty
@@ -168,8 +167,8 @@ class TestProcessNode:
         node.started = True
         node.get_status = MagicMock(return_value=NodeStatus.DOWN)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         assert node.status == NodeStatus.DOWN
         assert node.error == "Unreachable"
@@ -184,8 +183,8 @@ class TestProcessNode:
         node.get_config = MagicMock(return_value=rendered)
         node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         assert node.status == NodeStatus.STARTED
 
@@ -195,7 +194,7 @@ class TestProcessNode:
         node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _sync probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
             NodeStatus.IDLE,    # wait loop
             NodeStatus.IDLE,    # post-loop check
@@ -205,8 +204,8 @@ class TestProcessNode:
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_called_once()
         node.start.assert_called_once()
@@ -219,7 +218,7 @@ class TestProcessNode:
         desired_after = {"num_elements": 512}
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _sync probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
             NodeStatus.IDLE,    # wait loop check
             NodeStatus.IDLE,    # post-loop check
@@ -231,10 +230,9 @@ class TestProcessNode:
 
         node.queue_put(ChangeItem(
             type=ChangeType.BASE_CONFIG,
-            node_key="cx/cx1",
             config_content="num_elements: 512\n",
         ))
-        orchestrator._process_node(node)
+        NodeWorker(node, orchestrator).process()
 
         # Config was written to disk
         assert node.rendered_config == desired_after
@@ -256,11 +254,10 @@ class TestProcessNode:
 
         node.queue_put(ChangeItem(
             type=ChangeType.UPDATABLE_CONFIG,
-            node_key="cx/cx1",
             endpoint="updatable_config/gains",
             values={"start_time": 100},
         ))
-        orchestrator._process_node(node)
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         assert node.status == NodeStatus.STARTED
@@ -282,8 +279,8 @@ class TestProcessNode:
         node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
         node.push_updatable = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.push_updatable.assert_not_called()
 
@@ -294,7 +291,7 @@ class TestProcessNode:
         rendered = node.rendered_config
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _sync probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
             NodeStatus.IDLE,    # wait loop check
             NodeStatus.IDLE,    # post-loop check
@@ -304,8 +301,8 @@ class TestProcessNode:
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.RESYNC, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.RESYNC))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_called_once()
         node.start.assert_called_once()
@@ -316,7 +313,7 @@ class TestProcessNode:
         node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.IDLE,    # _sync_node probe
+            NodeStatus.IDLE,    # _sync probe
             NodeStatus.IDLE,    # _push_config probe (already idle)
         ])
         node.get_config = MagicMock(return_value=None)
@@ -324,8 +321,8 @@ class TestProcessNode:
         node.kill = MagicMock()
         node.start = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         node.start.assert_called_once()
@@ -337,7 +334,7 @@ class TestProcessNode:
         node.started = True
 
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.STARTED,      # _sync_node probe
+            NodeStatus.STARTED,      # _sync probe
             NodeStatus.STARTED,      # _push_config probe (not idle, so kill)
             NodeStatus.IDLE,    # wait loop check
             NodeStatus.IDLE,    # post-loop check
@@ -349,12 +346,11 @@ class TestProcessNode:
 
         node.queue_put(ChangeItem(
             type=ChangeType.BASE_CONFIG,
-            node_key="cx/cx1",
             config_content="num_elements: 256\n",
         ))
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
 
-        orchestrator._process_node(node)
+        NodeWorker(node, orchestrator).process()
 
         assert node.rendered_config == {"num_elements": 256}
         node.kill.assert_called_once()
@@ -370,8 +366,8 @@ class TestProcessNode:
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_called_once()
         node.start.assert_not_called()
@@ -387,8 +383,8 @@ class TestProcessNode:
         node.kill = MagicMock()
         node.start = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         node.start.assert_not_called()
@@ -406,11 +402,10 @@ class TestProcessNode:
 
         node.queue_put(ChangeItem(
             type=ChangeType.UPDATABLE_CONFIG,
-            node_key="cx/cx1",
             endpoint="updatable_config/gains",
             values={"start_time": 200},
         ))
-        orchestrator._process_node(node)
+        NodeWorker(node, orchestrator).process()
 
         node.push_updatable.assert_not_called()
 
@@ -423,8 +418,8 @@ class TestProcessNode:
         node.kill = MagicMock()
         node.start = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         node.start.assert_not_called()
@@ -444,9 +439,9 @@ updatable_config:
 """
 
 
-def _flag_item(key: str, bad: list) -> ChangeItem:
+def _flag_item(bad: list) -> ChangeItem:
     return ChangeItem(
-        type=ChangeType.UPDATABLE_CONFIG, node_key=key,
+        type=ChangeType.UPDATABLE_CONFIG,
         endpoint="updatable_config/bad_inputs",
         values={"bad_inputs": bad, "update_id": "bffs-1",
                 "start_time": 100.0},
@@ -478,9 +473,9 @@ class TestDownNodeFlagFanout:
         cx2.get_version_info = MagicMock(return_value={})
         cx2.push_updatable = MagicMock(return_value=True)
 
-        orchestrator.submit_group("cx", lambda key: _flag_item(key, ["f9"]))
-        orchestrator._process_node(cx1)
-        orchestrator._process_node(cx2)
+        orchestrator.submit_group("cx", _flag_item(["f9"]))
+        NodeWorker(cx1, orchestrator).process()
+        NodeWorker(cx2, orchestrator).process()
 
         # The reachable peer got the flags...
         cx2.push_updatable.assert_called_once()
@@ -506,8 +501,8 @@ class TestDownNodeFlagFanout:
         node.get_version_info = MagicMock(return_value={})
         node.push_updatable = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.push_updatable.assert_called_once()
         assert node.push_updatable.call_args[0][1]["bad_inputs"] == ["f9"]
@@ -525,9 +520,8 @@ class TestDownNodeFlagFanout:
         node.push_updatable = MagicMock(side_effect=[False, True])
 
         for _ in range(2):
-            node.queue_put(ChangeItem(type=ChangeType.POLL,
-                                      node_key="cx/cx1"))
-            orchestrator._process_node(node)
+            node.queue_put(ChangeItem(type=ChangeType.POLL))
+            NodeWorker(node, orchestrator).process()
 
         assert node.push_updatable.call_count == 2
 
@@ -564,8 +558,8 @@ class TestPushBlockedByLoadError:
         node.start = MagicMock(return_value=True)
         node.push_updatable = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         node.start.assert_not_called()
@@ -585,8 +579,8 @@ class TestPushBlockedByLoadError:
         node.kill = MagicMock()
         node.start = MagicMock(return_value=True)
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.start.assert_not_called()
         assert node.error == node.load_error
@@ -603,8 +597,8 @@ class TestPushBlockedByLoadError:
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_called_once()
         node.start.assert_not_called()
@@ -620,7 +614,7 @@ class TestPushBlockedByLoadError:
         # Drain queue with a fresh updatable, then poll.  The save replaces
         # the broken file; the subsequent sync should now push.
         node.get_status = MagicMock(side_effect=[
-            NodeStatus.IDLE,  # _sync_node probe
+            NodeStatus.IDLE,  # _sync probe
             NodeStatus.IDLE,  # _push_config probe
         ])
         node.get_config = MagicMock(return_value=None)
@@ -630,11 +624,10 @@ class TestPushBlockedByLoadError:
 
         node.queue_put(ChangeItem(
             type=ChangeType.UPDATABLE_CONFIG,
-            node_key="cx/cx1",
             endpoint="updatable_config/gains",
             values={"start_time": 200},
         ))
-        orchestrator._process_node(node)
+        NodeWorker(node, orchestrator).process()
 
         assert node.load_error is None
         node.start.assert_called_once()
@@ -652,8 +645,8 @@ class TestPushBlockedByLoadError:
         node.start = MagicMock(return_value=True)
         node.kill = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.start.assert_not_called()
         # The specific load_error is surfaced, not the generic "No config file".
@@ -750,8 +743,8 @@ class TestMaintenanceMode:
         node.start = MagicMock()
         node.push_updatable = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         node.start.assert_not_called()
@@ -769,8 +762,8 @@ class TestMaintenanceMode:
         node.kill = MagicMock(return_value=True)
         node.start = MagicMock()
 
-        node.queue_put(ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
-        orchestrator._process_node(node)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
 
         node.kill.assert_not_called()
         node.start.assert_not_called()
@@ -874,7 +867,7 @@ class TestNodeWorker:
         node.get_config = MagicMock(return_value=node.desired_config)
 
     def _start_worker(self, orchestrator, node):
-        orchestrator._running = True
+        orchestrator.running = True
         worker = NodeWorker(node, orchestrator)
         orchestrator._workers[node.key] = worker
         worker.start()
@@ -891,7 +884,7 @@ class TestNodeWorker:
 
         submitted = time.time()
         orchestrator.submit_node(
-            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+            "cx/cx1", ChangeItem(type=ChangeType.POLL))
         assert self._wait_until(lambda: node.queue_empty and
                                 worker.cycles >= 2)
         assert time.time() - submitted < 0.5  # not the 1s poll interval
@@ -907,7 +900,7 @@ class TestNodeWorker:
 
         before = worker.cycles
         orchestrator.submit_node(
-            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+            "cx/cx1", ChangeItem(type=ChangeType.POLL))
         assert self._wait_until(lambda: worker.cycles > before)
         orchestrator.stop()
 
@@ -934,7 +927,7 @@ class TestNodeWorker:
     def test_load_error_node_is_not_treated_as_unreachable(self, orchestrator):
         """A reachable node with a broken config keeps status + cadence.
 
-        The load_error early-return in _sync_node must record this
+        The load_error early-return in NodeWorker._sync must record this
         cycle's probe, so the worker neither backs off nor reports the
         node down when the real problem is a bad file on disk.
         """
@@ -944,7 +937,7 @@ class TestNodeWorker:
         node._updatable_load_error = "Bad updatable store"
         self._healthy(node)
 
-        orchestrator._process_node(node)
+        NodeWorker(node, orchestrator).process()
 
         assert node.status == NodeStatus.STARTED  # this cycle's probe
         assert "Bad updatable store" in node.error
@@ -972,7 +965,7 @@ class TestNodeWorker:
         node.started = True
         self._healthy(node)
         orchestrator.submit_node(
-            ChangeItem(type=ChangeType.POLL, node_key="cx/cx1"))
+            "cx/cx1", ChangeItem(type=ChangeType.POLL))
         assert not node.queue_empty
 
         worker = self._start_worker(orchestrator, node)
@@ -984,7 +977,7 @@ class TestNodeWorker:
                                                  monkeypatch):
         monkeypatch.setattr(Node, "get_status",
                             lambda self: NodeStatus.IDLE)
-        orchestrator._running = True
+        orchestrator.running = True
         with orchestrator._submit_lock:
             orchestrator._respawn_workers()
         old = dict(orchestrator._workers)
@@ -1023,7 +1016,7 @@ class TestNodeWorker:
 
         nodes = [make_node("cx/cx1"), make_node("cx/cx2")]
         greenlets = [
-            gevent.spawn(orchestrator._push_config, n, {"cfg": 1})
+            gevent.spawn(NodeWorker(n, orchestrator)._push_config, {"cfg": 1})
             for n in nodes
         ]
         gevent.joinall(greenlets, timeout=5)
@@ -1048,5 +1041,5 @@ class TestRestartWait:
         sleeps = []
         monkeypatch.setattr("choco.sync.gevent.sleep", lambda s: sleeps.append(s))
 
-        assert orchestrator._push_config(node, {"cfg": 1}) is True
+        assert NodeWorker(node, orchestrator)._push_config({"cfg": 1}) is True
         assert sleeps == [0.5]

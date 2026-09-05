@@ -55,7 +55,6 @@
     <strong>DATA</strong> <span>{{ monitor_label(data.health) }}</span>
 </a>
 {% endif %}
-{{ job_pill('EOP', 'eop', eop, 'last run') }}
-{{ job_pill('BFFS', 'bffs', bffs, 'last change') }}
-{{ job_pill('EIGENCAL', 'eigencal', eigencal, 'last calibration') }}
-{{ job_pill('WF', 'waterfall', waterfall, 'last run') }}
+{% for name, s in svc.items() if s.kind == 'job' %}
+{{ job_pill(s.label, name, services[name], s.mtime_label) }}
+{% endfor %}

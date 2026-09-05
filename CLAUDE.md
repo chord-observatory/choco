@@ -91,7 +91,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   writes `status`, `last_seen`, `version`, `error`.  Request handlers set the
   desired flags (`started`, `maintenance`) and enqueue a `POLL`; they never
   probe kotekan to write status themselves.
-- Every path through `_sync_node` leaves `node.status` reflecting that
+- Every path through `NodeWorker._sync` leaves `node.status` reflecting that
   cycle's probe; the worker reads it to choose its cadence.
 - The wake protocol in `NodeWorker.run` clears the event before testing the
   queue and nothing between them may yield to the hub.  Do not add logging

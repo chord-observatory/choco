@@ -91,6 +91,30 @@ def _orchestrator():
     return current_app.config["orchestrator"]
 
 
+def _set_flag(nodes, attr: str, value: bool) -> None:
+    """Set a desired flag (``started`` / ``maintenance``) on *nodes* and
+    wake each node's worker with a POLL, so the change takes effect now
+    rather than at the node's next scheduled check (which for a backed-off
+    node is up to ``max_retry_interval`` away)."""
+    orchestrator = _orchestrator()
+    for node in nodes:
+        setattr(node, attr, value)
+        orchestrator.submit_node(node.key, ChangeItem(ChangeType.POLL))
+
+
+def _flag_response(nodes, attr: str, value: bool):
+    """Reply to a bulk toggle: the dashboard table for htmx, else a redirect."""
+    _set_flag(nodes, attr, value)
+    if request.headers.get("HX-Request"):
+        return render_template("_dashboard_table.html", nodes=_registry().nodes)
+    return redirect(url_for("web.dashboard"))
+
+
+# URL action words of the bulk toggle routes -> flag value.
+_STARTED_ACTIONS = {"start": True, "stop": False}
+_MAINTENANCE_ACTIONS = {"on": True, "off": False}
+
+
 # --- Authentication routes ---
 
 def _next_target() -> str:
@@ -154,10 +178,6 @@ def logout():
 
 # --- Main routes (all require login) ---
 
-# Job services shown on the landing page (and their table order there).
-_LANDING_JOBS = ("eop", "bffs", "eigencal", "waterfall")
-
-
 def _landing_context() -> dict:
     """Everything the landing page's service table shows.
 
@@ -166,13 +186,14 @@ def _landing_context() -> dict:
     state-file summaries (both already tolerant of missing systemd or
     unusable state files).
     """
-    services = _services_health()
     svc_registry = _service_registry()
+    services = _services_health(svc_registry)
     timers = {}
     details = {}
-    for name in _LANDING_JOBS:
-        svc = svc_registry[name]
-        timers[name] = timer_status(svc["timer"]) if svc["timer"] else None
+    for name, svc in svc_registry.items():
+        if svc["kind"] != "job":
+            continue
+        timers[name] = timer_status(svc["timer"])
         details[name] = _service_detail(name, svc)
     return {
         "services": services,
@@ -268,9 +289,7 @@ def node_edit(node_key):
         action = request.form.get("action", "push_config")
 
         if action == "push_config":
-            orchestrator.submit_node(ChangeItem(
-                type=ChangeType.RESYNC, node_key=node_key,
-            ))
+            orchestrator.submit_node(node_key, ChangeItem(ChangeType.RESYNC))
             flash(f"Config re-push queued for {node_key}", "success")
 
         elif action == "save_config":
@@ -280,10 +299,8 @@ def node_edit(node_key):
             except Exception as e:
                 flash(f"Invalid config: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            orchestrator.submit_node(ChangeItem(
-                type=ChangeType.BASE_CONFIG, node_key=node_key,
-                config_content=content,
-            ))
+            orchestrator.submit_node(node_key, ChangeItem(
+                ChangeType.BASE_CONFIG, config_content=content))
             flash(f"Config change queued for {node_key}.", "success")
 
         elif action == "oneshot":
@@ -311,10 +328,8 @@ def node_edit(node_key):
             except json.JSONDecodeError as e:
                 flash(f"Invalid JSON: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            orchestrator.submit_node(ChangeItem(
-                type=ChangeType.UPDATABLE_CONFIG, node_key=node_key,
-                endpoint=endpoint, values=values,
-            ))
+            orchestrator.submit_node(node_key, ChangeItem(
+                ChangeType.UPDATABLE_CONFIG, endpoint=endpoint, values=values))
             flash(f"Update queued for /{endpoint}", "success")
 
         return redirect(url_for("web.node_edit", node_key=node_key))
@@ -524,11 +539,8 @@ def nodes_save():
 @login_required
 def group_edit(group):
     """Edit a single config to broadcast to every node in *group*."""
-    registry = _registry()
-    sample_node = next(
-        (n for n in registry.nodes.values() if n.group == group), None
-    )
-    if sample_node is None:
+    nodes = _registry().in_group(group)
+    if not nodes:
         flash(f"Group {group!r} not found", "error")
         return redirect(url_for("web.dashboard"))
 
@@ -536,16 +548,14 @@ def group_edit(group):
         _check_csrf()
         content = request.form.get("config_content", "")
         try:
-            sample_node.render(content)
+            nodes[0].render(content)  # template vars are shared
         except Exception as e:
             flash(f"Invalid config: {e}", "error")
             return render_template(
                 "edit_group.html", group=group, config_content=content,
             )
-        _orchestrator().submit_group(group, lambda key: ChangeItem(
-            type=ChangeType.BASE_CONFIG, node_key=key,
-            config_content=content,
-        ))
+        _orchestrator().submit_group(group, ChangeItem(
+            ChangeType.BASE_CONFIG, config_content=content))
         flash(f"Config change queued for group {group!r}.", "success")
         return redirect(url_for("web.dashboard"))
 
@@ -559,14 +569,10 @@ def group_edit(group):
 def toggle_started(node_key):
     """Toggle the started/idle desired state for a node."""
     _check_csrf()
-    registry = _registry()
-    node = registry.get_node(node_key)
+    node = _registry().get_node(node_key)
     if node is None:
         abort(404)
-    node.started = not node.started
-    _orchestrator().submit_node(
-        ChangeItem(type=ChangeType.POLL, node_key=node_key)
-    )
+    _set_flag([node], "started", not node.started)
     if request.headers.get("HX-Request"):
         return render_template("_toggle_started.html", node=node, key=node_key)
     flash(f"{node_key} {'started' if node.started else 'stopped'}", "success")
@@ -578,18 +584,10 @@ def toggle_started(node_key):
 def set_started_all(action):
     """Set all nodes to started or stopped."""
     _check_csrf()
-    if action not in ("start", "stop"):
+    if action not in _STARTED_ACTIONS:
         abort(400)
-    registry = _registry()
-    started = action == "start"
-    for node in registry.nodes.values():
-        node.started = started
-    _orchestrator().submit_all(
-        lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
-    )
-    if request.headers.get("HX-Request"):
-        return render_template("_dashboard_table.html", nodes=registry.nodes)
-    return redirect(url_for("web.dashboard"))
+    return _flag_response(list(_registry().nodes.values()), "started",
+                          _STARTED_ACTIONS[action])
 
 
 @bp.route("/nodes/set-started-group/<group>/<action>", methods=["POST"])
@@ -597,21 +595,12 @@ def set_started_all(action):
 def set_started_group(group, action):
     """Set every node in *group* to started or stopped."""
     _check_csrf()
-    if action not in ("start", "stop"):
+    if action not in _STARTED_ACTIONS:
         abort(400)
-    registry = _registry()
-    group_nodes = [n for n in registry.nodes.values() if n.group == group]
-    if not group_nodes:
+    nodes = _registry().in_group(group)
+    if not nodes:
         abort(404)
-    started = action == "start"
-    for node in group_nodes:
-        node.started = started
-    _orchestrator().submit_group(
-        group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
-    )
-    if request.headers.get("HX-Request"):
-        return render_template("_dashboard_table.html", nodes=registry.nodes)
-    return redirect(url_for("web.dashboard"))
+    return _flag_response(nodes, "started", _STARTED_ACTIONS[action])
 
 
 @bp.route("/nodes/toggle-maintenance/<path:node_key>", methods=["POST"])
@@ -619,14 +608,10 @@ def set_started_group(group, action):
 def toggle_maintenance(node_key):
     """Toggle maintenance mode for a single node."""
     _check_csrf()
-    registry = _registry()
-    node = registry.get_node(node_key)
+    node = _registry().get_node(node_key)
     if node is None:
         abort(404)
-    node.maintenance = not node.maintenance
-    _orchestrator().submit_node(
-        ChangeItem(type=ChangeType.POLL, node_key=node_key)
-    )
+    _set_flag([node], "maintenance", not node.maintenance)
     if request.headers.get("HX-Request"):
         return render_template("_toggle_maintenance.html",
                                node=node, key=node_key)
@@ -640,18 +625,10 @@ def toggle_maintenance(node_key):
 def set_maintenance_all(action):
     """Put every node into or out of maintenance mode."""
     _check_csrf()
-    if action not in ("on", "off"):
+    if action not in _MAINTENANCE_ACTIONS:
         abort(400)
-    registry = _registry()
-    maintenance = action == "on"
-    for node in registry.nodes.values():
-        node.maintenance = maintenance
-    _orchestrator().submit_all(
-        lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
-    )
-    if request.headers.get("HX-Request"):
-        return render_template("_dashboard_table.html", nodes=registry.nodes)
-    return redirect(url_for("web.dashboard"))
+    return _flag_response(list(_registry().nodes.values()), "maintenance",
+                          _MAINTENANCE_ACTIONS[action])
 
 
 @bp.route("/nodes/set-maintenance-group/<group>/<action>", methods=["POST"])
@@ -659,21 +636,12 @@ def set_maintenance_all(action):
 def set_maintenance_group(group, action):
     """Put every node in *group* into or out of maintenance mode."""
     _check_csrf()
-    if action not in ("on", "off"):
+    if action not in _MAINTENANCE_ACTIONS:
         abort(400)
-    registry = _registry()
-    group_nodes = [n for n in registry.nodes.values() if n.group == group]
-    if not group_nodes:
+    nodes = _registry().in_group(group)
+    if not nodes:
         abort(404)
-    maintenance = action == "on"
-    for node in group_nodes:
-        node.maintenance = maintenance
-    _orchestrator().submit_group(
-        group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
-    )
-    if request.headers.get("HX-Request"):
-        return render_template("_dashboard_table.html", nodes=registry.nodes)
-    return redirect(url_for("web.dashboard"))
+    return _flag_response(nodes, "maintenance", _MAINTENANCE_ACTIONS[action])
 
 
 @bp.route("/nodes/partials/node-status/<path:node_key>")
@@ -1131,9 +1099,11 @@ def _service_registry() -> dict[str, dict]:
         elif configs_dir:
             eop_state = Path(configs_dir) / p
 
-    def job(unit: str, state_file, stale_after_s=None,
+    def job(label: str, unit: str, state_file, stale_after_s=None,
             mtime_label="last run") -> dict:
         return {
+            "kind": "job",
+            "label": label,
             "unit": unit,
             "timer": unit.replace(".service", ".timer"),
             "state_file": state_file,
@@ -1141,21 +1111,27 @@ def _service_registry() -> dict[str, dict]:
             "mtime_label": mtime_label,
         }
 
+    # Dict order is the order of the strip's job badges and the landing
+    # table's rows; ``label`` is the badge text.
     return {
-        "choco": {"unit": "choco.service", "timer": None, "state_file": None,
-                  "stale_after_s": None, "mtime_label": None},
-        "eop": job(eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
+        "choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
+                  "timer": None, "state_file": None, "stale_after_s": None,
+                  "mtime_label": None},
+        "eop": job("EOP",
+                   eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
                    eop_state, EOP_STALE_AFTER_S, "last run"),
         # bffs rewrites its state file only when the bad-feed list
         # changes, so no staleness threshold — the mtime is "last change".
-        "bffs": job(bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
+        "bffs": job("BFFS",
+                    bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
                     Path(str(bffs_cfg["state_file"]))
                     if bffs_cfg.get("state_file") else None,
                     None, "last change"),
         # eigencal rewrites its state file once per processed transit;
         # transits skipped for daytime are silent by design, so an old
         # mtime is informational, not a health downgrade.
-        "eigencal": job(eigencal_cfg.get("service_unit")
+        "eigencal": job("EIGENCAL",
+                        eigencal_cfg.get("service_unit")
                         or "choco-eigencal.service",
                         Path(str(eigencal_cfg["state_file"]))
                         if eigencal_cfg.get("state_file") else None,
@@ -1163,7 +1139,8 @@ def _service_registry() -> dict[str, dict]:
         # waterfall rewrites its state file on every run, but a run with
         # nothing to render is the normal case between acquisitions, so
         # the mtime is "last run" and never a health downgrade.
-        "waterfall": job(waterfall_cfg.get("service_unit")
+        "waterfall": job("WF",
+                         waterfall_cfg.get("service_unit")
                          or "choco-waterfall.service",
                          Path(str(waterfall_cfg["state_file"]))
                          if waterfall_cfg.get("state_file") else None,
@@ -1171,29 +1148,25 @@ def _service_registry() -> dict[str, dict]:
     }
 
 
-def _service_units() -> dict[str, str]:
-    """Name -> systemd unit for the units whose journals may be viewed."""
-    return {name: s["unit"] for name, s in _service_registry().items()}
-
-
-def _services_health() -> dict:
+def _services_health(registry: dict | None = None) -> dict:
     """Health snapshots for the hardware monitors and the oneshot jobs.
 
-    Shared by the header strip, /api/status, and /metrics.
+    Shared by the header strip, the landing table, /api/status and
+    /metrics.  *registry* is ``_service_registry()``, passed in when the
+    caller already has one.
     """
     fpga = current_app.config.get("fpga_monitor")
     pdb = current_app.config.get("pdb_monitor")
     data = current_app.config.get("datafile_scan")
-    registry = _service_registry()
     health = {
         "fpga": fpga.to_dict() if fpga is not None else None,
         "pdb": pdb.to_dict() if pdb is not None else None,
         "data": data.to_dict() if data is not None else None,
     }
-    for name in ("eop", "bffs", "eigencal", "waterfall"):
-        svc = registry[name]
-        health[name] = job_status(svc["unit"], state_file=svc["state_file"],
-                                  stale_after_s=svc["stale_after_s"])
+    for name, svc in (registry or _service_registry()).items():
+        if svc["kind"] == "job":
+            health[name] = job_status(svc["unit"], state_file=svc["state_file"],
+                                      stale_after_s=svc["stale_after_s"])
     return health
 
 
@@ -1249,17 +1222,16 @@ def _nodes_health() -> dict:
 def partial_services():
     """Render the NODES + monitor (FPGA, PDB, DATA) + job (EOP, bffs,
     eigencal, waterfall) strip."""
-    services = _services_health()
+    registry = _service_registry()
+    services = _services_health(registry)
     return render_template(
         "_services_status.html",
         nodes=_nodes_health(),
         fpga=services["fpga"],
         pdb=services["pdb"],
         data=services["data"],
-        eop=services["eop"],
-        bffs=services["bffs"],
-        eigencal=services["eigencal"],
-        waterfall=services["waterfall"],
+        services=services,
+        svc=registry,
         now_ts=time.time(),
     )
 
@@ -1276,9 +1248,10 @@ def _journal_lines_arg(default: int = 100) -> int:
 @login_required
 def partial_service_logs(name):
     """Recent journal lines for one of the known service units."""
-    unit = _service_units().get(name)
-    if unit is None:
+    svc = _service_registry().get(name)
+    if svc is None:
         abort(404)
+    unit = svc["unit"]
     nlines = _journal_lines_arg()
     lines = job_logs(unit, lines=nlines)
     return render_template(
@@ -1320,7 +1293,7 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
                 1 for n in registry.nodes.values() if n.maintenance),
             "started_desired": sum(
                 1 for n in registry.nodes.values() if n.started),
-            "queued": sum(len(n._queue) for n in registry.nodes.values()),
+            "queued": sum(n.queue_depth for n in registry.nodes.values()),
             "configs_dir": str(current_app.config.get("configs_dir")),
         }
 
@@ -1734,130 +1707,65 @@ def pdb_control_group():
 
 # --- JSON API endpoints for queue-based updates ---
 
-@bp.route("/update/<group>", methods=["POST"])
-@localhost_or_login_required
-def update_group(group):
-    """Queue a config change for all nodes in a group."""
-    registry = _registry()
-    orchestrator = _orchestrator()
+def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
+    """One ``/update`` body applied to *nodes* (a group or a single node).
 
-    # Find a node in the group (for validation and to confirm group exists).
-    sample_node = next(
-        (n for n in registry.nodes.values() if n.group == group), None
-    )
-    if sample_node is None:
-        return {"error": f"Group '{group}' not found"}, 404
-
-    data = request.get_json(silent=True) or {}
+    ``base_config`` and ``updatable_config`` queue one :class:`ChangeItem`
+    on every node; ``set_started`` / ``set_maintenance`` set the flag and
+    wake the workers exactly as the dashboard toggles do.  *scope* is
+    echoed in the reply (``{"group": g}`` or ``{"node": key}``).
+    """
     action = data.get("action", "")
-
     if action == "base_config":
         content = data.get("config_content", "")
         try:
-            sample_node.render(content)
+            nodes[0].render(content)  # template vars are shared
         except Exception as e:
             return {"error": f"Invalid config: {e}"}, 400
-        orchestrator.submit_group(group, lambda key: ChangeItem(
-            type=ChangeType.BASE_CONFIG, node_key=key,
-            config_content=content,
-        ))
-        return {"status": "queued", "group": group, "action": action}
-
-    if action == "updatable_config":
+        item = ChangeItem(ChangeType.BASE_CONFIG, config_content=content)
+    elif action == "updatable_config":
         endpoint = data.get("endpoint", "")
         values = data.get("values")
         if not endpoint or values is None:
             return {"error": "endpoint and values are required"}, 400
-        orchestrator.submit_group(group, lambda key: ChangeItem(
-            type=ChangeType.UPDATABLE_CONFIG, node_key=key,
-            endpoint=endpoint, values=values,
-        ))
-        return {"status": "queued", "group": group, "action": action}
+        item = ChangeItem(ChangeType.UPDATABLE_CONFIG,
+                          endpoint=endpoint, values=values)
+    elif action in ("set_started", "set_maintenance"):
+        attr = action.removeprefix("set_")
+        value = data.get(attr)
+        if not isinstance(value, bool):
+            return {"error": f"{attr} must be a boolean"}, 400
+        _set_flag(nodes, attr, value)
+        return {"status": "ok", **scope, attr: value}, 200
+    else:
+        return {"error": f"Unknown action '{action}'"}, 400
+    orchestrator = _orchestrator()
+    for node in nodes:
+        orchestrator.submit_node(node.key, item)
+    return {"status": "queued", **scope, "action": action}, 200
 
-    if action == "set_started":
-        started = data.get("started")
-        if not isinstance(started, bool):
-            return {"error": "started must be a boolean"}, 400
-        for node in registry.nodes.values():
-            if node.group == group:
-                node.started = started
-        # Wake the workers, as the dashboard toggles do, so the change
-        # takes effect now rather than at the next scheduled check.
-        orchestrator.submit_group(
-            group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key))
-        return {"status": "ok", "group": group, "started": started}
 
-    if action == "set_maintenance":
-        maintenance = data.get("maintenance")
-        if not isinstance(maintenance, bool):
-            return {"error": "maintenance must be a boolean"}, 400
-        for node in registry.nodes.values():
-            if node.group == group:
-                node.maintenance = maintenance
-        orchestrator.submit_group(
-            group, lambda key: ChangeItem(type=ChangeType.POLL, node_key=key))
-        return {"status": "ok", "group": group, "maintenance": maintenance}
-
-    return {"error": f"Unknown action '{action}'"}, 400
+@bp.route("/update/<group>", methods=["POST"])
+@localhost_or_login_required
+def update_group(group):
+    """Queue a config change for all nodes in a group."""
+    nodes = _registry().in_group(group)
+    if not nodes:
+        return {"error": f"Group '{group}' not found"}, 404
+    data = request.get_json(silent=True) or {}
+    return _apply_update(nodes, data, {"group": group})
 
 
 @bp.route("/update/<group>/<node>", methods=["POST"])
 @localhost_or_login_required
 def update_node(group, node):
     """Queue a config change for a single node."""
-    registry = _registry()
-    orchestrator = _orchestrator()
     node_key = f"{group}/{node}"
-
-    node_obj = registry.get_node(node_key)
+    node_obj = _registry().get_node(node_key)
     if node_obj is None:
         return {"error": f"Node '{node_key}' not found"}, 404
-
     data = request.get_json(silent=True) or {}
-    action = data.get("action", "")
-
-    if action == "base_config":
-        content = data.get("config_content", "")
-        try:
-            node_obj.render(content)
-        except Exception as e:
-            return {"error": f"Invalid config: {e}"}, 400
-        orchestrator.submit_node(ChangeItem(
-            type=ChangeType.BASE_CONFIG, node_key=node_key,
-            config_content=content,
-        ))
-        return {"status": "queued", "node": node_key, "action": action}
-
-    if action == "updatable_config":
-        endpoint = data.get("endpoint", "")
-        values = data.get("values")
-        if not endpoint or values is None:
-            return {"error": "endpoint and values are required"}, 400
-        orchestrator.submit_node(ChangeItem(
-            type=ChangeType.UPDATABLE_CONFIG, node_key=node_key,
-            endpoint=endpoint, values=values,
-        ))
-        return {"status": "queued", "node": node_key, "action": action}
-
-    if action == "set_started":
-        started = data.get("started")
-        if not isinstance(started, bool):
-            return {"error": "started must be a boolean"}, 400
-        node_obj.started = started
-        orchestrator.submit_node(
-            ChangeItem(type=ChangeType.POLL, node_key=node_key))
-        return {"status": "ok", "node": node_key, "started": started}
-
-    if action == "set_maintenance":
-        maintenance = data.get("maintenance")
-        if not isinstance(maintenance, bool):
-            return {"error": "maintenance must be a boolean"}, 400
-        node_obj.maintenance = maintenance
-        orchestrator.submit_node(
-            ChangeItem(type=ChangeType.POLL, node_key=node_key))
-        return {"status": "ok", "node": node_key, "maintenance": maintenance}
-
-    return {"error": f"Unknown action '{action}'"}, 400
+    return _apply_update([node_obj], data, {"node": node_key})
 
 
 # --- One-off configs: start without recording ---
@@ -1938,7 +1846,7 @@ def _run_oneshot(nodes: list, content: str, user: str) -> tuple[dict, int]:
     )
     orchestrator = _orchestrator()
     for key in started:
-        orchestrator.submit_node(ChangeItem(type=ChangeType.POLL, node_key=key))
+        orchestrator.submit_node(key, ChangeItem(ChangeType.POLL))
 
     body = {"started": started, "skipped": skipped, "sha256": digest}
     return body, (200 if started else 409)
@@ -1948,7 +1856,7 @@ def _run_oneshot(nodes: list, content: str, user: str) -> tuple[dict, int]:
 @localhost_or_login_required
 def oneshot_group(group):
     """Start a config on the group's paused, idle nodes without recording it."""
-    nodes = [n for n in _registry().nodes.values() if n.group == group]
+    nodes = _registry().in_group(group)
     if not nodes:
         return {"error": f"Group '{group}' not found"}, 404
     data = request.get_json(silent=True) or {}
@@ -1985,7 +1893,7 @@ def _node_to_dict(node) -> dict:
         "version": node.version,
         "version_info": node.version_info,
         "error": node.error,
-        "queue_depth": len(node._queue),
+        "queue_depth": node.queue_depth,
     }
 
 

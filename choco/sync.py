@@ -56,11 +56,15 @@ class ChangeType(Enum):
     RESYNC = "resync"
 
 
-@dataclass
+@dataclass(frozen=True)
 class ChangeItem:
-    """A single queued change destined for one node."""
+    """A single queued change.
+
+    Frozen so one item can be enqueued on several nodes (a group or
+    cluster-wide submission) without any node's drain seeing another's
+    edits; the node it targets is the queue it sits in.
+    """
     type: ChangeType
-    node_key: str
     config_content: str | None = None  # BASE_CONFIG: base config text (YAML/Jinja2)
     endpoint: str | None = None        # UPDATABLE_CONFIG: REST path
     values: dict | None = None         # UPDATABLE_CONFIG: JSON payload
@@ -143,7 +147,7 @@ class NodeWorker:
         self.wake.set()
 
     def run(self):
-        while self.orch._running and not self._stop:
+        while self.orch.running and not self._stop:
             # Clear before testing the queue.  A producer appending
             # between the clear and the test is caught by the test; one
             # appending after it breaks the wait.  Clearing after the
@@ -165,7 +169,7 @@ class NodeWorker:
     def _cycle(self):
         started = time.time()
         try:
-            self.orch._process_node(self.node, worker=self)
+            self.process()
         except Exception:
             # A worker must outlive any single failure: with one owner
             # per node, an unhandled exception here would strand this
@@ -174,7 +178,7 @@ class NodeWorker:
             self.node.error = "Internal error during sync (see log)"
             self.consecutive_failures += 1
         else:
-            # _sync_node leaves node.status reflecting this cycle's
+            # _sync leaves node.status reflecting this cycle's
             # probe on every path, so it doubles as the "did the node
             # answer" signal.  Back off on unreachability only: a node
             # that answers but has a bad config file keeps its normal
@@ -202,6 +206,197 @@ class NodeWorker:
         return min(base * 2 ** doublings, self.orch.max_retry_interval)
 
 
+    # --- The cycle: drain the queue to disk, then reconcile with kotekan ---
+
+    def process(self):
+        """Drain all items from the node's queue, then sync to remote."""
+        node = self.node
+        self.set_phase(WorkerPhase.DRAINING)
+        had_base_change = False
+
+        # 1. Drain queue -- apply each item to on-disk files.
+        while True:
+            item = node.queue_pop()
+            if item is None:
+                break
+            if item.type == ChangeType.BASE_CONFIG:
+                if item.config_content is not None:
+                    node.save_base(item.config_content)
+                    logger.info(f"Wrote base config for {node.key}")
+                had_base_change = True
+            elif item.type == ChangeType.UPDATABLE_CONFIG:
+                if item.endpoint and item.values is not None:
+                    node.save_updatable(item.endpoint, item.values)
+                    logger.info(f"Wrote updatable config for {node.key} "
+                                f"at /{item.endpoint}")
+            elif item.type == ChangeType.RESYNC:
+                had_base_change = True  # force restart
+            # POLL: no file changes
+
+        # 2. Sync to remote kotekan instance.
+        self._sync(had_base_change)
+
+    def _sync(self, had_base_change: bool):
+        """Compare desired state with the remote node and reconcile.
+
+        Every path through here leaves ``node.status`` reflecting this
+        cycle's probe — :meth:`_cycle` reads it afterwards to decide
+        whether the node answered.
+        """
+        node = self.node
+        self.set_phase(WorkerPhase.PROBING)
+
+        probe = node.get_status()
+        node.error = None
+
+        if probe == NodeStatus.DOWN:
+            node.status = NodeStatus.DOWN
+            node.error = "Unreachable"
+            return
+
+        if probe == NodeStatus.UNKNOWN:
+            node.status = NodeStatus.UNKNOWN
+            node.error = "Unknown state"
+            return
+
+        node.last_seen = time.time()
+        node.version_info = node.get_version_info()
+        node.version = (node.version_info or {}).get("kotekan_version")
+
+        # If the node's desired state is not started, ensure kotekan is not running.
+        if not node.started:
+            if probe == NodeStatus.STARTED and not node.maintenance:
+                logger.info(f"Node {node.key} should be idle; sending /kill")
+                node.kill()
+                node.status = NodeStatus.IDLE
+            else:
+                node.status = probe
+            return
+
+        desired = node.desired_config
+        if desired is None:
+            node.status = probe
+            node.error = (node.load_error
+                          or f"No config file ({node.config_filename})")
+            return
+
+        # Refuse to push anything while a config file failed to load — the
+        # in-memory desired_config is incomplete (e.g. updatable overrides
+        # are missing because the JSON store is corrupt) and pushing it
+        # would silently reset runtime state on the node.
+        if node.load_error:
+            node.status = probe
+            node.error = node.load_error
+            return
+
+        # Maintenance mode: poll status but make no changes.  Push paths
+        # are skipped here and kill is skipped above so choco never
+        # mutates a node the operator has paused.
+        if node.maintenance:
+            node.status = probe
+            return
+
+        actual = node.get_config()
+
+        # Node idle with no config -> start it.
+        if probe == NodeStatus.IDLE and actual is None:
+            self._push_config(desired)
+            return
+
+        if actual is None:
+            node.status = NodeStatus.UNKNOWN
+            node.error = "Unable to get remote config; status indeterminate."
+            return
+
+        base_drift = (strip_updatable_values(actual)
+                      != strip_updatable_values(desired))
+
+        if had_base_change or base_drift:
+            self._push_config(desired)
+        else:
+            node.status = NodeStatus.STARTED
+            self._sync_updatable(actual)
+
+    def _push_config(self, desired: dict) -> bool:
+        """Kill -> wait for idle -> start with *desired* config.
+
+        *desired* should already include updatable overrides (as returned
+        by ``Node.desired_config``).
+        """
+        node = self.node
+        key = node.key
+        # Restarts are the disruptive operation, so they are the one
+        # thing bounded cluster-wide; a worker waits its turn here while
+        # plain polling continues everywhere else.
+        self.set_phase(WorkerPhase.QUEUED_FOR_PUSH)
+        with self.orch.push_semaphore:
+            self.set_phase(WorkerPhase.PUSHING)
+            node.status = NodeStatus.SYNCING
+
+            probe = node.get_status()
+            if probe == NodeStatus.DOWN:
+                logger.warning(f"Cannot push config to {key}: kotekan down")
+                node.status = probe
+                node.error = "Unreachable"
+                return False
+
+            if probe != NodeStatus.IDLE:
+                logger.info(f"Sending /kill to {key}")
+                node.kill()
+                logger.info(f"Waiting for {key} to reach idle state")
+                self.set_phase(WorkerPhase.AWAITING_IDLE)
+                # A float step: with integer division a timeout under
+                # ten seconds slept zero and probed ten times back to back.
+                for _ in range(10):
+                    gevent.sleep(self.orch.restart_timeout / 10)
+                    if node.get_status() == NodeStatus.IDLE:
+                        break
+                else:
+                    logger.warning(
+                        f"Timed out waiting for {key} to become idle"
+                    )
+
+                probe = node.get_status()
+                if probe != NodeStatus.IDLE:
+                    node.status = probe
+                    node.error = (f"Status is {probe.value}, "
+                                  f"failed to push config")
+                    return False
+                self.set_phase(WorkerPhase.PUSHING)
+
+            logger.info(f"Sending config to {key} via /start")
+            success = node.start(desired)
+            if success:
+                logger.info(f"Successfully pushed config to {key}")
+                node.status = NodeStatus.STARTED
+                node.error = None
+            else:
+                logger.error(f"Failed to push config to {key}")
+                node.status = NodeStatus.UNKNOWN
+                node.error = "Failed to push config via /start"
+            return success
+
+    def _sync_updatable(self, live_config: dict):
+        """Push stored updatable values that differ from the live config."""
+        node = self.node
+        stored = node.updatable_config
+        if not stored:
+            return
+        # Only push endpoints that still exist in the rendered base config.
+        rendered_blocks = (find_updatable_blocks(node.rendered_config)
+                           if node.rendered_config else {})
+        live_blocks = find_updatable_blocks(live_config)
+        for endpoint, values in stored.items():
+            if endpoint not in rendered_blocks:
+                continue
+            if live_blocks.get(endpoint) != values:
+                logger.info(f"Updatable config drift on {node.key} "
+                            f"at /{endpoint}")
+                if not node.push_updatable(f"/{endpoint}", values):
+                    logger.warning(f"Failed to sync updatable "
+                                   f"/{endpoint} to {node.key}")
+
+
 # --- Sync loop (orchestrator) ---
 
 class Orchestrator:
@@ -211,10 +406,9 @@ class Orchestrator:
     :class:`NodeWorker` greenlet.  Call :meth:`run` to spawn the workers
     and the config-file scan (blocks until :meth:`stop` is called).
     Feed changes in from web routes or other callers with the
-    ``submit_*`` methods, which construct nothing themselves — they take
-    :class:`ChangeItem` objects (or a ``make_item`` factory for fan-out)
-    and distribute them to node queues under one shared lock, waking
-    each queue's worker.
+    ``submit_*`` methods, which take a :class:`ChangeItem` and the node,
+    group or whole registry it is for, append it to each node's queue
+    under one shared lock, and wake each queue's worker.
     """
 
     def __init__(self, registry: Registry,
@@ -226,7 +420,7 @@ class Orchestrator:
         self.restart_timeout = restart_timeout
         self.max_concurrent_pushes = max_concurrent_pushes
         self.max_retry_interval = max_retry_interval
-        self._running = False
+        self.running = False
         self._file_mtimes: dict[Path, float] = {}
 
         # Serializes all submissions (and pauses them during a registry
@@ -234,7 +428,7 @@ class Orchestrator:
         self._submit_lock = BoundedSemaphore()
         # Bounds how many nodes may be mid-restart at once; polling
         # concurrency is deliberately unbounded (one greenlet per node).
-        self._push_semaphore = BoundedSemaphore(max_concurrent_pushes)
+        self.push_semaphore = BoundedSemaphore(max_concurrent_pushes)
         self._workers: dict[str, NodeWorker] = {}
 
     def worker_status(self, key: str) -> dict | None:
@@ -256,31 +450,26 @@ class Orchestrator:
         if worker is not None:
             worker.wake.set()
 
-    def submit_node(self, item: ChangeItem):
-        """Submit a change for one node."""
+    def submit_node(self, key: str, item: ChangeItem):
+        """Submit a change for the node *key*."""
         with self._submit_lock:
-            node = self.registry.get_node(item.node_key)
+            node = self.registry.get_node(key)
             if node is not None:
                 self._enqueue(node, item)
             else:
-                logger.warning(f"No node for key {item.node_key}")
+                logger.warning(f"No node for key {key}")
 
-    def submit_group(self, group: str, make_item):
-        """Submit a change for every node in *group*.
-
-        *make_item(node_key)* is called once per matching node to create the
-        ChangeItem.
-        """
+    def submit_group(self, group: str, item: ChangeItem):
+        """Submit one change to every node in *group*."""
         with self._submit_lock:
-            for key, node in self.registry.nodes.items():
-                if node.group == group:
-                    self._enqueue(node, make_item(key))
+            for node in self.registry.in_group(group):
+                self._enqueue(node, item)
 
-    def submit_all(self, make_item):
-        """Submit a change for every registered node."""
+    def submit_all(self, item: ChangeItem):
+        """Submit one change to every registered node."""
         with self._submit_lock:
-            for key, node in self.registry.nodes.items():
-                self._enqueue(node, make_item(key))
+            for node in self.registry.nodes.values():
+                self._enqueue(node, item)
 
     # --- Config-directory change detection ---
 
@@ -342,9 +531,7 @@ class Orchestrator:
             for node in self.registry.nodes.values():
                 node.template_vars = template_vars
                 node.load_config()
-            self.submit_all(
-                lambda key: ChangeItem(type=ChangeType.POLL, node_key=key)
-            )
+            self.submit_all(ChangeItem(ChangeType.POLL))
             return
 
         # Resolve path to a node key: strip configs_dir prefix, .updatable/
@@ -364,9 +551,7 @@ class Orchestrator:
 
         node.load_config()
         node.load_updatable()
-        self.submit_node(
-            ChangeItem(type=ChangeType.POLL, node_key=node_key)
-        )
+        self.submit_node(node_key, ChangeItem(ChangeType.POLL))
 
     # --- Main loop ---
 
@@ -402,7 +587,7 @@ class Orchestrator:
 
     def run(self):
         """Spawn the per-node workers and scan config files.  Blocks."""
-        self._running = True
+        self.running = True
 
         # Baseline the config-file mtimes: the registry already loaded
         # the current on-disk state, so only *subsequent* edits count.
@@ -425,12 +610,12 @@ class Orchestrator:
 
         # Workers schedule their own periodic checks, so this loop's
         # only job is detecting local config-file edits.
-        while self._running:
+        while self.running:
             gevent.sleep(self.poll_interval)
             self.check_config_files()
 
     def stop(self):
-        self._running = False
+        self.running = False
         with self._submit_lock:
             self._stop_workers()
 
@@ -455,205 +640,12 @@ class Orchestrator:
         watcher) end with exactly one worker per node.
         """
         self._stop_workers()
-        if not self._running:
+        if not self.running:
             return
         for node in self.registry.nodes.values():
             worker = NodeWorker(node, self)
             self._workers[node.key] = worker
             worker.start()
-
-    def _process_node(self, node: Node, worker: NodeWorker | None = None):
-        """Drain all items from a node's queue, then sync to remote."""
-        if worker:
-            worker.set_phase(WorkerPhase.DRAINING)
-        had_base_change = False
-
-        # 1. Drain queue -- apply each item to on-disk files.
-        while True:
-            item = node.queue_pop()
-            if item is None:
-                break
-            if item.type == ChangeType.BASE_CONFIG:
-                if item.config_content is not None:
-                    node.save_base(item.config_content)
-                    logger.info(f"Wrote base config for {node.key}")
-                had_base_change = True
-            elif item.type == ChangeType.UPDATABLE_CONFIG:
-                if item.endpoint and item.values is not None:
-                    node.save_updatable(item.endpoint, item.values)
-                    logger.info(f"Wrote updatable config for {node.key} "
-                                f"at /{item.endpoint}")
-            elif item.type == ChangeType.RESYNC:
-                had_base_change = True  # force restart
-            # POLL: no file changes
-
-        # 2. Sync to remote kotekan instance.
-        self._sync_node(node, had_base_change, worker=worker)
-
-    # --- Remote sync ---
-
-    def _sync_node(self, node: Node, had_base_change: bool,
-                   worker: NodeWorker | None = None):
-        """Compare desired state with the remote node and reconcile.
-
-        Every path through here leaves ``node.status`` reflecting this
-        cycle's probe — :meth:`NodeWorker._cycle` reads it afterwards to
-        decide whether the node answered.
-        """
-        if worker:
-            worker.set_phase(WorkerPhase.PROBING)
-
-        probe = node.get_status()
-        node.error = None
-
-        if probe == NodeStatus.DOWN:
-            node.status = NodeStatus.DOWN
-            node.error = "Unreachable"
-            return
-
-        if probe == NodeStatus.UNKNOWN:
-            node.status = NodeStatus.UNKNOWN
-            node.error = "Unknown state"
-            return
-
-        node.last_seen = time.time()
-        node.version_info = node.get_version_info()
-        node.version = (node.version_info or {}).get("kotekan_version")
-
-        # If the node's desired state is not started, ensure kotekan is not running.
-        if not node.started:
-            if probe == NodeStatus.STARTED and not node.maintenance:
-                logger.info(f"Node {node.key} should be idle; sending /kill")
-                node.kill()
-                node.status = NodeStatus.IDLE
-            else:
-                node.status = probe
-            return
-
-        desired = node.desired_config
-        if desired is None:
-            node.status = probe
-            node.error = (node.load_error
-                          or f"No config file ({node.config_filename})")
-            return
-
-        # Refuse to push anything while a config file failed to load — the
-        # in-memory desired_config is incomplete (e.g. updatable overrides
-        # are missing because the JSON store is corrupt) and pushing it
-        # would silently reset runtime state on the node.
-        if node.load_error:
-            node.status = probe
-            node.error = node.load_error
-            return
-
-        # Maintenance mode: poll status but make no changes.  Push paths
-        # are skipped here and kill is skipped above so choco never
-        # mutates a node the operator has paused.
-        if node.maintenance:
-            node.status = probe
-            return
-
-        actual = node.get_config()
-
-        # Node idle with no config -> start it.
-        if probe == NodeStatus.IDLE and actual is None:
-            self._push_config(node, desired, worker=worker)
-            return
-
-        if actual is None:
-            node.status = NodeStatus.UNKNOWN
-            node.error = "Unable to get remote config; status indeterminate."
-            return
-
-        base_drift = (strip_updatable_values(actual)
-                      != strip_updatable_values(desired))
-
-        if had_base_change or base_drift:
-            self._push_config(node, desired, worker=worker)
-        else:
-            node.status = NodeStatus.STARTED
-            self._sync_updatable(node, actual)
-
-    def _push_config(self, node: Node, desired: dict,
-                     worker: NodeWorker | None = None) -> bool:
-        """Kill -> wait for idle -> start with *desired* config.
-
-        *desired* should already include updatable overrides (as returned
-        by ``Node.desired_config``).
-        """
-        key = node.key
-        # Restarts are the disruptive operation, so they are the one
-        # thing bounded cluster-wide; a worker waits its turn here while
-        # plain polling continues everywhere else.
-        if worker:
-            worker.set_phase(WorkerPhase.QUEUED_FOR_PUSH)
-        with self._push_semaphore:
-            if worker:
-                worker.set_phase(WorkerPhase.PUSHING)
-            node.status = NodeStatus.SYNCING
-
-            probe = node.get_status()
-            if probe == NodeStatus.DOWN:
-                logger.warning(f"Cannot push config to {key}: kotekan down")
-                node.status = probe
-                node.error = "Unreachable"
-                return False
-
-            if probe != NodeStatus.IDLE:
-                logger.info(f"Sending /kill to {key}")
-                node.kill()
-                logger.info(f"Waiting for {key} to reach idle state")
-                if worker:
-                    worker.set_phase(WorkerPhase.AWAITING_IDLE)
-                # A float step: with integer division a timeout under
-                # ten seconds slept zero and probed ten times back to back.
-                for _ in range(10):
-                    gevent.sleep(self.restart_timeout / 10)
-                    if node.get_status() == NodeStatus.IDLE:
-                        break
-                else:
-                    logger.warning(
-                        f"Timed out waiting for {key} to become idle"
-                    )
-
-                probe = node.get_status()
-                if probe != NodeStatus.IDLE:
-                    node.status = probe
-                    node.error = (f"Status is {probe.value}, "
-                                  f"failed to push config")
-                    return False
-                if worker:
-                    worker.set_phase(WorkerPhase.PUSHING)
-
-            logger.info(f"Sending config to {key} via /start")
-            success = node.start(desired)
-            if success:
-                logger.info(f"Successfully pushed config to {key}")
-                node.status = NodeStatus.STARTED
-                node.error = None
-            else:
-                logger.error(f"Failed to push config to {key}")
-                node.status = NodeStatus.UNKNOWN
-                node.error = "Failed to push config via /start"
-            return success
-
-    def _sync_updatable(self, node: Node, live_config: dict):
-        """Push stored updatable values that differ from the live config."""
-        stored = node.updatable_config
-        if not stored:
-            return
-        # Only push endpoints that still exist in the rendered base config.
-        rendered_blocks = find_updatable_blocks(node.rendered_config) if node.rendered_config else {}
-        live_blocks = find_updatable_blocks(live_config)
-        for endpoint, values in stored.items():
-            if endpoint not in rendered_blocks:
-                continue
-            if live_blocks.get(endpoint) != values:
-                logger.info(f"Updatable config drift on {node.key} "
-                            f"at /{endpoint}")
-                if not node.push_updatable(f"/{endpoint}", values):
-                    logger.warning(f"Failed to sync updatable "
-                                   f"/{endpoint} to {node.key}")
 
     def apply_nodes_update(self, new_data: dict | None = None):
         """Replace the node registry.

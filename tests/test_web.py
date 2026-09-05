@@ -21,41 +21,6 @@ def clear_users():
     _users.clear()
 
 
-@pytest.fixture
-def configs_dir(tmp_path):
-    """Temporary configs directory with a starting set of two groups."""
-    nodes = {
-        "groups": {
-            "cx": {
-                "cx1": {"host": "cx1.example", "port": 12048},
-                "cx2": {"host": "cx2.example", "port": 12048},
-            },
-            "recv": {
-                "recv1": {"host": "recv1.example", "port": 12048},
-            },
-        }
-    }
-    (tmp_path / "nodes.yaml").write_text(yaml.safe_dump(nodes))
-    (tmp_path / "cx").mkdir()
-    (tmp_path / "cx" / "cx1.yaml").write_text("num_elements: 2048\n")
-    (tmp_path / "cx" / "cx2.yaml").write_text("num_elements: 2048\n")
-    (tmp_path / "recv").mkdir()
-    (tmp_path / "recv" / "recv1.yaml").write_text("buffer_depth: 12\n")
-    return tmp_path
-
-
-@pytest.fixture
-def app(configs_dir):
-    app = create_app(configs_dir=configs_dir)
-    app.config["TESTING"] = True
-    return app
-
-
-@pytest.fixture
-def client(app):
-    return app.test_client()
-
-
 def _login(client):
     user = save_user("cn=tester,dc=example", "tester")
     with client.session_transaction() as sess:
@@ -905,11 +870,8 @@ class TestMaintenanceToggles:
         backed-off node is up to max_retry_interval away)."""
         submitted = []
         orch = app.config["orchestrator"]
-        orch.submit_node = submitted.append
-        orch.submit_group = lambda group, factory: submitted.extend(
-            factory(n.key) for n in app.config["registry"].nodes.values()
-            if n.group == group)
-
+        orch.submit_node = lambda key, item: submitted.append((key, item))
+        orch
         assert client.post("/update/cx/cx1", json={
             "action": "set_started", "started": True}).status_code == 200
         assert client.post("/update/cx", json={
@@ -918,7 +880,7 @@ class TestMaintenanceToggles:
             "action": "set_maintenance", "maintenance": False}).status_code == 200
         assert client.post("/update/recv", json={
             "action": "set_started", "started": False}).status_code == 200
-        assert [(i.type, i.node_key) for i in submitted] == [
+        assert [(i.type, k) for k, i in submitted] == [
             (ChangeType.POLL, "cx/cx1"),
             (ChangeType.POLL, "cx/cx1"), (ChangeType.POLL, "cx/cx2"),
             (ChangeType.POLL, "recv/recv1"),
@@ -1046,7 +1008,7 @@ class TestOneshot:
         file_before = (configs_dir / "cx" / "cx1.yaml").read_text()
         base_before, rendered_before = node.base_content, node.rendered_config
         submitted = []
-        app.config["orchestrator"].submit_node = submitted.append
+        app.config["orchestrator"].submit_node = lambda key, item: submitted.append((key, item))
 
         with self._cluster(app) as calls, \
              caplog.at_level(logging.WARNING, logger="choco.web"):
@@ -1077,7 +1039,7 @@ class TestOneshot:
         assert digest in line and "cx/cx1" in line
 
         # The worker is asked to look, not told what it will see.
-        assert [(i.type, i.node_key) for i in submitted] == \
+        assert [(i.type, k) for k, i in submitted] == \
             [(ChangeType.POLL, "cx/cx1")]
 
     def test_group_fans_out_per_node(self, client, app):
