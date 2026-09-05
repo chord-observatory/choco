@@ -32,16 +32,18 @@ import glob
 import json
 import logging
 import os
-import ssl
 import time
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import astropy.units as u
 import numpy as np
 import yaml
+from astropy.coordinates import CIRS, AltAz, EarthLocation, SkyCoord, get_sun
+from astropy.time import Time
 
 import n2_io
+from choco.jobclient import post_json, write_json_atomic
 from transit_fit import (fit_transits, fringestop_phase, interpolate_gaps,
                          invert_no_zero)
 
@@ -131,10 +133,6 @@ def load_config(path):
 
 class Ephemeris:
     def __init__(self, obs_cfg, src_cfg):
-        import astropy.units as u
-        from astropy.coordinates import EarthLocation, SkyCoord
-
-        self.u = u
         self.loc = EarthLocation(lat=obs_cfg["latitude_deg"] * u.deg,
                                  lon=obs_cfg["longitude_deg"] * u.deg,
                                  height=obs_cfg["altitude_m"] * u.m)
@@ -143,12 +141,10 @@ class Ephemeris:
                             dec=src_cfg["dec_deg"] * u.deg, frame="icrs")
 
     def _time(self, unix):
-        from astropy.time import Time
         return Time(np.asarray(unix, dtype=float), format="unix",
                     location=self.loc)
 
     def apparent_radec_deg(self, unix):
-        from astropy.coordinates import CIRS
         c = self.src.transform_to(CIRS(obstime=self._time(unix)))
         return float(c.ra.deg), float(c.dec.deg)
 
@@ -171,7 +167,6 @@ class Ephemeris:
         return t
 
     def sun_alt_deg(self, unix):
-        from astropy.coordinates import AltAz, get_sun
         t = self._time(unix)
         return float(get_sun(t).transform_to(
             AltAz(obstime=t, location=self.loc)).alt.deg)
@@ -507,26 +502,13 @@ def send_to_choco(choco_cfg, payload):
 
     choco accepts ``{"action": "updatable_config", "endpoint": ..., "values":
     ...}`` at ``POST /update/<group>`` and relays the values to every kotekan
-    node in the group at ``POST /<endpoint>``.  Auth is bypassed for
-    localhost callers and choco serves a self-signed certificate, so run
-    eigencal on the choco host and skip TLS verification.
+    node in the group.  Loopback, unverified TLS: ``choco.jobclient``.
     """
-    data = json.dumps({
+    post_json(choco_cfg["url"], f"/update/{choco_cfg['group']}", {
         "action": "updatable_config",
         "endpoint": choco_cfg["endpoint"],
         "values": payload,
-    }).encode()
-    url = choco_cfg["url"].rstrip("/") + f"/update/{choco_cfg['group']}"
-    req = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={"Content-Type": "application/json"})
-    ctx = None
-    if url.startswith("https:"):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, timeout=60.0, context=ctx) as resp:
-        resp.read()
+    }, timeout=60.0)
 
 
 def write_archive(result, path, cfg):
@@ -551,14 +533,10 @@ def write_state(cfg, result, sent):
     state_file = cfg["run"].get("state_file")
     if not state_file:
         return
-    state = {"updated": time.time(), "transit_time": result["transit_time"],
-             "source": result["source"], "good_frac": result["good_frac"],
-             "sent": bool(sent)}
-    p = Path(state_file)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(p)
+    write_json_atomic(state_file, {
+        "updated": time.time(), "transit_time": result["transit_time"],
+        "source": result["source"], "good_frac": result["good_frac"],
+        "sent": bool(sent)})
 
 
 # -- CLI ----------------------------------------------------------------------

@@ -33,6 +33,8 @@ dl.service-facts dd { margin: 0; }
     <p>Point-source gain calibration — fits per-input complex gains once per calibrator transit, at night.</p>
     {% elif name == 'waterfall' %}
     <p>Visibility waterfalls — appends each new N&sup2; file to its acquisition's triangle of images. <a href="/files">Browse the data</a>.</p>
+    {% elif name == 'skymap' %}
+    <p>Current-sky strip plot — renders the beam's drift-scan strip with the Sun, Moon and pointing every 5 minutes. <a href="/">Shown on the landing page</a>.</p>
     {% endif %}
 </hgroup>
 

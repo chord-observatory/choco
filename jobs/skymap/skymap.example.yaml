@@ -23,10 +23,9 @@ choco_url: https://localhost:5000
 beams: [pointing]
 #beams: [pointing, Cyg A]
 
-# Where the rendered image and the job state land.  choco's skymap block
-# in config.yaml must point image_file at the same PNG.
+# Where the rendered image lands.  choco's skymap block in config.yaml
+# must point image_file at the same PNG.
 output: /var/lib/choco/skymap/skymap.png
-state_file: /var/lib/choco/skymap/state.json
 
 # Faded radio-sky background behind the projection.  The default is the
 # image shipped with the job; set to an empty string for plain white.

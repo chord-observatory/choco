@@ -15,7 +15,9 @@ is the beam declination (49.32° − 27.3° ≈ +22° = Tau A).  An explicit
 
 Runs from choco-skymap.timer every 5 minutes; the finished PNG is
 written atomically (temp file + rename) so choco's ``/skymap.png``
-route never serves a half-written image.  Exit codes follow the jobs
+route never serves a half-written image.  There is no state file: the
+image is the record (its title carries the render time) and the SKYMAP
+badge reads the unit's result from systemd.  Exit codes follow the jobs
 convention: 0 ok, 2 degraded (choco unreachable, no pointing found —
 the previous image simply stays up), 1 config error / bug.
 
@@ -27,18 +29,19 @@ SIMBAD.
 """
 
 import argparse
-import json
 import os
 import sys
+import urllib.error
 import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
-import requests
-import urllib3
 import yaml
+
+from choco.dishlabels import find_key
+from choco.jobclient import get_json
 
 import matplotlib
 matplotlib.use("Agg")
@@ -63,8 +66,6 @@ from astropy.coordinates import SkyCoord, EarthLocation, get_sun, get_body
 from astropy.time import Time
 import astropy.units as u
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 DEFAULTS = {
@@ -76,7 +77,6 @@ DEFAULTS = {
                             # pointing(s) from choco), a MAJOR_SOURCES name
                             # ("Cyg A"), or a declination in degrees
     "output": "/var/lib/choco/skymap/skymap.png",
-    "state_file": "/var/lib/choco/skymap/state.json",
     "background_image": str(SCRIPT_DIR / "sky_background.png"),
     "background_fade": 0.42,   # 0 = full white; 1 = full sky image
     "dpi": 130,
@@ -106,27 +106,27 @@ MAJOR_SOURCES = {
 }
 
 BRIGHT_SOURCES = {
-    # name:      (RA,             Dec,            ~1.4GHz flux Jy, notes)
-    'IC 443':    ('06h16m47s',    '+22d34m',      160,  'SNR "Jellyfish"'),
-    '3C 84':     ('03h19m48.16s', '+41d30m42.1s', 22,   'Perseus A, AGN'),
-    '3C 48':     ('01h37m41.30s', '+33d09m35.1s', 16,   'quasar, primary flux cal'),
-    '3C 123':    ('04h37m04.4s',  '+29d40m14s',   46,   'radio galaxy'),
-    '3C 138':    ('05h21m09.90s', '+16d38m22.1s', 8,    'flat-spec quasar'),
-    '3C 147':    ('05h42m36.14s', '+49d51m07.2s', 22,   'PFC (primary flux cal)'),
-    '3C 196':    ('08h13m36.05s', '+48d13m02.6s', 14,   'PFC'),
-    '3C 219':    ('09h21m08.63s', '+45d38m57.4s', 8,    'FR-II'),
-    '3C 264':    ('11h45m05.0s',  '+19d36m22s',   7,    'head-tail (Abell 1367)'),
-    '3C 277.3':  ('12h54m12.03s', '+27d37m32.1s', 2,    'Coma A'),
-    '3C 286':    ('13h31m08.29s', '+30d30m32.9s', 14.5, 'PFC, compact quasar'),
-    '3C 345':    ('16h42m58.81s', '+39d48m37.0s', 7,    'BL Lac, variable'),
-    '3C 380':    ('18h29m31.78s', '+48d44m46.7s', 14,   'CSS quasar'),
-    '3C 388':    ('18h44m02.37s', '+45d33m29.8s', 7,    'FR-II'),
-    'W51':       ('19h23m42s',    '+14d30m',      120,  'HII, inner Galaxy'),
-    'W63':       ('20h21m00s',    '+45d35m',      9,    'SNR'),
-    'DR 21':     ('20h39m01.6s',  '+42d19m43s',   20,   'HII, Cygnus X'),
-    'NGC 7027':  ('21h07m01.59s', '+42d14m10.2s', 5.5,  'planetary nebula'),
-    '3C 452':    ('22h45m48.79s', '+39d41m15.7s', 10,   'FR-II'),
-    '3C 454.3':  ('22h53m57.75s', '+16d08m53.6s', 12,   'BL Lac, variable'),
+    # name:      (RA,             Dec)            ~1.4 GHz flux, notes
+    'IC 443':    ('06h16m47s',    '+22d34m'),      # 160 Jy, SNR "Jellyfish"
+    '3C 84':     ('03h19m48.16s', '+41d30m42.1s'), # 22 Jy, Perseus A, AGN
+    '3C 48':     ('01h37m41.30s', '+33d09m35.1s'), # 16 Jy, quasar, primary flux cal
+    '3C 123':    ('04h37m04.4s',  '+29d40m14s'),   # 46 Jy, radio galaxy
+    '3C 138':    ('05h21m09.90s', '+16d38m22.1s'), # 8 Jy, flat-spec quasar
+    '3C 147':    ('05h42m36.14s', '+49d51m07.2s'), # 22 Jy, PFC (primary flux cal)
+    '3C 196':    ('08h13m36.05s', '+48d13m02.6s'), # 14 Jy, PFC
+    '3C 219':    ('09h21m08.63s', '+45d38m57.4s'), # 8 Jy, FR-II
+    '3C 264':    ('11h45m05.0s',  '+19d36m22s'),   # 7 Jy, head-tail (Abell 1367)
+    '3C 277.3':  ('12h54m12.03s', '+27d37m32.1s'), # 2 Jy, Coma A
+    '3C 286':    ('13h31m08.29s', '+30d30m32.9s'), # 14.5 Jy, PFC, compact quasar
+    '3C 345':    ('16h42m58.81s', '+39d48m37.0s'), # 7 Jy, BL Lac, variable
+    '3C 380':    ('18h29m31.78s', '+48d44m46.7s'), # 14 Jy, CSS quasar
+    '3C 388':    ('18h44m02.37s', '+45d33m29.8s'), # 7 Jy, FR-II
+    'W51':       ('19h23m42s',    '+14d30m'),      # 120 Jy, HII, inner Galaxy
+    'W63':       ('20h21m00s',    '+45d35m'),      # 9 Jy, SNR
+    'DR 21':     ('20h39m01.6s',  '+42d19m43s'),   # 20 Jy, HII, Cygnus X
+    'NGC 7027':  ('21h07m01.59s', '+42d14m10.2s'), # 5.5 Jy, planetary nebula
+    '3C 452':    ('22h45m48.79s', '+39d41m15.7s'), # 10 Jy, FR-II
+    '3C 454.3':  ('22h53m57.75s', '+16d08m53.6s'), # 12 Jy, BL Lac, variable
 }
 
 # ============================================================================
@@ -177,27 +177,6 @@ def split_wrap(l, b):
 # ============================================================================
 # Pointing (pure helpers — unit-tested without astropy/matplotlib)
 # ============================================================================
-def find_key(obj, key):
-    """First value of *key* anywhere in a nested dict/list, else None.
-
-    The kotekan configs nest ``dish_coelev_deg`` inside a telescope
-    block whose name is not choco's business to know.
-    """
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            found = find_key(v, key)
-            if found is not None:
-                return found
-    elif isinstance(obj, list):
-        for v in obj:
-            found = find_key(v, key)
-            if found is not None:
-                return found
-    return None
-
-
 def dec_from_coelev(coelev_deg):
     """Beam declination from kotekan's dish co-elevation.
 
@@ -237,22 +216,21 @@ def fetch_pointings(choco_url, group=None, timeout=15):
     With no group configured, every group choco knows is read, so
     groups pointed differently each contribute a beam.  Raises OSError
     when choco is unreachable and ValueError when no group's config
-    carries ``dish_coelev_deg``.
+    carries ``dish_coelev_deg``.  A group whose config choco cannot
+    render (an HTTP error for that group alone) is skipped.
     """
     if group:
         groups = [group]
     else:
-        resp = requests.get(f"{choco_url}/api/nodes", timeout=timeout,
-                            verify=False)
-        resp.raise_for_status()
-        groups = list((resp.json().get("groups") or {}).keys())
+        nodes = get_json(choco_url, "/api/nodes", timeout=timeout)
+        groups = list((nodes.get("groups") or {}).keys())
     found = []
     for g in groups:
-        resp = requests.get(f"{choco_url}/api/config/{g}", timeout=timeout,
-                            verify=False)
-        if resp.status_code != 200:
+        try:
+            config = get_json(choco_url, f"/api/config/{g}", timeout=timeout)
+        except urllib.error.HTTPError:
             continue
-        coelev = find_key(resp.json(), "dish_coelev_deg")
+        coelev = find_key(config, "dish_coelev_deg")
         if coelev is not None:
             found.append((dec_from_coelev(coelev), g))
     if not found:
@@ -627,7 +605,7 @@ def plot_skymap(cfg, beams, now=None):
         majors.append((name, -l[0], b[0]))
 
     brights = []
-    for name, (ra_str, dec_str, flux, notes) in BRIGHT_SOURCES.items():
+    for name, (ra_str, dec_str) in BRIGHT_SOURCES.items():
         sc = SkyCoord(ra_str, dec_str, frame='icrs')
         offset = min(abs(float(sc.dec.deg) - d) for d, _ in beams)
         if offset > BEAM_FILTER_DEG:
@@ -813,31 +791,10 @@ def main(argv=None):
         beams.extend((d, f"{g} config") for d, g in live)
     beams = dedup_beams(beams)
 
-    now = Time.now()
     try:
-        eph = plot_skymap(cfg, beams, now=now)
+        plot_skymap(cfg, beams, now=Time.now())
     except OSError as e:
         print(f"Render failed: {e}", file=sys.stderr)
-        return 2
-
-    state = {
-        "updated": now.unix,
-        "beams": [{"dec_deg": d, "origin": o, "label": beam_title(d, o)}
-                  for d, o in beams],
-        # The primary beam's numbers, kept top-level for compatibility.
-        "dec_deg": beams[0][0],
-        "pointing": beam_title(*beams[0]),
-        "output": str(cfg["output"]),
-        **eph,
-    }
-    state_file = Path(cfg["state_file"])
-    try:
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = state_file.with_name(state_file.name + ".tmp")
-        tmp.write_text(json.dumps(state, indent=2))
-        os.replace(tmp, state_file)
-    except OSError as e:
-        print(f"State write failed: {e}", file=sys.stderr)
         return 2
 
     print(f"Saved {cfg['output']} "

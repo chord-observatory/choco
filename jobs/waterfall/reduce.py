@@ -28,7 +28,6 @@ stored, a ~45% surcharge on the I/O that dominates this job.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 
 import h5py
@@ -39,15 +38,9 @@ import wfpng
 
 log = logging.getLogger("waterfall.reduce")
 
-# Per-element vs per-dish label layouts — mirrors jobs/bffs/kotekan_io.py
-# (labels_are_per_element / expand_dish_labels); keep the two in step.
-# Pre-2026-08 dish_inputs tables label every element (A1X, d0_pA — a
-# polarisation marker in the text); the 2026-08 layout labels each dish
-# once (A1) and the element axis is [P][D]: element = dish_idx +
-# pol * num_dishes, pol 0 = X.  The stored index labels the *element*
-# axis, so per-dish tables are expanded on the way in.
-_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
-_POL_SUFFIXES = "XY"
+from choco.dishlabels import (  # noqa: E402
+    expand_dish_labels, labels_are_per_element, num_polarizations,
+)
 
 
 def _element_labels(labels: list, n_elements: int) -> list:
@@ -60,17 +53,11 @@ def _element_labels(labels: list, n_elements: int) -> list:
     """
     if not labels:
         return labels
-    if any(_PER_ELEMENT_LABEL.search(l) for l in labels):
+    if labels_are_per_element(labels):
         log.warning("per-element (pre-2026-08) labels in the source file; "
                     "storing element indices instead of labels")
         return []
-    npol = 2
-    if n_elements >= len(labels) and n_elements % len(labels) == 0:
-        npol = n_elements // len(labels)
-    if npol == 1:
-        return list(labels)   # one polarization: the dish is the element
-    return [f"{label}{_POL_SUFFIXES[p] if p < len(_POL_SUFFIXES) else f'P{p}'}"
-            for p in range(npol) for label in labels]
+    return expand_dish_labels(labels, num_polarizations(len(labels), n_elements))
 
 #: Frequency rows per streamed block, a multiple of the 16-row chunk.
 #: Peak memory tracks this and nothing else; 64 rows measured no slower

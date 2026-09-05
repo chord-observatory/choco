@@ -44,9 +44,7 @@ import glob
 import json
 import logging
 import os
-import ssl
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,7 +52,10 @@ import numpy as np
 import yaml
 
 import sources
-from kotekan_io import expand_dish_labels, labels_are_per_element, read_labels
+from choco.dishlabels import (expand_dish_labels, find_dish_inputs, find_key,
+                              labels_are_per_element)
+from choco.jobclient import post_json, write_json_atomic
+from kotekan_io import read_labels
 from sources.common import choco_group_config
 
 log = logging.getLogger("bffs")
@@ -99,40 +100,6 @@ def load_config(path: str | Path) -> Config:
 # -- feed labels ----------------------------------------------------------
 
 
-def find_dish_inputs(config) -> list | None:
-    """The ``dish_inputs`` table from a rendered kotekan config, or None.
-
-    Searched recursively — the table's nesting spot varies between
-    config generations.
-    """
-    if isinstance(config, dict):
-        value = config.get("dish_inputs")
-        if isinstance(value, list) and value:
-            return value
-        for child in config.values():
-            found = find_dish_inputs(child)
-            if found is not None:
-                return found
-    return None
-
-
-def find_config_value(config, key):
-    """The first value for *key* anywhere in a rendered kotekan config.
-
-    Same recursive walk as :func:`find_dish_inputs` — the enclosing
-    block varies between config generations.  The current dict is
-    checked before its children, so a top-level value wins.
-    """
-    if isinstance(config, dict):
-        if key in config:
-            return config[key]
-        for child in config.values():
-            found = find_config_value(child, key)
-            if found is not None:
-                return found
-    return None
-
-
 def _config_int(config, key, default=None):
     """*key* as an int, *default* when absent; raises on an expression.
 
@@ -141,7 +108,7 @@ def _config_int(config, key, default=None):
     A key that is present but not a plain integer sizes the flag axis
     and cannot be guessed at.
     """
-    value = find_config_value(config, key)
+    value = find_key(config, key)
     if value is None:
         return default
     try:
@@ -413,11 +380,7 @@ def run(
         if config.max_history and len(history) > config.max_history:
             history = history[-config.max_history:]
         state["history"] = history
-        # Write atomically: temp file + rename.
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = state_file.with_name(state_file.name + ".tmp")
-        tmp.write_text(json.dumps(state, indent=2))
-        tmp.replace(state_file)
+        write_json_atomic(state_file, state)
 
     return payload, send, degraded
 
@@ -430,26 +393,13 @@ def send_to_choco(config: Config, payload: dict) -> None:
 
     choco accepts ``{"action": "updatable_config", "endpoint": ..., "values":
     ...}`` at ``POST /update/<group>`` and relays the values to every kotekan
-    node in the group. choco serves a self-signed certificate (and bypasses
-    auth only for localhost callers), so TLS goes unverified — point the URL
-    at choco on localhost.
+    node in the group.  Loopback, unverified TLS: ``choco.jobclient``.
     """
-    data = json.dumps({
+    post_json(config.url, f"/update/{config.group}", {
         "action": "updatable_config",
         "endpoint": config.endpoint,
         "values": payload,
-    }).encode()
-    url = config.url.rstrip("/") + f"/update/{config.group}"
-    req = urllib.request.Request(
-        url, data=data, method="POST", headers={"Content-Type": "application/json"},
-    )
-    ctx = None
-    if url.startswith("https:"):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, timeout=10.0, context=ctx) as resp:
-        resp.read()
+    }, timeout=10.0)
 
 
 def main(argv=None) -> int:

@@ -28,7 +28,6 @@ import argparse
 import contextlib
 import fcntl
 import glob
-import json
 import logging
 import os
 import re
@@ -38,6 +37,8 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+from choco.jobclient import write_json_atomic
 
 import reduce as R
 import wfpng
@@ -91,8 +92,7 @@ def single_run(path):
         lock.parent.mkdir(parents=True, exist_ok=True)
         fh = open(lock, "w")
     except OSError as exc:
-        logger_warn = logging.getLogger("waterfall")
-        logger_warn.warning("could not open lock file %s: %s", lock, exc)
+        log.warning("could not open lock file %s: %s", lock, exc)
         yield True                      # a missing lock must not stop the job
         return
     try:
@@ -363,18 +363,13 @@ def run(cfg: dict, only_acq: str | None = None) -> dict:
 
 
 def write_state(path, cfg: dict, report: dict) -> None:
-    p = Path(path)
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        state = {
+        write_json_atomic(path, {
             "updated": time.time(),
             "waterfalls_dir": cfg["waterfalls_dir"],
             "roots": [r["name"] for r in cfg["roots"]],
             **{k: v for k, v in report.items() if k != "degraded"},
-        }
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=1))
-        os.replace(tmp, p)
+        })
     except OSError as e:
         log.warning("could not write state file %s: %s", path, e)
 

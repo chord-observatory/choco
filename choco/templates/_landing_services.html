@@ -121,7 +121,7 @@
                 <br><small>last run: {{ d.files_rendered or 0 }} file{{ 's' if d.files_rendered != 1 }} rendered{% if d.backlog %}, backlog {{ d.backlog }}{% endif %}</small>
                 {% endif %}
             </td>
-            <td>{{ svc[name].mtime_label }}: {{ since(job.state_mtime, now) }}</td>
+            <td>{% if s.state_file %}{{ s.mtime_label }}: {{ since(job.state_mtime, now) }}{% else %}&mdash;{% endif %}</td>
             <td>{% if timer and timer.next_elapse %}{{ timer.next_elapse }}{% else %}&mdash;{% endif %}</td>
         </tr>
         {% endfor %}

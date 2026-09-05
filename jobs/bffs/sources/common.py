@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import csv
-import json
 import re
-import ssl
-import urllib.request
 from pathlib import Path
 
 import numpy as np
+
+from choco.jobclient import get_json
 
 _METRIC_LINE = re.compile(r'(\w+)\{([^}]*)\}\s+([\d.eE+-]+)')
 _LABEL = re.compile(r'(\w+)="([^"]*)"')
@@ -86,14 +85,7 @@ def choco_pdb_map(choco_url: str, timeout: float = 10.0) -> dict:
 
 def _choco_get(choco_url: str, path: str, timeout: float) -> dict:
     """GET a choco JSON endpoint (localhost auth bypass, unverified TLS)."""
-    url = choco_url.rstrip("/") + path
-    ctx = None
-    if url.startswith("https:"):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:
-        return json.loads(resp.read())
+    return get_json(choco_url, path, timeout=timeout)
 
 
 def project(input_good: dict[str, bool], labels: np.ndarray) -> np.ndarray:

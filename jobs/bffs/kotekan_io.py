@@ -5,7 +5,6 @@ Read-only. Shared by bffs (for the feed axis) and the power-outlier source.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,52 +38,13 @@ def input_labels(f: h5py.File) -> np.ndarray:
     return np.array([s.decode("utf-8", "replace") if isinstance(s, bytes) else str(s) for s in arr])
 
 
-# -- element axis: per-element vs per-dish label layouts --------------------
-
-#: A label that names a polarization is a per-element label: the wiring
-#: convention's trailing X/Y after the dish number (``A1X``), or a ``_p<pol>``
-#: marker (``d0_pA``, simulated configs).  A label without one names a whole
-#: dish (``A1``, ``CHORD-A01``) — the 2026-08 kotekan layout.
-_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
-
-#: Polarization suffixes for derived per-element labels, by polarization
-#: index: 0 = X, 1 = Y.  Matches the pre-2026-08 per-element labels, so the
-#: label-keyed hardware maps (pdb_map.csv, fpga_map.csv, manual overrides)
-#: keep working unchanged across the layout change.
-POL_SUFFIXES = "XY"
-
-
-def labels_are_per_element(labels) -> bool:
-    """True when *labels* use the pre-2026-08 per-element convention.
-
-    Old ``dish_inputs`` tables (and the N² files written from them) name
-    every correlator input separately, carrying a polarization marker;
-    the 2026-08 kotekan layout names each *dish* once, with the
-    polarizations as separate element blocks.  The two layouts are
-    structurally identical — same table shape, same label count — so the
-    label text is the only distinguishing mark.
-    """
-    return any(_PER_ELEMENT_LABEL.search(str(label)) for label in labels)
-
-
-def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
-    """Per-element labels from per-dish labels, in the CHORD [P][D] order.
-
-    Mirrors ``CHORDTelescope::encode_station_id``: ``element = dish_idx +
-    pol * num_dishes``, so all of polarization 0 (X) comes first, then
-    polarization 1 (Y) — ``A1`` at dish index i expands to ``A1X`` at
-    element i and ``A1Y`` at element i + num_dishes.  Placeholder dishes
-    expand like any other (``FakeX``/``FakeY``); duplicates are the
-    caller's problem (bffs uniquifies by element index).
-    """
-    if int(num_polarizations) == 1:
-        # One polarization: the dish is the element; no suffix to add.
-        return np.array([str(label) for label in dish_labels])
-    out = []
-    for pol in range(int(num_polarizations)):
-        suffix = POL_SUFFIXES[pol] if pol < len(POL_SUFFIXES) else f"P{pol}"
-        out.extend(f"{label}{suffix}" for label in dish_labels)
-    return np.array(out)
+# -- element axis: the label layout lives in choco.dishlabels (shared with
+# eigencal, waterfall and choco's PDB cross-check); re-exported here for
+# the callers that reach it through this module.
+from choco.dishlabels import (  # noqa: E402
+    POL_SUFFIXES, expand_dish_labels, labels_are_per_element,
+    num_polarizations,
+)
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
@@ -108,10 +68,8 @@ def element_labels(f: h5py.File) -> np.ndarray:
             "labels) — its element ordering is untrustworthy; waiting for "
             "post-migration files")
     num_elements = int(f.attrs.get("num_elements", 0) or 0)
-    npol = 2
-    if labels.size and num_elements >= labels.size and num_elements % labels.size == 0:
-        npol = num_elements // labels.size
-    return expand_dish_labels(labels, npol)
+    return np.array(expand_dish_labels(
+        labels, num_polarizations(labels.size, num_elements)))
 
 
 def read_labels(path: str | Path) -> np.ndarray:

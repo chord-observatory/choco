@@ -1243,7 +1243,7 @@ class TestServicePage:
         assert resp.status_code == 404
 
     @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
-                                  "waterfall"])
+                                  "waterfall", "skymap"])
     def test_job_pages_render(self, client, name):
         from unittest.mock import patch
         _login(client)
@@ -1254,7 +1254,7 @@ class TestServicePage:
         assert name.upper() in resp.data.decode()
 
     @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
-                                  "waterfall"])
+                                  "waterfall", "skymap"])
     def test_status_partial_renders(self, client, name):
         from unittest.mock import patch
         _login(client)

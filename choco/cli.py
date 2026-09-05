@@ -4,8 +4,7 @@ A thin wrapper over the endpoints that bypass login for callers on the
 choco host (``/update``, ``/oneshot``, ``/api/*``), so an operator -- or
 a script, or an agent -- can do from a shell what the dashboard does
 from a browser.  Stdlib only: the web process never imports this, and
-the jobs already talk to choco the same way (``urllib`` with
-verification off for the self-signed loopback cert).
+the jobs talk to choco the same way (``choco.jobclient``).
 
     choco status                         overall health
     choco nodes [-j]                     per-node table (or the raw JSON)
@@ -32,11 +31,12 @@ import argparse
 import http.client
 import json
 import os
-import ssl
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from .jobclient import ssl_context
 
 DEFAULT_URL = "https://localhost:5000"
 
@@ -70,12 +70,9 @@ def _http(method: str, url: str, body: dict | None = None,
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     # Loopback only: the cert is self-signed and nothing on the wire
-    # leaves the host, the same choice bffs and eigencal make.
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    # leaves the host (jobclient.ssl_context, the rule the jobs use too).
     opener = urllib.request.build_opener(
-        urllib.request.HTTPSHandler(context=ctx), _NoRedirect())
+        urllib.request.HTTPSHandler(context=ssl_context(url)), _NoRedirect())
     try:
         with opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.read().decode("utf-8", "replace")

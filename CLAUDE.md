@@ -57,6 +57,8 @@ choco/
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
+├── dishlabels.py   # dish_inputs table + per-element label layout (stdlib; shared with the jobs)
+├── jobclient.py    # loopback JSON client + atomic state write (stdlib; shared with the jobs and CLI)
 ├── auth.py         # Flask-Login + direct ldap3 bind, localhost bypass decorator
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
@@ -164,6 +166,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `ValueError`/`yaml.YAMLError` → 1.
 - A new badge costs one entry in `web._service_registry()` plus, optionally,
   a summary branch in `web._service_detail`.
+- Jobs reach choco through `choco.jobclient` and derive feed labels through
+  `choco.dishlabels`; both are stdlib-only so the jobs' venv is the only
+  requirement.  Do not copy either into a job.
 - `jobs/eop/eop_utils.py` is vendored from kotekan: do not modify, update
   from upstream.  EOP merging is append-only and never overwrites a stored
   entry ([jobs.md](docs/design/jobs.md)).

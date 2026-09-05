@@ -47,40 +47,57 @@ class TestPointingMath:
 
 
 class TestFetchPointing:
-    def _resp(self, payload, status=200):
-        m = Mock()
-        m.status_code = status
-        m.json.return_value = payload
-        m.raise_for_status.return_value = None
-        return m
+    """fetch_pointings reads choco through choco.jobclient.get_json; the
+    tests replace that one function with a path -> payload table."""
+
+    @staticmethod
+    def _serve(replies):
+        def get_json(base_url, path, timeout=None):
+            reply = replies[path]
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        return get_json
 
     def test_explicit_group(self):
-        with patch("skymap.requests.get",
-                   return_value=self._resp(
-                       {"telescope": {"dish_coelev_deg": -27.3}})) as get:
+        served = self._serve({
+            "/api/config/recv": {"telescope": {"dish_coelev_deg": -27.3}}})
+        with patch("skymap.get_json", side_effect=served) as get:
             found = skymap.fetch_pointings("https://localhost:5000", "recv")
         assert len(found) == 1
         dec, group = found[0]
         assert group == "recv"
         assert dec == pytest.approx(22.02, abs=0.01)
-        assert "/api/config/recv" in get.call_args[0][0]
+        assert get.call_args[0][1] == "/api/config/recv"
 
     def test_collects_every_pointed_group(self):
-        replies = [
-            self._resp({"groups": {"cx": [], "recv": []}}),   # /api/nodes
-            self._resp({"t": {"dish_coelev_deg": -8.6}}),     # cx config
-            self._resp({"t": {"dish_coelev_deg": -27.3}}),    # recv config
-        ]
-        with patch("skymap.requests.get", side_effect=replies):
+        served = self._serve({
+            "/api/nodes": {"groups": {"cx": [], "recv": []}},
+            "/api/config/cx": {"t": {"dish_coelev_deg": -8.6}},
+            "/api/config/recv": {"t": {"dish_coelev_deg": -27.3}},
+        })
+        with patch("skymap.get_json", side_effect=served):
             found = skymap.fetch_pointings("https://localhost:5000")
         assert [g for _, g in found] == ["cx", "recv"]
 
+    def test_unrenderable_group_is_skipped(self):
+        import urllib.error
+        served = self._serve({
+            "/api/nodes": {"groups": {"cx": [], "recv": []}},
+            "/api/config/cx": urllib.error.HTTPError(
+                "u", 503, "no config", {}, None),
+            "/api/config/recv": {"t": {"dish_coelev_deg": -27.3}},
+        })
+        with patch("skymap.get_json", side_effect=served):
+            found = skymap.fetch_pointings("https://localhost:5000")
+        assert [g for _, g in found] == ["recv"]
+
     def test_no_pointing_anywhere_raises(self):
-        replies = [
-            self._resp({"groups": {"cx": []}}),
-            self._resp({"no": "pointing"}),
-        ]
-        with patch("skymap.requests.get", side_effect=replies):
+        served = self._serve({
+            "/api/nodes": {"groups": {"cx": []}},
+            "/api/config/cx": {"no": "pointing"},
+        })
+        with patch("skymap.get_json", side_effect=served):
             with pytest.raises(ValueError):
                 skymap.fetch_pointings("https://localhost:5000")
 
@@ -148,8 +165,7 @@ class TestRender:
         from astropy.time import Time
         cfg = dict(skymap.DEFAULTS)
         out = tmp_path / "skymap.png"
-        cfg.update({"output": str(out), "dpi": 40,
-                    "state_file": str(tmp_path / "state.json")})
+        cfg.update({"output": str(out), "dpi": 40})
         eph = skymap.plot_skymap(cfg, [(22.0, "test"), (40.73, "Cyg A")],
                                  now=Time("2026-08-26T18:00:00"))
         assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

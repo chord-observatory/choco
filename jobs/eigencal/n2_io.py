@@ -19,7 +19,6 @@ tables are used as-is — and there products beyond the labelled feeds
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,31 +45,11 @@ def input_labels(f: h5py.File) -> np.ndarray:
                      for s in arr])
 
 
-# Per-element vs per-dish label layouts — mirrors jobs/bffs/kotekan_io.py
-# (labels_are_per_element / expand_dish_labels / element_labels); keep the
-# two in step.  A label carrying a polarisation marker (``A1X``, ``d0_pA``)
-# is per-element (pre-2026-08); a bare dish label (``A1``) is the 2026-08
-# per-dish layout, whose element axis is [P][D]: element = dish_idx +
-# pol * num_dishes, pol 0 = X.
-_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
-POL_SUFFIXES = "XY"
-
-
-def labels_are_per_element(labels) -> bool:
-    """True when *labels* use the pre-2026-08 per-element convention."""
-    return any(_PER_ELEMENT_LABEL.search(str(label)) for label in labels)
-
-
-def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> np.ndarray:
-    """Per-element labels from per-dish labels, in the CHORD [P][D] order."""
-    if int(num_polarizations) == 1:
-        # One polarization: the dish is the element; no suffix to add.
-        return np.array([str(label) for label in dish_labels])
-    out = []
-    for pol in range(int(num_polarizations)):
-        suffix = POL_SUFFIXES[pol] if pol < len(POL_SUFFIXES) else f"P{pol}"
-        out.extend(f"{label}{suffix}" for label in dish_labels)
-    return np.array(out)
+# The label layout lives in choco.dishlabels, shared with bffs, waterfall
+# and choco's own PDB cross-check.
+from choco.dishlabels import (  # noqa: E402
+    expand_dish_labels, labels_are_per_element, num_polarizations,
+)
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
@@ -91,10 +70,8 @@ def element_labels(f: h5py.File) -> np.ndarray:
             "labels) — its element ordering is untrustworthy; waiting for "
             "post-migration files")
     num_elements = int(f.attrs.get("num_elements", 0) or 0)
-    npol = 2
-    if labels.size and num_elements >= labels.size and num_elements % labels.size == 0:
-        npol = num_elements // labels.size
-    return expand_dish_labels(labels, npol)
+    return np.array(expand_dish_labels(
+        labels, num_polarizations(labels.size, num_elements)))
 
 
 @dataclass(frozen=True)

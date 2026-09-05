@@ -1085,6 +1085,7 @@ def _service_registry() -> dict[str, dict]:
     bffs_cfg = current_app.config.get("bffs_cfg") or {}
     eigencal_cfg = current_app.config.get("eigencal_cfg") or {}
     waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
+    skymap_cfg = current_app.config.get("skymap_cfg") or {}
     configs_dir = current_app.config.get("configs_dir")
 
     # EOP rewrites its state file on every successful (daily) run, so
@@ -1145,6 +1146,11 @@ def _service_registry() -> dict[str, dict]:
                          Path(str(waterfall_cfg["state_file"]))
                          if waterfall_cfg.get("state_file") else None,
                          None, "last run"),
+        # skymap keeps no state file: the image is the record and its
+        # title carries the render time, so the badge is systemd only.
+        "skymap": job("SKYMAP",
+                      skymap_cfg.get("service_unit") or "choco-skymap.service",
+                      None, None, "last render"),
     }
 
 

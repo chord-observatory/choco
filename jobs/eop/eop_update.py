@@ -14,26 +14,29 @@ point, so currently-used EOP values should never change.
 The state is kept in a single file (STATE_FILENAME) so all nodes should receive
 an identical table regardless of individual node state.
 
-Reads fpga_master, server, and node settings from choco's config.yaml.
+Reads fpga_master and eop settings from choco's config.yaml; the node groups
+come from choco itself (``GET /api/nodes``).
 """
 import json
+import logging
 import sys
 import time
 from pathlib import Path
 
-import requests
-import urllib3
 import yaml
 from astropy.time import Time
 import astropy.utils.iers
 import astropy.utils.data
 
-sys.path.insert(0, str(Path(__file__).parent))
-import eop_utils
+from choco.jobclient import get_json, post_json, write_json_atomic
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+sys.path.insert(0, str(Path(__file__).parent))
+import eop_utils  # noqa: E402
+
 astropy.utils.iers.conf.auto_download = True
 astropy.utils.iers.conf.auto_max_age = 10.0
+
+log = logging.getLogger("eop")
 
 INTERVAL_LENGTH_DAYS = 1.0
 EOP_REQUIRED_KEYS = [
@@ -42,16 +45,21 @@ EOP_REQUIRED_KEYS = [
 ]
 
 
+class Degraded(Exception):
+    """A dependency was unavailable (fpga_master, choco).  Exit 2."""
+
+
 def build_fresh_table(frame0_ns: int, n_before: int, n_after: int) -> list[dict]:
     """Build a fresh EOP table from IERS data."""
     t_ref = Time.now()
     t_ref.precision = 9
-    print(f"Reference time: {t_ref.utc.isot} (UTC)")
+    log.info("Reference time: %s (UTC)", t_ref.utc.isot)
 
     times = eop_utils.build_time_array(
         t_ref, n_before, n_after, INTERVAL_LENGTH_DAYS, snap_to_grid=True,
     )
-    print(f"Fresh table: {times[0].isot} to {times[-1].isot} ({len(times)} entries)")
+    log.info("Fresh table: %s to %s (%d entries)",
+             times[0].isot, times[-1].isot, len(times))
 
     iers = astropy.utils.iers.IERS_Auto.open()
     table = eop_utils.build_EOP_table(times, frame0_ns, iers)
@@ -135,28 +143,23 @@ def merge_tables(stored: list[dict], fresh: list[dict],
 
     merged = sorted(kept + added, key=lambda e: e["t_inst_ns"])
 
-    truncated_count = len(stored) - len(kept)
-    print(f"Merge: {len(stored)} stored "
-          f"- {truncated_count} truncated "
-          f"+ {len(added)} appended fresh "
-          f"= {len(merged)} total "
-          f"({'truncation applied' if truncated_ok else 'truncation skipped'})")
+    log.info("Merge: %d stored - %d truncated + %d appended fresh = %d total (%s)",
+             len(stored), len(stored) - len(kept), len(added), len(merged),
+             "truncation applied" if truncated_ok else "truncation skipped")
     return merged
 
 
-def wait_for_choco(choco_url: str, timeout: int = 30):
-    """Wait for choco to be ready (handles startup with choco.service)."""
-    print(f"Waiting for choco at {choco_url} ...", end="", flush=True)
-    for i in range(timeout):
+def wait_for_choco(choco_url: str, timeout: int = 30) -> None:
+    """Wait for choco to answer ``/api/status`` (this unit starts with
+    choco.service).  Raises :class:`Degraded` after *timeout* seconds."""
+    log.info("Waiting for choco at %s ...", choco_url)
+    for _ in range(timeout):
         try:
-            requests.get(f"{choco_url}/login", timeout=2, verify=False)
-            print(" ready")
+            get_json(choco_url, "/api/status", timeout=2)
             return
-        except requests.RequestException:
-            pass
-        time.sleep(1)
-    print(" timed out", file=sys.stderr)
-    sys.exit(2)  # dependency (choco) unavailable -> degraded, retry heals
+        except OSError:
+            time.sleep(1)
+    raise Degraded(f"choco at {choco_url} did not come up in {timeout} s")
 
 
 def push_to_choco(choco_url: str, groups: list[str],
@@ -169,19 +172,16 @@ def push_to_choco(choco_url: str, groups: list[str],
     }
     failures = 0
     for group in groups:
-        url = f"{choco_url}/update/{group}"
-        print(f"  POST {url} ...", end="")
         try:
-            resp = requests.post(url, json=payload, timeout=30, verify=False)
-            resp.raise_for_status()
-            print(f" {resp.status_code} OK")
-        except requests.RequestException as e:
-            print(f" FAILED: {e}")
+            post_json(choco_url, f"/update/{group}", payload, timeout=30)
+            log.info("POST /update/%s OK", group)
+        except OSError as e:
+            log.error("POST /update/%s FAILED: %s", group, e)
             failures += 1
     return failures == 0
 
 
-def main():
+def main() -> int:
     # Find config
     config_path = sys.argv[1] if len(sys.argv) > 1 else None
     if config_path is None:
@@ -190,56 +190,50 @@ def main():
                 config_path = candidate
                 break
     if config_path is None:
-        print("Error: no config.yaml found", file=sys.stderr)
-        sys.exit(1)
+        raise ValueError("no config.yaml found")
 
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
-    print(f"Config: {config_path}")
+    log.info("Config: %s", config_path)
 
     # EOP settings (all required)
     eop_cfg = config.get("eop") or {}
     missing = [k for k in EOP_REQUIRED_KEYS if k not in eop_cfg]
     if missing:
-        print(f"Error: missing eop config keys: {', '.join(missing)}", file=sys.stderr)
-        sys.exit(1)
+        raise ValueError(f"missing eop config keys: {', '.join(missing)}")
     # fpga_master moved to its own top-level block; accept the legacy
     # eop.fpga_master_* keys for now and warn.
     fpga_cfg = config.get("fpga_master") or {}
     fpga_host = fpga_cfg.get("host") or eop_cfg.get("fpga_master_host")
     fpga_port = fpga_cfg.get("port") or eop_cfg.get("fpga_master_port")
     if fpga_host is None or fpga_port is None:
-        print("Error: fpga_master.host / fpga_master.port not set in config",
-              file=sys.stderr)
-        sys.exit(1)
+        raise ValueError("fpga_master.host / fpga_master.port not set in config")
     if "fpga_master_host" in eop_cfg or "fpga_master_port" in eop_cfg:
-        print("Warning: eop.fpga_master_host/port is deprecated; "
-              "move it to a top-level fpga_master block.", file=sys.stderr)
+        log.warning("eop.fpga_master_host/port is deprecated; "
+                    "move it to a top-level fpga_master block.")
     fpga_port = int(fpga_port)
     n_before = int(eop_cfg["intervals_before"])
     n_after = int(eop_cfg["intervals_after"])
     endpoint = eop_cfg["endpoint"]
-    state_filename = eop_cfg["state_file"]
 
-    # Resolve paths
-    configs_dir = Path(config.get("configs_dir", "configs"))
-    if not configs_dir.is_absolute():
-        configs_dir = Path(config_path).parent / configs_dir
-    # The state file lives at an absolute path (the /var/lib/choco/eop default);
-    # a relative path is resolved against configs_dir (the legacy layout).
-    state_file = Path(state_filename)
+    # The state file lives at an absolute path (the /var/lib/choco/eop
+    # default); a relative path is resolved against configs_dir (the
+    # legacy layout).
+    state_file = Path(eop_cfg["state_file"])
     if not state_file.is_absolute():
+        configs_dir = Path(config.get("configs_dir", "configs"))
+        if not configs_dir.is_absolute():
+            configs_dir = Path(config_path).parent / configs_dir
         state_file = configs_dir / state_file
 
     # Frame0
-    print(f"Reading frame0 from fpga_master at {fpga_host}:{fpga_port} ...")
+    log.info("Reading frame0 from fpga_master at %s:%d ...", fpga_host, fpga_port)
     try:
         frame0_ns = eop_utils.read_fpga_master_frame0_ns(fpga_host, fpga_port, 30.0)
     except Exception as e:
-        print(f"fpga_master not reachable: {e}", file=sys.stderr)
-        sys.exit(2)  # dependency unavailable -> degraded, retry heals
+        raise Degraded(f"fpga_master not reachable: {e}") from e
     t0 = eop_utils.calc_astropy_time_from_unix_ns(frame0_ns)
-    print(f"frame0: {frame0_ns} ns  ({t0.utc.isot} UTC)")
+    log.info("frame0: %d ns  (%s UTC)", frame0_ns, t0.utc.isot)
 
     # Build fresh table
     fresh_table = build_fresh_table(frame0_ns, n_before, n_after)
@@ -247,7 +241,7 @@ def main():
     # Merge with stored state if it exists.  Truncate stored entries older
     # than n_before days; preserve everything else verbatim.
     if state_file.exists():
-        print(f"Loading stored state from {state_file}")
+        log.info("Loading stored state from %s", state_file)
         with open(state_file) as f:
             stored = json.load(f)
         stored_table = stored["earth_orientation_parameter_table"]
@@ -257,54 +251,46 @@ def main():
         final_table = merge_tables(stored_table, fresh_table,
                                    lower_inst_ns, now_inst_ns)
     else:
-        print("No stored state - using fresh table as-is")
+        log.info("No stored state - using fresh table as-is")
         final_table = fresh_table
 
-    # Load groups
-    with open(configs_dir / "nodes.yaml") as f:
-        nodes = yaml.safe_load(f)
-    groups = list((nodes.get("groups") or {}).keys())
-    if not groups:
-        print(f"Error: no groups in {configs_dir / 'nodes.yaml'}", file=sys.stderr)
-        sys.exit(1)
-
-    # Push to choco
+    # Push to choco: every group it knows.
     server = config.get("server") or {}
-    port = int(server.get("port", 5000))
-    choco_url = f"https://localhost:{port}"
-
+    choco_url = f"https://localhost:{int(server.get('port', 5000))}"
     wait_for_choco(choco_url)
-    print(f"Pushing to {len(groups)} group(s) ...")
-    success = push_to_choco(choco_url, groups, final_table, endpoint)
+    groups = list((get_json(choco_url, "/api/nodes").get("groups") or {}).keys())
+    if not groups:
+        raise ValueError("choco has no node groups to push to")
 
-    if success:
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(state_file, "w") as f:
-            json.dump({"earth_orientation_parameter_table": final_table}, f)
-        print(f"State saved to {state_file}")
-    else:
-        print("Some groups failed - state NOT updated", file=sys.stderr)
-        sys.exit(2)  # dependency (choco/nodes) trouble -> degraded
+    log.info("Pushing to %d group(s) ...", len(groups))
+    if not push_to_choco(choco_url, groups, final_table, endpoint):
+        raise Degraded("some groups failed - state NOT updated")
 
-    print("Done")
+    write_json_atomic(state_file,
+                      {"earth_orientation_parameter_table": final_table},
+                      indent=None)
+    log.info("State saved to %s", state_file)
+    return 0
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
     # Exit codes (shared job convention, read by choco's badge):
     #   0 ok; 2 degraded — the job is fine but a dependency wasn't
     #   (fpga_master unreachable, IERS download down, choco/groups not
     #   accepting; the unit's Restart / next timer tick self-heals);
     #   1 failed — config error or bug, needs a human.
     try:
-        main()
-    except OSError as e:
+        sys.exit(main())
+    except (Degraded, OSError) as e:
         # Environmental: IERS download unreachable, network errors
-        # (requests/urllib errors are OSError).
-        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        # (urllib errors are OSError).
+        log.error("%s: %s", type(e).__name__, e)
         sys.exit(2)
     except (ValueError, yaml.YAMLError) as e:
         # Config or state-file problems (JSONDecodeError is a
         # ValueError) — needs a human.  Anything else is a bug and
         # keeps its traceback.
-        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        log.error("%s: %s", type(e).__name__, e)
         sys.exit(1)

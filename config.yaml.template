@@ -91,6 +91,7 @@ waterfall:
 # page.  Omit the block to disable both.
 skymap:
   image_file: /var/lib/choco/skymap/skymap.png
+  service_unit: choco-skymap.service          # systemd unit to query for the SKYMAP badge
 
 # Data-file roots shown on /files.  Each root is scanned one level deep:
 # its immediate subdirectories are listed with the number, total size and

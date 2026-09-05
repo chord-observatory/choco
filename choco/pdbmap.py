@@ -20,25 +20,17 @@ from __future__ import annotations
 
 import csv
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from .dishlabels import (
+    PLACEHOLDER_LABEL, expand_dish_labels, find_dish_inputs,
+    labels_are_per_element,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAP_FILENAME = "pdb_map.csv"
-
-# kotekan's dish_inputs table pads unpopulated slots with this label.
-PLACEHOLDER_LABEL = "Fake"
-
-# Per-element vs per-dish label layouts — mirrors jobs/bffs/kotekan_io.py
-# (labels_are_per_element / expand_dish_labels); keep the two in step.
-# A polarization marker in the text (``A1X``, ``d0_pA``) means the
-# pre-2026-08 per-element layout, whose element ordering was wrong; the
-# 2026-08 layout names each dish once (``A1``) and derives per-element
-# labels as label + X/Y (pol 0 = X).
-_PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
-_POL_SUFFIXES = "XY"
 
 # The dish-input column has gone by a few names (bffs's vendored
 # power_map.csv calls it correlator_input); accept them all, write the
@@ -232,23 +224,6 @@ class PdbMapFile:
 
 # --- cross-check against kotekan's own dish_inputs table -----------------
 
-def find_dish_inputs(config):
-    """The ``dish_inputs`` table from a rendered kotekan config, or None.
-
-    Searched recursively — the table's nesting spot varies between
-    config generations (same lookup bffs does).
-    """
-    if isinstance(config, dict):
-        value = config.get("dish_inputs")
-        if isinstance(value, list) and value:
-            return value
-        for child in config.values():
-            found = find_dish_inputs(child)
-            if found is not None:
-                return found
-    return None
-
-
 def kotekan_dish_labels(config) -> dict | None:
     """Per-element label sets from a per-dish ``dish_inputs`` table.
 
@@ -276,18 +251,15 @@ def kotekan_dish_labels(config) -> dict | None:
                if label and label != PLACEHOLDER_LABEL]
     if not entries:
         return None
-    if any(_PER_ELEMENT_LABEL.search(label) for label, _ in entries):
+    if labels_are_per_element(label for label, _ in entries):
         raise ValueError(
             "pre-2026-08 per-element dish_inputs table (labels like A1X) — "
             "its element ordering is untrustworthy; migrate the config to "
             "the per-dish layout")
 
-    def expand(labels):
-        return {label + pol for label in labels for pol in _POL_SUFFIXES}
-
     return {
-        "live": expand(l for l, typ in entries if typ == "ArrayDish"),
-        "known": expand(l for l, _ in entries),
+        "live": set(expand_dish_labels(l for l, typ in entries if typ == "ArrayDish")),
+        "known": set(expand_dish_labels(l for l, _ in entries)),
     }
 
 
