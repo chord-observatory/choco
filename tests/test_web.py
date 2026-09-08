@@ -254,11 +254,16 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 class TestSkymap:
-    def _configure(self, app, tmp_path, write=True):
+    def _configure(self, app, tmp_path, write=True, night=False):
         path = tmp_path / "skymap.png"
         if write:
             path.write_bytes(PNG_MAGIC + b"fake image data")
         app.config["skymap_cfg"] = {"image_file": str(path)}
+        if night:
+            night_path = tmp_path / "skymap-night.png"
+            if write:
+                night_path.write_bytes(PNG_MAGIC + b"fake night data")
+            app.config["skymap_cfg"]["night_image_file"] = str(night_path)
         return path
 
     def test_unconfigured_404(self, client):
@@ -285,6 +290,23 @@ class TestSkymap:
         resp = client.get("/skymap.png", headers={"If-None-Match": etag})
         assert resp.status_code == 304
 
+    def test_night_image_served_without_login(self, client, app, tmp_path):
+        path = self._configure(app, tmp_path, night=True)
+        resp = client.get("/skymap-night.png")
+        assert resp.status_code == 200
+        assert resp.mimetype == "image/png"
+        assert resp.data == (path.parent / "skymap-night.png").read_bytes()
+        assert resp.data != path.read_bytes()
+
+    def test_night_image_404_until_configured_and_rendered(
+            self, client, app, tmp_path):
+        # Day only configured: the night route is simply absent ...
+        self._configure(app, tmp_path)
+        assert client.get("/skymap-night.png").status_code == 404
+        # ... and configured but not yet rendered is the same 404.
+        self._configure(app, tmp_path, write=False, night=True)
+        assert client.get("/skymap-night.png").status_code == 404
+
     def test_partial_requires_login(self, client, app, tmp_path):
         self._configure(app, tmp_path)
         resp = client.get("/partials/skymap", follow_redirects=False)
@@ -295,6 +317,16 @@ class TestSkymap:
         _login(client)
         body = client.get("/partials/skymap").data.decode()
         assert f'/skymap.png?v={int(path.stat().st_mtime)}' in body
+
+    def test_partial_links_night_image_only_when_rendered(
+            self, client, app, tmp_path):
+        _login(client)
+        self._configure(app, tmp_path)
+        assert "skymap-night" not in client.get("/partials/skymap").data.decode()
+        path = self._configure(app, tmp_path, night=True)
+        night_mtime = int((path.parent / "skymap-night.png").stat().st_mtime)
+        body = client.get("/partials/skymap").data.decode()
+        assert f'/skymap-night.png?v={night_mtime}' in body
 
     def test_partial_without_render_yet(self, client, app, tmp_path):
         self._configure(app, tmp_path, write=False)

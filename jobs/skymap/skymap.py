@@ -13,9 +13,12 @@ The pointing declination is read live from choco's ``/api/config``:
 is the beam declination (49.32° − 27.3° ≈ +22° = Tau A).  An explicit
 ``dec`` in skymap.yaml overrides it.
 
-Runs from choco-skymap.timer every 5 minutes; the finished PNG is
-written atomically (temp file + rename) so choco's ``/skymap.png``
-route never serves a half-written image.  There is no state file: the
+Runs from choco-skymap.timer every 5 minutes and renders the same
+instant twice: a day image (white page, for the landing card) and a
+night image (dark page, for wall displays in a dim control room),
+differing only in palette.  Each PNG is written atomically (temp file
++ rename) so choco's ``/skymap.png`` and ``/skymap-night.png`` routes
+never serve a half-written image.  There is no state file: the
 image is the record (its title carries the render time) and the SKYMAP
 badge reads the unit's result from systemd.  Exit codes follow the jobs
 convention: 0 ok, 2 degraded (choco unreachable, no pointing found —
@@ -47,7 +50,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from matplotlib.colors import to_rgba
+from matplotlib.colors import to_rgb, to_rgba
 from matplotlib.font_manager import FontProperties
 from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse
@@ -77,8 +80,9 @@ DEFAULTS = {
                             # pointing(s) from choco), a MAJOR_SOURCES name
                             # ("Cyg A"), or a declination in degrees
     "output": "/var/lib/choco/skymap/skymap.png",
+    "output_night": "/var/lib/choco/skymap/skymap-night.png",  # "" = no night render
     "background_image": str(SCRIPT_DIR / "sky_background.png"),
-    "background_fade": 0.42,   # 0 = full white; 1 = full sky image
+    "background_fade": 0.42,   # 0 = flat page colour; 1 = full sky image
     "dpi": 130,
     "timezone": "America/Vancouver",
 }
@@ -299,15 +303,68 @@ def dedup_beams(beams):
 # Main plotting function
 # ============================================================================
 
-# One palette per beam, in order: (centre line, 300 MHz band, 1000 MHz
-# band, label ink).  Green stays the primary beam; further beams take
-# hues nothing else on the plot uses (RA grid is thin blue lines, Dec
-# grid red, sources purple).
-BEAM_PALETTES = [
-    ('#0a4d22', '#1f9c4d', '#0f7a3a', '#053812'),   # green
-    ('#0a3d5e', '#2a7ab0', '#155e8a', '#062c42'),   # teal-blue
-    ('#5e0a42', '#b02a7a', '#8a1560', '#42062e'),   # magenta
-]
+# Every colour the plot uses, by role, for the two renders: "day" (white
+# page, the landing card) and "night" (dark page, wall displays in a dim
+# control room).  Geometry, labels and placement are identical; only the
+# palette differs, so the two images stay directly comparable.
+#
+# ``face`` is the page colour and what the sky image fades toward;
+# ``box`` fills the label boxes; ``halo`` is the marker outline that
+# separates a dot from the sky (so it matches the page).  ``rc`` goes
+# through plt.rc_context for what matplotlib styles itself: title, tick
+# and axis-label ink, the projection outline, the legend box.
+#
+# ``beams`` is one palette per beam, in order: (centre line, 300 MHz
+# band, 1000 MHz band, label ink).  Green stays the primary beam; further
+# beams take hues nothing else on the plot uses (RA grid is thin blue
+# lines, Dec grid red, sources purple).
+THEMES = {
+    "day": {
+        "face": "white", "box": "white", "halo": "white",
+        "grid": "#cfcfd6",
+        "ra": "#2e5d9c", "ra_emph": "#0c2a5e",
+        "dec": "#a83232", "dec_emph": "#5e0c0c",
+        "pole": "black", "pole_box_edge": "black",
+        "major": "#0a0a0a", "major_box_edge": "#888",
+        "bright": "#7030a0", "bright_ink": "#5a2080",
+        "bright_box_edge": "#9a60c0",
+        "sun": "#ffcc44", "sun_edge": "#a05010", "sun_ink": "#a05010",
+        "moon": "#dddddd", "moon_edge": "#3a3a3a", "moon_ink": "#3a3a3a",
+        "moon_box_edge": "#6a6a6a",
+        "ecliptic": "#d4a017", "gc": "#cc6600", "beam_now_edge": "#888",
+        "beams": [
+            ('#0a4d22', '#1f9c4d', '#0f7a3a', '#053812'),   # green
+            ('#0a3d5e', '#2a7ab0', '#155e8a', '#062c42'),   # teal-blue
+            ('#5e0a42', '#b02a7a', '#8a1560', '#42062e'),   # magenta
+        ],
+        "rc": {},
+    },
+    "night": {
+        "face": "#0b0f1a", "box": "#151b2b", "halo": "#0b0f1a",
+        "grid": "#2c3244",
+        "ra": "#5b8fd6", "ra_emph": "#a9c8f2",
+        "dec": "#d06060", "dec_emph": "#f0a8a8",
+        "pole": "white", "pole_box_edge": "#c8cdd8",
+        "major": "#f0f2f6", "major_box_edge": "#6a7080",
+        "bright": "#c08ae8", "bright_ink": "#dcc0f8",
+        "bright_box_edge": "#8a5cc0",
+        "sun": "#ffcc44", "sun_edge": "#c06018", "sun_ink": "#ffb866",
+        "moon": "#e6e6e6", "moon_edge": "#606060", "moon_ink": "#c4c4c4",
+        "moon_box_edge": "#7a7a7a",
+        "ecliptic": "#e8c04a", "gc": "#ff9a40", "beam_now_edge": "#8a90a0",
+        "beams": [
+            ('#3fd97f', '#2fb865', '#37c872', '#b0f2cc'),   # green
+            ('#4aa8e8', '#2a7ab0', '#3a90cc', '#bfe0fa'),   # teal-blue
+            ('#e060b0', '#b02a7a', '#c8408f', '#f8c0e4'),   # magenta
+        ],
+        "rc": {
+            "text.color": "#e6e9f0", "axes.labelcolor": "#e6e9f0",
+            "xtick.color": "#c8cdd8", "ytick.color": "#c8cdd8",
+            "axes.edgecolor": "#6a7080", "axes.facecolor": "#0b0f1a",
+            "legend.facecolor": "#151b2b", "legend.edgecolor": "#3a4152",
+        },
+    },
+}
 
 
 class LabelPlacer:
@@ -393,8 +450,22 @@ class LabelPlacer:
                                 **annotate_kw)
 
 
-def plot_skymap(cfg, beams, now=None):
-    """Render the strip plot for *beams* = [(dec_deg, origin), ...]."""
+def plot_skymap(cfg, beams, now=None, theme="day", output=None):
+    """Render the strip plot for *beams* = [(dec_deg, origin), ...].
+
+    *theme* names an entry of THEMES; *output* defaults to cfg["output"].
+    The day and night images of one run are drawn from the same *now*,
+    so pass it explicitly when rendering both.
+    """
+    if theme not in THEMES:
+        raise ValueError(f"unknown theme {theme!r}; one of {list(THEMES)}")
+    T = THEMES[theme]
+    with plt.rc_context(T["rc"]):
+        return _plot_skymap(cfg, beams, now, T,
+                            output if output is not None else cfg["output"])
+
+
+def _plot_skymap(cfg, beams, now, T, output):
     drao = EarthLocation(lat=DRAO_LAT * u.deg, lon=DRAO_LON * u.deg,
                          height=DRAO_ALT * u.m)
     now = now or Time.now()
@@ -408,7 +479,7 @@ def plot_skymap(cfg, beams, now=None):
     lst_now_h = float(now.sidereal_time('apparent', longitude=drao.lon).hour)
 
     # ------------------ Figure setup ------------------
-    fig = plt.figure(figsize=(15, 8.5), facecolor='white')
+    fig = plt.figure(figsize=(15, 8.5), facecolor=T["face"])
     ax_pos = [0.06, 0.18, 0.88, 0.72]
 
     # Background image axes (matched to Mollweide's 2:1 aspect)
@@ -417,7 +488,8 @@ def plot_skymap(cfg, beams, now=None):
         sky_img = mpimg.imread(bg)
         rgb = sky_img[..., :3]
         fade = float(cfg["background_fade"])
-        faded = np.clip(rgb * fade + (1 - fade), 0, 1)
+        page = np.array(to_rgb(T["face"]))
+        faded = np.clip(rgb * fade + (1 - fade) * page, 0, 1)
         ax_bg = fig.add_axes(ax_pos)
         ax_bg.imshow(faded, aspect='auto', extent=[-1, 1, -1, 1],
                      interpolation='bilinear')
@@ -435,14 +507,14 @@ def plot_skymap(cfg, beams, now=None):
     # Mollweide overlay
     ax = fig.add_axes(ax_pos, projection='mollweide')
     ax.patch.set_alpha(0)
-    ax.grid(True, color='#cfcfd6', linestyle=':', linewidth=0.6)
+    ax.grid(True, color=T["grid"], linestyle=':', linewidth=0.6)
     labels = LabelPlacer(ax)
 
     n_pts = 800
 
     # ------------------ RA/Dec grid ------------------
-    ra_col, ra_emph = '#2e5d9c', '#0c2a5e'
-    dec_col, dec_emph = '#a83232', '#5e0c0c'
+    ra_col, ra_emph = T["ra"], T["ra_emph"]
+    dec_col, dec_emph = T["dec"], T["dec_emph"]
     for ra_h in np.arange(0, 24, 2):
         ra = np.radians(ra_h * 15)
         dec_arr = np.linspace(-np.pi / 2 + 0.001, np.pi / 2 - 0.001, n_pts)
@@ -454,7 +526,8 @@ def plot_skymap(cfg, beams, now=None):
         l0, b0 = eq_to_gal(np.array([ra]), np.array([0.0]))
         ax.text(-l0[0], b0[0] + 0.04, f"{ra_h}ʰ", color=ra_emph, fontsize=8.5,
                 ha='center', va='bottom', fontweight='bold',
-                bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=1))
+                bbox=dict(facecolor=T["box"], edgecolor='none', alpha=0.7,
+                          pad=1))
 
     for dec_d in np.arange(-75, 76, 15):
         dec = np.radians(dec_d)
@@ -471,25 +544,27 @@ def plot_skymap(cfg, beams, now=None):
         sign = '+' if dec_d >= 0 else ''
         ax.text(-l[0] + 0.03, b[0], f"{sign}{dec_d}°", color=dec_emph,
                 fontsize=8.5, ha='left', va='center', fontweight='bold',
-                bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=1))
+                bbox=dict(facecolor=T["box"], edgecolor='none', alpha=0.7,
+                          pad=1))
 
     # ------------------ Poles ------------------
     for eq_dec, name, va in [(np.pi / 2 - 1e-5, 'NCP', 'top'),
                              (-np.pi / 2 + 1e-5, 'SCP', 'bottom')]:
         l, b = eq_to_gal(np.array([0.0]), np.array([eq_dec]))
-        ax.plot(-l, b, marker='*', color='black', markersize=18,
-                markeredgecolor='white', markeredgewidth=1.0, zorder=6)
+        ax.plot(-l, b, marker='*', color=T["pole"], markersize=18,
+                markeredgecolor=T["halo"], markeredgewidth=1.0, zorder=6)
         dy = -0.08 if va == 'top' else 0.08
         ax.text(-l[0], b[0] + dy, name, fontsize=10, fontweight='bold',
                 ha='center', va=va,
-                bbox=dict(facecolor='white', edgecolor='black', alpha=0.85, pad=2))
+                bbox=dict(facecolor=T["box"], edgecolor=T["pole_box_edge"],
+                          alpha=0.85, pad=2))
         labels.claim(-l[0], b[0] + dy, name, 10, ha='center', va=va,
                      weight='bold')
 
     # ------------------ CHORD strips, one per beam ------------------
     ra_strip = np.linspace(0, 2 * np.pi, n_pts)
     for i, (beam_dec, origin) in enumerate(beams):
-        centre, band300, band1000, _ink = BEAM_PALETTES[i % len(BEAM_PALETTES)]
+        centre, band300, band1000, _ink = T["beams"][i % len(T["beams"])]
         for freq, hpbw, color, n_band, per_alpha, lw in [
             (300, HPBW_300_MHZ, band300, 50, 0.07, 1.4),
             (1000, HPBW_1000_MHZ, band1000, 25, 0.09, 1.1),
@@ -520,7 +595,7 @@ def plot_skymap(cfg, beams, now=None):
     ra_now = np.radians(lst_now_h * 15)
     r_beam = np.radians(HPBW_300_MHZ / 2)
     for i, (beam_dec, origin) in enumerate(beams):
-        centre = BEAM_PALETTES[i % len(BEAM_PALETTES)][0]
+        centre = T["beams"][i % len(T["beams"])][0]
         dec0 = np.radians(beam_dec)
         ra_c, dec_c = small_circle(ra_now, dec0, r_beam)
         l_c, b_c = eq_to_gal(ra_c, dec_c)
@@ -569,7 +644,7 @@ def plot_skymap(cfg, beams, now=None):
     # RA of a label is the same for every beam, so only the primary
     # strip carries them to keep the plot readable.
     primary_dec = beams[0][0]
-    primary_centre, _, _, primary_ink = BEAM_PALETTES[0]
+    primary_centre, _, _, primary_ink = T["beams"][0]
     first = local_now.replace(minute=0, second=0, microsecond=0)
     while first <= local_now or first.hour % 2:
         first += timedelta(hours=1)
@@ -582,12 +657,12 @@ def plot_skymap(cfg, beams, now=None):
         label_str = (f"{t_local.hour:02d} {tz_label}" if k == 0
                      else f"{t_local.hour:02d}")
         ax.plot(-l_pt[0], b_pt[0], marker='o', color=primary_centre,
-                markersize=5, markeredgecolor='white', markeredgewidth=1.0,
+                markersize=5, markeredgecolor=T["halo"], markeredgewidth=1.0,
                 zorder=5.5)
         labels.place(-l_pt[0], b_pt[0], label_str, 8,
                      prefer=(8, 8, 'left', 'bottom'),
                      color=primary_ink, fontweight='bold',
-                     bbox=dict(facecolor='white', edgecolor=primary_centre,
+                     bbox=dict(facecolor=T["box"], edgecolor=primary_centre,
                                alpha=0.88, pad=1.5, linewidth=0.6), zorder=6)
 
     # ------------------ Sources near any beam ------------------
@@ -599,7 +674,7 @@ def plot_skymap(cfg, beams, now=None):
         sc = SkyCoord(ra_str, dec_str, frame='icrs')
         l, b = eq_to_gal(np.array([sc.ra.rad]), np.array([sc.dec.rad]))
         ax.plot(-l[0], b[0], marker='o', markerfacecolor='none',
-                markeredgecolor='#0a0a0a', markersize=10, markeredgewidth=1.6,
+                markeredgecolor=T["major"], markersize=10, markeredgewidth=1.6,
                 zorder=5)
         labels.claim_marker(-l[0], b[0], 11)
         majors.append((name, -l[0], b[0]))
@@ -614,7 +689,7 @@ def plot_skymap(cfg, beams, now=None):
                        key=lambda d: abs(float(sc.dec.deg) - d))
         l, b = eq_to_gal(np.array([sc.ra.rad]), np.array([sc.dec.rad]))
         ax.plot(-l[0], b[0], marker='o', markerfacecolor='none',
-                markeredgecolor='#7030a0', markersize=7, markeredgewidth=1.3,
+                markeredgecolor=T["bright"], markersize=7, markeredgewidth=1.3,
                 zorder=4.8)
         labels.claim_marker(-l[0], b[0], 8)
         brights.append((name, -l[0], b[0], sc.dec.deg > beam_dec))
@@ -622,8 +697,8 @@ def plot_skymap(cfg, beams, now=None):
     for name, x, y in majors:
         labels.place(x, y, name, 9.5, prefer=(7, -9, 'left', 'top'),
                      fontweight='bold',
-                     bbox=dict(facecolor='white', edgecolor='#888', alpha=0.9,
-                               pad=2),
+                     bbox=dict(facecolor=T["box"], edgecolor=T["major_box_edge"],
+                               alpha=0.9, pad=2),
                      zorder=5)
 
     for name, x, y, above in brights:
@@ -631,28 +706,28 @@ def plot_skymap(cfg, beams, now=None):
         # placer flip a label that would land on a neighbour's.
         prefer = (7, 6, 'left', 'bottom') if above else (7, -6, 'left', 'top')
         labels.place(x, y, name, 8, prefer=prefer,
-                     color='#5a2080',
-                     bbox=dict(facecolor='white', edgecolor='#9a60c0',
+                     color=T["bright_ink"],
+                     bbox=dict(facecolor=T["box"], edgecolor=T["bright_box_edge"],
                                alpha=0.85, pad=1.5, linewidth=0.5),
                      zorder=5)
 
     # ------------------ Sun (current position) ------------------
     l, b = eq_to_gal(np.array([sun.ra.rad]), np.array([sun.dec.rad]))
-    ax.plot(-l[0], b[0], marker='o', color='#ffcc44', markersize=14,
-            markeredgecolor='#a05010', markeredgewidth=1.8, zorder=7)
+    ax.plot(-l[0], b[0], marker='o', color=T["sun"], markersize=14,
+            markeredgecolor=T["sun_edge"], markeredgewidth=1.8, zorder=7)
     labels.place(-l[0], b[0], "Sun", 9.5, prefer=(12, -8, 'left', 'top'),
-                 color='#a05010', fontweight='bold',
-                 bbox=dict(facecolor='white', edgecolor='#a05010', alpha=0.92,
-                           pad=2), zorder=8)
+                 color=T["sun_ink"], fontweight='bold',
+                 bbox=dict(facecolor=T["box"], edgecolor=T["sun_ink"],
+                           alpha=0.92, pad=2), zorder=8)
 
     # ------------------ Moon (current position) ------------------
     l, b = eq_to_gal(np.array([moon.ra.rad]), np.array([moon.dec.rad]))
-    ax.plot(-l[0], b[0], marker='o', color='#dddddd', markersize=11,
-            markeredgecolor='#3a3a3a', markeredgewidth=1.6, zorder=7)
+    ax.plot(-l[0], b[0], marker='o', color=T["moon"], markersize=11,
+            markeredgecolor=T["moon_edge"], markeredgewidth=1.6, zorder=7)
     labels.place(-l[0], b[0], "Moon", 9.5, prefer=(10, 10, 'left', 'bottom'),
-                 color='#3a3a3a', fontweight='bold',
-                 bbox=dict(facecolor='white', edgecolor='#6a6a6a', alpha=0.92,
-                           pad=2), zorder=8)
+                 color=T["moon_ink"], fontweight='bold',
+                 bbox=dict(facecolor=T["box"], edgecolor=T["moon_box_edge"],
+                           alpha=0.92, pad=2), zorder=8)
 
     # ------------------ Ecliptic + galactic center ------------------
     eps = np.radians(23.4393)
@@ -661,9 +736,9 @@ def plot_skymap(cfg, beams, now=None):
     dec_ecl = np.arcsin(np.sin(ecl_lon) * np.sin(eps))
     l_ecl, b_ecl = eq_to_gal(ra_ecl, dec_ecl)
     l_ep, b_ep = split_wrap(-l_ecl, b_ecl)
-    ax.plot(l_ep, b_ep, color='#d4a017', linewidth=1.6, linestyle='--',
+    ax.plot(l_ep, b_ep, color=T["ecliptic"], linewidth=1.6, linestyle='--',
             alpha=0.85, zorder=2.5)
-    ax.plot(0, 0, marker='+', color='#cc6600', markersize=18,
+    ax.plot(0, 0, marker='+', color=T["gc"], markersize=18,
             markeredgewidth=2.5, zorder=4)
 
     # ------------------ Axes labels and title ------------------
@@ -691,33 +766,35 @@ def plot_skymap(cfg, beams, now=None):
         Line2D([0], [0], color=ra_col, lw=1.0, label='RA meridians (2ʰ)'),
         Line2D([0], [0], color=dec_emph, lw=2.2, label='Celestial equator'),
         Line2D([0], [0], color=dec_col, lw=1.0, label='Dec parallels (15°)'),
-        Line2D([0], [0], color='#d4a017', lw=1.6, ls='--', label='Ecliptic'),
+        Line2D([0], [0], color=T["ecliptic"], lw=1.6, ls='--',
+               label='Ecliptic'),
     ]
     for i, (beam_dec, origin) in enumerate(beams):
-        centre = BEAM_PALETTES[i % len(BEAM_PALETTES)][0]
+        centre = T["beams"][i % len(T["beams"])][0]
         near = nearest_major_source(beam_dec)
         name = f' ≈ {near}' if near else ''
         handles.append(Line2D([0], [0], color=centre, lw=2.6,
                               label=f'Beam Dec={beam_dec:+.1f}°{name}'))
+    primary = T["beams"][0]
     handles += [
-        Line2D([0], [0], color=BEAM_PALETTES[0][1], lw=8, alpha=0.45,
+        Line2D([0], [0], color=primary[1], lw=8, alpha=0.45,
                label=f'HPBW 300 MHz (~{HPBW_300_MHZ:.1f}°)'),
-        Line2D([0], [0], color=BEAM_PALETTES[0][2], lw=4, alpha=0.65,
+        Line2D([0], [0], color=primary[2], lw=4, alpha=0.65,
                label=f'HPBW 1000 MHz (~{HPBW_1000_MHZ:.1f}°)'),
         Line2D([0], [0], marker='o',
-               markerfacecolor=to_rgba(BEAM_PALETTES[0][0], 0.35),
-               markeredgecolor='#888', markersize=11, markeredgewidth=1.2,
-               lw=0, label='Beam now (300 MHz HPBW)'),
-        Line2D([0], [0], marker='o', color='#ffcc44', markersize=10,
-               markeredgecolor='#a05010', markeredgewidth=1.4, lw=0,
+               markerfacecolor=to_rgba(primary[0], 0.35),
+               markeredgecolor=T["beam_now_edge"], markersize=11,
+               markeredgewidth=1.2, lw=0, label='Beam now (300 MHz HPBW)'),
+        Line2D([0], [0], marker='o', color=T["sun"], markersize=10,
+               markeredgecolor=T["sun_edge"], markeredgewidth=1.4, lw=0,
                label='Sun (now)'),
-        Line2D([0], [0], marker='o', color='#dddddd', markersize=8,
-               markeredgecolor='#3a3a3a', markeredgewidth=1.2, lw=0,
+        Line2D([0], [0], marker='o', color=T["moon"], markersize=8,
+               markeredgecolor=T["moon_edge"], markeredgewidth=1.2, lw=0,
                label='Moon (now)'),
         Line2D([0], [0], marker='o', markerfacecolor='none',
-               markeredgecolor='#7030a0', markersize=8, markeredgewidth=1.3,
+               markeredgecolor=T["bright"], markersize=8, markeredgewidth=1.3,
                lw=0, label=f'Radio sources within {BEAM_FILTER_DEG:.0f}°'),
-        Line2D([0], [0], marker='+', color='#cc6600', markersize=12, lw=0,
+        Line2D([0], [0], marker='+', color=T["gc"], markersize=12, lw=0,
                markeredgewidth=2, label='Galactic center'),
     ]
     ax.legend(handles=handles, loc='lower left', fontsize=8.5,
@@ -727,11 +804,11 @@ def plot_skymap(cfg, beams, now=None):
 
     # Atomic write: choco serves this file, so it must never be readable
     # half-written.  A rename on the same filesystem is atomic.
-    out = Path(cfg["output"])
+    out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     plt.savefig(tmp, format='png', dpi=int(cfg["dpi"]), bbox_inches='tight',
-                facecolor='white')
+                facecolor=T["face"])
     plt.close(fig)
     os.replace(tmp, out)
     return {
@@ -786,13 +863,23 @@ def main(argv=None):
         beams.extend((d, f"{g} config") for d, g in live)
     beams = dedup_beams(beams)
 
+    # Day first (the landing card), then night when configured: the two
+    # images are the same instant in two palettes, so *now* is fixed
+    # before either render.  Each write is atomic on its own; a failure
+    # partway leaves whichever images did land, both from this run or
+    # both from the last.
+    renders = [("day", cfg["output"])]
+    if cfg["output_night"]:
+        renders.append(("night", cfg["output_night"]))
+    now = Time.now()
     try:
-        plot_skymap(cfg, beams, now=Time.now())
+        for theme, output in renders:
+            plot_skymap(cfg, beams, now=now, theme=theme, output=output)
     except OSError as e:
         print(f"Render failed: {e}", file=sys.stderr)
         return 2
 
-    print(f"Saved {cfg['output']} "
+    print(f"Saved {', '.join(o for _, o in renders)} "
           f"({'; '.join(beam_title(d, o) for d, o in beams)})")
     return 0
 

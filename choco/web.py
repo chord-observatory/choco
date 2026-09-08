@@ -224,11 +224,27 @@ def partial_landing_services():
     return render_template("_landing_services.html", **_landing_context())
 
 
-def _skymap_file() -> Path | None:
-    """The rendered sky-map PNG, if the skymap config block names one."""
+def _skymap_file(night: bool = False) -> Path | None:
+    """The rendered sky-map PNG (or its night-palette twin), if the
+    skymap config block names it."""
     cfg = current_app.config.get("skymap_cfg") or {}
-    path = cfg.get("image_file")
+    path = cfg.get("night_image_file" if night else "image_file")
     return Path(path) if path else None
+
+
+def _file_mtime(path: Path | None) -> int | None:
+    if path is None:
+        return None
+    try:
+        return int(path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _send_skymap(path: Path | None):
+    if path is None or not path.is_file():
+        abort(404)
+    return send_file(path, mimetype="image/png", conditional=True, max_age=0)
 
 
 @bp.route("/skymap.png")
@@ -242,10 +258,17 @@ def skymap_png():
     ``max_age=0`` make the browser revalidate each time and get a 304
     until the 5-minute job rewrites the file.
     """
-    path = _skymap_file()
-    if path is None or not path.is_file():
-        abort(404)
-    return send_file(path, mimetype="image/png", conditional=True, max_age=0)
+    return _send_skymap(_skymap_file())
+
+
+@bp.route("/skymap-night.png")
+def skymap_night_png():
+    """The same render in the job's night palette, for wall displays in
+    a dim control room.  Unauthenticated for the same reason as
+    /skymap.png and carrying the same single cluster fact; 404 until
+    the skymap block's ``night_image_file`` names a rendered file.
+    """
+    return _send_skymap(_skymap_file(night=True))
 
 
 @bp.route("/partials/skymap")
@@ -254,16 +277,13 @@ def partial_skymap():
     """The landing page's sky-map card, htmx-refreshed every 5 min.
 
     The image URL carries the file's mtime, so a refresh swaps in a new
-    render exactly when one has landed and is a no-op otherwise.
+    render exactly when one has landed and is a no-op otherwise.  The
+    card links the night-palette image when one has been rendered.
     """
-    path = _skymap_file()
-    mtime = None
-    if path is not None:
-        try:
-            mtime = int(path.stat().st_mtime)
-        except OSError:
-            mtime = None
-    return render_template("_skymap.html", mtime=mtime, now_ts=time.time())
+    return render_template("_skymap.html",
+                           mtime=_file_mtime(_skymap_file()),
+                           night_mtime=_file_mtime(_skymap_file(night=True)),
+                           now_ts=time.time())
 
 
 @bp.route("/nodes")

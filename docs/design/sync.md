@@ -55,7 +55,7 @@ every ``Node`` has exactly one owner (``sync.NodeWorker``) that drains its
 queue and reconciles, so per-node operations are serialized by construction
 (no queue locks, no ``SYNCING`` re-entry guard) and each node carries visible
 worker state: a ``WorkerPhase`` (idle / down / draining / probing / queued-
-for-push / pushing / awaiting-idle), consecutive-failure count, last cycle
+for-push / pushing / awaiting-idle / handover), consecutive-failure count, last cycle
 duration and next check time, surfaced per node in ``/api/nodes/status`` as
 ``worker``.  Submissions wake the owner (``Orchestrator._enqueue``), so a
 queued change is picked up immediately rather than on the next scheduled
@@ -74,7 +74,16 @@ flight cycle (a restart especially) always completes first, so a registry
 reload cannot strand a node between ``/kill`` and ``/start``;
 ``apply_nodes_update`` stops the old workers, reloads, runs state discovery,
 then spawns the new set (discovery before spawn, same order as startup, so
-first cycles act on observed state).  Every path through ``_sync_node`` leaves
+first cycles act on observed state).  Each new worker is handed the retired
+worker for its key and joins it before its own first cycle (phase
+``handover``), so a restart still in flight on the old ``Node`` object and the
+replacement's first probe never overlap on one kotekan; the join lives in the
+worker rather than in ``apply_nodes_update`` so a web save does not block on a
+restart cycle.  After the reload, ``apply_nodes_update`` re-baselines the
+mtime scan on what it just read, so choco's own ``nodes.yaml`` write is not
+taken for an external edit on the next tick — that would rebuild a second time
+and re-engage maintenance under an operator who had just switched it off.
+Every path through ``_sync_node`` leaves
 ``node.status`` reflecting that cycle's probe — the load-error early-returns
 included — because the worker reads it afterwards to distinguish "node
 answered" (normal cadence) from "unreachable" (back off); a reachable node
@@ -202,7 +211,9 @@ intent.
 
 kotekan's ``/stop`` endpoint is unreliable. All stopping is done via
 ``/kill``, which terminates the process; the daemon restarts it into a stopped
-(idle) state. The ``Node.stop()`` method has been removed.
+(idle) state. The ``Node.stop()`` method has been removed.  A ``/kill`` that
+fails in transport leaves the node reporting the probe's status (still
+running) with an error, not an assumed idle; the next poll retries it.
 
 ## Kotekan managed by Ansible
 

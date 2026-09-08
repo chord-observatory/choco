@@ -373,6 +373,24 @@ class TestProcessNode:
         node.start.assert_not_called()
         assert node.status == NodeStatus.IDLE
 
+    def test_stopped_node_failed_kill_is_not_reported_idle(self, orchestrator):
+        """If /kill fails kotekan is still running: report the probe, not IDLE."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
+        node.kill = MagicMock(return_value=False)
+        node.start = MagicMock()
+
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
+
+        node.kill.assert_called_once()
+        node.start.assert_not_called()
+        assert node.status == NodeStatus.STARTED
+        assert "kill" in node.error
+
     def test_stopped_node_leaves_idle_alone(self, orchestrator):
         """A node with started=False does nothing if already idle."""
         node = orchestrator.registry.get_node("cx/cx1")
@@ -849,6 +867,37 @@ class TestConfigFileScan:
             assert node.queue_empty
 
 
+    def test_web_save_is_not_an_external_edit(self, configs_dir, orchestrator,
+                                              monkeypatch):
+        """apply_nodes_update(new_data) writes nodes.yaml itself.
+
+        The next tick's scan must not take that write for an edit and
+        rebuild a second time: the rebuild re-engages maintenance, so it
+        would undo a toggle the operator made in between.
+        """
+        monkeypatch.setattr(Node, "get_status", lambda self: NodeStatus.IDLE)
+        nodes_yaml = configs_dir / "nodes.yaml"
+        past = time.time() - 10             # so the save's mtime clearly differs
+        os.utime(nodes_yaml, (past, past))
+        self._baseline(orchestrator)
+        data = yaml.safe_load(nodes_yaml.read_text())
+        data["groups"]["cx"]["cx3"] = {"host": "cx3.chord.ca", "port": 12048}
+
+        orchestrator.apply_nodes_update(data)
+        assert orchestrator.registry.get_node("cx/cx3") is not None
+
+        rebuilds = []
+        monkeypatch.setattr(orchestrator, "apply_nodes_update",
+                            lambda new_data=None: rebuilds.append(new_data))
+        orchestrator.check_config_files()
+        assert rebuilds == []
+
+        # A genuine external edit after the save is still picked up.
+        self._bump(nodes_yaml)
+        orchestrator.check_config_files()
+        assert rebuilds == [None]
+
+
 class TestNodeWorker:
     """The per-node owner greenlet: wake-on-submit, backoff, lifecycle."""
 
@@ -993,6 +1042,51 @@ class TestNodeWorker:
             assert worker._stop                  # old set signalled
             assert worker.greenlet is None or worker.greenlet.join(timeout=1) \
                 is not None or worker.greenlet.dead
+        orchestrator.stop()
+
+    def test_replacement_worker_waits_for_predecessor(self, orchestrator,
+                                                      monkeypatch):
+        """A rebuild mid-cycle never puts two workers on one kotekan.
+
+        The retired worker keeps running on the old Node object until
+        its cycle ends; its replacement sits in HANDOVER and does not
+        probe until then.
+        """
+        state = {"old": None}
+        probes = []  # (greenlet, was the retired worker already dead?)
+
+        def get_status(self):
+            old = state["old"]
+            probes.append((gevent.getcurrent(),
+                           old is not None and old.greenlet.dead))
+            if old is not None and self is old.node:
+                gevent.sleep(0.5)          # a long cycle on the old node
+            return NodeStatus.IDLE
+
+        monkeypatch.setattr(Node, "get_status", get_status)
+        monkeypatch.setattr(Node, "get_version_info", lambda self: {})
+        orchestrator.running = True
+        with orchestrator._submit_lock:
+            orchestrator._respawn_workers()
+        old = orchestrator._workers["cx/cx1"]
+        state["old"] = old
+        gevent.sleep(0.05)                  # old worker is now mid-probe
+        assert not old.greenlet.dead
+
+        orchestrator.apply_nodes_update()
+        new = orchestrator._workers["cx/cx1"]
+        assert new is not old and new.node is not old.node
+        gevent.sleep(0.05)                  # let the new greenlet run
+        assert new.phase is WorkerPhase.HANDOVER
+        assert not old.greenlet.dead
+        assert not any(g is new.greenlet for g, _ in probes)
+
+        assert self._wait_until(lambda: new.cycles >= 1)
+        assert old.greenlet.dead
+        mine = [dead for g, dead in probes if g is new.greenlet]
+        assert mine and all(mine)           # every probe came after the old exit
+        assert new._predecessor is None     # no chain of retired workers
+        assert orchestrator._retired == {}
         orchestrator.stop()
 
     def test_push_semaphore_bounds_concurrent_restarts(self, registry):

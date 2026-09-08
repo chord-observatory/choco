@@ -90,7 +90,7 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 | `sync` | `poll_interval`, `restart_timeout`, `max_concurrent_pushes`, `max_retry_interval` |
 | `fpga_master`, `pdb` | the two hardware monitors: host, port, timeout, `control`; `pdb.map_file`, `pdb.kotekan_group` |
 | `eop`, `bffs`, `eigencal`, `waterfall` | each job's `service_unit` and `state_file` for its badge; EOP's table window and endpoint; `waterfall.images_dir` and `timezone` |
-| `skymap` | `image_file`, where the sky-map job writes its PNG |
+| `skymap` | `image_file`, where the sky-map job writes its PNG; optional `night_image_file` for the dark-palette render |
 | `vis_files` | the data roots `/files` scans |
 | `ldap` | FreeIPA host, port, `use_ssl`, `ca_cert`, `base_dn`, `user_dn`, `user_login_attr` |
 
@@ -296,7 +296,7 @@ Every reply is printed as JSON. Exit status: 0 ok, 1 rejected (the server's erro
 
 `GET /metrics` serves Prometheus exposition text and is **unauthenticated** (Prometheus
 scrapes from another host and speaks neither LDAP sessions nor CSRF tokens); the
-only other unauthenticated route is `/skymap.png`, for wall displays. It deliberately exposes only aggregate health — no node names,
+only other unauthenticated routes are `/skymap.png` and `/skymap-night.png`, for wall displays. It deliberately exposes only aggregate health — no node names,
 hosts, or configs:
 
 - `choco_up` — 1 while choco is serving requests (Prometheus's own `up` metric
@@ -427,7 +427,7 @@ sudo journalctl -u choco-eigencal -f          # per-run logs
 
 ## Sky map
 
-The [skymap job](jobs/skymap/) (`choco-skymap.timer`, every 5 minutes) renders a Mollweide all-sky view of the CHORD drift-scan strip with the current Sun, Moon and beam position, reading the pointing live from `/api/config/<group>`. The PNG is served unauthenticated at `/skymap.png` and shown on the landing page. Its config is `/etc/choco/skymap.yaml`.
+The [skymap job](jobs/skymap/) (`choco-skymap.timer`, every 5 minutes) renders a Mollweide all-sky view of the CHORD drift-scan strip with the current Sun, Moon and beam position, reading the pointing live from `/api/config/<group>`. Each run renders the same instant in two palettes: the day image is served unauthenticated at `/skymap.png` and shown on the landing page, and a dark-page night version at `/skymap-night.png` for wall displays. Its config is `/etc/choco/skymap.yaml`.
 
 ## Tests
 

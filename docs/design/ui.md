@@ -117,7 +117,7 @@ check at ``/api/pdb/map``; and the data-file scan at ``/api/files``
 as hand-rolled Prometheus exposition text (no client library) and is
 unauthenticated — Prometheus scrapes cross-host and can't do LDAP sessions —
 so it must stay aggregate-only: no node names, hosts, or configs in metric
-labels.  The only other unauthenticated route is ``/skymap.png`` (see the sky-
-map bullet), open for the same cross-host reason; everything else requires
-login.  ``choco_start_time_seconds`` exists specifically because a choco
+labels.  The only other unauthenticated routes are ``/skymap.png`` and its
+night-palette twin ``/skymap-night.png`` (see the sky-map bullet), open for the
+same cross-host reason; everything else requires login.  ``choco_start_time_seconds`` exists specifically because a choco
 restart re-engages cluster-wide maintenance (alertable via ``changes()``).

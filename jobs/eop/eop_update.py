@@ -149,6 +149,16 @@ def merge_tables(stored: list[dict], fresh: list[dict],
     return merged
 
 
+def choco_base_url(server: dict) -> str:
+    """choco's loopback URL, from the ``server`` block of its config.
+
+    The scheme follows ``server.ssl`` so a plain-HTTP instance
+    (``./choco.sh develop``) is reachable too; jobclient handles both.
+    """
+    scheme = "https" if server.get("ssl", True) else "http"
+    return f"{scheme}://localhost:{int(server.get('port', 5000))}"
+
+
 def wait_for_choco(choco_url: str, timeout: int = 30) -> None:
     """Wait for choco to answer ``/api/status`` (this unit starts with
     choco.service).  Raises :class:`Degraded` after *timeout* seconds."""
@@ -249,8 +259,7 @@ def main() -> int:
         final_table = fresh_table
 
     # Push to choco: every group it knows.
-    server = config.get("server") or {}
-    choco_url = f"https://localhost:{int(server.get('port', 5000))}"
+    choco_url = choco_base_url(config.get("server") or {})
     wait_for_choco(choco_url)
     groups = list((get_json(choco_url, "/api/nodes").get("groups") or {}).keys())
     if not groups:

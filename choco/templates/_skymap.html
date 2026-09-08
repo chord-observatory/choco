@@ -9,6 +9,12 @@
 </p>
 <img src="/skymap.png?v={{ mtime }}" alt="Current-sky strip plot"
      style="width: 100%; border-radius: 6px;">
+{% if night_mtime %}
+<p class="svc-note" style="margin: 0.3em 0 0; text-align: center;">
+    Also rendered in a dark palette for wall displays:
+    <a href="/skymap-night.png?v={{ night_mtime }}">night-mode version</a>.
+</p>
+{% endif %}
 {% else %}
 <p class="svc-note">No sky map rendered yet — choco-skymap runs every 5 minutes.</p>
 {% endif %}

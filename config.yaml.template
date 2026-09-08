@@ -86,9 +86,13 @@ waterfall:
 # 5 min; configured in /etc/choco/skymap.yaml).  image_file is where choco
 # reads the finished PNG back -- it must match skymap.yaml's output.  The
 # image is served unauthenticated at /skymap.png and shown on the landing
-# page.  Omit the block to disable both.
+# page.  night_image_file is the same render in the job's dark palette
+# (skymap.yaml's output_night), served at /skymap-night.png for wall
+# displays; omit it to serve the day image only.  Omit the block to
+# disable all of it.
 skymap:
   image_file: /var/lib/choco/skymap/skymap.png
+  night_image_file: /var/lib/choco/skymap/skymap-night.png   # optional
   service_unit: choco-skymap.service          # systemd unit to query for the SKYMAP badge
 
 # Data-file roots shown on /files.  Each root is scanned one level deep:

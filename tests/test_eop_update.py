@@ -187,3 +187,14 @@ class TestComputeLowerCutoffNs:
         c_morning = eop_update.compute_lower_cutoff_ns(frame0_ns, 2, t_morning)
         c_evening = eop_update.compute_lower_cutoff_ns(frame0_ns, 2, t_evening)
         assert c_morning == c_evening
+
+
+class TestChocoBaseUrl:
+    """The job reads choco's own config, so the scheme follows server.ssl."""
+
+    def test_defaults_to_https_on_5000(self):
+        assert eop_update.choco_base_url({}) == "https://localhost:5000"
+
+    def test_follows_server_ssl_and_port(self):
+        server = {"ssl": False, "port": 8080}
+        assert eop_update.choco_base_url(server) == "http://localhost:8080"

@@ -43,3 +43,28 @@ by install.  A failed pointing lookup exits 2 and leaves the previous image up
 — staleness is visible in the image's own title timestamp.  matplotlib joined
 the ``[jobs]`` extra for this job; the render is ~3.5 s and the unit carries
 the usual caps.
+
+## Night mode (2026-09)
+
+Every run renders the same instant twice: the **day** image (white page, the
+landing card) and a **night** image (dark navy page, for wall displays in a
+dim control room), written to ``skymap.yaml``'s ``output`` and
+``output_night`` and served at ``/skymap.png`` and ``/skymap-night.png``.
+The two differ only in palette — every colour the plot uses is a named role
+in ``THEMES`` (page, label box, marker halo, grid, RA/Dec ink, the beam
+palettes, and an ``rc`` dict for what matplotlib styles itself: title, ticks,
+projection outline, legend box), and ``plot_skymap`` takes the theme name —
+so geometry, label placement and pixel dimensions are identical and the two
+images are directly comparable (a test checks the shapes match and the
+corner pixel is white in one and dark in the other).  The sky backdrop fades
+toward the page colour rather than toward white, so ``background_fade`` keeps
+one meaning for both.  ``now`` is fixed once in ``main`` before either render
+so Sun, Moon and beam-now agree; the night render is a second ~3 s of CPU,
+well inside the unit's caps, and each write stays atomic on its own.  An
+empty ``output_night`` skips the second render.  choco reads the night PNG
+back from the ``skymap:`` block's optional ``night_image_file``; the route
+is unauthenticated for the same wall-display reason as ``/skymap.png`` and
+exposes the same single cluster fact.  The web UI itself is pinned to the
+light theme, so the landing card shows the day image and links the night one
+(``?v=`` mtime-busted like the day image); a browser-side ``<picture>``
+switch would never fire.

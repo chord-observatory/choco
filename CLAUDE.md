@@ -68,7 +68,7 @@ jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
 ├── bffs/           # Bad-feed flagging (30 s timer); sources/ = one module per signal
 ├── eigencal/       # Point-source gain calibration (10 min timer, self-gating)
 ├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
-└── skymap/         # Current-sky Mollweide plot (5 min timer)
+└── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
 configs/            # nodes.yaml, vars.yaml, pdb_map.csv, <group>/<node>.yaml|.j2
 tests/              # pytest; test_<module>.py per module, test_web.py for routes
 docs/design/        # Design rationale, one file per subsystem (see the end of this file)
@@ -98,7 +98,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - The wake protocol in `NodeWorker.run` clears the event before testing the
   queue and nothing between them may yield to the hub.  Do not add logging
   to a socket handler or any other yielding call inside that window.
-- Workers are never force-killed; `stop()` is a flag plus a wake.
+- Workers are never force-killed; `stop()` is a flag plus a wake.  A
+  replacement worker joins the one it retires before its first cycle;
+  that join lives in the worker, not in `apply_nodes_update`.
 - Restart concurrency is bounded by `sync.max_concurrent_pushes`; polling
   concurrency is unbounded by design.
 
@@ -127,8 +129,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `createElement`/`textContent`, never `innerHTML`.
 
 **Auth and exposure** ([auth.md](docs/design/auth.md), [ui.md](docs/design/ui.md))
-- Every route requires login except `/metrics` and `/skymap.png`, which are
-  cross-host and must stay aggregate-only: no node names, hosts or configs.
+- Every route requires login except `/metrics`, `/skymap.png` and
+  `/skymap-night.png`, which are cross-host and must stay aggregate-only: no
+  node names, hosts or configs.
 - `/update/*`, `/oneshot/*` and `/api/*` bypass login for loopback callers
   (`localhost_or_login_required`); the jobs and the CLI use only these.  FPGA
   and PDB controls stay login + CSRF because their audit line names a person.

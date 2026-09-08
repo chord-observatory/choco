@@ -86,6 +86,7 @@ class WorkerPhase(Enum):
     QUEUED_FOR_PUSH = "queued-for-push"  # restart needed, waiting for a turn
     PUSHING = "pushing"                  # /kill or /start in flight
     AWAITING_IDLE = "awaiting-idle"      # killed, waiting for kotekan to go idle
+    HANDOVER = "handover"                # waiting for the worker it replaces to exit
 
 
 class NodeWorker:
@@ -100,15 +101,22 @@ class NodeWorker:
     Workers are never force-killed: :meth:`stop` sets a flag and wakes
     the greenlet, which finishes any in-flight cycle first.  A config
     push therefore always completes its kill -> start sequence instead
-    of aborting between the two and leaving kotekan down.
+    of aborting between the two and leaving kotekan down.  The worker
+    that replaces a stopped one (a registry rebuild swaps in a fresh
+    ``Node`` for the same host) joins it before its own first cycle, so
+    two workers never act on one kotekan at once.
     """
 
-    def __init__(self, node: Node, orchestrator: "Orchestrator"):
+    def __init__(self, node: Node, orchestrator: "Orchestrator",
+                 predecessor: "NodeWorker | None" = None):
         self.node = node
         self.orch = orchestrator
         self.wake = Event()
         self.greenlet: gevent.Greenlet | None = None
         self._stop = False
+        # The retired worker for this node's key, if any.  Joined once in
+        # run() and then dropped, so retired workers do not chain.
+        self._predecessor = predecessor
 
         # Monitoring state.  Written only by this greenlet; read freely
         # by request greenlets without a lock, since each read is a
@@ -147,6 +155,7 @@ class NodeWorker:
         self.wake.set()
 
     def run(self):
+        self._await_predecessor()
         while self.orch.running and not self._stop:
             # Clear before testing the queue.  A producer appending
             # between the clear and the test is caught by the test; one
@@ -165,6 +174,22 @@ class NodeWorker:
                 self.wake.wait(timeout=self.next_check - now)
                 continue
             self._cycle()
+
+    def _await_predecessor(self):
+        """Block until the worker this one replaces has exited.
+
+        The old worker keeps running on its (now unregistered) ``Node``
+        until its cycle ends, and that cycle may be a kill -> start on
+        the same kotekan this worker is about to probe.  Waiting here
+        rather than in ``apply_nodes_update`` keeps a web save from
+        blocking on a restart cycle.  Items enqueued meanwhile just
+        wait: the first check after the join runs immediately.
+        """
+        pred, self._predecessor = self._predecessor, None
+        if pred is None or pred.greenlet is None or pred.greenlet.dead:
+            return
+        self.set_phase(WorkerPhase.HANDOVER)
+        pred.greenlet.join()
 
     def _cycle(self):
         started = time.time()
@@ -267,8 +292,13 @@ class NodeWorker:
         if not node.started:
             if probe == NodeStatus.STARTED and not node.maintenance:
                 logger.info(f"Node {node.key} should be idle; sending /kill")
-                node.kill()
-                node.status = NodeStatus.IDLE
+                if node.kill():
+                    node.status = NodeStatus.IDLE
+                else:
+                    # kotekan is still running; say so rather than
+                    # assume.  The next poll retries the kill.
+                    node.status = probe
+                    node.error = "Failed to send /kill"
             else:
                 node.status = probe
             return
@@ -430,6 +460,9 @@ class Orchestrator:
         # concurrency is deliberately unbounded (one greenlet per node).
         self.push_semaphore = BoundedSemaphore(max_concurrent_pushes)
         self._workers: dict[str, NodeWorker] = {}
+        # Workers stopped but possibly still finishing a cycle, by node
+        # key; handed to their replacements by _respawn_workers.
+        self._retired: dict[str, NodeWorker] = {}
 
     def worker_status(self, key: str) -> dict | None:
         """The node's worker snapshot, or None if no worker is running."""
@@ -625,11 +658,13 @@ class Orchestrator:
         """Signal every worker to exit.  Caller holds ``_submit_lock``.
 
         Workers finish any in-flight cycle before exiting (they are
-        never force-killed), so a config push in progress completes its
-        kill -> start sequence rather than leaving kotekan down.
+        never force-killed), so a registry reload cannot strand a node
+        between ``/kill`` and ``/start``.  The stopped set is kept in
+        ``_retired`` so the replacements can wait for it.
         """
         for worker in self._workers.values():
             worker.stop()
+        self._retired.update(self._workers)
         self._workers.clear()
 
     def _respawn_workers(self):
@@ -637,13 +672,16 @@ class Orchestrator:
 
         Caller holds ``_submit_lock``.  Always stops the existing set
         first, so concurrent callers (a web save racing the file
-        watcher) end with exactly one worker per node.
+        watcher) end with exactly one worker per node.  Each new worker
+        is handed the retired worker for its key and joins it before
+        its first cycle (:meth:`NodeWorker._await_predecessor`).
         """
         self._stop_workers()
+        retired, self._retired = self._retired, {}
         if not self.running:
             return
         for node in self.registry.nodes.values():
-            worker = NodeWorker(node, self)
+            worker = NodeWorker(node, self, predecessor=retired.get(node.key))
             self._workers[node.key] = worker
             worker.start()
 
@@ -669,6 +707,13 @@ class Orchestrator:
                 self.registry.save_nodes_yaml(new_data)
             self._stop_workers()
             self.registry.reload()
+            # The reload just read every config file from disk, so
+            # re-baseline the mtime scan on that state, as run() does
+            # after the initial load.  Otherwise the next tick sees our
+            # own nodes.yaml write as an external edit and rebuilds a
+            # second time, re-engaging maintenance under an operator
+            # who has just switched it off.
+            self._file_mtimes = self._config_file_mtimes()
         # Discovery runs before the new workers spawn so their first
         # cycle acts on observed runtime state, not the cold ``started``
         # defaults from nodes.yaml — the same order run() uses.  It sits

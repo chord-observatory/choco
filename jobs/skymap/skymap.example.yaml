@@ -23,14 +23,17 @@ choco_url: https://localhost:5000
 beams: [pointing]
 #beams: [pointing, Cyg A]
 
-# Where the rendered image lands.  choco's skymap block in config.yaml
-# must point image_file at the same PNG.
+# Where the rendered images land.  choco's skymap block in config.yaml
+# must point image_file / night_image_file at the same PNGs.  The night
+# image is the same render in a dark palette, for wall displays in a dim
+# control room; set output_night to an empty string to skip it.
 output: /var/lib/choco/skymap/skymap.png
+output_night: /var/lib/choco/skymap/skymap-night.png
 
 # Faded radio-sky background behind the projection.  The default is the
 # image shipped with the job; set to an empty string for plain white.
 #background_image: /opt/choco/jobs/skymap/sky_background.png
-background_fade: 0.42     # 0 = full white; 1 = full sky image
+background_fade: 0.42     # 0 = flat page colour (white by day, near-black at night); 1 = full sky image
 
 dpi: 130                  # ~1900 px wide; the page shows it at width 100%
 timezone: America/Vancouver   # IANA zone for the strip's clock labels

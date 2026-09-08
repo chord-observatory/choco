@@ -141,6 +141,12 @@ class TestLoadConfig:
         cfg = skymap.load_config(None)
         assert cfg["beams"] == ["pointing"]
         assert cfg["timezone"] == "America/Vancouver"
+        assert cfg["output_night"] == "/var/lib/choco/skymap/skymap-night.png"
+
+    def test_empty_output_night_disables_it(self, tmp_path):
+        p = tmp_path / "skymap.yaml"
+        p.write_text('output_night: ""\n')
+        assert skymap.load_config(str(p))["output_night"] == ""
 
     def test_file_overrides(self, tmp_path):
         p = tmp_path / "skymap.yaml"
@@ -174,3 +180,70 @@ class TestRender:
         assert eph["sun_dec_d"] == pytest.approx(10.4, abs=1.0)
         assert 0 <= eph["lst_h"] < 24
         assert -90 <= eph["moon_dec_d"] <= 90
+
+    def test_night_theme_darkens_the_page_only(self, tmp_path):
+        """The night render is the day render in another palette: same
+        pixel geometry (so the two stay directly comparable), a dark
+        page instead of a white one, written to its own path."""
+        import matplotlib.image as mpimg
+        from astropy.time import Time
+        cfg = dict(skymap.DEFAULTS)
+        day, night = tmp_path / "day.png", tmp_path / "night.png"
+        cfg.update({"output": str(day), "dpi": 40})
+        now = Time("2026-08-26T18:00:00")
+        beams = [(22.0, "test")]
+        skymap.plot_skymap(cfg, beams, now=now)
+        skymap.plot_skymap(cfg, beams, now=now, theme="night",
+                           output=str(night))
+        assert night.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+        assert not (tmp_path / "night.png.tmp").exists()
+        d, n = mpimg.imread(day), mpimg.imread(night)
+        assert d.shape == n.shape
+        # The top-left corner is bare page in both.
+        assert d[0, 0, :3].mean() > 0.95
+        assert n[0, 0, :3].mean() < 0.15
+
+    def test_unknown_theme_is_an_error(self):
+        with pytest.raises(ValueError, match="unknown theme"):
+            skymap.plot_skymap(dict(skymap.DEFAULTS), [(22.0, "t")],
+                               theme="dusk")
+
+
+class TestMain:
+    """main() wires the config to the renders; the render itself is
+    covered above, so it is replaced here."""
+
+    def _run(self, tmp_path, yaml_text):
+        cfg = tmp_path / "skymap.yaml"
+        cfg.write_text(yaml_text)
+        with patch("skymap.plot_skymap") as render:
+            rc = skymap.main(["--config", str(cfg)])
+        return rc, render
+
+    def test_renders_day_then_night_from_one_instant(self, tmp_path):
+        rc, render = self._run(
+            tmp_path,
+            f"beams: [Cyg A]\noutput: {tmp_path}/d.png\n"
+            f"output_night: {tmp_path}/n.png\n")
+        assert rc == 0
+        assert [c.kwargs["theme"] for c in render.call_args_list] == [
+            "day", "night"]
+        assert [c.kwargs["output"] for c in render.call_args_list] == [
+            f"{tmp_path}/d.png", f"{tmp_path}/n.png"]
+        # Both images must show the same Sun, Moon and beam-now.
+        first, second = (c.kwargs["now"] for c in render.call_args_list)
+        assert first is second
+
+    def test_empty_output_night_renders_day_only(self, tmp_path):
+        rc, render = self._run(
+            tmp_path, f"beams: [Cyg A]\noutput: {tmp_path}/d.png\n"
+                      'output_night: ""\n')
+        assert rc == 0
+        assert render.call_count == 1
+        assert render.call_args.kwargs["theme"] == "day"
+
+    def test_render_oserror_is_degraded(self, tmp_path):
+        cfg = tmp_path / "skymap.yaml"
+        cfg.write_text(f"beams: [Cyg A]\noutput: {tmp_path}/d.png\n")
+        with patch("skymap.plot_skymap", side_effect=OSError("disk full")):
+            assert skymap.main(["--config", str(cfg)]) == 2
