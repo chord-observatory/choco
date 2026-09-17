@@ -233,7 +233,7 @@ def kotekan_dish_labels(config) -> dict | None:
     ``known`` covers every real-labeled entry, connected or not, so a
     map row for a dish that exists but is not on the correlator yet
     (the pathfinder's C/D rows) is not flagged as stale.  Placeholder
-    entries (label ``Fake``) are dropped from both.  Only the names
+    entries (label ``Missing``) are dropped from both.  Only the names
     matter here: the cross-check compares *which* feeds exist, not
     where they sit on the element axis (that indexing is bffs's
     problem, and bffs reads the table itself).

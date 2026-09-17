@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 
 #: kotekan pads unpopulated dish_inputs slots with this label.
-PLACEHOLDER_LABEL = "Fake"
+PLACEHOLDER_LABEL = "Missing"
 
 #: A polarization marker in the label text (``A1X``, ``d0_pA``) means the
 #: pre-2026-08 per-element layout.  A bare dish label (``A1``,
@@ -99,7 +99,7 @@ def expand_dish_labels(dish_labels, num_polarizations: int = 2) -> list[str]:
     Mirrors ``CHORDTelescope::encode_station_id``: all of polarization 0
     (X) first, then polarization 1 (Y) — ``A1`` at dish index *i* expands
     to ``A1X`` at element *i* and ``A1Y`` at element ``i + num_dishes``.
-    Placeholder dishes expand like any other (``FakeX`` / ``FakeY``);
+    Placeholder dishes expand like any other (``MissingX`` / ``MissingY``);
     duplicates are the caller's problem.
     """
     labels = [str(label) for label in dish_labels]   # may be a generator

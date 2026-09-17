@@ -478,7 +478,7 @@ _PER_DISH_CONFIG = {
     },
 }
 
-_PER_DISH_LABELS = ["A1X", "FakeX", "A3X", "A1Y", "FakeY", "A3Y"]
+_PER_DISH_LABELS = ["A1X", "MissingX", "A3X", "A1Y", "MissingY", "A3Y"]
 
 
 def test_element_labels_per_dish_expands_pol_blocks():
@@ -620,7 +620,7 @@ def test_missing_file_skips_file_sources_but_still_flags(tmp_path, monkeypatch):
                  {"kind": "manual", "path": str(manualf)}],
     )
     labels, good, flagged_by, degraded = bffs.combine_sources(cfg)
-    assert list(labels) == ["A1X", "FakeX", "A3X", "A1Y", "FakeY", "A3Y"]
+    assert list(labels) == ["A1X", "MissingX", "A3X", "A1Y", "MissingY", "A3Y"]
     assert list(good) == [True, True, False, True, True, True]
     assert flagged_by == {"A3X": ["manual"]}
 

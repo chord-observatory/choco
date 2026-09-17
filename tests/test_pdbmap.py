@@ -140,7 +140,7 @@ class TestKotekanDishLabels:
     def test_placeholder_labels_dropped(self):
         config = {"dish_inputs": [
             {"dish_idx": 0, "label": "A1", "type": "ArrayDish"},
-            {"dish_idx": 1, "label": "Fake"},
+            {"dish_idx": 1, "label": "Missing"},
         ]}
         sets = kotekan_dish_labels(config)
         assert sets["known"] == {"A1X", "A1Y"}

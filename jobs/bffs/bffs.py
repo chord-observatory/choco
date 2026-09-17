@@ -52,7 +52,8 @@ import numpy as np
 import yaml
 
 import sources
-from choco.dishlabels import (expand_dish_labels, find_dish_inputs, find_key,
+from choco.dishlabels import (PLACEHOLDER_LABEL, expand_dish_labels,
+                              find_dish_inputs, find_key,
                               labels_are_per_element)
 from choco.jobclient import post_json, write_json_atomic
 from kotekan_io import read_labels
@@ -162,7 +163,7 @@ def element_labels_from_config(config: dict, file_labels=None) -> list[str] | No
             f"num_dishes ({ndish}) — refusing to flag with ambiguous "
             f"indexing")
     npol = _config_int(config, "num_polarizations", default=2)
-    dish_labels = [by_idx.get(i, "Fake") for i in range(ndish)]
+    dish_labels = [by_idx.get(i, PLACEHOLDER_LABEL) for i in range(ndish)]
     labels = list(expand_dish_labels(dish_labels, npol))
     if file_labels is not None and [str(l) for l in file_labels] != labels:
         raise ValueError(
@@ -173,9 +174,9 @@ def element_labels_from_config(config: dict, file_labels=None) -> list[str] | No
 
 
 def uniquify_labels(labels) -> np.ndarray:
-    """Suffix repeated labels with their element index (Fake -> Fake[7]).
+    """Suffix repeated labels with their element index (Missing -> Missing[7]).
 
-    Placeholder elements share the label ``Fake`` (``FakeX``/``FakeY``
+    Placeholder elements share the label ``Missing`` (``MissingX``/``MissingY``
     on a per-dish axis); state diffing and per-source projection key by
     label, so duplicates must be made per-element.  Unique labels pass
     through untouched.
