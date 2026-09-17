@@ -201,10 +201,6 @@ cmd_install() {
         cp "$SCRIPT_DIR/jobs/eigencal/eigencal.example.yaml" "$CONFIG_DIR/eigencal.yaml"
         echo "Seeded $CONFIG_DIR/eigencal.yaml from jobs/eigencal/eigencal.example.yaml -- edit before use"
     fi
-    if [ ! -f "$CONFIG_DIR/eigencal_feeds.yaml" ]; then
-        cp "$SCRIPT_DIR/jobs/eigencal/eigencal_feeds.example.yaml" "$CONFIG_DIR/eigencal_feeds.yaml"
-        echo "Seeded $CONFIG_DIR/eigencal_feeds.yaml -- fill in the real feed layout before use"
-    fi
 
     # Seed the waterfall config on first install; never overwrite an edited one
     if [ ! -f "$CONFIG_DIR/waterfall.yaml" ]; then

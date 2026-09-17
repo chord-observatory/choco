@@ -790,7 +790,8 @@ class PdbMonitor:
 # The handful of ``systemctl show`` properties consumed by job_status.
 # ``Result`` is the only health signal; ``ExecMainExitTimestamp`` is used
 # purely as an emptiness test ("has this unit ever run") — its value is
-# never parsed.  The rest are carried into the result for tooltips.
+# never parsed; ``ActiveState`` marks a run in progress.  The rest are
+# carried into the result for tooltips.
 _SYSTEMCTL_PROPS = (
     "Result",
     "ActiveState",
@@ -803,6 +804,16 @@ _SYSTEMCTL_PROPS = (
 # job runs daily, so anything more than a day plus a little slop is a
 # signal that the last run didn't update the state.
 EOP_STALE_AFTER_S = 25 * 3600
+
+
+#: The last *completed* snapshot per unit (health, result, exit status).
+#: systemd resets ``Result`` and ``ExecMainStatus`` and blanks
+#: ``ExecMainExitTimestamp`` the moment a run starts — a unit that just
+#: failed reads ``success`` while its next run is in flight — so a run in
+#: progress carries no verdict, and this is the only place the previous
+#: one survives.  Process-local and rebuilt by the status poll: runtime
+#: state, never persisted.
+_LAST_COMPLETED: dict[str, dict] = {}
 
 
 def _systemctl_show(unit: str, timeout: float = 5.0,
@@ -1119,6 +1130,13 @@ def job_status(service_unit: str, state_file: Path | None = None,
       rewrites state only when the bad-feed list *changes*, so its age
       says nothing about job health).
 
+    A run in progress (``ActiveState`` ``activating``) is reported as
+    the unit's last completed snapshot, flagged ``running``, because
+    systemd tells nothing about the previous outcome while a run is in
+    flight (see ``_LAST_COMPLETED``); without one — a fresh process —
+    it reads ``unknown`` until the first completion it sees.  Staleness
+    is a live fact about the state file and still applies.
+
     Jobs share an exit-code convention: 0 = ok, **2 = degraded** (the
     job itself is fine but a dependency or input wasn't — fpga_master
     unreachable, stale data, choco down; retries self-heal), anything
@@ -1127,8 +1145,9 @@ def job_status(service_unit: str, state_file: Path | None = None,
     rather than ``failed``.
 
     Returns a dict with ``health`` (``ok`` / ``degraded`` / ``stale`` /
-    ``failed`` / ``never_run`` / ``unknown``), ``state_mtime`` (epoch or
-    ``None``), and raw systemd fields for the tooltip.
+    ``failed`` / ``never_run`` / ``unknown``), ``running``,
+    ``state_mtime`` (epoch or ``None``), and raw systemd fields for the
+    tooltip.
     """
     now = time.time()
     props = _systemctl_show(service_unit)
@@ -1165,8 +1184,9 @@ def job_status(service_unit: str, state_file: Path | None = None,
     else:
         health = "unknown"
 
-    return {
+    out = {
         "health": health,
+        "running": False,
         "state_mtime": mtime,
         "result": result or None,
         "active_state": (props or {}).get("ActiveState") or None,
@@ -1176,3 +1196,16 @@ def job_status(service_unit: str, state_file: Path | None = None,
         "unit": service_unit,
         "state_file": str(state_file) if state_file else None,
     }
+    if (out["active_state"] or "").strip() == "activating":
+        out["running"] = True
+        last = _LAST_COMPLETED.get(service_unit)
+        if last is None:
+            out["health"] = "stale" if stale else "unknown"
+        else:
+            out["health"] = "stale" if stale else last["health"]
+            out["result"], out["exit_status"] = last["result"], last["exit_status"]
+    elif props is not None:
+        _LAST_COMPLETED[service_unit] = {
+            "health": health, "result": out["result"],
+            "exit_status": out["exit_status"]}
+    return out

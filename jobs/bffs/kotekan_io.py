@@ -20,63 +20,52 @@ except ImportError:  # uncompressed files remain readable without it
 
 
 def input_labels(f: h5py.File) -> np.ndarray:
-    """Return ordered feed labels from the kotekan file's index map, as-is.
+    """The file's ``index_map/label`` entries as str, in element order.
 
-    CHIME-style files carry ``index_map/input``, written as a compound dtype
-    (e.g. ``(chan_id, correlator_input)``), so the labels are a field of the
-    record, not the record itself: use the ``correlator_input`` serial when
-    present, else the first field. CHORD N² files (hdf5N2Write) carry
-    ``index_map/label`` instead — one plain string per dish entry (see
-    :func:`element_labels` for what "dish entry" means per layout).
+    kotekan writes them as variable-length UTF-8, which h5py yields as
+    bytes.  Raises ``KeyError`` when the file has no label table.
     """
-    im = f["index_map"]
-    arr = (im["input"] if "input" in im else im["label"])[()]
-    if arr.dtype.names:
-        field = "correlator_input" if "correlator_input" in arr.dtype.names else arr.dtype.names[0]
-        arr = arr[field]
-    # h5py yields bytes for variable-length UTF-8 strings; decode each to str.
-    return np.array([s.decode("utf-8", "replace") if isinstance(s, bytes) else str(s) for s in arr])
+    arr = f["index_map"]["label"][()]
+    return np.array([s.decode("utf-8", "replace") if isinstance(s, bytes) else str(s)
+                     for s in arr])
 
 
 # -- element axis: the label layout lives in choco.dishlabels (shared with
-# eigencal, waterfall and choco's PDB cross-check); re-exported here for
-# the callers that reach it through this module.
-from choco.dishlabels import (  # noqa: E402
-    POL_SUFFIXES, expand_dish_labels, labels_are_per_element,
-    num_polarizations,
-)
+# eigencal, waterfall and choco's PDB cross-check).
+from choco.dishlabels import file_element_labels  # noqa: E402
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
-    """The element-axis labels of *f*, expanded from its per-dish labels.
+    """The element-axis labels of *f* in choco's names (``B4X``).
 
-    Only the 2026-08 per-dish layout is accepted: ``index_map/label``
-    with one label per dish for a num_polarizations × num_dishes element
-    axis, expanded to per-element labels in [P][D] order with the
-    polarization count taken from the file's ``num_elements`` attribute
-    (default 2).  Pre-2026-08 files — CHIME-style ``index_map/input``,
-    or labels carrying a polarization marker — are REFUSED: their
-    element ordering was wrong, so flagging feeds against their labels
-    would flag the wrong feeds.  Raises ``OSError`` so the job reports
-    degraded (exit 2) and heals on its own once post-migration files
-    land, with no job-side action needed.
+    Only the per-element layout kotekan writes since chord.2021.10+988
+    (acquisitions from 2026-09-11 on) is accepted: ``index_map/label``
+    names every element of the file's own axis as dish label +
+    ``p1``/``p2``, cross-checked against ``index_map/pol`` and the
+    ``num_elements`` attribute (:func:`choco.dishlabels.file_element_labels`).
+    Anything else — a CHIME-style ``index_map/input`` map, a per-dish
+    table, pre-2026-08 ``A1X`` labels — is refused with ``OSError`` so
+    the job reports degraded (exit 2) rather than flag against a guessed
+    axis, and heals once files from the current writer land.
     """
-    labels = input_labels(f)
-    if "input" in f["index_map"] or labels_are_per_element(labels):
+    im = f["index_map"]
+    if "input" in im or "label" not in im:
         raise OSError(
-            "N2 file predates the per-dish dish_inputs layout (per-element "
-            "labels) — its element ordering is untrustworthy; waiting for "
-            "post-migration files")
-    num_elements = int(f.attrs.get("num_elements", 0) or 0)
-    return np.array(expand_dish_labels(
-        labels, num_polarizations(labels.size, num_elements)))
+            "N2 file has no per-element label table (index_map/label): a "
+            "CHIME-style or pre-2026-08 file — refusing to guess its element axis")
+    num_elements = int(f.attrs.get("num_elements", 0) or 0) or None
+    pol = im["pol"][()] if "pol" in im else None
+    try:
+        return np.array(file_element_labels(input_labels(f), num_elements, pol))
+    except ValueError as e:
+        raise OSError(
+            "N2 file is not in kotekan's per-element label layout "
+            f"(chord.2021.10+988, 2026-09-11 on): {e}") from e
 
 
 def read_labels(path: str | Path) -> np.ndarray:
-    """The element-axis labels from the kotekan file's index map.
-
-    Per-dish labels come back expanded to per-element labels; a
-    pre-2026-08 per-element file raises — see :func:`element_labels`.
+    """The element-axis labels from the kotekan file, one per element, in
+    choco's names; any other label layout raises — see :func:`element_labels`.
     """
     with h5py.File(path, "r") as f:
         return element_labels(f)
@@ -115,11 +104,9 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
     extracted — laid out either ``vis[time, freq, prod]`` (CHIME-style) or
     ``vis[freq, prod, time]`` (CHORD hdf5N2Write; told apart by matching the
     axes against the index map). The feed axis is the element axis
-    (:func:`element_labels`): products beyond it are dropped — for
-    pre-2026-08 CHORD files that is the phantom second-polarization
-    elements, while 2026-08 per-dish files expand to the full element
-    count first, so both polarizations' autos are kept. Returns
-    ``None`` if the file is missing or has no time rows.
+    (:func:`element_labels`, one label per element); products beyond it
+    are dropped. Returns ``None`` if the file is missing or has no time
+    rows.
     """
     if not Path(path).exists():
         return None

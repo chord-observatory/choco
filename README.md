@@ -46,7 +46,7 @@ The install script also:
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
 - Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal, waterfall, skymap), enabling the services and starting the timers
-- Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`bffs.yaml`, `eigencal.yaml`, `eigencal_feeds.yaml`, `waterfall.yaml`, `skymap.yaml`) from its example file; on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
+- Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`bffs.yaml`, `eigencal.yaml`, `waterfall.yaml`, `skymap.yaml`) from its example file; on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
 
 Re-running `sudo ./choco.sh install` is safe — **it never overwrites a deployed `/etc/choco/config.yaml`**. On first install the config is seeded from the repo's local `config.yaml` (or the template) with `configs_dir` rewritten to `/etc/choco/configs`; on later installs, if the repo copy differs from what's deployed, the incoming version is staged as `/etc/choco/config.yaml.new` for manual merging and the deployed file is left alone. Kotekan configs prompt before overwriting; `configs/pdb_map.csv` — the master PDB channel map, which may be the only authoritative record of that wiring — is excluded from that overwrite entirely and gets the same seed-once-then-stage-a-`.new` treatment as `config.yaml`; iptables rules are deduplicated.
 
@@ -410,9 +410,9 @@ correlator input, archives one HDF5 file, and POSTs the gains to
 Exit codes carry meaning: 0 is success *or* nothing-to-do, 2 means the
 solution failed the quality gate (archived but not sent), 1 is an error —
 so a red **EIGENCAL** badge means a real failure, not an idle daytime tick.
-Its config lives at `/etc/choco/eigencal.yaml` (plus the feed-layout file
-`eigencal_feeds.yaml`, which must be filled in before real use), seeded from
-the examples in `jobs/eigencal/` on first install — see
+Its config lives at `/etc/choco/eigencal.yaml`, seeded from the example in
+`jobs/eigencal/` on first install; the feed layout comes from the N² file's
+own geometry (a YAML override exists for files without it) — see
 [jobs/eigencal/README.md](jobs/eigencal/README.md) for the science and
 config details.
 

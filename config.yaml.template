@@ -16,6 +16,16 @@ server:
   dev_auth:                       # DEV ONLY. Set to a username to disable login AND CSRF for every
                                   # request. choco refuses to start unless server.host is loopback.
                                   # ./choco.sh develop writes this into dev/config.yaml for you.
+  trusted_hosts: {}                # Peers logged in WITHOUT credentials, as a synthetic user named by
+                                  # the label (which is what audit lines then record).  Keys are IP
+                                  # addresses or CIDR networks; quote IPv6 ("::1").  CSRF stays on and
+                                  # a real LDAP login from a listed host keeps its own name.  Anyone who
+                                  # can reach choco from a listed address -- a shell there, an ssh
+                                  # tunnel -- gets the whole UI, F-engine and PDB controls included.
+                                  #   trusted_hosts:
+                                  #     127.0.0.1: localhost
+                                  #     "::1": localhost
+                                  #     10.222.0.54: chive
 
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs

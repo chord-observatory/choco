@@ -25,8 +25,11 @@
 {%- else -%}#ff4136
 {%- endif -%}
 {%- endmacro %}
-{% macro job_label(h) -%}
-{%- if h == 'never_run' -%}not run
+{# running: a run is in flight; the health shown is the last completed
+   one, so only a badge with no verdict yet says "running". #}
+{% macro job_label(h, running=false) -%}
+{%- if running and h in ('unknown', 'never_run') -%}running
+{%- elif h == 'never_run' -%}not run
 {%- elif h -%}{{ h }}
 {%- else -%}unknown
 {%- endif -%}

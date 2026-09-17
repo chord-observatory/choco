@@ -104,7 +104,7 @@
         {% set timer = timers.get(name) %}
         <tr>
             <td class="svc"><a href="/service/{{ name }}"><strong>{{ label }}</strong></a></td>
-            <td>{{ status_pill(job_color(job.health), job_label(job.health)) }}</td>
+            <td>{{ status_pill(job_color(job.health), job_label(job.health, job.running)) }}</td>
             <td>
                 <code>{{ job.unit }}</code>
                 {% if job.result and job.result != 'success' %}

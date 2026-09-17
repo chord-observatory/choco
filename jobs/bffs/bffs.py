@@ -127,7 +127,7 @@ def element_labels_from_config(config: dict, file_labels=None) -> list[str] | No
     ``num_polarizations`` blocks of ``num_dishes``, ``element = dish_idx
     + pol * num_dishes`` — so per-element labels are derived as label +
     X/Y.  A pre-2026-08 per-element table (labels like ``A1X``, see
-    ``kotekan_io.labels_are_per_element``) is REFUSED: its element
+    ``dishlabels.labels_are_per_element``) is REFUSED: its element
     ordering was wrong, and indexing kotekan's bad-input mask with it
     would flag the wrong feeds.  Raises ``OSError`` so the run reports
     degraded (exit 2) and heals once the config is migrated, with no
@@ -224,8 +224,8 @@ def resolve_labels(config: Config, path: str | None) -> np.ndarray:
     mask with, and its labels (``A1X``...; derived as label + X/Y when
     the table is the 2026-08 per-dish layout) are the ones operators
     know.  The file's own index map is the fallback (dry runs, choco
-    down; ``read_labels`` already expands a per-dish file to the element
-    axis).  When both are available they must agree — a mismatch means
+    down; ``read_labels`` spells the file's per-element ``B4p1`` labels
+    the same way).  When both are available they must agree — a mismatch means
     the file predates the running config and positions would be
     ambiguous (see :func:`element_labels_from_config`).
     """
@@ -321,6 +321,12 @@ def run(
     every run sends. ``write=False`` (dry run) computes the diff but writes
     nothing.
 
+    The element axis (``labels``, one per element in kotekan's order) is
+    recorded alongside — it is what the payload's indices address, and
+    what the web page's element grid shows.  A run whose axis differs from
+    the recorded one counts as a change even when the bad labels do not:
+    the same names on a reordered or resized axis are different indices.
+
     When ``sender`` (a callable taking the payload) is given, it is invoked
     *before* the state is written — a failed send leaves the state file
     untouched, so the next run sees the change again and retries.
@@ -347,14 +353,19 @@ def run(
         except json.JSONDecodeError:
             log.warning("state file %s is corrupt; starting fresh", state_file)
 
-    bad_labels = sorted(str(labels[i]) for i in bad_idx)
+    axis = [str(label) for label in labels]
+    bad_labels = sorted(axis[i] for i in bad_idx)
     prev = None if state is None else list(state.get("bad_inputs", []))
+    prev_axis = None if state is None else state.get("labels")
     if prev is None:  # first run: record the baseline
         became_bad, became_good, changed = bad_labels, [], True
     else:
         became_bad = sorted(set(bad_labels) - set(prev))
         became_good = sorted(set(prev) - set(bad_labels))
-        changed = bool(became_bad or became_good)
+        # A state file from before the axis was recorded has no
+        # prev_axis and cannot tell; it gains one below.
+        axis_changed = prev_axis is not None and list(prev_axis) != axis
+        changed = bool(became_bad or became_good) or axis_changed
 
     send = changed or force
     if send and sender is not None:
@@ -365,6 +376,9 @@ def run(
         state["updated"] = now
         state["update_id"] = payload["update_id"]
         state["bad_inputs"] = bad_labels
+        # the element axis the indices address, one label per element in
+        # kotekan's order — what the web page's element grid is drawn from
+        state["labels"] = axis
         # which source(s) flagged each feed, as of this change — display
         # bookkeeping only, never part of the payload sent to kotekan
         state["flagged_by"] = {label: flagged_by.get(label, [])
@@ -380,6 +394,11 @@ def run(
         if config.max_history and len(history) > config.max_history:
             history = history[-config.max_history:]
         state["history"] = history
+        write_json_atomic(state_file, state)
+    elif write and state is not None and prev_axis is None:
+        # A state file from before the axis was recorded: add it now so
+        # the element grid can render, without inventing a transition.
+        state["labels"] = axis
         write_json_atomic(state_file, state)
 
     return payload, send, degraded

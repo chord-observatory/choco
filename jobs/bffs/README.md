@@ -97,7 +97,7 @@ is accepted: the table names each *dish* once (`A1`) and the element axis is
 labels as label + `X`/`Y` (pol 0 = X) — the same names the label-keyed
 hardware maps (pdb_map.csv, fpga_map.csv, manual overrides) use. A
 pre-2026-08 per-element table (a polarization marker in the label text —
-`A1X`, `d0_pA`; `kotekan_io.labels_are_per_element`) is REFUSED with a
+`A1X`, `d0_pA`; `choco.dishlabels.labels_are_per_element`) is REFUSED with a
 degraded exit: those tables carried a wrong element ordering, so indexing
 kotekan's bad-input mask with them would flag the wrong feeds; the run
 resumes by itself once the config is migrated. The labels shown name
@@ -108,10 +108,15 @@ the run rather than sending ambiguous indices. Duplicate placeholder labels
 are made per-element (`Fake[7]`) so label-keyed state stays exact.
 
 bffs reads CHORD `hdf5N2Write` output (`index_map/label`, `vis[freq,
-prod, time]`, compound freq, `frames_added` validity); the per-dish label
-table is expanded to the element axis the same way as the config's, and
-pre-2026-08 files (CHIME-style `index_map/input`, or per-element labels)
-are refused for the same wrong-ordering reason as old config tables.
+prod, time]`, compound freq, `frames_added` validity). Since kotekan
+chord.2021.10+988 (acquisitions from 2026-09-11 on) `index_map/label` is
+per *element* — dish label + `p1`/`p2`, one entry per element of the
+file's axis, with `index_map/pol` alongside — and `kotekan_io.read_labels`
+spells it in the same `X`/`Y` names the config derives
+(`choco.dishlabels.file_element_labels`), so the two lists compare
+directly. Any other file layout (a per-dish table, CHIME-style
+`index_map/input`, pre-2026-08 `A1X` labels) is refused with a degraded
+exit rather than expanded or guessed at.
 Products beyond the element axis are ignored, and elements the file's
 product list never correlates (unwired slots in a `DishInputs`-layout file)
 are reported as unmeasured — `power-outlier` leaves them good rather than
@@ -180,14 +185,18 @@ the absolute bounds.
 
 If the config has a `state.path`, bffs keeps a small JSON file there recording
 the feed change history — and sends to choco only when the bad list changes. It
-holds the current bad list (by stable feed *label*, not index) and an append-only
-`history` of transitions:
+holds the current bad list (by stable feed *label*, not index), the element
+axis those labels sit on (`labels`, one per element in kotekan's order — what
+the payload's indices address, and what choco's service page draws its
+element grid from; a state file from before it was recorded gains it on the
+next run) and an append-only `history` of transitions:
 
 ```json
 {
   "updated": 1700000077.7,
   "update_id": "bffs-1700000077750",
   "bad_inputs": ["A1X"],
+  "labels": ["A1X", "A2X", "A1Y", "A2Y"],
   "flagged_by": {"A1X": ["power-outlier", "manual"]},
   "history": [
     {"time": 1700000077.4, "update_id": "bffs-...", "became_bad": ["A1X"], "became_good": [], "bad_inputs": ["A1X"]}

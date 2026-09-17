@@ -48,7 +48,15 @@ two cheap signals without parsing any timestamps: ``systemctl show``'s
 and the job state file's mtime — plus ``ExecMainStatus`` to split failures by
 the shared exit-code convention: exit 2 reports ``degraded`` (yellow —
 dependency/input trouble, self-heals), anything else ``failed`` (red — needs a
-human).  With ``stale_after_s`` set (EOP: 25 h — the job rewrites its state
+human).  A run in progress (``ActiveState`` ``activating``) carries no verdict
+at all — systemd resets ``Result`` and ``ExecMainStatus`` and blanks
+``ExecMainExitTimestamp`` the moment a run starts, verified against a unit
+that had just failed — so ``job_status`` remembers each unit's last completed
+snapshot (``services._LAST_COMPLETED``, process-local, rebuilt by the 5 s
+poll) and reports that, flagged ``running`` for the tooltip, instead of
+dropping to grey for the length of every run (bffs runs ~6-20 s of every 30 s,
+the waterfall ~50 s of every 2 min); a fresh process shows ``running`` until
+the first completion it sees.  With ``stale_after_s`` set (EOP: 25 h — the job rewrites its state
 file on every successful daily run) an old mtime downgrades health to
 ``stale``; without it (bffs — state rewritten only when the bad-feed list
 *changes*; eigencal — daytime transits are silently skipped by design) the
@@ -82,9 +90,11 @@ looked up there, never passed to journalctl raw.  A job page
 (``service.html``) shows common unit facts (``job_status`` detail plus the
 timer's next/last run via ``services.timer_status`` — systemd's own timestamp
 strings, displayed never parsed), a per-service summary read from the job's
-JSON state file (``services.read_state_json``: bffs bad-feed list + recent
-transitions, EOP table span, eigencal last transit; assembled in
-``web._service_detail``), a collapsed ``<details>`` dump of the **raw** state-
+JSON state file (``services.read_state_json``: bffs element grid — every
+element of the recorded axis, eight to a column in kotekan's order, good/bad
+with the flagging source on hover, ``web._element_grid``; the bad list alone
+for a state file that predates the axis — + recent transitions, EOP table
+span, eigencal last transit; assembled in ``web._service_detail``), a collapsed ``<details>`` dump of the **raw** state-
 file JSON (pretty-printed once at page-load, kept out of the 5 s status poll
 so a large EOP table isn't re-sent), and an htmx-refreshed journal viewer
 (``job_logs``, one ``journalctl -u`` subprocess; ``?lines=`` clamped to

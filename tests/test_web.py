@@ -1394,6 +1394,43 @@ class TestServicePage:
         assert "power-outlier, manual" in body
         assert "rfi" in body
 
+    def test_bffs_detail_renders_the_element_grid(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        labels = [f"d{i}X" for i in range(10)] + [f"d{i}Y" for i in range(10)]
+        state = {
+            "updated": 1700000077.7,
+            "bad_inputs": ["d0Y", "d3X"],
+            "flagged_by": {"d3X": ["power-outlier"], "d0Y": ["manual"]},
+            "labels": labels,
+        }
+        state_file = tmp_path / "bffs-state.json"
+        state_file.write_text(json.dumps(state))
+        app.config["bffs_cfg"] = {"state_file": str(state_file)}
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/bffs")
+        body = resp.data.decode()
+        assert "2 of 20 elements" in body
+        assert body.count('class="feed-bad"') == 2
+        assert body.count('class="feed-good"') == 18
+        assert 'title="element 3: bad (power-outlier)"' in body
+        assert 'title="element 10: bad (manual)"' in body
+        assert "d1, d9" not in body            # the list gave way to the grid
+
+    def test_element_grid_runs_down_columns_of_eight(self):
+        from choco.web import _element_grid
+        labels = [f"e{i}" for i in range(20)]
+        rows = _element_grid(labels, {"e3", "e10"}, {"e3": "rfi"})
+        assert len(rows) == 8
+        # column c holds elements 8c..8c+7, so row 0 is 0, 8, 16
+        assert [cell["label"] for cell in rows[0]] == ["e0", "e8", "e16"]
+        assert [cell["index"] for cell in rows[3][:2]] == [3, 11]
+        assert rows[3][0]["bad"] and rows[3][0]["sources"] == "rfi"
+        assert rows[2][1]["bad"] and rows[2][1]["sources"] == ""
+        assert rows[4][2] is None and rows[7][2] is None   # ragged last column
+        assert _element_grid([], set(), {}) == []
+
     def test_eigencal_detail_from_state_file(self, client, app, tmp_path):
         from unittest.mock import patch
         _login(client)

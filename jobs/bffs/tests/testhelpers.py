@@ -10,19 +10,38 @@ import kotekan_io
 _STR = h5py.string_dtype(encoding="utf-8")
 
 
-def write_normalized(path, labels, freq, auto, weight=None):
-    """`auto`-layout file with a per-dish label map, one polarization.
+def element_table(dish_labels, num_elements=None):
+    """kotekan's per-element label table (chord.2021.10+988) for *dish_labels*.
 
-    *labels* must be bare dish labels (no pol marker): with
-    ``num_elements == len(labels)`` the expansion is x1, so the element
-    axis equals the label count and each label gains the pol-0 suffix
-    (``f0`` -> ``f0X``).  Pre-2026-08 ``index_map/input`` files are
-    refused by ``element_labels`` and only appear in refusal tests.
+    Returns ``(labels, pol)``: [P][D] order, ``num_elements //
+    len(dish_labels)`` polarizations (default two), each element spelled
+    dish label + ``p1``/``p2`` with its polarization index alongside —
+    what ``index_map/label`` and ``index_map/pol`` hold.
     """
+    ndish = len(dish_labels)
+    npol = (int(num_elements) // ndish) if (num_elements and ndish) else 2
+    labels = [f"{d}p{p + 1}" for p in range(npol) for d in dish_labels]
+    pol = [p for p in range(npol) for _ in range(ndish)]
+    return labels, pol
+
+
+def _write_labels(im, labels, pol):
+    im.create_dataset("label", data=np.array(labels, dtype=object), dtype=_STR)
+    if pol is not None:
+        im.create_dataset("pol", data=np.asarray(pol, dtype="i4"))
+
+
+def write_normalized(path, labels, freq, auto, weight=None):
+    """`auto`-layout file over one polarization of the given dishes.
+
+    *labels* are bare dish labels; the file names each as its pol-0
+    element (``f0`` -> ``f0p1``), which reads back as ``f0X``.
+    """
+    table, pol = element_table(labels, len(labels))
     with h5py.File(path, "w") as f:
         f.attrs["num_elements"] = len(labels)
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(labels, dtype=object), dtype=_STR)
+        _write_labels(im, table, pol)
         im.create_dataset("freq", data=np.asarray(freq, dtype="f4"))
         f.create_dataset("auto", data=np.asarray(auto, dtype="f4"))
         if weight is not None:
@@ -30,9 +49,9 @@ def write_normalized(path, labels, freq, auto, weight=None):
 
 
 def write_visibility(path, labels, freq, power):
-    """Time-first visibility file (vis[time, freq, prod]), per-dish label
-    map with one polarization — the same label convention as
-    :func:`write_normalized`.  power: (ntime, nfreq, nfeed) diagonal values.
+    """Time-first visibility file (vis[time, freq, prod]) over one
+    polarization — the same label convention as :func:`write_normalized`.
+    power: (ntime, nfreq, nfeed) diagonal values.
     """
     nfeed = len(labels)
     pairs = [(i, j) for i in range(nfeed) for j in range(i, nfeed)]
@@ -41,10 +60,11 @@ def write_visibility(path, labels, freq, power):
     for k, (i, j) in enumerate(pairs):
         if i == j:
             vis[:, :, k] = power[:, :, i]
+    table, pol = element_table(labels, nfeed)
     with h5py.File(path, "w") as f:
         f.attrs["num_elements"] = nfeed
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(labels, dtype=object), dtype=_STR)
+        _write_labels(im, table, pol)
         im.create_dataset("freq", data=np.asarray(freq, dtype="f4"))
         prod = np.zeros(len(pairs), dtype=[("input_a", "i4"), ("input_b", "i4")])
         prod["input_a"] = [p[0] for p in pairs]
@@ -54,18 +74,21 @@ def write_visibility(path, labels, freq, power):
 
 
 def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=None,
-                   products=None):
-    """CHORD hdf5N2Write layout: ``vis[freq, prod, time]``, ``index_map/label``,
-    compound freq (centre, width), ``vis_weight`` at the root, ``frames_added``,
-    and the ``num_elements`` file attribute.
+                   products=None, element_labels=None):
+    """CHORD hdf5N2Write layout: ``vis[freq, prod, time]``, per-element
+    ``index_map/label`` + ``index_map/pol``, compound freq (centre, width),
+    ``vis_weight`` at the root, ``frames_added``, and the ``num_elements``
+    file attribute.
 
-    power: (ntime, nfreq, n) autocorrelation diagonal values for the first
-    ``n`` elements (``n = len(labels)`` for the pre-2026-08 per-element
-    layout; up to ``num_elements`` for the 2026-08 per-dish layout, where
-    both polarization blocks carry data); ``num_elements`` (default
-    ``2 * len(labels)``) sets the product axis beyond that.  ``products``
-    (a list of ``(input_a, input_b)`` pairs) overrides the dense upper
-    triangle — the subset product list a ``DishInputs``-layout file has.
+    *labels* are dish labels; the file carries kotekan's per-element table
+    for them (:func:`element_table`) over ``num_elements`` (default
+    ``2 * len(labels)``) elements, both polarization blocks of which are
+    real.  power: (ntime, nfreq, n) autocorrelation diagonal values for
+    the first ``n`` elements.  ``products`` (a list of ``(input_a,
+    input_b)`` pairs) overrides the dense upper triangle — the subset
+    product list a ``DishInputs``-layout file has.  ``element_labels``
+    writes a label table verbatim, with no ``pol`` index, for the tests
+    that check other layouts are refused.
     """
     nfeed = len(labels)
     num_elements = num_elements or 2 * nfeed
@@ -76,10 +99,14 @@ def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=No
     for k, (i, j) in enumerate(pairs):
         if i == j and i < ndata:
             vis[:, k, :] = power[:, :, i].T
+    if element_labels is None:
+        table, pol = element_table(labels, num_elements)
+    else:
+        table, pol = list(element_labels), None
     with h5py.File(path, "w") as f:
         f.attrs["num_elements"] = num_elements
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(labels, dtype=object), dtype=_STR)
+        _write_labels(im, table, pol)
         fr = np.zeros(nfreq, dtype=[("centre", "f8"), ("width", "f8")])
         fr["centre"], fr["width"] = np.asarray(freq, "f8"), 0.1953125
         im.create_dataset("freq", data=fr)

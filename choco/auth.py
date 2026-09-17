@@ -1,5 +1,6 @@
 """LDAP authentication for choco."""
 
+import ipaddress
 import logging
 import os
 import ssl
@@ -19,12 +20,15 @@ _users: dict[str, "User"] = {}
 
 
 class User(UserMixin):
-    """Authenticated user backed by LDAP."""
+    """Authenticated user backed by LDAP, or -- ``trusted=True`` -- the
+    synthetic user a ``server.trusted_hosts`` peer is logged in as."""
 
-    def __init__(self, dn: str, username: str, data: dict | None = None):
+    def __init__(self, dn: str, username: str, data: dict | None = None,
+                 *, trusted: bool = False):
         self.dn = dn
         self.username = username
         self.data = data or {}
+        self.trusted = trusted
 
     def get_id(self) -> str:
         return self.dn
@@ -38,6 +42,63 @@ def save_user(dn: str, username: str, data: dict | None = None) -> User:
     user = User(dn, username, data)
     _users[dn] = user
     return user
+
+
+def parse_trusted_hosts(raw) -> list[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, str]]:
+    """Validate ``server.trusted_hosts`` into ``[(network, label), ...]``.
+
+    The config value is a mapping of address or CIDR network to the label
+    the peer is logged in as (``127.0.0.1: localhost``, ``10.222.0.54:
+    chive``).  Keys are stringified before parsing so YAML's scalar
+    guessing cannot change their meaning; a bare address is a /32 (or
+    /128).  The result is sorted most-specific first so a host entry
+    inside a listed network wins.  Raises ``ValueError`` on anything
+    malformed -- called from ``load_config`` so a typo is a startup
+    error, not a silently open or silently closed door.
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "server.trusted_hosts must be a mapping of address (or CIDR "
+            "network) to label, e.g. {127.0.0.1: localhost}; "
+            f"got {type(raw).__name__}"
+        )
+    out = []
+    for key, label in raw.items():
+        try:
+            net = ipaddress.ip_network(str(key).strip(), strict=False)
+        except ValueError as e:
+            raise ValueError(
+                f"server.trusted_hosts: {key!r} is not an IP address or "
+                f"CIDR network ({e})"
+            ) from None
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(
+                f"server.trusted_hosts: {key!r} needs a non-empty label "
+                f"(the name audit lines record), got {label!r}"
+            )
+        out.append((net, label.strip()))
+    out.sort(key=lambda item: item[0].prefixlen, reverse=True)
+    return out
+
+
+def trusted_host_label(trusted: list, remote_addr: str | None) -> str | None:
+    """The label for *remote_addr* if it is inside a trusted network."""
+    if not trusted or not remote_addr:
+        return None
+    try:
+        addr = ipaddress.ip_address(remote_addr)
+    except ValueError:
+        return None
+    # A dual-stack bind ("::") reports IPv4 peers as ::ffff:a.b.c.d; judge
+    # those by the IPv4 address the operator actually wrote down.
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    for net, label in trusted:
+        if addr.version == net.version and addr in net:
+            return label
+    return None
 
 
 class LdapAuthenticator:
@@ -188,6 +249,41 @@ def init_auth(app: Flask, config: dict):
         def _dev_auto_login():
             if not current_user.is_authenticated:
                 login_user(save_user(f"dev:{dev_user}", dev_user))
+
+    # Trusted hosts: a peer inside ``server.trusted_hosts`` is logged in as
+    # a synthetic user named by its label, so the whole UI (which gates
+    # htmx and the toggles on ``is_authenticated``) works with no LDAP.
+    # Three properties keep this narrower than dev mode:
+    #
+    # * CSRF stays on.  The session cookie round-trips normally, so the
+    #   token works; and a hostile page in the operator's browser could
+    #   otherwise POST to localhost unchallenged.
+    # * The user is built with ``User(...)``, never ``save_user``, so it
+    #   is not in ``_users``: the cookie this mints loads as *nobody* on
+    #   the next request and only a trusted peer gets logged back in.
+    #   Replaying it from any other address is worthless.
+    # * A real login is left alone -- ``is_authenticated`` is tested
+    #   first -- so audit lines name the person when there is one.
+    #
+    # Stored as TRUSTED_PEERS, not TRUSTED_HOSTS: Flask >= 3.1 reads the
+    # latter as its Host-header allowlist and would reject every request.
+    trusted = parse_trusted_hosts((config.get("server") or {}).get("trusted_hosts"))
+    app.config["TRUSTED_PEERS"] = trusted
+    if trusted:
+        logger.warning(
+            "server.trusted_hosts: requests from %s are logged in without "
+            "credentials",
+            ", ".join(f"{net} as {label!r}" for net, label in trusted),
+        )
+
+        @app.before_request
+        def _trusted_host_login():
+            if current_user.is_authenticated:
+                return
+            label = trusted_host_label(trusted, request.remote_addr)
+            if label:
+                login_user(User(f"trusted:{request.remote_addr}", label,
+                                trusted=True))
 
     # LDAP setup: direct bind, so no service account and no search filter.
     ldap = config.get("ldap", {}) or {}

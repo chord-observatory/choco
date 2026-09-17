@@ -712,6 +712,64 @@ class TestJobStatusViaSystemctl:
         assert out["health"] == "ok"
 
 
+    # systemd resets Result / ExecMainStatus and blanks ExecMainExitTimestamp
+    # while a oneshot runs, so the in-flight snapshot alone reads like a
+    # never-run unit; a 20 s job on a 30 s timer would be grey most of the
+    # time.  Verified against a real unit: a run that had just failed reads
+    # Result=success, ExecMainStatus=0 during its next run.
+    RUNNING = dict(ActiveState="activating", SubState="start",
+                   ExecMainExitTimestamp="")
+
+    def test_run_in_progress_keeps_the_last_completed_health(self):
+        import choco.services as services_mod
+        services_mod._LAST_COMPLETED.clear()
+        with _with_systemctl(), _patch_systemctl(_props()):
+            assert job_status(UNIT)["health"] == "ok"
+        with _with_systemctl(), _patch_systemctl(_props(**self.RUNNING)):
+            out = job_status(UNIT)
+        assert out["health"] == "ok" and out["running"] is True
+        assert out["active_state"] == "activating"      # the live fact stays
+
+        with _with_systemctl(), _patch_systemctl(
+                _props(Result="exit-code", ExecMainStatus="1", ActiveState="failed")):
+            assert job_status(UNIT)["health"] == "failed"
+        with _with_systemctl(), _patch_systemctl(_props(**self.RUNNING)):
+            out = job_status(UNIT)
+        assert out["health"] == "failed" and out["running"] is True
+        assert out["result"] == "exit-code" and out["exit_status"] == "1"
+
+    def test_run_in_progress_without_memory_is_unknown(self, tmp_path):
+        import choco.services as services_mod
+        services_mod._LAST_COMPLETED.clear()
+        with _with_systemctl(), _patch_systemctl(_props(**self.RUNNING)):
+            out = job_status(UNIT, state_file=tmp_path / "missing.json")
+        assert out["health"] == "unknown" and out["running"] is True
+
+    def test_run_in_progress_still_reports_staleness(self, tmp_path):
+        import choco.services as services_mod
+        services_mod._LAST_COMPLETED.clear()
+        p = tmp_path / "state.json"
+        p.write_text("{}")
+        with _with_systemctl(), _patch_systemctl(_props()):
+            assert job_status(UNIT, state_file=p,
+                              stale_after_s=EOP_STALE_AFTER_S)["health"] == "ok"
+        _backdate(p, 30 * 3600)
+        with _with_systemctl(), _patch_systemctl(_props(**self.RUNNING)):
+            out = job_status(UNIT, state_file=p, stale_after_s=EOP_STALE_AFTER_S)
+        assert out["health"] == "stale" and out["running"] is True
+
+    def test_completion_refreshes_the_memory(self):
+        import choco.services as services_mod
+        services_mod._LAST_COMPLETED.clear()
+        with _with_systemctl(), _patch_systemctl(
+                _props(Result="exit-code", ExecMainStatus="2", ActiveState="failed")):
+            assert job_status(UNIT)["health"] == "degraded"
+        with _with_systemctl(), _patch_systemctl(_props()):
+            assert job_status(UNIT)["health"] == "ok"
+        with _with_systemctl(), _patch_systemctl(_props(**self.RUNNING)):
+            assert job_status(UNIT)["health"] == "ok"
+
+
 class TestJobStatusWithoutSystemctl:
     """When systemctl isn't available, derive from the state file's mtime."""
 

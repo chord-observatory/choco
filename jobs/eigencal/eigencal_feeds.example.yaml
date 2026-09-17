@@ -1,26 +1,24 @@
-# Example eigencal feed layout.
+# Example eigencal feed layout -- an OPTIONAL override.
 #
-# Maps the N² file's feed labels (index_map/label) to polarisation and
-# antenna position, and names one phase-reference feed per polarisation.
-# This file is eigencal's replacement for CHIME's layout database: label
-# order in the N² file is the correlator input axis, and this file supplies
-# everything else the fit needs (pol grouping for the per-polarisation
-# eigendecomposition, EW/NS positions for fringestopping).
+# By default eigencal derives the feed layout from the N² file itself:
+# kotekan records each element's polarisation (index_map/pol), dish type
+# (index_map/type: only ArrayDish elements are calibrated) and position
+# (the feed_positions_m attribute).  Point telescope.feed_layout at a
+# file like this one only to calibrate a file without that geometry, or
+# to hand-pick which feeds are fitted.  When set, it replaces the file's
+# geometry entirely: feeds present in the file but missing here are not
+# calibrated (gain 0, weight 0), and the DishType is ignored.
 #
-# Feeds present in the file but missing here are simply not calibrated
-# (gain 0, weight 0).  Positions are metres East/North of any fixed local
-# origin; only differences matter (each polarisation is referenced to its
-# phase_reference feed).  Pick reference feeds that are reliably healthy --
-# a sample where the reference is flagged cannot be phase-referenced and is
-# dropped from the fit.
+# Positions are metres East/North of any fixed local origin; only
+# differences matter (each polarisation is referenced to its
+# phase_reference feed, which is required here).  Pick reference feeds
+# that are reliably healthy -- a sample where the reference is flagged
+# cannot be phase-referenced and is dropped from the fit.
 #
-# Label convention: use the labels of the file's *element* axis.  N² files
-# carry one label per dish (index_map/label, e.g. A1) and n2_io expands
-# them to per-element labels as dish label + X/Y (pol 0 = X) in the [P][D]
-# element order (A1X ... A1Y ...) -- list those derived names here, one
-# entry per element, both polarisations of every dish.  (Pre-2026-08
-# per-element files are refused by n2_io: their element ordering was
-# wrong, so a label here would select the wrong element.)
+# Label convention: the labels of the file's *element* axis in choco's
+# names -- dish label + X/Y (pol 0 = X), one entry per element, both
+# polarisations of every dish (A1X ... A1Y ...).  n2_io spells kotekan's
+# per-element index_map/label (A1p1/A1p2) that way.
 
 phase_reference:
   X: A1X

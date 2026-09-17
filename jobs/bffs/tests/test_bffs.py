@@ -70,7 +70,7 @@ def test_flag_end_to_end(tmp_path):
     auto[..., 1] = 900.0
     write_normalized(n2, ["f0", "f1", "f2", "f3"], np.linspace(400, 800, 4), auto)
     manualf = tmp_path / "manual.yaml"
-    write_manual(manualf, ["f2"])
+    write_manual(manualf, ["f2X"])
 
     cfg = bffs.Config(
         kotekan_file=str(n2), sync_delay=5.0,
@@ -114,13 +114,13 @@ def test_state_records_change_history(tmp_path):
     assert len(json.loads(statef.read_text())["history"]) == 1
 
     # feed 1 goes bad -> send, a new history entry naming the transition.
-    write_manual(manualf, ["f1"])
+    write_manual(manualf, ["f1X"])
     payload, send, _ = bffs.run(cfg, now=1002.0)
     assert send is True and payload["bad_inputs"] == [1]
     st = json.loads(statef.read_text())
-    assert st["bad_inputs"] == ["f1"]
+    assert st["bad_inputs"] == ["f1X"]
     assert len(st["history"]) == 2
-    assert st["history"][-1]["became_bad"] == ["f1"]
+    assert st["history"][-1]["became_bad"] == ["f1X"]
     assert st["history"][-1]["became_good"] == []
 
     # feed 1 recovers -> send, recorded as became_good.
@@ -129,13 +129,55 @@ def test_state_records_change_history(tmp_path):
     assert send is True
     st = json.loads(statef.read_text())
     assert st["bad_inputs"] == []
-    assert st["history"][-1]["became_good"] == ["f1"]
+    assert st["history"][-1]["became_good"] == ["f1X"]
+
+
+def test_state_records_the_element_axis(tmp_path):
+    n2, statef, manualf = tmp_path / "n2.h5", tmp_path / "state.json", tmp_path / "manual.yaml"
+    write_normalized(n2, ["f0", "f1", "f2"], [400.0], np.ones((1, 1, 3), "f4"))
+    bffs.run(_state_config(n2, statef, manualf), now=1000.0)
+    assert json.loads(statef.read_text())["labels"] == ["f0X", "f1X", "f2X"]
+
+
+def test_pre_axis_state_file_gains_labels_without_a_transition(tmp_path):
+    n2, statef, manualf = tmp_path / "n2.h5", tmp_path / "state.json", tmp_path / "manual.yaml"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    write_manual(manualf, ["f1X"])
+    cfg = _state_config(n2, statef, manualf)
+    bffs.run(cfg, now=1000.0)
+    st = json.loads(statef.read_text())
+    del st["labels"]                       # written before the axis was recorded
+    statef.write_text(json.dumps(st))
+
+    _, send, _ = bffs.run(cfg, now=1001.0)
+    assert send is False                   # nothing changed: no send ...
+    st = json.loads(statef.read_text())
+    assert st["labels"] == ["f0X", "f1X"]  # ... but the axis is now on record
+    assert len(st["history"]) == 1         # and no transition was invented
+
+
+def test_axis_change_with_the_same_bad_labels_sends(tmp_path):
+    n2, statef, manualf = tmp_path / "n2.h5", tmp_path / "state.json", tmp_path / "manual.yaml"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    write_manual(manualf, ["f1X"])
+    cfg = _state_config(n2, statef, manualf)
+    payload, _, _ = bffs.run(cfg, now=1000.0)
+    assert payload["bad_inputs"] == [1]
+
+    # the axis grows: f1X keeps its name but is element 2 now
+    write_normalized(n2, ["f0", "f9", "f1"], [400.0], np.ones((1, 1, 3), "f4"))
+    payload, send, _ = bffs.run(cfg, now=1001.0)
+    assert send is True and payload["bad_inputs"] == [2]
+    st = json.loads(statef.read_text())
+    assert st["labels"] == ["f0X", "f9X", "f1X"]
+    assert st["bad_inputs"] == ["f1X"]
+    assert st["history"][-1]["became_bad"] == [] and st["history"][-1]["became_good"] == []
 
 
 def test_force_sends_when_unchanged(tmp_path):
     n2, statef, manualf = tmp_path / "n2.h5", tmp_path / "state.json", tmp_path / "manual.yaml"
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
-    write_manual(manualf, ["f1"])
+    write_manual(manualf, ["f1X"])
     cfg = _state_config(n2, statef, manualf)
 
     bffs.run(cfg, now=1000.0)                       # establish state
@@ -156,7 +198,7 @@ def test_max_history_truncates(tmp_path):
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
     cfg = _state_config(n2, statef, manualf, max_history=2)
 
-    for i, bad in enumerate([[], ["f1"], []]):  # three changes
+    for i, bad in enumerate([[], ["f1X"], []]):  # three changes
         write_manual(manualf, bad)
         bffs.run(cfg, now=1000.0 + i)
     hist = json.loads(statef.read_text())["history"]
@@ -177,7 +219,7 @@ def test_main_dry_run_prints_payload(tmp_path, capsys):
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
     manualf = tmp_path / "manual.yaml"
-    write_manual(manualf, ["f1"])
+    write_manual(manualf, ["f1X"])
     cfg_file = tmp_path / "cfg.yaml"
     cfg_file.write_text(json.dumps({
         "kotekan_file": str(n2),
@@ -197,7 +239,7 @@ def test_glob_kotekan_file_reads_newest(tmp_path):
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(new, (2_000_000, 2_000_000))
     labels, good, _, _ = bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "n2_*.h5"), max_age=0))
-    assert list(labels) == ["new0", "new1"]
+    assert list(labels) == ["new0X", "new1X"]
 
 
 def test_glob_no_match_and_no_choco_raises(tmp_path):
@@ -214,7 +256,7 @@ def test_failed_send_leaves_state_unwritten(tmp_path):
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
     manualf = tmp_path / "manual.yaml"
-    write_manual(manualf, ["f1"])
+    write_manual(manualf, ["f1X"])
     statef = tmp_path / "state.json"
     cfg = bffs.Config(
         kotekan_file=str(n2), state_path=str(statef),
@@ -233,7 +275,7 @@ def test_failed_send_leaves_state_unwritten(tmp_path):
     sent = []
     _, send, _ = bffs.run(cfg, now=1001.0, sender=sent.append)
     assert send is True and sent[0]["bad_inputs"] == [1]
-    assert json.loads(statef.read_text())["bad_inputs"] == ["f1"]
+    assert json.loads(statef.read_text())["bad_inputs"] == ["f1X"]
 
 
 def test_send_to_choco_posts_group_update(monkeypatch):
@@ -343,7 +385,7 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     os.utime(new, (3_000_000, 3_000_000))
     labels, good, _, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5"), max_age=0))
-    assert list(labels) == ["new0", "new1"]
+    assert list(labels) == ["new0X", "new1X"]
 
 
 def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
@@ -389,7 +431,7 @@ def test_max_age_zero_disables_staleness(tmp_path):
     os.utime(n2, (old, old))
     labels, good, _, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(n2), max_age=0))
-    assert list(labels) == ["f0"]
+    assert list(labels) == ["f0X"]
 
 
 # -- labels from the kotekan config (dish_inputs) ---------------------------
@@ -558,7 +600,7 @@ def test_choco_config_fetch_failure_falls_back_to_file(tmp_path, monkeypatch):
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx")
     labels, good, _, _ = bffs.combine_sources(cfg)
-    assert list(labels) == ["f0", "f1"]
+    assert list(labels) == ["f0X", "f1X"]
 
 
 # -- file-optional operation ------------------------------------------------
@@ -610,7 +652,7 @@ def test_flagged_by_names_every_flagging_source(tmp_path):
     auto[:, :, 1] = 0.0
     write_normalized(n2, ["f0", "f1"], [400.0], auto)
     manualf = tmp_path / "manual.yaml"
-    write_manual(manualf, ["f1"])
+    write_manual(manualf, ["f1X"])
     cfg = bffs.Config(
         kotekan_file=str(n2),
         sources=[{"kind": "power-outlier"},
@@ -618,7 +660,7 @@ def test_flagged_by_names_every_flagging_source(tmp_path):
     )
     labels, good, flagged_by, degraded = bffs.combine_sources(cfg)
     assert list(good) == [True, False]
-    assert flagged_by == {"f1": ["power-outlier", "manual"]}
+    assert flagged_by == {"f1X": ["power-outlier", "manual"]}
 
 
 def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
@@ -627,7 +669,7 @@ def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
     manualf = tmp_path / "manual.yaml"
-    write_manual(manualf, ["f1"])
+    write_manual(manualf, ["f1X"])
     statef = tmp_path / "state.json"
     cfg = bffs.Config(
         kotekan_file=str(n2), state_path=str(statef),
@@ -638,4 +680,4 @@ def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
     assert payload["bad_inputs"] == [1]
     assert all(isinstance(i, int) for i in payload["bad_inputs"])
     state = json.loads(statef.read_text())
-    assert state["flagged_by"] == {"f1": ["manual"]}
+    assert state["flagged_by"] == {"f1X": ["manual"]}

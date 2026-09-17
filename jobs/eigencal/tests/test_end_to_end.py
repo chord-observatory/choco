@@ -26,31 +26,44 @@ NFEED = 2 * NDISH
 FREQ_MHZ = np.array([500.0, 520.0, 540.0, 560.0])
 TSTEP = 60.0
 
-# Per-dish labels (2026-08 layout); the element axis is [P][D]:
+# Dish labels; the file's per-element axis is [P][D]:
 # element = dish + pol * NDISH, pol 0 = X — the X block, then the Y block.
 DISH_LABELS = [f"d{d:04d}" for d in range(NDISH)]
 ELEM_LABELS = [f"{lbl}{p}" for p in "XY" for lbl in DISH_LABELS]
 POS_EW = np.tile(np.array([0.0, 9.0, 21.0, 40.0]), 2)     # metres, per element
 POS_NS = np.tile(np.array([0.0, 4.0, -7.0, 11.0]), 2)
 FLAGGED_FEED = 7               # kotekan marks this input bad (d0003Y)
+# The file records positions in kotekan's grid frame, here rotated 20 deg
+# from East/North about Up (v_grid = R . v_topo), so the derived layout
+# must rotate them back before the fringe geometry is right.
+_TH = np.radians(20.0)
+GRID_ORIENTATION = np.array([[np.cos(_TH), np.sin(_TH), 0.0],
+                             [-np.sin(_TH), np.cos(_TH), 0.0],
+                             [0.0, 0.0, 1.0]])
 
 
-@pytest.fixture
-def setup(tmp_path):
-    layout = {
-        "phase_reference": {"X": "d0000X", "Y": "d0000Y"},
-        "feeds": [{"label": lbl, "pol": lbl[-1],
-                   "ew_m": float(POS_EW[i]), "ns_m": float(POS_NS[i])}
-                  for i, lbl in enumerate(ELEM_LABELS)],
-    }
-    layout_path = tmp_path / "feeds.yaml"
-    layout_path.write_text(yaml.safe_dump(layout))
+@pytest.fixture(params=["file", "yaml"])
+def setup(request, tmp_path):
+    """The two layout sources: derived from the N² file's own geometry
+    (the default) or an operator's YAML override."""
+    if request.param == "yaml":
+        layout = {
+            "phase_reference": {"X": "d0000X", "Y": "d0000Y"},
+            "feeds": [{"label": lbl, "pol": lbl[-1],
+                       "ew_m": float(POS_EW[i]), "ns_m": float(POS_NS[i])}
+                      for i, lbl in enumerate(ELEM_LABELS)],
+        }
+        layout_path = tmp_path / "feeds.yaml"
+        layout_path.write_text(yaml.safe_dump(layout))
+        telescope = {"feed_layout": str(layout_path)}
+    else:
+        telescope = {"phase_reference": {"X": "d0000X", "Y": "d0000Y"}}
 
     cfg = merge_config(DEFAULTS, {
         "kotekan_file": str(tmp_path / "*.h5"),
         "run": {"archive_dir": str(tmp_path / "archive"),
                 "state_file": None},
-        "telescope": {"feed_layout": str(layout_path)},
+        "telescope": telescope,
         "analysis": {"nfreq_per_block": 4, "min_good_frac": 0.3},
         "daytime": {"skip": False},
     })
@@ -110,8 +123,20 @@ def _make_file(cfg, eph, transit, tmp_path, rng):
     path = tmp_path / "n2_0000.h5"
     with h5py.File(path, "w") as f:
         f.attrs["num_elements"] = NFEED
+        # Per-element geometry as hdf5N2Write records it: every dish an
+        # ArrayDish, positions in the grid frame (E/N/U rotated by R).
+        enu = np.stack([POS_EW, POS_NS, np.zeros(NFEED)], axis=-1)
+        f.attrs["feed_positions_m"] = enu @ GRID_ORIENTATION.T
+        f.attrs["grid_orientation"] = GRID_ORIENTATION
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(DISH_LABELS, dtype="S16"))
+        im.create_dataset("type", data=np.zeros(NFEED, dtype=np.int32))
+        # kotekan's per-element table (chord.2021.10+988): dish label +
+        # p1/p2 in [P][D] order, with the polarization index alongside.
+        _dishes = [d.decode() if isinstance(d, bytes) else str(d) for d in DISH_LABELS]
+        im.create_dataset("label", data=np.array(
+            [f"{d}p{pol + 1}" for pol in range(2) for d in _dishes], dtype="S16"))
+        im.create_dataset("pol", data=np.array(
+            [pol for pol in range(2) for _ in _dishes], dtype=np.int32))
         freq = np.zeros(len(FREQ_MHZ), dtype=[("centre", "<f8"), ("width", "<f8")])
         freq["centre"], freq["width"] = FREQ_MHZ, 20.0
         im.create_dataset("freq", data=freq)

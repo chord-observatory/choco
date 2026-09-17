@@ -38,8 +38,8 @@ eigencal lives in the [choco](../../README.md) repo and runs from choco's venv:
 quality gate (archived but not sent) or a dependency wasn't available (no N²
 data covering the transit, choco not up; the next tick retries), 1 = a config
 error or bug that needs a human. choco's EIGENCAL badge renders these as
-green / yellow / red. See `eigencal.example.yaml` for an annotated config and
-`eigencal_feeds.example.yaml` for the feed layout file.
+green / yellow / red. See `eigencal.example.yaml` for an annotated config
+(and `eigencal_feeds.example.yaml` for the optional feed-layout override).
 
 ### As a systemd timer
 
@@ -58,7 +58,8 @@ and does real work only once per transit, at night.
                           ▼
    kotekan N² output (hdf5N2Write) — newest file(s) covering the transit
                           │  n2_io: labels, freq, time, vis products,
-                          │  frames_added, per-input `flags`  (kotekan's masks)
+                          │  frames_added, per-input `flags`  (kotekan's masks),
+                          │  per-element pol / DishType / position  (the layout)
                           ▼
    per (time, freq, pol): visibility matrix → eigh → response = √λ · v
                           │  dynamic-range gate: λ_on / median λ_off
@@ -121,12 +122,29 @@ reach the beamformer.
 A single YAML file (see `eigencal.example.yaml`): the `kotekan_file` glob, an
 `observer` block (site position), a `source` block (name, J2000 coordinates,
 flux polynomial — apparent place is computed per transit), a `telescope`
-block (dish size and the `feed_layout` file), an `analysis` block (windows,
-gates, fit degrees), and a `choco` block (`url` + `group` + `endpoint`).
-The **feed layout file** (`eigencal_feeds.example.yaml`) maps the N² file's
-feed labels to polarisation and EW/NS position and names one phase-reference
-feed per polarisation — it replaces CHIME's layout database, and it is the
-one place where "row *i* of the gain array is feed label *L*" is pinned down.
+block (dish size, beam model, `phase_reference`), an `analysis` block
+(windows, gates, fit degrees), and a `choco` block (`url` + `group` +
+`endpoint`).
+
+The **feed layout** — which elements to fit, grouped by polarisation, with
+EW/NS positions for fringestopping — is derived from the N² file itself.
+kotekan's `hdf5N2Write` records, per element of the file's axis,
+`index_map/pol`, `index_map/type` (its `DishType`: −1 Fake, 0 ArrayDish,
+1 RFIDish) and the `feed_positions_m` attribute (metres in the telescope's
+grid frame, displacements included), plus `grid_orientation`, the rotation
+from East/North/Up into that frame; `n2_io` exposes them on `N2Meta` and
+`eigencal.layout_from_file` builds the layout: only ArrayDish elements are
+calibrated (placeholder and RFI-antenna elements stay at gain 0 / weight 0),
+polarisations are named X/Y like the labels, positions are rotated back to
+East/North.  `telescope.phase_reference` names the reference element per
+polarisation (default: its first array-dish element).  This is CHIME's
+layout database replaced by the data file's own header, so a dish added or
+relabelled in kotekan's `dish_inputs` is picked up on the next transit.
+`telescope.feed_layout` may still point at a YAML (`eigencal_feeds.example.yaml`)
+to override all of that — for a file written before kotekan recorded the
+geometry, or to hand-pick feeds; a file without geometry and no override
+exits degraded.  Either way the N² file's label order is the gain array's
+row order.
 
 ### Things to VERIFY on first live use
 
@@ -134,11 +152,24 @@ These encode conventions that cannot be checked without real CHORD data
 (all marked `VERIFY` in the code):
 
 - **fringestop sign** (`telescope.fringestop_sign`) — with the wrong sign the
-  fitted phase winds rapidly with hour angle instead of sitting flat;
+  fitted phase winds rapidly with hour angle instead of sitting flat.  Note
+  kotekan's `N2Accumulate` already applies `fill_fringestop_phases_1d`
+  towards a target EOP when accumulating; check what phase centre the
+  archived visibilities are referenced to before trusting eigencal's own
+  fringestop model on top of it;
+- **position frame** — `feed_positions_m` is read as kotekan's grid frame
+  and rotated to East/North with `grid_orientation` (v_grid = R · v_topo,
+  so positions @ R); verified against the kotekan source, not yet against
+  a fitted transit;
 - **kotekan gain endpoint** (`choco.endpoint`) and the exact payload keys the
   kotekan gain-apply stage expects;
-- the N² file's **time convention** (integration start vs centre) and the
-  **shape of the `flags` dataset**;
+- ~~the N² file's **time convention**~~ — verified 2026-09-13: CHORD files
+  have no `index_map/time`; `n2_io` reads the root-level
+  `time_center_t_inst_ns` (unix ns, already the integration centre);
+- the **shape of the `flags` dataset** — live files write
+  `flags[freq, element, time]` (0/1, varying with frequency), which the
+  reader currently treats as all-good; applying it needs a per-frequency
+  treatment in the fit;
 - the **flux coefficients** (Perley & Butler 2017 values are pre-filled for
   Cyg A).
 

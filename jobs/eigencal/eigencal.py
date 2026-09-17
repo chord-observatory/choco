@@ -43,6 +43,7 @@ from astropy.coordinates import CIRS, AltAz, EarthLocation, SkyCoord, get_sun
 from astropy.time import Time
 
 import n2_io
+from choco.dishlabels import pol_suffix
 from choco.jobclient import post_json, write_json_atomic
 from transit_fit import (fit_transits, fringestop_phase, interpolate_gaps,
                          invert_no_zero)
@@ -76,7 +77,14 @@ DEFAULTS = {
         "gate_freq_mhz": 300.0,    # widest beam in the band, for gate sizing
     },
     "telescope": {
-        "feed_layout": None,       # YAML: label -> pol/position (see example); required
+        # Feed layout: by default derived from the N² file itself (kotekan's
+        # per-element pol, DishType and feed_positions_m; only ArrayDish
+        # elements are calibrated).  phase_reference names the reference
+        # element per polarisation (X/Y); a missing pol defaults to its
+        # first array-dish element.  feed_layout is an optional YAML
+        # override (see eigencal_feeds.example.yaml).
+        "feed_layout": None,
+        "phase_reference": {},
         "dish_diameter_m": 6.0,
         "beam_fwhm_factor": 1.2,   # FWHM = factor * lambda / D
         "beam_peak_ha_deg": 0.0,   # beam peak hour angle (deg); 0 = on meridian
@@ -121,8 +129,8 @@ def load_config(path):
     cfg = merge_config(DEFAULTS, raw)
     if not cfg["kotekan_file"]:
         raise ValueError("config needs 'kotekan_file' (the kotekan N² output glob)")
-    if not cfg["telescope"]["feed_layout"]:
-        raise ValueError("config needs 'telescope.feed_layout' (the feed layout YAML)")
+    if not isinstance(cfg["telescope"].get("phase_reference") or {}, dict):
+        raise ValueError("'telescope.phase_reference' must map polarisation -> label")
     if cfg["choco"]["url"] and not cfg["choco"]["group"]:
         raise ValueError("config needs 'choco.group' when choco.url is set")
     return cfg
@@ -186,15 +194,47 @@ def source_flux_jy(freq_mhz, src_cfg):
                        for k, c in enumerate(src_cfg["flux_log10_coeff"]))
 
 
-def load_feed_layout(path, labels):
-    """Join the layout YAML to the N² file's label order.
+def _group_by_pol(labels, pol_of, dist, refs, default_ref):
+    """Shared tail of the layout builders: group feeds by polarisation
+    and reference each group's positions to its phase-reference feed.
 
-    Returns ``(pols, feed_idx, ref_pos, dist)``: polarisation names, for
-    each one the label-order indices of its feeds and the position of its
-    phase-reference feed *within* that set, and (nfeed, 2) EW/NS positions
-    (metres) relative to each polarisation's reference.  Feeds present in
-    the file but absent from the layout are simply not fitted (their gain
-    stays 0 / weight 0).
+    ``pol_of`` is the polarisation name per element ("" = not
+    calibrated); ``dist`` the (nfeed, 2) EW/NS positions; ``refs`` maps
+    polarisation -> reference label.  With ``default_ref`` a polarisation
+    missing from ``refs`` takes its first calibrated element.  Returns
+    ``(pols, feed_idx, ref_pos, dist)``.
+    """
+    label_list = list(labels)
+    pols, feed_idx, ref_pos = [], [], []
+    for pol in sorted(set(pol_of) - {""}):
+        sel = np.flatnonzero(pol_of == pol)
+        ref_label = refs.get(pol)
+        if ref_label is None and default_ref:
+            ref_label = label_list[sel[0]]
+            log.info("phase reference for pol %s defaults to %s", pol, ref_label)
+        if ref_label is None:
+            raise ValueError(f"no phase_reference label for pol {pol!r}")
+        if ref_label not in label_list or pol_of[label_list.index(ref_label)] != pol:
+            raise ValueError(f"phase_reference {pol}: {ref_label!r} is not a "
+                             f"calibrated element of polarisation {pol} in the N² file")
+        ref = label_list.index(ref_label)
+        dist[sel] -= dist[ref]
+        pols.append(pol)
+        feed_idx.append(sel)
+        ref_pos.append(int(np.flatnonzero(sel == ref)[0]))
+    if not pols:
+        raise ValueError("feed layout matched no feeds in the N² file")
+    return pols, feed_idx, ref_pos, dist
+
+
+def layout_from_yaml(path, labels):
+    """Feed layout from an operator's YAML, joined to the file's label order.
+
+    The override for a file without usable geometry, or for excluding
+    feeds by hand: ``feeds`` rows carry label, pol, ew_m, ns_m and
+    ``phase_reference`` names the reference per polarisation (required
+    here).  Feeds present in the file but absent from the YAML are not
+    fitted (gain 0 / weight 0).  See ``eigencal_feeds.example.yaml``.
     """
     layout = yaml.safe_load(Path(path).read_text())
     by_label = {str(e["label"]): e for e in layout["feeds"]}
@@ -210,23 +250,52 @@ def load_feed_layout(path, labels):
     if missing:
         log.warning("%d of %d feeds in the N² file are not in the layout; "
                     "they will not be calibrated", missing, labels.size)
+    return _group_by_pol(labels, pol_of, dist, refs, default_ref=False)
 
-    pols, feed_idx, ref_pos = [], [], []
-    label_list = list(labels)
-    for pol in sorted(set(pol_of) - {""}):
-        sel = np.flatnonzero(pol_of == pol)
-        ref_label = refs.get(pol)
-        if ref_label is None or ref_label not in label_list:
-            raise ValueError(f"no phase_reference label for pol {pol!r} "
-                             "(or it is not present in the N² file)")
-        ref = label_list.index(ref_label)
-        dist[sel] -= dist[ref]
-        pols.append(pol)
-        feed_idx.append(sel)
-        ref_pos.append(int(np.flatnonzero(sel == ref)[0]))
-    if not pols:
-        raise ValueError("feed layout matched no feeds in the N² file")
-    return pols, feed_idx, ref_pos, dist
+
+def layout_from_file(meta, phase_reference):
+    """Feed layout from the N² file's own geometry (the default).
+
+    kotekan writes, per element, the polarisation index, the ``DishType``
+    and the feed position (``n2_io._feed_geometry``).  Polarisations are
+    named by choco's convention (0 -> X, 1 -> Y, matching the label
+    suffixes); only array dishes are calibrated — placeholder and
+    RFI-antenna elements stay at gain 0 / weight 0; positions are rotated
+    from the grid frame to East/North (``n2_io.enu_positions_m``).
+    ``phase_reference`` maps polarisation -> label; a missing polarisation
+    defaults to its first array-dish element.
+
+    A file without the geometry (pre-2026-09 writers) is refused with
+    ``OSError`` — degraded, not failed: set ``telescope.feed_layout`` to a
+    YAML to calibrate such files.
+    """
+    if meta.pol is None or meta.dish_type is None or meta.position_m is None:
+        raise OSError(f"{meta.path} carries no feed geometry (index_map/pol, "
+                      "index_map/type, feed_positions_m); set "
+                      "telescope.feed_layout to a YAML layout instead")
+    is_array = meta.dish_type == n2_io.DISH_ARRAY
+    pol_of = np.array([pol_suffix(int(p)) if ok else ""
+                       for p, ok in zip(meta.pol, is_array)])
+    log.info("feed layout from %s: %d array-dish elements to calibrate; "
+             "%d placeholder and %d RFI-antenna elements excluded",
+             os.path.basename(meta.path), int(is_array.sum()),
+             int((meta.dish_type == n2_io.DISH_FAKE).sum()),
+             int((meta.dish_type == n2_io.DISH_RFI).sum()))
+    dist = np.array(n2_io.enu_positions_m(meta)[:, :2], dtype=np.float64)  # (E, N)
+    refs = {str(k): str(v) for k, v in (phase_reference or {}).items()}
+    return _group_by_pol(meta.labels, pol_of, dist, refs, default_ref=True)
+
+
+def feed_layout(tel_cfg, meta):
+    """``(pols, feed_idx, ref_pos, dist)`` for the fit: polarisation names,
+    each one's element indices and the position of its phase-reference
+    element within that set, and (nfeed, 2) EW/NS metres relative to each
+    polarisation's reference.  An explicit ``telescope.feed_layout`` YAML
+    overrides the geometry recorded in the file."""
+    if tel_cfg.get("feed_layout"):
+        log.info("feed layout override from %s", tel_cfg["feed_layout"])
+        return layout_from_yaml(tel_cfg["feed_layout"], meta.labels)
+    return layout_from_file(meta, tel_cfg.get("phase_reference"))
 
 
 # -- data collection ---------------------------------------------------------
@@ -338,7 +407,7 @@ def process_transit(cfg, transit_unix, eph):
 
     meta0 = segments[0][0]
     labels = meta0.labels
-    pols, feed_idx, ref_pos, dist = load_feed_layout(tel["feed_layout"], labels)
+    pols, feed_idx, ref_pos, dist = feed_layout(tel, meta0)
     flux = source_flux_jy(freq, cfg["source"])
     inv_bt = invert_no_zero(np.abs(meta0.freq_width_mhz) * 1e6 * tau)  # radiometer 1/(B*tau)
 

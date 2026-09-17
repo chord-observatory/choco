@@ -1,24 +1,25 @@
-"""Tests for kotekan — run with `pytest`. No network needed."""
+"""Tests for kotekan_io — run with `pytest`. No network needed."""
 
 import h5py
 import numpy as np
+import pytest
 
 import kotekan_io
 from testhelpers import write_chord_n2, write_normalized, write_visibility
 
 
-def test_input_labels_reads_index_map(tmp_path):
+def test_input_labels_reads_the_per_element_table(tmp_path):
     path = tmp_path / "n2.h5"
     write_normalized(path, ["f0", "f1", "f2"], [400.0], np.ones((1, 1, 3), "f4"))
     with h5py.File(path, "r") as f:
         labels = kotekan_io.input_labels(f)
-    assert list(labels) == ["f0", "f1", "f2"]
+    assert list(labels) == ["f0p1", "f1p1", "f2p1"]
 
 
-def test_read_labels(tmp_path):
+def test_read_labels_spells_p_suffixes_as_xy(tmp_path):
     path = tmp_path / "n2.h5"
     write_normalized(path, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
-    assert list(kotekan_io.read_labels(path)) == ["f0", "f1"]
+    assert list(kotekan_io.read_labels(path)) == ["f0X", "f1X"]
 
 
 def test_read_autocorr_normalized(tmp_path):
@@ -51,17 +52,24 @@ def test_read_autocorr_missing_file(tmp_path):
     assert kotekan_io.read_autocorr(tmp_path / "absent.h5") is None
 
 
-def test_per_element_chord_file_is_refused(tmp_path):
-    # Pre-2026-08 files (pol-marked labels) carried a wrong element
-    # ordering; flagging feeds against them would flag the wrong feeds.
+def test_pre_2026_08_per_element_labels_are_refused(tmp_path):
+    # A1X-style labels carried a wrong element ordering; they lack the
+    # p<n> suffix of the current writer and are refused, not reinterpreted.
     path = tmp_path / "chord.h5"
-    write_chord_n2(path, ["A1X", "A2X", "B1X"], [400.0], np.ones((1, 1, 3), "f4"))
-    try:
+    write_chord_n2(path, ["A1", "A2", "B1"], [400.0], np.ones((1, 1, 3), "f4"),
+                   num_elements=3, element_labels=["A1X", "A2X", "B1X"])
+    with pytest.raises(OSError, match="per-element label"):
         kotekan_io.read_labels(path)
-    except OSError as e:
-        assert "predates" in str(e)
-        return
-    raise AssertionError("expected OSError for a per-element file")
+
+
+def test_per_dish_label_table_is_refused(tmp_path):
+    # The 2026-08..09 layout (one label per dish, expanded by the reader)
+    # is not accepted any more: the count does not match the axis.
+    path = tmp_path / "chord.h5"
+    write_chord_n2(path, ["A1", "B1"], [400.0], np.ones((1, 1, 4), "f4"),
+                   num_elements=4, element_labels=["A1", "B1"])
+    with pytest.raises(OSError, match="per-element label"):
+        kotekan_io.read_labels(path)
 
 
 def test_chime_style_input_map_is_refused(tmp_path):
@@ -71,40 +79,34 @@ def test_chime_style_input_map_is_refused(tmp_path):
         im = f.create_group("index_map")
         im.create_dataset("input", data=np.array(["f0", "f1"], dtype=object),
                           dtype=h5py.string_dtype(encoding="utf-8"))
-    try:
+    with pytest.raises(OSError, match="per-element label"):
         kotekan_io.read_labels(path)
-    except OSError as e:
-        assert "predates" in str(e)
-        return
-    raise AssertionError("expected OSError for an index_map/input file")
 
 
-def test_labels_are_per_element_conventions():
-    assert kotekan_io.labels_are_per_element(["A1X", "Fake", "RFI01"])
-    assert kotekan_io.labels_are_per_element(["d0_pA", "d0_pB"])
-    assert not kotekan_io.labels_are_per_element(["A1", "D8", "Fake", "RFI01"])
-    assert not kotekan_io.labels_are_per_element(["CHORD-A01", "CHORD-H08"])
-
-
-def test_expand_dish_labels_pd_order():
-    # [P][D]: element = dish_idx + pol * num_dishes, pol 0 = X.
-    out = list(kotekan_io.expand_dish_labels(["A1", "Fake", "A3"]))
-    assert out == ["A1X", "FakeX", "A3X", "A1Y", "FakeY", "A3Y"]
-
-
-def test_read_labels_per_dish_expands(tmp_path):
-    # 2026-08 layout: index_map/label is per dish; the element axis is
-    # num_elements wide, X block then Y block.
+def test_pol_index_disagreeing_with_the_suffix_is_refused(tmp_path):
     path = tmp_path / "chord.h5"
     write_chord_n2(path, ["A1", "B1"], [400.0], np.ones((1, 1, 4), "f4"),
                    num_elements=4)
+    with h5py.File(path, "r+") as f:
+        f["index_map/pol"][...] = np.array([0, 0, 0, 1], "i4")
+    with pytest.raises(OSError, match="index_map/pol says 0"):
+        kotekan_io.read_labels(path)
+
+
+def test_read_labels_per_element_pd_order(tmp_path):
+    # kotekan's table: the X block (p1) then the Y block (p2), one entry
+    # per element, read position for position.
+    path = tmp_path / "chord.h5"
+    write_chord_n2(path, ["A1", "B1"], [400.0], np.ones((1, 1, 4), "f4"),
+                   num_elements=4)
+    with h5py.File(path, "r") as f:
+        assert list(kotekan_io.input_labels(f)) == ["A1p1", "B1p1", "A1p2", "B1p2"]
     assert list(kotekan_io.read_labels(path)) == ["A1X", "B1X", "A1Y", "B1Y"]
 
 
-def test_read_autocorr_per_dish_keeps_second_pol(tmp_path):
-    # Both polarization blocks are real elements now — the Y-pol autos
-    # (elements num_dishes..2*num_dishes-1) must survive, not be dropped
-    # as phantoms.
+def test_read_autocorr_keeps_second_pol(tmp_path):
+    # Both polarization blocks are real elements — the Y-pol autos
+    # (elements num_dishes..2*num_dishes-1) must survive.
     path = tmp_path / "chord.h5"
     power = np.ones((1, 2, 4), "f4") * 5.0
     power[..., 3] = 50.0  # B1Y

@@ -7,10 +7,21 @@ import pytest
 import n2_io
 
 NFEED, NFREQ, NTIME = 4, 3, 6
-# Per-dish labels (the 2026-08 layout): 2 dishes x 2 pol = NFEED elements,
-# [P][D] order, so the element axis reads d0X, d1X, d0Y, d1Y.
-DISH_LABELS = [b"d0", b"d1"]
+# kotekan's per-element label table (chord.2021.10+988): 2 dishes x 2 pol
+# = NFEED elements in [P][D] order, dish label + p1/p2, read back as
+# d0X, d1X, d0Y, d1Y.
+FILE_LABELS = [b"d0p1", b"d1p1", b"d0p2", b"d1p2"]
+FILE_POL = [0, 0, 1, 1]
 ELEMENT_LABELS = ["d0X", "d1X", "d0Y", "d1Y"]
+# Per-element geometry as hdf5N2Write records it: DishType per element
+# (dish 1 is a placeholder), grid-frame positions (dish pitch 6.3 m along
+# grid x), and the grid frame rotated GRID_ROT_DEG east of north about Up:
+# v_grid = R . v_topo, i.e. R's rows are the grid axes in the E/N/U basis.
+FILE_TYPE = [0, -1, 0, -1]
+FILE_POS = [[0.0, 0.0, 0.0], [6.3, 0.0, 0.0], [0.0, 0.0, 0.0], [6.3, 0.0, 0.0]]
+GRID_ROT_DEG = 30.0
+_c, _s = np.cos(np.radians(GRID_ROT_DEG)), np.sin(np.radians(GRID_ROT_DEG))
+GRID_ORIENTATION = [[_c, _s, 0.0], [-_s, _c, 0.0], [0.0, 0.0, 1.0]]
 # Pre-2026-08 per-element labels, used only by the refusal tests.
 OLD_LABELS = [b"d0_pA", b"d0_pB", b"d1_pA", b"d1_pB"]
 
@@ -30,13 +41,17 @@ def _vis_values(a, b):
 
 @pytest.fixture
 def chord_file(tmp_path):
-    """CHORD hdf5N2Write flavour: per-dish label map, vis[freq, prod, time]."""
+    """CHORD hdf5N2Write flavour: per-element labels, vis[freq, prod, time]."""
     a, b = _prods(NFEED)
     path = tmp_path / "chord.h5"
     with h5py.File(path, "w") as f:
         f.attrs["num_elements"] = NFEED
+        f.attrs["feed_positions_m"] = np.array(FILE_POS)
+        f.attrs["grid_orientation"] = np.array(GRID_ORIENTATION)
         im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array(DISH_LABELS, dtype="S10"))
+        im.create_dataset("label", data=np.array(FILE_LABELS, dtype="S10"))
+        im.create_dataset("pol", data=np.array(FILE_POL, dtype=np.int32))
+        im.create_dataset("type", data=np.array(FILE_TYPE, dtype=np.int32))
         freq = np.zeros(NFREQ, dtype=[("centre", "<f8"), ("width", "<f8")])
         freq["centre"] = [400.0, 500.0, 600.0]
         freq["width"] = 100.0
@@ -85,25 +100,106 @@ def test_read_meta_chord(chord_file):
     assert m.prod_a.size == NFEED * (NFEED + 1) // 2
 
 
-def test_chime_style_file_is_refused(chime_file):
-    """Pre-2026-08 files carried a wrong element ordering; feeds
-    selected by label against them would be the wrong elements."""
-    with pytest.raises(OSError, match="predates"):
-        n2_io.read_meta(chime_file)
-
-
-def test_per_element_labels_are_refused(tmp_path, chord_file):
+@pytest.fixture
+def live_chord_file(tmp_path, chord_file):
+    """The layout kotekan actually writes (checked 2026-09-13): no
+    index_map/time; root-level time_center_t_inst_ns holds int64 unix ns
+    at the integration *centre*."""
     with h5py.File(chord_file, "r+") as f:
-        del f["index_map"]["label"]
-        f["index_map"].create_dataset(
-            "label", data=np.array(OLD_LABELS, dtype="S10"))
-    with pytest.raises(OSError, match="predates"):
+        del f["index_map"]["time"]
+        centres_ns = (1_789_279_147_885_186_870
+                      + np.arange(NTIME, dtype=np.int64) * 9_982_443_520)
+        f.create_dataset("time_center_t_inst_ns", data=centres_ns)
+    return chord_file
+
+
+def test_read_meta_live_chord_time_axis(live_chord_file):
+    """time_center_t_inst_ns is taken as-is (no half-bin shift) and keeps
+    its sub-second part to well under a microsecond."""
+    m = n2_io.read_meta(live_chord_file)
+    expect = 1_789_279_147.885186870 + 9.982443520 * np.arange(NTIME)
+    assert m.time.shape == (NTIME,)
+    assert np.all(np.abs(m.time - expect) < 1e-6)
+    assert abs(m.time[0] - 1_789_279_147.885186870) < 1e-7
+
+
+def test_read_meta_feed_geometry(chord_file):
+    m = n2_io.read_meta(chord_file)
+    assert m.pol.tolist() == FILE_POL
+    assert m.dish_type.tolist() == FILE_TYPE
+    assert (m.dish_type == n2_io.DISH_ARRAY).tolist() == [True, False, True, False]
+    assert np.allclose(m.position_m, FILE_POS)
+    assert np.allclose(m.grid_orientation, GRID_ORIENTATION)
+
+
+def test_enu_positions_rotate_grid_frame_to_east_north(chord_file):
+    """R's rows are the grid axes in the E/N/U basis, so with the grid
+    x-axis at (cos th, sin th, 0) -- th north of east -- a feed 6.3 m
+    along it sits at 6.3 (cos th, sin th) East/North."""
+    m = n2_io.read_meta(chord_file)
+    enu = n2_io.enu_positions_m(m)
+    assert enu.shape == (NFEED, 3)
+    th = np.radians(GRID_ROT_DEG)
+    assert np.allclose(enu[1], [6.3 * np.cos(th), 6.3 * np.sin(th), 0.0])
+    assert np.allclose(enu[0], 0.0)
+
+
+def test_enu_positions_without_orientation_pass_through(chord_file):
+    with h5py.File(chord_file, "r+") as f:
+        del f.attrs["grid_orientation"]
+    m = n2_io.read_meta(chord_file)
+    assert m.grid_orientation is None
+    assert np.allclose(n2_io.enu_positions_m(m), FILE_POS)
+
+
+def test_geometry_is_optional(chord_file):
+    """A file from before kotekan wrote the geometry still reads; the
+    fields are None and the ENU helper says so."""
+    with h5py.File(chord_file, "r+") as f:
+        del f["index_map"]["type"]
+        del f.attrs["feed_positions_m"]
+        del f.attrs["grid_orientation"]
+    m = n2_io.read_meta(chord_file)
+    assert m.pol is not None                 # kept: the label layout needs it
+    assert m.dish_type is None and m.position_m is None
+    with pytest.raises(ValueError, match="no feed positions"):
+        n2_io.enu_positions_m(m)
+
+
+def test_geometry_length_mismatch_is_refused(chord_file):
+    with h5py.File(chord_file, "r+") as f:
+        f.attrs["feed_positions_m"] = np.zeros((NFEED + 1, 3))
+    with pytest.raises(OSError, match="entries for 4 elements"):
         n2_io.read_meta(chord_file)
 
 
-def test_read_meta_per_dish_expands_labels(tmp_path):
-    """2026-08 layout: index_map/label is per dish; the element axis is
-    [P][D] (X block then Y block), sized by the num_elements attribute."""
+def test_file_without_any_time_axis_is_refused(chord_file):
+    with h5py.File(chord_file, "r+") as f:
+        del f["index_map"]["time"]
+    with pytest.raises(OSError, match="no time axis"):
+        n2_io.read_meta(chord_file)
+
+
+def test_chime_style_file_is_refused(chime_file):
+    """Pre-2026-08 files carried a wrong element ordering; feeds
+    selected by label against them would be the wrong elements."""
+    with pytest.raises(OSError, match="per-element label"):
+        n2_io.read_meta(chime_file)
+
+
+def test_pre_2026_08_per_element_labels_are_refused(tmp_path, chord_file):
+    with h5py.File(chord_file, "r+") as f:
+        del f["index_map"]["label"]
+        del f["index_map"]["pol"]
+        f["index_map"].create_dataset(
+            "label", data=np.array(OLD_LABELS, dtype="S10"))
+    with pytest.raises(OSError, match="per-element label"):
+        n2_io.read_meta(chord_file)
+
+
+def test_per_dish_label_table_is_refused(tmp_path):
+    """The 2026-08..09 layout (one label per dish, expanded by the reader)
+    is not accepted any more: the count does not match the element axis."""
     a, b = _prods(4)
     path = tmp_path / "chord_per_dish.h5"
     with h5py.File(path, "w") as f:
@@ -118,11 +214,8 @@ def test_read_meta_per_dish_expands_labels(tmp_path):
         prod["input_a"], prod["input_b"] = a, b
         im.create_dataset("prod", data=prod)
         f.create_dataset("vis", data=np.zeros((1, a.size, 1), np.complex64))
-    m = n2_io.read_meta(path)
-    assert list(m.labels) == ["A1X", "B1X", "A1Y", "B1Y"]
-    # every product is now in range of the label axis — nothing phantom
-    prod_idx, ai, bi = n2_io.pol_products(m, np.arange(4))
-    assert prod_idx.size == a.size
+    with pytest.raises(OSError, match="2 entries for 4 elements"):
+        n2_io.read_meta(path)
 
 
 def test_read_products(chord_file):

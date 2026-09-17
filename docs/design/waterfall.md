@@ -54,7 +54,9 @@ level.  (Earlier trees used batlow with a transparent-missing ``tRNS`` chunk —
 ``set_palette`` flips that alpha opaque in passing — then briefly magma;
 ``waterfall.py --repalette`` is the maintenance pass that recolours every
 already-rendered acquisition — constant time per image, no pixel touched,
-listed from the image tree so it works with the source mount gone.)  Greyscale
+listed from the image tree so it works with the source mount gone; its
+sibling ``--relabel`` re-derives the element labels the same way, see
+below.)  Greyscale
 was rejected as saving nothing (identical 1 byte/pixel; the palette costs 768
 bytes and keeps the colour) and 16-bit PNG as a trap (92 KB against 16 KB —
 the low bits are noise).  Deflate level is **6**: level 9 runs at 5.9 MB/s
@@ -100,7 +102,27 @@ the stride doubles (~log2(N/256) times per acquisition, 0.5 s / 5.3 s at those
 two scales) and the steady state is nothing at all until a bin completes, then
 one appended row per product (0.66 s for 5050 thumbnails).  The axes carry the
 **element names** from ``index_map/label`` rather than indices, column headers
-rotated so any label length fits a 1/33-wide column.  A cell links to the
+rotated so any label length fits a 1/33-wide column.  Those names come from
+kotekan's per-element label table (chord.2021.10+988, acquisitions from
+2026-09-11 on): ``index_map/label`` has one entry per element of *this
+file's* axis — a ``subset/`` file is a ``DishInputs`` frame over the
+populated dishes only (16 dishes + 8 RFI antennas × 2 pol = 48 elements) and
+carries exactly 48 labels — spelled dish label + ``p1``/``p2``, which
+``dishlabels.file_element_labels`` maps to choco's ``B4X``/``B4Y`` after
+checking the count against ``num_elements`` and the suffix against
+``index_map/pol``.  Earlier layouts are not read: a per-dish table needing
+expansion, a whole-telescope table needing the ``input_list`` lookup (the
+2026-09-09 subset files, whose ``label[compact]`` named the Y block as the
+next row of unpopulated dishes), pre-2026-08 ``A1X`` labels — anything that is
+not the current layout is stored as no labels — the viewer shows indices —
+because a wrong name on an axis is worse than none.  Labels are written once,
+at ``store.start``, so ``waterfall.py --relabel`` exists to push a better
+reading to finished acquisitions: one source file per acquisition is re-read
+and only ``index.json``'s ``labels`` rewritten.  A re-read that resolves
+nothing never replaces consistent stored labels (acquisitions labelled under
+an earlier layout keep their names); an acquisition whose sources are gone
+has its labels cleared if they do not cover its element axis one-to-one
+(that mismatch *is* the old bug) and is otherwise left alone.  A cell links to the
 **full-image viewer** (``/waterfall/<root>/<acq>/view/<name>``): the PNG is
 append-only data, so axes are drawn *around* it at display time, never into
 its pixels — a **sticky frequency ruler** on top (the image is one pixel row

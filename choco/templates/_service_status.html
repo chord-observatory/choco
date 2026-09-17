@@ -46,7 +46,8 @@
     <dt>Bad feeds</dt>
     <dd>
         {{ detail.bad_inputs | length }}
-        {%- if detail.bad_inputs %}:
+        {%- if detail.element_rows %} of {{ detail.n_elements }} elements (grid below)
+        {%- elif detail.bad_inputs %}:
         {% if detail.flagged_by %}
         {% for label in detail.bad_inputs -%}
         <code>{{ label }}</code>{% if detail.flagged_by.get(label) %} <small>({{ detail.flagged_by[label] }})</small>{% endif %}
@@ -62,6 +63,20 @@
     <dd>{{ detail.updated }}{% if detail.update_id %} (<code>{{ detail.update_id }}</code>){% endif %}</dd>
     {% endif %}
 </dl>
+{% if detail.element_rows %}
+<h4 style="margin-bottom: 0.25em;">Elements</h4>
+<figure style="margin: 0 0 1.5em 0; overflow-x: auto;">
+<table class="feed-grid">
+    <tbody>
+    {% for row in detail.element_rows %}
+    <tr>{% for cell in row %}{% if cell %}<td class="feed-{{ 'bad' if cell.bad else 'good' }}" title="element {{ cell.index }}: {{ 'bad' if cell.bad else 'good' }}{% if cell.sources %} ({{ cell.sources }}){% endif %}">{{ cell.label }}</td>{% else %}<td class="feed-none"></td>{% endif %}{% endfor %}</tr>
+    {% endfor %}
+    </tbody>
+</table>
+<figcaption style="font-size: 0.8em; margin-top: 0.4em;">Every element in kotekan's order, eight per column, left to right:
+    <span class="feed-key feed-good">good</span> <span class="feed-key feed-bad">bad</span>. Hover a cell for the flagging source.</figcaption>
+</figure>
+{% endif %}
 {% if detail.history %}
 <h4 style="margin-bottom: 0.25em;">Recent transitions</h4>
 <figure style="margin: 0 0 1.5em 0; overflow-x: auto;">

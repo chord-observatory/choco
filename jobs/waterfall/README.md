@@ -13,7 +13,16 @@ scanlines. Nothing is recomputed and no written byte is rewritten.
 python waterfall.py -c waterfall.yaml -n          # what is pending
 python waterfall.py -c waterfall.yaml --acq acq_20260723_232332_046022478
 python waterfall.py -c waterfall.yaml --max-files 0 --level 4   # backfill
+python waterfall.py -c waterfall.yaml --repalette    # recolour, no pixels touched
+python waterfall.py -c waterfall.yaml --relabel      # re-read element labels
 ```
+
+Element labels come from the source file's per-element `index_map/label`
+(kotekan chord.2021.10+988 on: one `B4p1`-style entry per element of the
+file's own axis, mapped to `B4X`/`B4Y` by `choco.dishlabels`); a file in
+any other label layout gets no labels rather than a guess.  They are
+written once per acquisition; `--relabel` re-derives them from any one
+remaining source file and rewrites nothing else.
 
 ## Why it is shaped this way
 

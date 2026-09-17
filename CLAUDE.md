@@ -134,7 +134,13 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   node names, hosts or configs.
 - `/update/*`, `/oneshot/*` and `/api/*` bypass login for loopback callers
   (`localhost_or_login_required`); the jobs and the CLI use only these.  FPGA
-  and PDB controls stay login + CSRF because their audit line names a person.
+  and PDB controls stay login + CSRF because their audit line names a person
+  or a trusted-host label.
+- `server.trusted_hosts` (default empty) logs a listed peer in as a synthetic
+  `User(trusted=True)` named by its label.  CSRF stays on; the user never
+  enters `_users`, so its cookie is worthless from any other address; a real
+  login is never replaced.  It is safe only because nothing proxies to choco
+  and `remote_addr` is the real peer.
 - Keep the startup guardrails: a placeholder or short `server.secret_key` is
   refused; `server.dev_auth` requires a loopback `server.host`; LDAPS
   verifies the server certificate (`Tls(CERT_REQUIRED)`, passed
@@ -180,6 +186,14 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Only the 2026-08 per-dish `dish_inputs` layout is accepted (each dish named
   once, per-element labels derived as label + X/Y).  Pre-2026-08 per-element
   tables are refused everywhere because their element ordering was wrong.
+- N² files are labelled per element since kotekan chord.2021.10+988
+  (2026-09-11): `index_map/label` has one `B4p1`/`B4p2` entry per element of
+  the file's own axis, compact `DishInputs` frames included, plus
+  `index_map/pol`.  Every reader goes through `dishlabels.file_element_labels`
+  (`p1`→X, `p2`→Y, count and `pol` cross-checked) and refuses any other file
+  layout: no expansion of per-dish tables, no `input_list` mapping, no
+  positional guess — bffs and eigencal exit degraded, the waterfall stores no
+  labels ([waterfall.md](docs/design/waterfall.md)).
 - The fleet runs mixed kotekan versions: both pipeline palettes are styled
   (guarded by `tests/test_pipeline_palette.py`), and both N² subset wire
   forms (sparse `product_list`, compact `input_list`) are decoded, with the

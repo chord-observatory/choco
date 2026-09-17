@@ -5,10 +5,11 @@
              ~ '\nhealth: ' ~ job.health
              ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
              ~ ('\nresult: ' ~ job.result if job.result else '')
+             ~ ('\na run is in progress; showing the last completed one' if job.running else '')
              ~ ('' if job.systemd else '\nsystemd not reachable')
              ~ '\n\nclick for details' %}
 <a href="/service/{{ name }}" title="{{ tip }}" style="{{ pill_style() }} background: {{ job_color(job.health) }};">
-    <strong>{{ label }}</strong> <span>{{ job_label(job.health) }}</span>
+    <strong>{{ label }}</strong> <span>{{ job_label(job.health, job.running) }}</span>
 </a>
 {%- endmacro %}
 {% if nodes %}

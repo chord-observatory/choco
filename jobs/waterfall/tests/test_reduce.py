@@ -44,9 +44,14 @@ def make_file(path, n_freq=64, n_elem=4, n_time=6, seed=0, dead_cells=()):
         g.create_dataset("freq", data=np.array(
             [(300.0 + i, 1.0) for i in range(n_freq)],
             dtype=[("centre", "<f8"), ("width", "<f8")]))
-        # Per-dish labels (2026-08 layout): n_elem // 2 dishes x 2 pol.
+        # kotekan's per-element table (chord.2021.10+988): n_elem // 2
+        # dishes x 2 pol in [P][D] order, dish label + p1/p2, with the
+        # polarization index alongside.
+        n_dish = n_elem // 2
         g.create_dataset("label", data=np.array(
-            [f"A{i}".encode() for i in range(n_elem // 2)]))
+            [f"A{d}p{p + 1}".encode() for p in range(2) for d in range(n_dish)]))
+        g.create_dataset("pol", data=np.array(
+            [p for p in range(2) for _ in range(n_dish)], np.int32))
         f.attrs["num_elements"] = n_elem
         f.attrs["num_prod"] = n_prod
         f.attrs["abs_file_idx"] = 4202415
@@ -73,32 +78,65 @@ def test_read_axes(vis_file):
     assert ax.times_ns.shape == (6,)
 
 
-def test_read_axes_per_element_labels_store_nothing(tmp_path, caplog):
-    """Pre-2026-08 per-element labels carried a wrong element ordering:
-    they are dropped, and the viewer falls back to element indices."""
-    path = tmp_path / "vis_0004202415_x.h5"
-    make_file(path)
-    with h5py.File(path, "r+") as f:
-        del f["index_map/label"]
-        f["index_map"].create_dataset(
-            "label", data=np.array([b"A0X", b"A1X", b"A0Y", b"A1Y"]))
-    ax = R.read_axes(path)
-    assert ax.labels == []
-    assert "pre-2026-08" in caplog.text
-
-
-def test_read_axes_per_dish_labels_expand(tmp_path):
-    """2026-08 layout: index_map/label is one label per dish; the stored
-    labels must cover the whole [P][D] element axis (X block then Y),
-    so the contact sheet can name the second-polarisation elements."""
-    path = tmp_path / "vis_0000000001_x.h5"
-    make_file(path, n_elem=4)
+def _labels(path, labels, pol=None):
+    """Replace the fixture file's label table (and its pol index)."""
     with h5py.File(path, "a") as f:
         del f["index_map/label"]
         f["index_map"].create_dataset(
-            "label", data=np.array([b"A1", b"B1"]))  # 2 dishes, 4 elements
-    ax = R.read_axes(path)
-    assert ax.labels == ["A1X", "B1X", "A1Y", "B1Y"]
+            "label", data=np.array([l.encode() for l in labels]))
+        if "index_map/pol" in f:
+            del f["index_map/pol"]
+        if pol is not None:
+            f["index_map"].create_dataset("pol", data=np.array(pol, np.int32))
+
+
+def test_read_axes_compact_labels_are_read_as_written(tmp_path):
+    """A DishInputs file over 4 of a wider table's elements carries exactly
+    those 4 labels, in its own order — nothing is expanded or looked up.
+    (Live case: the 48-element subset files, B4p1..RFIA1p1, B4p2..RFIA1p2.)"""
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["B4p1", "RFIA1p1", "B4p2", "RFIA1p2"], pol=[0, 0, 1, 1])
+    with h5py.File(path, "a") as f:
+        f.attrs["n2_layout"] = "DishInputs"
+        f.attrs["input_list"] = np.array([0, 63, 64, 127], np.int32)
+    assert R.read_axes(path).labels == ["B4X", "RFIA1X", "B4Y", "RFIA1Y"]
+
+
+def test_read_axes_without_pol_index_trusts_the_suffix(tmp_path):
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["A0p1", "A1p1", "A0p2", "A1p2"])
+    assert R.read_axes(path).labels == ["A0X", "A1X", "A0Y", "A1Y"]
+
+
+def test_read_axes_per_dish_table_stores_nothing(tmp_path, caplog):
+    """The 2026-08..09 per-dish table (one label per dish, half the axis)
+    is not expanded any more: indices, and a warning."""
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["A1", "B1"])
+    assert R.read_axes(path).labels == []
+    assert "2 entries for 4 elements" in caplog.text
+
+
+def test_read_axes_labels_without_pol_suffix_store_nothing(tmp_path, caplog):
+    """Pre-2026-08 per-element labels (A0X) carried a wrong element
+    ordering; they lack the current writer's p<n> suffix and are refused,
+    not reinterpreted."""
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["A0X", "A1X", "A0Y", "A1Y"])
+    assert R.read_axes(path).labels == []
+    assert "no p<n> polarization suffix" in caplog.text
+
+
+def test_read_axes_pol_index_disagreeing_with_suffix_stores_nothing(tmp_path, caplog):
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["A0p1", "A1p1", "A0p2", "A1p2"], pol=[0, 0, 0, 1])
+    assert R.read_axes(path).labels == []
+    assert "index_map/pol says 0" in caplog.text
 
 
 def test_product_names_are_sortable_and_padded(vis_file):

@@ -13,7 +13,7 @@ import gevent
 import yaml
 from flask import Flask
 
-from .auth import init_auth
+from .auth import init_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
 from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
@@ -31,6 +31,7 @@ _DEFAULT_CONFIG = {
         "log_level": "INFO",
         "ssl": True,
         "dev_auth": None,
+        "trusted_hosts": {},
     },
     "configs_dir": "configs",
     "kotekan": {
@@ -143,6 +144,10 @@ def load_config(path: str | Path) -> dict:
                 "so a guessable one lets anyone log in.  Generate one with: "
                 "python3 -c 'import secrets; print(secrets.token_hex(32))'"
             )
+    # Validated here as well as in init_auth so a typo in the mapping is a
+    # startup error with the offending key named, not a peer silently let
+    # in or silently locked out.
+    parse_trusted_hosts(config["server"].get("trusted_hosts"))
     _refuse_retired_keys(raw)
     config["configs_dir"] = raw.get("configs_dir", "configs")
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}

@@ -21,7 +21,7 @@ dl.service-facts dd { margin: 0; }
 <hgroup style="margin-bottom: 0.75em;">
     <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
         {{ name | upper }}
-        <span style="{{ pill_style() }} background: {{ job_color(job.health) }}; font-size: 0.55em;">{{ job_label(job.health) }}</span>
+        <span style="{{ pill_style() }} background: {{ job_color(job.health) }}; font-size: 0.55em;">{{ job_label(job.health, job.running) }}</span>
     </h2>
     {% if name == 'choco' %}
     <p>The config orchestrator itself.</p>

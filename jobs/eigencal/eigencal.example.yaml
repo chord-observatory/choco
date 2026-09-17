@@ -36,10 +36,20 @@ run:
   gate_freq_mhz: 300.0           # widest beam in the band (transit-complete gate)
 
 telescope:
-  # Feed layout YAML: maps the N² file's feed labels to polarisation and
-  # EW/NS position, and names the phase-reference feed per polarisation.
-  # This file replaces CHIME's layout database -- see eigencal_feeds.example.yaml.
-  feed_layout: /etc/choco/eigencal_feeds.yaml
+  # Feed layout: derived from the N² file itself.  kotekan writes each
+  # element's polarisation (index_map/pol), dish type (index_map/type) and
+  # position (the feed_positions_m attribute, grid frame, rotated to
+  # East/North here with grid_orientation).  Only ArrayDish elements are
+  # calibrated; placeholder (Fake) and RFI-antenna elements stay at
+  # gain 0 / weight 0.  phase_reference names the phase-reference element
+  # per polarisation -- pick reliably healthy feeds; a polarisation left
+  # out defaults to its first array-dish element.
+  phase_reference:
+    X: A1X
+    Y: A1Y
+  # feed_layout: /etc/choco/eigencal_feeds.yaml
+  #   Optional YAML override of the file's geometry (a file without it, or
+  #   hand exclusions) -- see eigencal_feeds.example.yaml.  Leave unset.
   dish_diameter_m: 6.0
   beam_fwhm_factor: 1.2          # FWHM = factor * lambda / D
   beam_peak_ha_deg: 0.0          # beam-peak hour angle; 0 = pointing at meridian

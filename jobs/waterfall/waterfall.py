@@ -335,6 +335,88 @@ def repalette(cfg: dict, only_acq: str | None = None) -> dict:
     return report
 
 
+def relabel(cfg: dict, only_acq: str | None = None) -> dict:
+    """Re-derive every acquisition's element labels from its source files.
+
+    A maintenance pass like ``repalette``: labels are written once, when
+    an acquisition is started, so a better reading of the source
+    (kotekan's per-element label table, 2026-09) reaches finished
+    acquisitions only through this.  Any one completed file will do — every file in
+    an acquisition shares its table — and nothing but ``labels`` in the
+    index is touched.
+
+    An acquisition whose source files are gone cannot be re-read.  If its
+    stored labels do not even cover its element axis one-to-one they are
+    the mislabelling this pass exists to remove, and are **cleared** so
+    the viewer shows element indices — wrong names are worse than none.
+    Consistent labels are left as they are when there is no source, and
+    when the source resolves to no labels at all (an acquisition written
+    under an earlier layout keeps the names it was given).
+    """
+    t0 = time.perf_counter()
+    report = {"acquisitions_touched": 0, "relabelled": 0, "cleared": 0,
+              "errors": [], "degraded": False}
+    for root in cfg["roots"]:
+        tree = Path(cfg["waterfalls_dir"]) / root["name"]
+        try:
+            acqs = sorted((d for d in os.listdir(tree)
+                           if (tree / d).is_dir()), reverse=True)
+        except OSError as e:
+            report["errors"].append(f"{tree}: {e}")
+            report["degraded"] = True
+            continue
+        for acq in acqs:
+            if only_acq and acq != only_acq:
+                continue
+            store = AcquisitionStore(tree / acq, acq, root["name"])
+            if not store.started:
+                continue
+            # the acquisition's own record of where it came from, else the
+            # root as configured now (older indexes did not record it)
+            src_root = store.index.get("source_path") or root["path"]
+            try:
+                files = source_files(os.path.join(src_root, acq))
+            except OSError as e:
+                report["errors"].append(f"{acq}: {e}")
+                report["degraded"] = True
+                continue
+            if not files:
+                stored = store.index.get("labels") or []
+                n_el = int(store.index.get("n_elements") or 0)
+                if stored and n_el and len(stored) != n_el:
+                    log.warning("%s/%s: %d labels for %d elements and no "
+                                "source left to re-read; clearing them",
+                                root["name"], acq, len(stored), n_el)
+                    store.relabel([])
+                    report["acquisitions_touched"] += 1
+                    report["cleared"] += 1
+                continue
+            try:
+                axes = R.read_axes(files[0])
+            except OSError as e:                      # transient: mount
+                report["errors"].append(f"{acq}: {e}")
+                report["degraded"] = True
+                continue
+            except (ValueError, KeyError) as e:
+                report["errors"].append(f"{acq}: unexpected layout ({e})")
+                continue
+            if not axes.labels:
+                stored = store.index.get("labels") or []
+                n_el = int(store.index.get("n_elements") or 0)
+                if stored and len(stored) == n_el:
+                    # A reading that resolves nothing is not a better one.
+                    log.info("%s/%s: source labels unresolved; keeping the "
+                             "%d stored", root["name"], acq, len(stored))
+                    continue
+            if store.relabel(axes.labels):
+                report["acquisitions_touched"] += 1
+                report["relabelled"] += 1
+                log.info("%s/%s: %d labels rewritten", root["name"], acq,
+                         len(axes.labels))
+    report["run_seconds"] = round(time.perf_counter() - t0, 2)
+    return report
+
+
 def run(cfg: dict, only_acq: str | None = None) -> dict:
     t0 = time.perf_counter()
     report = {"files_rendered": 0, "acquisitions_touched": 0, "backlog": 0,
@@ -388,6 +470,9 @@ def main(argv=None) -> int:
     ap.add_argument("--repalette", action="store_true",
                     help="refresh every rendered image's palette and exit "
                          "(after a colormap change; touches no pixels)")
+    ap.add_argument("--relabel", action="store_true",
+                    help="re-derive every acquisition's element labels from "
+                         "its source files and exit (touches no pixels)")
     ap.add_argument("-v", "--verbose", action="count", default=0)
     args = ap.parse_args(argv)
 
@@ -436,6 +521,14 @@ def main(argv=None) -> int:
                 log.warning("%s", e)
             log.info("refreshed %d palettes across %d acquisition(s) in %.1fs",
                      report["images"], report["acquisitions_touched"],
+                     report["run_seconds"])
+            return 2 if report["degraded"] else 0
+        if args.relabel:
+            report = relabel(cfg, only_acq=args.acq)
+            for e in report["errors"][:20]:
+                log.warning("%s", e)
+            log.info("relabelled %d acquisition(s), cleared %d, in %.1fs",
+                     report["relabelled"], report["cleared"],
                      report["run_seconds"])
             return 2 if report["degraded"] else 0
         report = run(cfg, only_acq=args.acq)

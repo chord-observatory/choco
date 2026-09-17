@@ -294,6 +294,77 @@ def test_repalette_recolours_finished_acquisitions(tree, tmp_path):
     assert (tmp_path / "state.json").read_text() == state_before
 
 
+def test_relabel_rewrites_labels_from_the_source(tree, tmp_path):
+    """Labels are written once, at start; a better reading of the source
+    reaches a finished acquisition only through --relabel, which touches
+    nothing else."""
+    _, root = tree
+    cfg_path = write_cfg(tmp_path, root)
+    assert W.main(["-c", str(cfg_path)]) == 0
+    state_before = (tmp_path / "state.json").read_text()
+
+    acq = "acq_20260202_000000_000000000"
+    index_path = tmp_path / "wf" / "subset" / acq / "index.json"
+    index = json.loads(index_path.read_text())
+    good = index["labels"]
+    assert good == ["A0X", "A1X", "A0Y", "A1Y"]
+    # the pre-fix mislabelling: a table wider than the element axis,
+    # indexed by position
+    index["labels"] = ["A0X", "A1X", "D0X", "D1X", "A0Y", "A1Y", "D0Y", "D1Y"]
+    index_path.write_text(json.dumps(index))
+    images = sorted((tmp_path / "wf" / "subset" / acq).rglob("wf_*.png"))
+    pixels_before = wfpng.read(images[0])[0]
+
+    assert W.main(["-c", str(cfg_path), "--relabel", "--acq", acq]) == 0
+    after = json.loads(index_path.read_text())
+    assert after["labels"] == good
+    assert after["files"] == index["files"]
+    assert np.array_equal(wfpng.read(images[0])[0], pixels_before)
+    # the other acquisition, and the timer's state file, were left alone
+    other = tmp_path / "wf" / "subset" / "acq_20260101_000000_000000000" / "index.json"
+    assert json.loads(other.read_text())["labels"] == good
+    assert (tmp_path / "state.json").read_text() == state_before
+
+
+def test_relabel_clears_inconsistent_labels_when_the_source_is_gone(tree, tmp_path):
+    """No source to re-read and more labels than elements: the labels are
+    the mislabelling itself, so indices are shown instead.  Consistent
+    labels without a source stay."""
+    _, root = tree
+    cfg_path = write_cfg(tmp_path, root)
+    assert W.main(["-c", str(cfg_path)]) == 0
+    old, new = "acq_20260101_000000_000000000", "acq_20260202_000000_000000000"
+    for acq in (old, new):
+        for f in (root / acq).glob("*.h5"):
+            f.unlink()
+    old_index = tmp_path / "wf" / "subset" / old / "index.json"
+    index = json.loads(old_index.read_text())
+    index["labels"] = ["A0X", "A1X", "D0X", "D1X", "A0Y", "A1Y", "D0Y", "D1Y"]
+    old_index.write_text(json.dumps(index))
+
+    assert W.main(["-c", str(cfg_path), "--relabel"]) == 0
+    assert json.loads(old_index.read_text())["labels"] == []
+    new_index = tmp_path / "wf" / "subset" / new / "index.json"
+    assert json.loads(new_index.read_text())["labels"] == ["A0X", "A1X", "A0Y", "A1Y"]
+
+
+def test_relabel_keeps_consistent_labels_when_the_source_resolves_none(tree, tmp_path):
+    """An acquisition labelled under an earlier file layout keeps its
+    names: a re-read that yields no labels is not a better reading."""
+    _, root = tree
+    cfg_path = write_cfg(tmp_path, root)
+    assert W.main(["-c", str(cfg_path)]) == 0
+    acq = "acq_20260101_000000_000000000"
+    for f in (root / acq).glob("*.h5"):
+        with h5py.File(f, "r+") as h:           # the 2026-08 per-dish table
+            del h["index_map/label"]
+            del h["index_map/pol"]
+            h["index_map"].create_dataset("label", data=np.array([b"A0", b"A1"]))
+    index_path = tmp_path / "wf" / "subset" / acq / "index.json"
+    assert W.main(["-c", str(cfg_path), "--relabel", "--acq", acq]) == 0
+    assert json.loads(index_path.read_text())["labels"] == ["A0X", "A1X", "A0Y", "A1Y"]
+
+
 def test_cli_overrides_config(tree, tmp_path):
     _, root = tree
     cfg_path = write_cfg(tmp_path, root, max_files_per_run=40, level=9)

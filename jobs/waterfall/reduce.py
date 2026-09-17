@@ -38,26 +38,30 @@ import wfpng
 
 log = logging.getLogger("waterfall.reduce")
 
-from choco.dishlabels import (  # noqa: E402
-    expand_dish_labels, labels_are_per_element, num_polarizations,
-)
+from choco.dishlabels import file_element_labels  # noqa: E402
 
 
-def _element_labels(labels: list, n_elements: int) -> list:
-    """Per-element labels from per-dish labels; old layouts get none.
+def _element_labels(labels: list, n_elements: int, pol=None) -> list:
+    """One label per element of *this file's* axis; doubtful layouts get none.
 
-    A pre-2026-08 per-element label set (a polarisation marker in the
-    text) is dropped rather than stored: its element ordering was wrong,
-    so the names would sit on the wrong axes.  The viewer already falls
-    back to element indices when an acquisition has no labels.
+    kotekan (chord.2021.10+988, acquisitions from 2026-09-11 on) writes
+    ``index_map/label`` per element — a full frame's 128 or a compact
+    ``DishInputs`` frame's 48, each spelled dish label + ``p1``/``p2`` —
+    and ``file_element_labels`` turns that into choco's ``B4X``/``B4Y``
+    after checking the count against ``num_elements`` and the suffix
+    against ``index_map/pol``.  Any other layout (a per-dish table, a
+    table wider than the axis, pre-2026-08 ``A1X`` labels) is stored as
+    *no* labels rather than expanded or guessed: the viewer already falls
+    back to element indices, and a wrong name on an axis is worse than none.
     """
     if not labels:
-        return labels
-    if labels_are_per_element(labels):
-        log.warning("per-element (pre-2026-08) labels in the source file; "
-                    "storing element indices instead of labels")
         return []
-    return expand_dish_labels(labels, num_polarizations(len(labels), n_elements))
+    try:
+        return file_element_labels(labels, n_elements or None, pol)
+    except ValueError as exc:
+        log.warning("%s; storing element indices instead of labels", exc)
+        return []
+
 
 #: Frequency rows per streamed block, a multiple of the 16-row chunk.
 #: Peak memory tracks this and nothing else; 64 rows measured no slower
@@ -107,6 +111,7 @@ def read_axes(path) -> Axes:
         if "index_map/label" in f:
             labels = [b.decode() if isinstance(b, bytes) else str(b)
                       for b in f["index_map/label"][:]]
+        pol = f["index_map/pol"][:] if "index_map/pol" in f else None
         times = f["time_center_ut1_ns"][:] if "time_center_ut1_ns" in f else None
         n_elements = int(attrs.get("num_elements", 0))
         return Axes(
@@ -118,7 +123,7 @@ def read_axes(path) -> Axes:
             input_a=prod["input_a"].astype(int),
             input_b=prod["input_b"].astype(int),
             freq_mhz=f["index_map/freq"]["centre"][:].astype(float),
-            labels=_element_labels(labels, n_elements),
+            labels=_element_labels(labels, n_elements, pol),
             times_ns=times,
         )
 

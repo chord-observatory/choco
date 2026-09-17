@@ -9,7 +9,7 @@
 # (see jobs/waterfall/README.md).
 #
 # Thin wrapper that finds the Python venv and calls the waterfall.py next to it.
-# Extra arguments are forwarded (e.g. --repalette, --acq, -n).
+# Extra arguments are forwarded (e.g. --repalette, --relabel, --acq, -n).
 # Usage: ./jobs/waterfall/waterfall.sh [/path/to/waterfall.yaml] [args...]
 #
 set -euo pipefail

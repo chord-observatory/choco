@@ -227,6 +227,20 @@ class AcquisitionStore:
         self._counts = np.zeros((axes.n_prod, 256), np.int64)
         self._save_index()
 
+    def relabel(self, labels) -> bool:
+        """Replace the element labels and commit; True if they changed.
+
+        Labels are the one thing in the index that is *about* the data
+        rather than derived from it, so they are the one thing a later,
+        better reading of the source can revise without touching a pixel.
+        """
+        labels = [str(label) for label in labels]
+        if not self.started or labels == list(self.index.get("labels") or []):
+            return False
+        self.index["labels"] = labels
+        self._save_index()
+        return True
+
     def scale(self) -> tuple[np.ndarray, np.ndarray]:
         """The frozen per-product ``(lo, hi)``, nan where unscaled."""
         prods = self.index["products"]

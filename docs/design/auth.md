@@ -89,3 +89,44 @@ F-engine or the power boards; those badges render ``unconfigured`` and no
 greenlet spawns.  ``tests/test_dev_mode.py`` guards the direction that
 matters: with ``dev_auth`` unset the dashboard still redirects to login and
 both CSRF checks still raise.
+
+## Trusted hosts
+
+``server.trusted_hosts`` (2026-09) is the production answer to "I am on the
+choco box (or on chive) and do not want to type an LDAP password": a mapping
+of IP address or CIDR network to a label, e.g. ``127.0.0.1: localhost``,
+``10.222.0.54: chive``.  A request from a listed peer that carries no login
+is logged in by a ``before_request`` in ``init_auth`` as a synthetic
+``User`` whose username is the label, so the whole UI works -- ``base.html``
+gates htmx, the service strip and every toggle on ``is_authenticated``, which
+is why merely swapping ``login_required`` for ``localhost_or_login_required``
+on the UI routes would have produced static pages with no polling.  The
+label is what ``_audit_user`` records, so an F-engine restart from chive
+logs as ``requested by chive`` rather than a bare address.
+
+It is deliberately narrower than dev mode on three points.  **CSRF stays
+on**: the session cookie round-trips normally so the token works, and a
+hostile page in the operator's browser could otherwise POST to
+``localhost:5000`` unchallenged.  **The user is never stored**: it is built
+with ``User(...)``, not ``save_user``, so the ``trusted:<addr>`` id in the
+cookie it mints loads as nobody on the next request and only a trusted peer
+is logged back in -- replaying that cookie from any other address is
+worthless, which is what makes a per-address trust decision safe to persist
+in a bearer cookie.  **A real login wins**: ``is_authenticated`` is tested
+first, so someone who did log in over LDAP from chive keeps their own name
+in the audit line.  The logout link is hidden for a synthetic user because
+logging out would only log it straight back in.
+
+The peer address is trustworthy because gevent's WSGIServer terminates the
+TCP connection itself: there is no reverse proxy on the box, and the
+iptables 443→5000 rule is PREROUTING only, so ``remote_addr`` is the real
+peer.  Putting a proxy in front of choco would have to come with
+``ProxyFix`` and a rethink of this key.  The list is validated in
+``load_config`` (and again in ``init_auth`` for tests that build a config
+dict directly): a non-mapping, an unparsable key or an empty label is a
+startup error naming the entry.  Entries are matched most-specific first so
+a host inside a listed network can carry its own label.  Default is empty,
+which is also what keeps the test suite honest -- Flask's test client
+presents as ``127.0.0.1``, so every ``test_requires_login`` in the suite is
+implicitly a test that the default is off.  ``tests/test_trusted_hosts.py``
+covers the rest.

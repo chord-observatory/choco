@@ -1301,6 +1301,34 @@ def _service_detail(name: str, svc: dict) -> dict | None:
         return None
 
 
+#: Elements per column of the bffs page's element grid: kotekan's
+#: element order runs down each column, so the 64-dish [P][D] axis is
+#: eight columns of X then eight of Y.
+ELEMENTS_PER_COLUMN = 8
+
+
+def _element_grid(labels: list[str], bad: set[str], sources: dict,
+                  per_column: int = ELEMENTS_PER_COLUMN) -> list[list[dict | None]]:
+    """The element axis as table rows, *per_column* elements to a column.
+
+    Column *c* holds elements ``c*per_column .. c*per_column+per_column-1``
+    top to bottom; row *r* is therefore every element whose index is
+    ``r`` modulo *per_column*.  Cells are ``{"label", "index", "bad",
+    "sources"}``; a ragged last column is padded with ``None``.  Empty
+    when there is no axis, so the template can fall back to the list.
+    """
+    columns = [labels[i:i + per_column]
+               for i in range(0, len(labels), per_column)]
+    rows = []
+    for r in range(min(per_column, len(labels))):
+        rows.append([
+            {"label": col[r], "index": c * per_column + r,
+             "bad": col[r] in bad, "sources": sources.get(col[r], "")}
+            if r < len(col) else None
+            for c, col in enumerate(columns)])
+    return rows
+
+
 def _service_detail_inner(name: str, svc: dict) -> dict | None:
     if name == "choco":
         registry = _registry()
@@ -1337,15 +1365,23 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
         history = [h for h in (state.get("history") or [])
                    if isinstance(h, dict)]
         flagged_by = state.get("flagged_by") or {}
+        # which source(s) flagged each feed (absent for state files
+        # written before attribution existed)
+        sources = ({str(label): ", ".join(map(str, kinds or []))
+                    for label, kinds in flagged_by.items()}
+                   if isinstance(flagged_by, dict) else {})
+        bad_inputs = [str(label) for label in (state.get("bad_inputs") or [])]
+        # the element axis the flags index, recorded by bffs since
+        # 2026-09; an older state file has none and the page shows the
+        # bad list alone
+        labels = [str(label) for label in (state.get("labels") or [])]
         return {
             "updated": _fmt_utc(state.get("updated")),
             "update_id": state.get("update_id"),
-            "bad_inputs": list(state.get("bad_inputs") or []),
-            # which source(s) flagged each feed (absent for state files
-            # written before attribution existed)
-            "flagged_by": {str(label): ", ".join(map(str, kinds or []))
-                           for label, kinds in flagged_by.items()}
-            if isinstance(flagged_by, dict) else {},
+            "bad_inputs": bad_inputs,
+            "flagged_by": sources,
+            "n_elements": len(labels),
+            "element_rows": _element_grid(labels, set(bad_inputs), sources),
             # pre-shape everything the template touches, so a malformed
             # entry fails here (-> detail None) and not mid-render
             "history": [{
