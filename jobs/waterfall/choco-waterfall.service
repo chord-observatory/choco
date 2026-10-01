@@ -5,8 +5,8 @@ After=choco.service
 
 [Service]
 Type=oneshot
-# systemd owns /var/lib/choco/waterfall (creates it with the right ownership);
-# the default state_file lives there.
+# systemd owns /var/lib/choco/waterfall (creates it with the right ownership)
+# and exports it as $STATE_DIRECTORY; state.json and the run lock live there.
 StateDirectory=choco/waterfall
 # Run as a real account, not root.  The output tree is on NFS, where root
 # is squashed to nobody -- files written that way are awkward to manage

@@ -5,13 +5,14 @@ table values are tabulated at each midnight (sets snap_to_grid=True in
 eop_utils.)
 
 If no table exists yet, this script builds a new EOP table from eop_utils and
-stores the result to STATE_FILENAME.
+stores the result to state.json in the job's state directory
+(/var/lib/choco/eop, systemd's StateDirectory; --state-dir overrides).
 
 If a table exists, then entries at or before the next midnight boundary are
 used from the stored table. New entries are only ever *appended* after that
 point, so currently-used EOP values should never change.
 
-The state is kept in a single file (STATE_FILENAME) so all nodes should receive
+The state is kept in a single file so all nodes should receive
 an identical table regardless of individual node state.
 
 Reads fpga_master and eop settings from choco's config.yaml; the node groups
@@ -28,7 +29,7 @@ from astropy.time import Time
 import astropy.utils.iers
 import astropy.utils.data
 
-from choco.jobclient import get_json, post_json, write_json_atomic
+from choco.jobclient import get_json, job_state_dir, post_json, write_json_atomic
 
 sys.path.insert(0, str(Path(__file__).parent))
 import eop_utils  # noqa: E402
@@ -40,8 +41,7 @@ log = logging.getLogger("eop")
 
 INTERVAL_LENGTH_DAYS = 1.0
 EOP_REQUIRED_KEYS = [
-    "intervals_before", "intervals_after",
-    "endpoint", "state_file",
+    "intervals_before", "intervals_after", "endpoint",
 ]
 
 
@@ -191,9 +191,18 @@ def push_to_choco(choco_url: str, groups: list[str],
     return failures == 0
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="eop_update",
+                                 description="merge and broadcast the EOP table")
+    ap.add_argument("config", nargs="?", default=None,
+                    help="choco's config.yaml (default: /etc/choco/config.yaml, ./config.yaml)")
+    ap.add_argument("--state-dir", default=None,
+                    help="where state.json lives (default: systemd's "
+                         "$STATE_DIRECTORY, else /var/lib/choco/eop)")
+    args = ap.parse_args(argv)
     # Find config
-    config_path = sys.argv[1] if len(sys.argv) > 1 else None
+    config_path = args.config
     if config_path is None:
         for candidate in ["/etc/choco/config.yaml", "config.yaml"]:
             if Path(candidate).exists():
@@ -221,14 +230,14 @@ def main() -> int:
     endpoint = eop_cfg["endpoint"]
 
     # The table is append-only across runs, so where it lives is not a
-    # detail: a relative path would resolve against whatever the current
-    # directory happens to be and quietly start a fresh table.
-    state_file = Path(eop_cfg["state_file"])
-    if not state_file.is_absolute():
+    # detail: it is the job's state directory, fixed by the unit and read
+    # by choco from the same place.  A configured path only ever drifted.
+    if "state_file" in eop_cfg:
         raise ValueError(
-            f"eop.state_file must be an absolute path, not {state_file!s}; "
-            f"move the table to /var/lib/choco/eop/state.json and point the "
-            f"key there")
+            "eop.state_file is retired: remove it; the table lives at "
+            f"{job_state_dir('eop') / 'state.json'} (systemd's "
+            "StateDirectory=choco/eop, or --state-dir)")
+    state_file = job_state_dir("eop", args.state_dir) / "state.json"
 
     # Frame0
     log.info("Reading frame0 from fpga_master at %s:%d ...", fpga_host, fpga_port)

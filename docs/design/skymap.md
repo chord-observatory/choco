@@ -36,10 +36,11 @@ can't do LDAP sessions; the image's only cluster fact is the pointing),
 answering conditional GETs with 304s off the file mtime.  The landing page
 shows it below the service table as an htmx card (``/partials/skymap``, every
 5 min) whose ``<img>`` URL carries the file mtime as ``?v=`` so a swap fetches
-exactly when a new render landed.  choco's ``skymap:`` config block holds only
-``image_file`` (where to read the PNG back — must match ``skymap.yaml``'s
-``output``); the job's own settings live in ``/etc/choco/skymap.yaml``, seeded
-by install.  A failed pointing lookup exits 2 and leaves the previous image up
+exactly when a new render landed.  choco reads the PNG back from
+``<state_dir>/skymap/skymap.png``, where the job writes it — its state
+directory, so neither side configures the path (2026-10; ``skymap.image_file``
+and the job's ``output`` are refused); the job's own settings live in
+``/etc/choco/skymap.yaml``, seeded by install.  A failed pointing lookup exits 2 and leaves the previous image up
 — staleness is visible in the image's own title timestamp.  matplotlib joined
 the ``[jobs]`` extra for this job; the render is ~3.5 s and the unit carries
 the usual caps.
@@ -60,9 +61,9 @@ corner pixel is white in one and dark in the other).  The sky backdrop fades
 toward the page colour rather than toward white, so ``background_fade`` keeps
 one meaning for both.  ``now`` is fixed once in ``main`` before either render
 so Sun, Moon and beam-now agree; the night render is a second ~3 s of CPU,
-well inside the unit's caps, and each write stays atomic on its own.  An
-empty ``output_night`` skips the second render.  choco reads the night PNG
-back from the ``skymap:`` block's optional ``night_image_file``; the route
+well inside the unit's caps, and each write stays atomic on its own.
+``night: false`` skips the second render.  choco reads the night PNG back
+from ``skymap-night.png`` beside the day image; the route
 is unauthenticated for the same wall-display reason as ``/skymap.png`` and
 exposes the same single cluster fact.  The web UI itself is pinned to the
 light theme, so the landing card shows the day image and links the night one

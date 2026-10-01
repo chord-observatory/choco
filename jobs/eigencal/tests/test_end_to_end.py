@@ -61,8 +61,6 @@ def setup(request, tmp_path):
 
     cfg = merge_config(DEFAULTS, {
         "kotekan_file": str(tmp_path / "*.h5"),
-        "run": {"archive_dir": str(tmp_path / "archive"),
-                "state_file": None},
         "telescope": telescope,
         "analysis": {"nfreq_per_block": 4, "min_good_frac": 0.3},
         "daytime": {"skip": False},

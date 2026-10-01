@@ -30,6 +30,14 @@ server:
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs
 
+# Where the jobs keep their state: <state_dir>/<job>/, the directories
+# systemd's StateDirectory=choco/<job> creates for them.  choco reads each
+# job's files from there by name (state.json, run.json, the bffs manual
+# overrides, the sky-map PNGs) and nothing names those paths one by one,
+# so the two sides cannot drift.  Change only for a dev instance
+# (./choco.sh develop does).
+state_dir: /var/lib/choco
+
 # kotekan connection settings.
 kotekan:
   timeout: 10                       # HTTP request timeout (seconds) for kotekan REST API calls
@@ -68,23 +76,18 @@ eop:
   intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
   intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
   endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
-  state_file: /var/lib/choco/eop/state.json   # Absolute path; rewritten on every successful run
   service_unit: choco-eop-broadcast.service  # systemd unit to query for last-run status
 
-# bffs feed-flagging job (BFFS badge in the web UI header).
+# bffs feed-flagging job (BFFS badge in the web UI header).  Its files --
+# state.json, run.json and the manual override file the element grid
+# edits -- live in <state_dir>/bffs/.
 bffs:
   service_unit: choco-bffs-flag.service  # systemd unit to query for last-run status
-  state_file: /var/lib/choco/bffs/state.json   # bffs state.path (absolute; "last change" in the badge tooltip)
-  # bffs state.run_path: rewritten every run with each source's report
-  # (what it measured, what it abstained from and why).  Feeds the BFFS
-  # page's Sources table and the badge's "why" line.  Defaults to
-  # run.json beside state_file, as in the job itself.
-  # run_file: /var/lib/choco/bffs/run.json
+  control: true                          # clicking the element grid adds/removes manual flags
 
 # eigencal gain-calibration job (EIGENCAL badge in the web UI header).
 eigencal:
   service_unit: choco-eigencal.service       # systemd unit to query for last-run status
-  state_file: /var/lib/choco/eigencal/state.json   # eigencal run.state_file (absolute; written once per processed transit)
 
 # waterfall image-rendering job (WF badge, /files column, contact sheet).
 # What to render is configured in /etc/choco/waterfall.yaml; these keys are
@@ -92,22 +95,16 @@ eigencal:
 # reads "-" for every acquisition and the contact sheet 404s.
 waterfall:
   service_unit: choco-waterfall.service       # systemd unit to query for last-run status
-  state_file: /var/lib/choco/waterfall/state.json   # waterfall state_file (absolute; rewritten every run)
   images_dir: /mnt/cs00/data/kotekan_vis_files/waterfalls   # must match waterfall.yaml's waterfalls_dir
   ttl: 30                                     # seconds to cache the per-acquisition summary sweep
   timezone: America/Vancouver                 # IANA zone for the viewer's time axis (default shown)
 
 # Current-sky strip plot rendered by the skymap job (jobs/skymap, every
-# 5 min; configured in /etc/choco/skymap.yaml).  image_file is where choco
-# reads the finished PNG back -- it must match skymap.yaml's output.  The
-# image is served unauthenticated at /skymap.png and shown on the landing
-# page.  night_image_file is the same render in the job's dark palette
-# (skymap.yaml's output_night), served at /skymap-night.png for wall
-# displays; omit it to serve the day image only.  Omit the block to
-# disable all of it.
+# 5 min; configured in /etc/choco/skymap.yaml).  choco reads the PNGs back
+# from <state_dir>/skymap/ and serves them unauthenticated at /skymap.png
+# (shown on the landing page) and /skymap-night.png (the job's dark
+# palette, for wall displays); each 404s until rendered.
 skymap:
-  image_file: /var/lib/choco/skymap/skymap.png
-  night_image_file: /var/lib/choco/skymap/skymap-night.png   # optional
   service_unit: choco-skymap.service          # systemd unit to query for the SKYMAP badge
 
 # Data-file roots shown on /files.  Each root is scanned one level deep:

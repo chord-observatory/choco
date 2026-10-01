@@ -19,6 +19,7 @@ from flask import (
 from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
+from .jobclient import MANUAL_OVERRIDES_NAME
 from .datafiles import human_bytes
 from . import dishlabels
 from .pdbmap import PdbMap, cross_check, kotekan_dish_labels
@@ -31,6 +32,7 @@ from .waterfalls import (
 from .services import (
     job_status, job_logs, timer_status, read_state_json, render_dot_svg,
     sanitize_pipeline_svg, EOP_STALE_AFTER_S, PIPELINE_LAYOUTS,
+    read_manual_flags, toggle_manual_flag,
 )
 from .state import NodeStatus, find_updatable_blocks
 from .sync import ChangeItem, ChangeType
@@ -203,7 +205,6 @@ def _landing_context() -> dict:
         "details": details,
         "choco": _service_detail("choco", svc_registry["choco"]),
         "nodes": _nodes_health(),
-        "skymap_configured": _skymap_file() is not None,
         "now_ts": time.time(),
     }
 
@@ -225,12 +226,17 @@ def partial_landing_services():
     return render_template("_landing_services.html", **_landing_context())
 
 
-def _skymap_file(night: bool = False) -> Path | None:
-    """The rendered sky-map PNG (or its night-palette twin), if the
-    skymap config block names it."""
-    cfg = current_app.config.get("skymap_cfg") or {}
-    path = cfg.get("night_image_file" if night else "image_file")
-    return Path(path) if path else None
+def _state_root() -> Path:
+    """Where the jobs keep their files: ``state_dir`` (default
+    ``/var/lib/choco``), the root systemd's ``StateDirectory=choco/<job>``
+    lays out.  Everything choco reads back from a job sits under it."""
+    return Path(current_app.config.get("state_dir") or "/var/lib/choco")
+
+
+def _skymap_file(night: bool = False) -> Path:
+    """The rendered sky-map PNG (or its night-palette twin), where the
+    skymap job writes it: ``<state_dir>/skymap/skymap[-night].png``."""
+    return _state_root() / "skymap" / ("skymap-night.png" if night else "skymap.png")
 
 
 def _file_mtime(path: Path | None) -> int | None:
@@ -267,7 +273,7 @@ def skymap_night_png():
     """The same render in the job's night palette, for wall displays in
     a dim control room.  Unauthenticated for the same reason as
     /skymap.png and carrying the same single cluster fact; 404 until
-    the skymap block's ``night_image_file`` names a rendered file.
+    the job has rendered it (``night: true`` in skymap.yaml).
     """
     return _send_skymap(_skymap_file(night=True))
 
@@ -1144,20 +1150,26 @@ def _service_registry() -> dict[str, dict]:
     waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
     skymap_cfg = current_app.config.get("skymap_cfg") or {}
 
+    # Every file read back from a job sits under <state_dir>/<job>/, the
+    # layout systemd's StateDirectory=choco/<job> gives the jobs; the
+    # names are the jobs' conventions, not settings.
+    root = _state_root()
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
-    eop_state = (Path(str(eop_cfg["state_file"]))
-                 if eop_cfg.get("state_file") else None)
-    bffs_state = (Path(str(bffs_cfg["state_file"]))
-                  if bffs_cfg.get("state_file") else None)
+    eop_state = root / "eop" / "state.json"
+    bffs_state = root / "bffs" / "state.json"
     # bffs also rewrites a run file on *every* run — what each source
     # measured, what it abstained from and why the exit status was what
-    # it was.  It defaults to a sibling of the state file, as in the job.
-    bffs_run = (Path(str(bffs_cfg["run_file"])) if bffs_cfg.get("run_file")
-                else bffs_state.with_name("run.json") if bffs_state else None)
+    # it was.
+    bffs_run = root / "bffs" / "run.json"
+    # The manual override file the job's ``manual`` source reads; with
+    # it the element grid toggles manual flags.  ``bffs.control: false``
+    # makes the grid read-only (the same switch the PDB page has).
+    bffs_manual = (root / "bffs" / MANUAL_OVERRIDES_NAME
+                   if bffs_cfg.get("control", True) else None)
 
     def job(label: str, unit: str, state_file, stale_after_s=None,
-            mtime_label="last run", run_file=None) -> dict:
+            mtime_label="last run", run_file=None, manual_file=None) -> dict:
         return {
             "kind": "job",
             "label": label,
@@ -1167,6 +1179,7 @@ def _service_registry() -> dict[str, dict]:
             "stale_after_s": stale_after_s,
             "mtime_label": mtime_label,
             "run_file": run_file,
+            "manual_file": manual_file,
         }
 
     # Dict order is the order of the strip's job badges and the landing
@@ -1174,7 +1187,7 @@ def _service_registry() -> dict[str, dict]:
     return {
         "choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
                   "timer": None, "state_file": None, "stale_after_s": None,
-                  "mtime_label": None, "run_file": None},
+                  "mtime_label": None, "run_file": None, "manual_file": None},
         "eop": job("EOP",
                    eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
                    eop_state, EOP_STALE_AFTER_S, "last run"),
@@ -1182,15 +1195,15 @@ def _service_registry() -> dict[str, dict]:
         # changes, so no staleness threshold — the mtime is "last change".
         "bffs": job("BFFS",
                     bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
-                    bffs_state, None, "last change", run_file=bffs_run),
+                    bffs_state, None, "last change", run_file=bffs_run,
+                    manual_file=bffs_manual),
         # eigencal rewrites its state file once per processed transit;
         # transits skipped for daytime are silent by design, so an old
         # mtime is informational, not a health downgrade.
         "eigencal": job("EIGENCAL",
                         eigencal_cfg.get("service_unit")
                         or "choco-eigencal.service",
-                        Path(str(eigencal_cfg["state_file"]))
-                        if eigencal_cfg.get("state_file") else None,
+                        root / "eigencal" / "state.json",
                         None, "last calibration"),
         # waterfall rewrites its state file on every run, but a run with
         # nothing to render is the normal case between acquisitions, so
@@ -1198,8 +1211,7 @@ def _service_registry() -> dict[str, dict]:
         "waterfall": job("WF",
                          waterfall_cfg.get("service_unit")
                          or "choco-waterfall.service",
-                         Path(str(waterfall_cfg["state_file"]))
-                         if waterfall_cfg.get("state_file") else None,
+                         root / "waterfall" / "state.json",
                          None, "last run"),
         # skymap keeps no state file: the image is the record and its
         # title carries the render time, so the badge is systemd only.
@@ -1372,47 +1384,111 @@ ELEMENTS_PER_COLUMN = 8
 
 
 def _element_grid(labels: list[str], bad: set[str], sources: dict,
-                  per_column: int = ELEMENTS_PER_COLUMN) -> list[list[dict | None]]:
+                  per_column: int = ELEMENTS_PER_COLUMN,
+                  manual: set[str] | None = None) -> list[list[dict | None]]:
     """The element axis as table rows, *per_column* elements to a column.
 
     Column *c* holds elements ``c*per_column .. c*per_column+per_column-1``
     top to bottom; row *r* is therefore every element whose index is
     ``r`` modulo *per_column*.  Cells are ``{"label", "index", "bad",
-    "sources"}``; a ragged last column is padded with ``None``.  Empty
+    "sources", "manual"}`` — ``manual`` says the label is in the override
+    file now, which can run ahead of ``bad`` (the job applies the file on
+    its next run); a ragged last column is padded with ``None``.  Empty
     when there is no axis, so the template can fall back to the list.
     """
+    manual = manual or set()
     columns = [labels[i:i + per_column]
                for i in range(0, len(labels), per_column)]
     rows = []
     for r in range(min(per_column, len(labels))):
         rows.append([
             {"label": col[r], "index": c * per_column + r,
-             "bad": col[r] in bad, "sources": sources.get(col[r], "")}
+             "bad": col[r] in bad, "sources": sources.get(col[r], ""),
+             "manual": col[r] in manual}
             if r < len(col) else None
             for c, col in enumerate(columns)])
     return rows
 
 
-def _bffs_detail(state: dict | None, run: dict | None) -> dict | None:
+def _bffs_manual_state(manual_file, run: dict | None) -> dict:
+    """What the page knows about manual flagging.
+
+    ``enabled`` is whether the grid may edit the override file
+    (``bffs.control``); ``labels`` is what that file lists now; ``error``
+    an unreadable file;
+    ``job_path`` the file the job's ``manual`` source reported reading
+    (from the run file) and ``mismatch`` whether that differs from ours —
+    a click would then write where the job never looks, so the grid says
+    so and the route refuses.
+    """
+    out = {"enabled": manual_file is not None, "path": str(manual_file) if manual_file else None,
+           "labels": set(), "error": None, "job_path": None, "mismatch": False}
+    if manual_file is None:
+        return out
+    try:
+        out["labels"] = read_manual_flags(manual_file) or set()
+    except ValueError as e:
+        out["error"] = str(e)
+    job_path = _job_manual_path(run)
+    out["job_path"] = job_path
+    if job_path is not None and not _same_path(job_path, manual_file):
+        out["mismatch"] = True
+    return out
+
+
+def _job_manual_path(run: dict | None) -> str | None:
+    """The override file the job's ``manual`` source read, per the run
+    file; ``""`` when the job ran with no manual source; ``None`` when
+    there is no run file to tell."""
+    if not isinstance(run, dict) or not isinstance(run.get("sources"), list):
+        return None
+    for src in run["sources"]:
+        if isinstance(src, dict) and src.get("kind") == "manual":
+            detail = src.get("detail") if isinstance(src.get("detail"), dict) else {}
+            return str(detail.get("path") or "")
+    return ""
+
+
+def _same_path(a, b) -> bool:
+    try:
+        return Path(str(a)).resolve() == Path(str(b)).resolve()
+    except OSError:
+        return str(a) == str(b)
+
+
+def _bffs_detail(state: dict | None, run: dict | None,
+                 manual_file=None) -> dict | None:
     """The BFFS page's summary from the job's two files.
 
     The state file says what the flags *are* (bad list, element axis,
     transitions; rewritten only when the list changes); the run file
     says how the last run *measured* them (per-source status, what was
     skipped or abstained and why; rewritten every run).  Either may be
-    missing; ``None`` only when both are.
+    missing; ``None`` only when both are.  *manual_file* adds the manual
+    override file's current contents to the grid.
     """
     run_summary = _bffs_run_summary(run)
     if state is None and run_summary is None:
         return None
+    manual = _bffs_manual_state(manual_file, run)
     has_state = state is not None
     state = state or {}
     history = [h for h in (state.get("history") or [])
                if isinstance(h, dict)]
     flagged_by = state.get("flagged_by") or {}
-    # which source(s) flagged each feed (absent for state files
-    # written before attribution existed)
-    sources = ({str(label): ", ".join(map(str, kinds or []))
+    flag_reasons = state.get("flag_reasons")
+    flag_reasons = flag_reasons if isinstance(flag_reasons, dict) else {}
+
+    def attribution(label, kinds) -> str:
+        # which source(s) flagged the feed, each with the reason it gave
+        # where it gave one: "power: not in PDB table", "manual"
+        reasons = flag_reasons.get(label)
+        reasons = reasons if isinstance(reasons, dict) else {}
+        return ", ".join(f"{kind}: {reasons[kind]}" if reasons.get(kind) else str(kind)
+                         for kind in (kinds or []))
+
+    # absent for state files written before attribution existed
+    sources = ({str(label): attribution(str(label), kinds)
                 for label, kinds in flagged_by.items()}
                if isinstance(flagged_by, dict) else {})
     bad_inputs = [str(label) for label in (state.get("bad_inputs") or [])]
@@ -1427,7 +1503,9 @@ def _bffs_detail(state: dict | None, run: dict | None) -> dict | None:
         "bad_inputs": bad_inputs,
         "flagged_by": sources,
         "n_elements": len(labels),
-        "element_rows": _element_grid(labels, set(bad_inputs), sources),
+        "element_rows": _element_grid(labels, set(bad_inputs), sources,
+                                      manual=manual["labels"]),
+        "manual": manual,
         # pre-shape everything the template touches, so a malformed
         # entry fails here (-> detail None) and not mid-render
         "history": [{
@@ -1542,8 +1620,10 @@ def _bffs_source_summary(kind: str, d: dict) -> str:
             parts.append(f"{int(d['n_watched'])} feeds watched")
         if d.get("n_unpowered") is not None:
             parts.append(f"{int(d['n_unpowered'])} unpowered")
-        if d.get("n_unwatched"):
-            parts.append(f"{int(d['n_unwatched'])} on the axis unmapped")
+        if d.get("n_unmapped"):
+            parts.append(f"{int(d['n_unmapped'])} not in the PDB table"
+                         + (" (flagged absent)" if d.get("unmapped_flagged")
+                            else " (left good)"))
         if d.get("map_source"):
             parts.append(f"map: {d['map_source']}")
         if d.get("map_check") and d["map_check"] != "ok":
@@ -1583,7 +1663,8 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
 
     state = read_state_json(svc.get("state_file"))
     if name == "bffs":
-        return _bffs_detail(state, read_state_json(svc.get("run_file")))
+        return _bffs_detail(state, read_state_json(svc.get("run_file")),
+                            svc.get("manual_file"))
     if state is None:
         return None
 
@@ -1833,6 +1914,73 @@ def partial_service_status(name):
         detail=_service_detail(name, svc),
         now_ts=time.time(),
     )
+
+
+def _bffs_manual_result(ok: bool, message: str):
+    """Reply to a manual-flag toggle, the same two ways as a PDB write:
+    over htmx the status block is swapped in place with the outcome as an
+    out-of-band notice; a plain form POST gets flash-and-redirect."""
+    if request.headers.get("HX-Request"):
+        svc = _service_registry()["bffs"]
+        return render_template(
+            "_service_bffs_result.html", ok=ok, message=message,
+            name="bffs", svc=svc,
+            job=job_status(svc["unit"], state_file=svc["state_file"],
+                           stale_after_s=svc["stale_after_s"]),
+            timer=timer_status(svc["timer"]) if svc["timer"] else None,
+            detail=_service_detail("bffs", svc), now_ts=time.time())
+    flash(f"BFFS: {message}", "success" if ok else "error")
+    return redirect(url_for("web.service_page", name="bffs"))
+
+
+@bp.route("/service/bffs/manual", methods=["POST"])
+@login_required
+def bffs_manual_toggle():
+    """Add or remove one element's manual flag from the BFFS element grid.
+
+    Writes ``manual_overrides.yaml`` in the job's state directory, the
+    file its ``manual`` source reads by default; the job applies it on
+    its next run.  The
+    label is accepted only if it is on the element axis the state file
+    records — the allowlist for this write — and the file is written
+    only if the run file says the job's manual source reads that same
+    file (or there is no run file to check against).  Login + CSRF, and
+    one audit line naming the operator, like the PDB controls.
+    """
+    _check_csrf()
+    svc = _service_registry()["bffs"]
+    manual_file = svc.get("manual_file")
+    if manual_file is None:
+        abort(403)
+    label = request.form.get("label", "")
+    state = read_state_json(svc.get("state_file")) or {}
+    axis = state.get("labels")
+    if (not label or len(label) > 64 or not isinstance(axis, list)
+            or label not in [str(x) for x in axis]):
+        abort(400)
+    run = read_state_json(svc.get("run_file"))
+    job_path = _job_manual_path(run)
+    if job_path == "":
+        return _bffs_manual_result(
+            False, "the bffs job runs with no manual source; a flag written "
+                   "here would never be read")
+    if job_path is not None and not _same_path(job_path, manual_file):
+        return _bffs_manual_result(
+            False, f"choco edits {manual_file} but the bffs job's manual source "
+                   f"reads {job_path}; drop the source's path: (or point it at "
+                   f"the state directory) so the two agree")
+    try:
+        flagged = toggle_manual_flag(manual_file, label)
+    except ValueError as e:
+        return _bffs_manual_result(False, f"manual file not rewritten: {e}")
+    except OSError as e:
+        return _bffs_manual_result(False, f"could not write {manual_file}: {e}")
+    logger.warning(
+        f"bffs manual flag: {label} -> {'bad' if flagged else 'good'} "
+        f"requested by {getattr(current_user, 'username', '?')} ({manual_file})")
+    return _bffs_manual_result(
+        True, f"{label} {'flagged' if flagged else 'unflagged'} manually; "
+              f"the job applies it on its next run")
 
 
 @bp.route("/service/fpga/<action>", methods=["POST"])

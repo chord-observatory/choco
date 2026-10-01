@@ -5,8 +5,8 @@ After=choco.service
 
 [Service]
 Type=oneshot
-# systemd owns /var/lib/choco/eigencal (creates it with the right ownership);
-# the default state_file and archive_dir live there.
+# systemd owns /var/lib/choco/eigencal (creates it with the right ownership)
+# and exports it as $STATE_DIRECTORY; the gain archive and state.json live there.
 StateDirectory=choco/eigencal
 ExecStart=/opt/choco/jobs/eigencal/eigencal.sh /etc/choco/eigencal.yaml
 # No Restart: the script self-gates (it exits 0 in seconds unless a transit

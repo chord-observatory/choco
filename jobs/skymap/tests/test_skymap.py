@@ -141,12 +141,22 @@ class TestLoadConfig:
         cfg = skymap.load_config(None)
         assert cfg["beams"] == ["pointing"]
         assert cfg["timezone"] == "America/Vancouver"
-        assert cfg["output_night"] == "/var/lib/choco/skymap/skymap-night.png"
+        assert cfg["night"] is True
 
-    def test_empty_output_night_disables_it(self, tmp_path):
+    def test_night_can_be_switched_off(self, tmp_path):
         p = tmp_path / "skymap.yaml"
-        p.write_text('output_night: ""\n')
-        assert skymap.load_config(str(p))["output_night"] == ""
+        p.write_text("night: false\n")
+        assert skymap.load_config(str(p))["night"] is False
+
+    @pytest.mark.parametrize("text", ['output: /x/d.png\n', 'output_night: ""\n',
+                                      'state_file: /x/state.json\n'])
+    def test_output_paths_are_retired(self, tmp_path, text):
+        # the PNGs land in the state directory by convention, where
+        # choco's /skymap.png routes read them; a path here only drifted
+        p = tmp_path / "skymap.yaml"
+        p.write_text(text)
+        with pytest.raises(ValueError, match="retired"):
+            skymap.load_config(str(p))
 
     def test_file_overrides(self, tmp_path):
         p = tmp_path / "skymap.yaml"
@@ -171,9 +181,9 @@ class TestRender:
         from astropy.time import Time
         cfg = dict(skymap.DEFAULTS)
         out = tmp_path / "skymap.png"
-        cfg.update({"output": str(out), "dpi": 40})
+        cfg.update({"dpi": 40})
         eph = skymap.plot_skymap(cfg, [(22.0, "test"), (40.73, "Cyg A")],
-                                 now=Time("2026-08-26T18:00:00"))
+                                 now=Time("2026-08-26T18:00:00"), output=str(out))
         assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
         assert not (tmp_path / "skymap.png.tmp").exists()
         # Sanity on the ephemerides: late-August sun, Dec ~ +10.
@@ -189,10 +199,10 @@ class TestRender:
         from astropy.time import Time
         cfg = dict(skymap.DEFAULTS)
         day, night = tmp_path / "day.png", tmp_path / "night.png"
-        cfg.update({"output": str(day), "dpi": 40})
+        cfg.update({"dpi": 40})
         now = Time("2026-08-26T18:00:00")
         beams = [(22.0, "test")]
-        skymap.plot_skymap(cfg, beams, now=now)
+        skymap.plot_skymap(cfg, beams, now=now, output=str(day))
         skymap.plot_skymap(cfg, beams, now=now, theme="night",
                            output=str(night))
         assert night.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
@@ -221,29 +231,33 @@ class TestMain:
         return rc, render
 
     def test_renders_day_then_night_from_one_instant(self, tmp_path):
-        rc, render = self._run(
-            tmp_path,
-            f"beams: [Cyg A]\noutput: {tmp_path}/d.png\n"
-            f"output_night: {tmp_path}/n.png\n")
+        rc, render = self._run(tmp_path, "beams: [Cyg A]\n")
         assert rc == 0
         assert [c.kwargs["theme"] for c in render.call_args_list] == [
             "day", "night"]
+        # into the state directory (the conftest's $STATE_DIRECTORY), by name
         assert [c.kwargs["output"] for c in render.call_args_list] == [
-            f"{tmp_path}/d.png", f"{tmp_path}/n.png"]
+            f"{tmp_path}/state/skymap.png", f"{tmp_path}/state/skymap-night.png"]
         # Both images must show the same Sun, Moon and beam-now.
         first, second = (c.kwargs["now"] for c in render.call_args_list)
         assert first is second
 
-    def test_empty_output_night_renders_day_only(self, tmp_path):
-        rc, render = self._run(
-            tmp_path, f"beams: [Cyg A]\noutput: {tmp_path}/d.png\n"
-                      'output_night: ""\n')
+    def test_state_dir_flag_overrides(self, tmp_path):
+        cfg = tmp_path / "skymap.yaml"
+        cfg.write_text("beams: [Cyg A]\n")
+        with patch("skymap.plot_skymap") as render:
+            rc = skymap.main(["--config", str(cfg), "--state-dir", str(tmp_path / "out")])
+        assert rc == 0
+        assert render.call_args_list[0].kwargs["output"] == f"{tmp_path}/out/skymap.png"
+
+    def test_night_false_renders_day_only(self, tmp_path):
+        rc, render = self._run(tmp_path, "beams: [Cyg A]\nnight: false\n")
         assert rc == 0
         assert render.call_count == 1
         assert render.call_args.kwargs["theme"] == "day"
 
     def test_render_oserror_is_degraded(self, tmp_path):
         cfg = tmp_path / "skymap.yaml"
-        cfg.write_text(f"beams: [Cyg A]\noutput: {tmp_path}/d.png\n")
+        cfg.write_text("beams: [Cyg A]\n")
         with patch("skymap.plot_skymap", side_effect=OSError("disk full")):
             assert skymap.main(["--config", str(cfg)]) == 2

@@ -21,10 +21,8 @@ page; the header badges carry the same health from any page.</p>
     {% include "_landing_services.html" %}
 </div>
 
-{% if skymap_configured %}
 <div id="skymap"
      hx-get="/partials/skymap"
      hx-trigger="load, every 300s"
      hx-swap="innerHTML"></div>
-{% endif %}
 {% endblock %}

@@ -5,8 +5,9 @@ After=choco.service
 
 [Service]
 Type=oneshot
-# systemd owns /var/lib/choco/skymap (creates it with the right ownership);
-# the rendered PNG lives there and choco's /skymap.png route reads it back.
+# systemd owns /var/lib/choco/skymap (creates it with the right ownership)
+# and exports it as $STATE_DIRECTORY; skymap.png and skymap-night.png land
+# there, where choco's /skymap.png routes read them.
 StateDirectory=choco/skymap
 User=choco
 Group=choco

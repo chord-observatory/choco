@@ -121,8 +121,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Journal units come from `web._service_registry()`; dot layout presets from
   `services.PIPELINE_LAYOUTS`; buffer names must match `_BUFFER_NAME_RE`;
   gain dataset names are checked against the manifest; waterfall path parts
-  against `NAME_RE` / `SHARD_RE` / `IMAGE_RE`.  Extend the allowlist, never
-  bypass it.
+  against `NAME_RE` / `SHARD_RE` / `IMAGE_RE`; a manual bffs flag's label
+  against the element axis in the job's state file.  Extend the allowlist,
+  never bypass it.
 - kotekan-supplied markup reaches the DOM only through
   `services.sanitize_pipeline_svg` (whitelist reconstruction; unknown
   elements are unwrapped, never copied).  Plot panel DOM is built with
@@ -169,6 +170,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   (`StateDirectory=choco/<name>`), has its own `/etc/choco/<name>.yaml`
   seeded by install, and ships `choco-<name>.service` + `.timer` in
   `jobs/<name>/`.
+- State paths are a convention, never a config key.  A job resolves its
+  directory with `choco.jobclient.job_state_dir` (`--state-dir`, else
+  `$STATE_DIRECTORY`, else `/var/lib/choco/<name>`); choco reads
+  `<state_dir>/<job>/<file>` by name.  Both sides refuse the retired path
+  keys (`state_file`, `state.path`, `run_path`, `archive_dir`, `lock_file`,
+  `output`, `image_file`) rather than read them.
 - Exit codes: **0** ok or nothing to do, **2** degraded (a dependency or
   input was unavailable; retries self-heal; badge yellow), **1** failed
   (config error or bug; badge red).  Inside `main`: `OSError` → 2,
@@ -180,8 +187,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   requirement.  Do not copy either into a job.
 - A bffs source that cannot measure a feed leaves it good and reports
   `degraded`; "no data" is never turned into "bad" (power-outlier abstains
-  below `min_coverage`, rfi skips down nodes and stale gauges).  Run facts
-  go to `run.json` every run; `state.json` changes only with the bad list.
+  below `min_coverage`, rfi skips down nodes and stale gauges).  Absence from
+  the master PDB table is inventory, not missing data: the power source
+  flags it (`not in PDB table`) when the table is trusted — an operator CSV,
+  or choco's table with no row kotekan does not know — and abstains
+  otherwise.  Run facts go to `run.json` every run; `state.json` changes
+  only with the bad list.
 - `jobs/eop/eop_utils.py` is vendored from kotekan: do not modify, update
   from upstream.  EOP merging is append-only and never overwrites a stored
   entry ([jobs.md](docs/design/jobs.md)).
@@ -209,9 +220,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   are meaningful replies, not outages.
 
 **Retired config keys are refused, not read.** `load_config` raises on
-`sync.num_workers`, a `psu:` block, `eop.fpga_master_*` and a relative
-`eop.state_file`, naming the replacement.  Do not add a silent fallback for
-a renamed key; extend `_RETIRED_KEYS` instead.
+`sync.num_workers`, a `psu:` block, `eop.fpga_master_*` and every per-job
+state path (`*.state_file`, `bffs.run_file`/`manual_file`,
+`skymap.image_file`/`night_image_file`), naming the replacement.  Do not add
+a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
 
 ## Design docs
 

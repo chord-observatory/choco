@@ -58,6 +58,35 @@ def post_json(base_url: str, path: str, body, timeout: float = 10.0):
     return request_json(base_url, path, body=body, timeout=timeout)
 
 
+#: Root of the jobs' state, as the systemd units lay it out
+#: (``StateDirectory=choco/<job>``).  choco reads ``<state_dir>/<job>/...``
+#: from its one ``state_dir`` setting, which defaults to this.
+STATE_ROOT = Path("/var/lib/choco")
+
+#: The bffs manual override file: written by choco's BFFS page (the
+#: element grid) and read by the job's ``manual`` source, so the name is
+#: shared rather than configured twice.
+MANUAL_OVERRIDES_NAME = "manual_overrides.yaml"
+
+
+def job_state_dir(name: str, override=None) -> Path:
+    """Where job *name* keeps its files.
+
+    This is a convention, not configuration: the unit fixes it
+    (``StateDirectory=choco/<name>``, exported to the job as
+    ``$STATE_DIRECTORY``) and choco reads the same place.  *override* (a
+    ``--state-dir`` flag) serves hand runs, dev instances and tests;
+    after it comes ``$STATE_DIRECTORY``, then ``/var/lib/choco/<name>``.
+    """
+    if override:
+        return Path(override)
+    env = os.environ.get("STATE_DIRECTORY")
+    if env:
+        # systemd joins several StateDirectory= entries with ':'; ours have one
+        return Path(env.split(":")[0])
+    return STATE_ROOT / name
+
+
 def write_json_atomic(path, obj, indent: int = 2) -> None:
     """Write *obj* as JSON via a temp file and rename, so a reader (choco's
     ``read_state_json``, the next run of the job) never sees a torn file."""

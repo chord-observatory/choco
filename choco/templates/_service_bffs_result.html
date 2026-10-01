@@ -1,0 +1,15 @@
+{# Reply to a manual-flag toggle made over htmx.
+
+   The status block (facts, grid, sources) goes to the request's target
+   (#service-status), swapped in place so the page neither reloads nor
+   scrolls; the outcome rides along as an out-of-band swap into
+   #service-flash, which sits outside the polled region and therefore
+   survives the next 5 s refresh instead of blinking away. #}
+<div id="service-flash" hx-swap-oob="true">
+    <div class="flash flash-{{ 'success' if ok else 'error' }}" role="alert">
+        <span>BFFS: {{ message }}</span>
+        <button class="flash-dismiss" title="Dismiss"
+                onclick="this.closest('.flash').remove()">&times;</button>
+    </div>
+</div>
+{% include "_service_status.html" %}

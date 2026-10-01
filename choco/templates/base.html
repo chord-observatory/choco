@@ -32,7 +32,17 @@
         .feed-good { background: #008000; color: white; }
         .feed-bad { background: #ff4136; color: white; }
         .feed-none { background: transparent; }
+        /* in the manual override file now (the job applies it next run) */
+        .feed-manual { box-shadow: inset 0 0 0 2px #ffdc00; }
         .feed-key { padding: 0 0.4em; border-radius: 3px; font-family: monospace; }
+        /* clickable grid: each cell is a one-button form posting a toggle;
+           the button fills the cell and looks like the plain cell text */
+        .feed-grid form { margin: 0; }
+        .feed-grid button.feed-cell { all: unset; display: block; width: 100%;
+                                      box-sizing: border-box; cursor: pointer;
+                                      text-align: center; overflow: hidden;
+                                      text-overflow: ellipsis; }
+        .feed-grid-clickable td:hover { filter: brightness(1.2); }
         /* Flash messages: one-shot notices (action results). Rendered as
            dismissable banners so they read as transient, not page content. */
         .flash {

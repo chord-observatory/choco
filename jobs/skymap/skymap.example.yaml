@@ -23,12 +23,12 @@ choco_url: https://localhost:5000
 beams: [pointing]
 #beams: [pointing, Cyg A]
 
-# Where the rendered images land.  choco's skymap block in config.yaml
-# must point image_file / night_image_file at the same PNGs.  The night
-# image is the same render in a dark palette, for wall displays in a dim
-# control room; set output_night to an empty string to skip it.
-output: /var/lib/choco/skymap/skymap.png
-output_night: /var/lib/choco/skymap/skymap-night.png
+# The renders land in /var/lib/choco/skymap, the job's state directory, as
+# skymap.png and skymap-night.png, where choco serves them from at
+# /skymap.png and /skymap-night.png (not a setting; --state-dir redirects a
+# hand run).  The night image is the same render in a dark palette, for
+# wall displays in a dim control room; night: false skips it.
+night: true
 
 # Faded radio-sky background behind the projection.  The default is the
 # image shipped with the job; set to an empty string for plain white.

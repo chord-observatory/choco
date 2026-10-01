@@ -1,8 +1,12 @@
-"""power source — feeds whose amplifier the power controller reports unpowered.
+"""power source — feeds whose amplifier is unpowered, or that have no amplifier.
 
 Read-only. Joins power_db's live ``/channel_states`` with a channel->input map.
 An independent "is this feed powered" signal that does not depend on bffs's own
-flagging (no latch), and self-heals when a feed powers back on.
+flagging (no latch), and self-heals when a feed powers back on.  The map is
+also the inventory of what is wired at all: a feed on the element axis with
+no channel in it (the E/F/G/H dishes before they are installed, placeholder
+elements) has nothing to power and is flagged *absent* — ch_flag's ``layout``
+signal — provided the table can be trusted (see :func:`mask`).
 
 The channel->input map comes from choco's master PDB table
 (``GET /api/pdb/map``, one CSV beside choco's ``nodes.yaml``) so this job and
@@ -83,7 +87,9 @@ def resolve_map_info(src: dict) -> tuple[dict[Channel, str], dict]:
                      str(r.get("dish_input") or r.get("correlator_input", "")).strip()
                      for r in rows}
             info = {"map_source": "choco master table",
-                    "map_bad_rows": len(errors)}
+                    "map_bad_rows": len(errors),
+                    "map_check_available": bool(check.get("available")),
+                    "map_unknown_to_kotekan": len(check.get("unknown_to_kotekan") or [])}
             if check.get("available"):
                 info["map_check"] = "ok" if check.get("ok") else (
                     f"disagrees with the {check.get('group')} kotekan config: "
@@ -98,12 +104,37 @@ def resolve_map_info(src: dict) -> tuple[dict[Channel, str], dict]:
     return load_map(_DEFAULT_MAP, _key), info
 
 
+def table_trusted(info: dict) -> tuple[bool, str | None]:
+    """Whether the map may be read as the inventory of wired feeds.
+
+    Returns ``(trusted, why_not)``.  An operator's ``map:`` CSV is taken
+    at its word.  choco's master table is trusted when choco could
+    cross-check it against kotekan's ``dish_inputs`` and found no row
+    naming a dish input kotekan does not know — a stale or renamed label
+    there would make real feeds look unmapped, and flagging *those*
+    absent is the one mistake this rule must not make.  The bundled
+    placeholder never qualifies.
+    """
+    source = info.get("map_source")
+    if source == "config CSV":
+        return True, None
+    if source == "choco master table":
+        if not info.get("map_check_available"):
+            return False, "choco could not cross-check the table against kotekan"
+        unknown = int(info.get("map_unknown_to_kotekan") or 0)
+        if unknown:
+            return False, (f"the table names {unknown} dish input(s) kotekan does "
+                           f"not know (stale rows?)")
+        return True, None
+    return False, "the map is the bundled placeholder"
+
+
 def _log_check(check: dict, errors: list) -> None:
     """Surface choco's map-vs-kotekan verdict in the bffs journal.
 
-    A disagreement is loud but not fatal: a channel whose label is not on
-    the current element axis simply projects onto nothing, so a stale
-    wiring row cannot mis-flag a feed — it just leaves one unwatched.
+    A disagreement is loud but not fatal: unmapped feeds are flagged
+    absent only when the table is trusted (:func:`table_trusted`), so a
+    stale wiring row leaves feeds unjudged and reported, never mis-flagged.
     """
     if errors:
         log.warning("choco's PDB map has %d bad row(s): %s",
@@ -154,39 +185,62 @@ def read_power_state(base_url: str) -> dict[Channel, bool]:
 
 
 def mask(src: dict, labels, kotekan_file: str):
-    """Good-mask over ``labels``: a feed whose power channel reads off is bad.
+    """Good-mask over ``labels``: a feed is bad when its power channel
+    reads off, or when the table has no channel for it at all.
+
+    The second rule is the connectivity signal: the master table is the
+    inventory of what is wired, so a feed absent from it has no amplifier
+    to power and is flagged ``not in PDB table`` — but only when the table
+    is trusted (:func:`table_trusted`); otherwise those feeds are left
+    good and the run reports ``degraded`` saying how many and why.
 
     A mapped channel absent from the live read counts as unpowered
-    (fail-safe) and the run is reported ``degraded`` for it: that is a
-    read problem being turned into a flag, and the page should say so.
-    The report also counts the feeds on the axis the map does not cover
-    (their power is not watched) and names where the map came from.
+    (fail-safe) and is reported ``degraded`` too: that is a read problem
+    being turned into a flag, and the page should say so.  The report's
+    ``feed_reasons`` names each flagged feed's reason (``off``, ``unread``,
+    ``not in PDB table``), which the core carries into the state file for
+    the element grid's hover text.
     """
     power_map, info = resolve_map_info(src)
     state = read_power_state(src["url"])
     input_good = {inp: state.get(ch, False) for ch, inp in power_map.items()}
-    axis = {str(lbl) for lbl in labels}
-    watched = [inp for inp in input_good if inp in axis]
+    axis = [str(lbl) for lbl in labels]
+    watched = [lbl for lbl in axis if lbl in input_good]
+    unmapped = [lbl for lbl in axis if lbl not in input_good]
     unread = sorted(inp for ch, inp in power_map.items()
-                    if ch not in state and inp in axis)
+                    if ch not in state and inp in set(axis))
+    reasons = {lbl: ("unread" if lbl in unread else "off")
+               for lbl in watched if not input_good[lbl]}
+    trusted, why_not = table_trusted(info)
+    if unmapped and trusted:
+        for lbl in unmapped:
+            input_good[lbl] = False
+            reasons[lbl] = "not in PDB table"
     detail = {
         "url": src["url"],
         "channels_read": len(state),
         "n_mapped": len(power_map),
         "n_watched": len(watched),
-        "n_unwatched": len(axis.difference(input_good)),
-        "n_unpowered": sum(1 for inp in watched if not input_good[inp]),
+        "n_unpowered": sum(1 for lbl in watched if not input_good[lbl]),
+        "n_unmapped": len(unmapped),
+        "unmapped_flagged": bool(unmapped and trusted),
+        "feed_reasons": reasons,
         **info,
     }
-    status, reason = "ok", None
+    problems = []
     if unread:
         detail["unread"] = unread[:10]
-        status = "degraded"
-        reason = (f"{len(unread)} mapped channel(s) absent from the "
-                  f"controller's read; their feeds are judged unpowered")
-        log.warning("power: %s: %s", reason, ", ".join(unread[:10]))
+        problems.append(f"{len(unread)} mapped channel(s) absent from the "
+                        f"controller's read; their feeds are judged unpowered")
+        log.warning("power: %s: %s", problems[-1], ", ".join(unread[:10]))
+    if unmapped and not trusted:
+        problems.append(f"{len(unmapped)} feed(s) not in the PDB table left "
+                        f"unjudged: {why_not}")
+        log.warning("power: %s", problems[-1])
+    n_measured = len(watched) + (len(unmapped) if trusted else 0)
     return project(input_good, labels), report(
-        status, reason, n_measured=len(watched), **detail)
+        "degraded" if problems else "ok", "; ".join(problems) or None,
+        n_measured=n_measured, **detail)
 
 
 def main(argv=None) -> int:

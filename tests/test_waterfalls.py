@@ -282,8 +282,7 @@ class TestConfig:
         cfg.write_text(yaml.safe_dump({
             "configs_dir": str(tmp_path),
             "server": {"secret_key": "k" * 32},  # a placeholder key is refused at load
-            "waterfall": {"images_dir": str(images), "ttl": 5,
-                          "state_file": "/var/lib/choco/waterfall/state.json"},
+            "waterfall": {"images_dir": str(images), "ttl": 5},
         }))
         loaded = load_config(cfg)
         assert loaded["waterfall"]["images_dir"] == str(images)

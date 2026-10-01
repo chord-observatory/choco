@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -19,6 +20,21 @@ def clear_users():
     _users.clear()
     yield
     _users.clear()
+
+
+def _job_dir(app, job) -> Path:
+    """<state_dir>/<job>/ of the test app, created."""
+    d = Path(app.config["state_dir"]) / job
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _install_state(app, job, src, name="state.json") -> Path:
+    """Put the file at *src* where choco reads *job*'s *name* from: the
+    state root is the only setting; the job's file names are convention."""
+    dest = _job_dir(app, job) / name
+    dest.write_bytes(Path(src).read_bytes())
+    return dest
 
 
 def _login(client):
@@ -255,18 +271,16 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 class TestSkymap:
     def _configure(self, app, tmp_path, write=True, night=False):
-        path = tmp_path / "skymap.png"
+        # The images live where the job writes them, <state_dir>/skymap/;
+        # nothing in config.yaml names them.
+        path = _job_dir(app, "skymap") / "skymap.png"
         if write:
             path.write_bytes(PNG_MAGIC + b"fake image data")
-        app.config["skymap_cfg"] = {"image_file": str(path)}
-        if night:
-            night_path = tmp_path / "skymap-night.png"
-            if write:
-                night_path.write_bytes(PNG_MAGIC + b"fake night data")
-            app.config["skymap_cfg"]["night_image_file"] = str(night_path)
+        if night and write:
+            (path.parent / "skymap-night.png").write_bytes(PNG_MAGIC + b"fake night data")
         return path
 
-    def test_unconfigured_404(self, client):
+    def test_not_rendered_yet_404(self, client):
         # No login on purpose: the route must answer (with 404 here)
         # without a session.
         assert client.get("/skymap.png").status_code == 404
@@ -334,37 +348,39 @@ class TestSkymap:
         body = client.get("/partials/skymap").data.decode()
         assert "No sky map rendered yet" in body
 
-    def test_landing_card_only_when_configured(self, client, app, tmp_path):
+    def test_landing_card_always_present(self, client, app, tmp_path):
+        # the job is part of the install, so the card is unconditional:
+        # it says "not rendered yet" until the first PNG lands
         _login(client)
-        assert 'id="skymap"' not in client.get("/").data.decode()
-        self._configure(app, tmp_path)
         assert 'id="skymap"' in client.get("/").data.decode()
+        _login(client)
+        body = client.get("/partials/skymap").data.decode()
+        assert "No sky map rendered yet" in body
 
     def test_load_config_carries_skymap_block(self, configs_dir, tmp_path):
         """The production path: config.yaml -> load_config -> create_app.
 
         load_config copies each known section explicitly, so a section
-        missing from that list is parsed and then silently dropped --
-        exactly how a correct skymap: block in the deployed config.yaml
-        still 404'd /skymap.png.  Every other test reaches create_app
-        directly and never sees that filter.
+        it forgot would stay invisible until the page is loaded for real.
+        The state root the skymap PNGs are read from travels the same way.
         """
-        from choco.app import load_config
-        png = tmp_path / "skymap.png"
-        png.write_bytes(PNG_MAGIC + b"fake")
-        cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text(
-            f"configs_dir: {configs_dir}\n"
-            "server: {secret_key: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk}\n"
-            f"skymap:\n  image_file: {png}\n"
-        )
-        config = load_config(cfg_file)
-        assert config["skymap"] == {"image_file": str(png)}
-        app = create_app(config=config)
-        app.config["TESTING"] = True
-        resp = app.test_client().get("/skymap.png")
-        assert resp.status_code == 200
-
+        from choco.app import create_app, load_config
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "configs_dir": str(configs_dir),
+            "server": {"secret_key": "k" * 32},  # a placeholder key is refused at load
+            "state_dir": str(tmp_path / "state"),
+            "skymap": {"service_unit": "choco-skymap.service"},
+        }))
+        loaded = load_config(cfg)
+        assert loaded["skymap"]["service_unit"] == "choco-skymap.service"
+        assert loaded["state_dir"] == str(tmp_path / "state")
+        app = create_app(config=loaded)
+        assert app.config["state_dir"] == tmp_path / "state"
+        assert app.config["skymap_cfg"]["service_unit"] == "choco-skymap.service"
+        (tmp_path / "state" / "skymap").mkdir(parents=True)
+        (tmp_path / "state" / "skymap" / "skymap.png").write_bytes(PNG_MAGIC + b"x")
+        assert app.test_client().get("/skymap.png").status_code == 200
 
 # --- POST /nodes/set-started-group/<group>/<action> ---
 
@@ -1422,7 +1438,7 @@ class TestServicePage:
         }
         state_file = tmp_path / "bffs-state.json"
         state_file.write_text(json.dumps(state))
-        app.config["bffs_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "bffs", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/bffs")
@@ -1442,13 +1458,34 @@ class TestServicePage:
         }
         state_file = tmp_path / "bffs-state.json"
         state_file.write_text(json.dumps(state))
-        app.config["bffs_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "bffs", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/bffs")
         body = resp.data.decode()
         assert "power-outlier, manual" in body
         assert "rfi" in body
+
+    def test_bffs_detail_shows_the_reason_a_source_gave(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state = {
+            "updated": 1700000077.7,
+            "bad_inputs": ["E01X", "A1X", "B2Y"],
+            "flagged_by": {"E01X": ["power"], "A1X": ["power", "manual"], "B2Y": ["rfi"]},
+            "flag_reasons": {"E01X": {"power": "not in PDB table"},
+                             "A1X": {"power": "off"}},
+        }
+        state_file = tmp_path / "bffs-state.json"
+        state_file.write_text(json.dumps(state))
+        _install_state(app, "bffs", state_file)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/bffs")
+        body = resp.data.decode()
+        assert "power: not in PDB table" in body
+        assert "power: off, manual" in body
+        assert "(rfi)" in body                       # no reason given: the kind alone
 
     def test_bffs_detail_renders_the_element_grid(self, client, app, tmp_path):
         from unittest.mock import patch
@@ -1462,7 +1499,8 @@ class TestServicePage:
         }
         state_file = tmp_path / "bffs-state.json"
         state_file.write_text(json.dumps(state))
-        app.config["bffs_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "bffs", state_file)
+        app.config["bffs_cfg"] = {"control": False}      # the plain grid; toggles are tested below
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/bffs")
@@ -1494,7 +1532,7 @@ class TestServicePage:
                  "source": "CYG_A", "good_frac": 0.87, "sent": True}
         state_file = tmp_path / "eigencal-state.json"
         state_file.write_text(json.dumps(state))
-        app.config["eigencal_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "eigencal", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/eigencal")
@@ -1513,7 +1551,7 @@ class TestServicePage:
                  "last_file_idx": 4202415, "errors": []}
         state_file = tmp_path / "waterfall-state.json"
         state_file.write_text(json.dumps(state))
-        app.config["waterfall_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "waterfall", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/waterfall")
@@ -1528,7 +1566,7 @@ class TestServicePage:
         state_file = tmp_path / "waterfall-state.json"
         state_file.write_text(json.dumps(
             {"backlog": 0, "files_rendered": 0, "acquisitions_touched": 0}))
-        app.config["waterfall_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "waterfall", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/waterfall")
@@ -1541,7 +1579,7 @@ class TestServicePage:
         state_file.write_text(json.dumps(
             {"backlog": 0, "files_rendered": 1, "acquisitions_touched": 1,
              "errors": [f"vis_{i}.h5: cannot be widened" for i in range(14)]}))
-        app.config["waterfall_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "waterfall", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/waterfall")
@@ -1558,7 +1596,7 @@ class TestServicePage:
         state = {"source": "CYG_A", "sent": True, "raw_marker": 4242}
         state_file = tmp_path / "eigencal-state.json"
         state_file.write_text(json.dumps(state))
-        app.config["eigencal_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "eigencal", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/eigencal")
@@ -1575,7 +1613,7 @@ class TestServicePage:
         state_file = configs_dir / "eop-state.json"
         state_file.write_text(
             json.dumps({"earth_orientation_parameter_table": table}))
-        app.config["eop_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, "eop", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/eop")
@@ -1601,6 +1639,10 @@ class TestServicePage:
                   "history": "none"}),
         ("bffs", {"bad_inputs": ["f1"],
                   "history": [42, {"time": "then", "bad_inputs": 3}]}),
+        ("bffs", {"bad_inputs": ["f1"], "flagged_by": {"f1": ["power"]},
+                  "flag_reasons": "lots", "labels": ["f1"]}),
+        ("bffs", {"bad_inputs": ["f1"], "flagged_by": {"f1": ["power"]},
+                  "flag_reasons": {"f1": "off"}, "labels": ["f1"]}),
         ("eigencal", {"updated": [], "transit_time": "noon",
                       "good_frac": "most", "sent": "yes"}),
         ("waterfall", {"updated": "just now", "roots": 7, "errors": "none",
@@ -1613,7 +1655,7 @@ class TestServicePage:
         _login(client)
         state_file = tmp_path / "state.json"
         state_file.write_text(json.dumps(state))
-        app.config[f"{name}_cfg"] = {"state_file": str(state_file)}
+        _install_state(app, name, state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get(f"/service/{name}")
@@ -2426,7 +2468,7 @@ class TestBffsRunFile:
             {"kind": "power", "status": "ok", "reason": None,
              "n_measured": 128, "n_flagged": 36,
              "detail": {"url": "http://10.222.0.30:5000", "channels_read": 256,
-                        "n_mapped": 136, "n_watched": 128, "n_unwatched": 0,
+                        "n_mapped": 136, "n_watched": 128, "n_unmapped": 0,
                         "n_unpowered": 36, "map_source": "choco master table",
                         "map_check": "ok"}},
             {"kind": "rfi", "status": "degraded",
@@ -2441,19 +2483,14 @@ class TestBffsRunFile:
              "bad_inputs": ["B01X"], "labels": ["B01X", "B02X"],
              "flagged_by": {"B01X": ["power"]}}
 
-    def _page(self, client, app, tmp_path, run=None, state=None, cfg=None):
+    def _page(self, client, app, tmp_path, run=None, state=None):
         from unittest.mock import patch
         _login(client)
-        cfg = dict(cfg or {})
+        d = _job_dir(app, "bffs")
         if state is not None:
-            f = tmp_path / "state.json"
-            f.write_text(json.dumps(state))
-            cfg["state_file"] = str(f)
+            (d / "state.json").write_text(json.dumps(state))
         if run is not None:
-            f = tmp_path / "run.json"
-            f.write_text(run if isinstance(run, str) else json.dumps(run))
-            cfg["run_file"] = str(f)
-        app.config["bffs_cfg"] = cfg
+            (d / "run.json").write_text(run if isinstance(run, str) else json.dumps(run))
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
             resp = client.get("/service/bffs")
@@ -2489,11 +2526,12 @@ class TestBffsRunFile:
         assert "Bad feeds" not in body
         assert "Recent transitions" not in body
 
-    def test_run_file_defaults_beside_the_state_file(self, client, app, tmp_path):
-        # only state_file configured: run.json next to it is picked up
-        (tmp_path / "run.json").write_text(json.dumps(self.RUN))
-        body = self._page(client, app, tmp_path, state=self.STATE)
+    def test_both_files_come_from_the_state_root_alone(self, client, app, tmp_path):
+        # nothing in the bffs config block names a file
+        app.config["bffs_cfg"] = {}
+        body = self._page(client, app, tmp_path, run=self.RUN, state=self.STATE)
         assert "Sources" in body and "not polled: cx47 (down)" in body
+        assert "1 of 2 elements" in body
 
     @pytest.mark.parametrize("run", [
         "{ not json",
@@ -2520,9 +2558,7 @@ class TestBffsRunFile:
     def test_strip_tooltip_says_why_when_degraded(self, client, app, tmp_path):
         from unittest.mock import patch
         _login(client)
-        f = tmp_path / "run.json"
-        f.write_text(json.dumps(self.RUN))
-        app.config["bffs_cfg"] = {"run_file": str(f)}
+        (_job_dir(app, "bffs") / "run.json").write_text(json.dumps(self.RUN))
         degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
         with patch("choco.web.job_status", return_value=degraded):
             body = client.get("/partials/services").data.decode()
@@ -2536,9 +2572,7 @@ class TestBffsRunFile:
     def test_landing_table_carries_the_reasons(self, client, app, tmp_path):
         from unittest.mock import patch
         _login(client)
-        f = tmp_path / "run.json"
-        f.write_text(json.dumps(self.RUN))
-        app.config["bffs_cfg"] = {"run_file": str(f)}
+        (_job_dir(app, "bffs") / "run.json").write_text(json.dumps(self.RUN))
         degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
         with patch("choco.web.job_status", return_value=degraded), \
              patch("choco.web.timer_status", return_value=None):
@@ -2548,11 +2582,10 @@ class TestBffsRunFile:
     def test_failed_run_error_is_a_reason(self, client, app, tmp_path):
         from unittest.mock import patch
         _login(client)
-        f = tmp_path / "run.json"
-        f.write_text(json.dumps({"status": "failed", "exit_code": 1,
-                                 "error": "ValueError: unknown source kind 'nope'",
-                                 "degraded": [], "sources": []}))
-        app.config["bffs_cfg"] = {"run_file": str(f)}
+        (_job_dir(app, "bffs") / "run.json").write_text(json.dumps({
+            "status": "failed", "exit_code": 1,
+            "error": "ValueError: unknown source kind 'nope'",
+            "degraded": [], "sources": []}))
         failed = dict(_JOB_STUB, health="failed", result="exit-code", exit_status="1")
         with patch("choco.web.job_status", return_value=failed):
             body = client.get("/partials/services").data.decode()
@@ -2575,11 +2608,16 @@ class TestBffsRunFile:
                             "sk_bounds": [0.7, 1.5]}) == (
             "12 of 14 /sk endpoints used · 1 unreachable · 1 stale · "
             "not polled: cx47 (idle) · SK bounds 0.7–1.5")
-        assert line("power", {"n_watched": 128, "n_unpowered": 36, "n_unwatched": 2,
+        assert line("power", {"n_watched": 128, "n_unpowered": 36, "n_unmapped": 2,
+                              "unmapped_flagged": True,
                               "map_source": "choco master table",
                               "map_check": "disagrees with the cx kotekan config: 1 of 3 dish inputs mapped"}) == (
-            "128 feeds watched · 36 unpowered · 2 on the axis unmapped · "
+            "128 feeds watched · 36 unpowered · 2 not in the PDB table (flagged absent) · "
             "map: choco master table · disagrees with the cx kotekan config: 1 of 3 dish inputs mapped")
+        assert line("power", {"n_watched": 80, "n_unpowered": 0, "n_unmapped": 48,
+                              "unmapped_flagged": False, "map_source": "bundled placeholder"}) == (
+            "80 feeds watched · 0 unpowered · 48 not in the PDB table (left good) · "
+            "map: bundled placeholder")
         assert line("manual", {"n_listed": 2, "exists": True, "not_on_axis": ["A1x"]}) == (
             "2 listed · not on the axis: A1x")
         assert line("fpga", {"n_watched": 8, "channels_sampled": 32}) == (
@@ -2592,3 +2630,187 @@ class TestBffsRunFile:
         assert _fmt_age(600) == "10 min"
         assert _fmt_age(7200) == "2.0 h"
         assert _fmt_age(937000) == "10.8 d"
+
+
+class TestBffsManualFlags:
+    """Clicking the element grid adds or removes a manual flag: a CSRF
+    form per cell posting to /service/bffs/manual, the label checked
+    against the state file's axis, the file cross-checked against the
+    one the job reports reading."""
+
+    LABELS = ["A1X", "B1X", "A1Y", "B1Y"]
+
+    def _setup(self, app, tmp_path, *, manual=True, run="match", state=True,
+               manual_text=None):
+        d = _job_dir(app, "bffs")
+        if state:
+            (d / "state.json").write_text(json.dumps(
+                {"bad_inputs": ["B1X"], "labels": self.LABELS,
+                 "flagged_by": {"B1X": ["power"]}}))
+        manual_file = d / "manual_overrides.yaml"
+        # bffs.control is the one switch: off, the grid is read-only
+        cfg = {} if manual else {"control": False}
+        if manual_text is not None:
+            manual_file.write_text(manual_text)
+        if run is not None:
+            job_path = {"match": str(manual_file), "other": "/elsewhere/flags.yaml",
+                        "none": None}[run]
+            sources = ([{"kind": "manual", "status": "ok", "n_measured": 4, "n_flagged": 0,
+                         "detail": {"path": job_path, "exists": False, "n_listed": 0}}]
+                       if job_path else [{"kind": "power", "status": "ok"}])
+            (d / "run.json").write_text(json.dumps(
+                {"time": 1.0, "status": "ok", "exit_code": 0,
+                 "degraded": [], "sources": sources}))
+        app.config["bffs_cfg"] = cfg
+        return manual_file
+
+    def _post(self, client, token, label, htmx=False):
+        headers = {"HX-Request": "true"} if htmx else {}
+        return client.post("/service/bffs/manual",
+                           data={"_csrf_token": token, "label": label},
+                           headers=headers)
+
+    def _page(self, client):
+        from unittest.mock import patch
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            return client.get("/service/bffs").data.decode()
+
+    def test_requires_login(self, client, app, tmp_path):
+        self._setup(app, tmp_path)
+        resp = client.post("/service/bffs/manual", data={"label": "A1X"},
+                           follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_requires_csrf(self, client, app, tmp_path):
+        self._setup(app, tmp_path)
+        _login(client)
+        assert client.post("/service/bffs/manual", data={"label": "A1X"}).status_code == 403
+
+    def test_control_off_403(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path, manual=False)
+        _login(client)
+        assert self._post(client, _csrf(client), "A1X").status_code == 403
+        assert not manual_file.exists()
+
+    @pytest.mark.parametrize("label", ["", "Z9X", "A1X; rm -rf /", "x" * 65, "../etc"])
+    def test_label_must_be_on_the_axis(self, client, app, tmp_path, label):
+        manual_file = self._setup(app, tmp_path)
+        _login(client)
+        assert self._post(client, _csrf(client), label).status_code == 400
+        assert not manual_file.exists()
+
+    def test_no_axis_on_record_400(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path, state=False)
+        _login(client)
+        assert self._post(client, _csrf(client), "A1X").status_code == 400
+        assert not manual_file.exists()
+
+    def test_toggle_adds_then_removes(self, client, app, tmp_path, caplog):
+        manual_file = self._setup(app, tmp_path)
+        _login(client)
+        token = _csrf(client)
+        resp = self._post(client, token, "A1X")
+        assert resp.status_code == 302 and resp.headers["Location"].endswith("/service/bffs")
+        assert manual_file.exists()
+        assert yaml.safe_load(manual_file.read_text()) == {"bad_inputs": ["A1X"]}
+        assert manual_file.read_text().startswith("# bffs manual overrides")
+        assert "bffs manual flag: A1X -> bad requested by tester" in caplog.text
+
+        self._post(client, token, "B1Y")
+        assert yaml.safe_load(manual_file.read_text()) == {"bad_inputs": ["A1X", "B1Y"]}
+        self._post(client, token, "A1X")
+        assert yaml.safe_load(manual_file.read_text()) == {"bad_inputs": ["B1Y"]}
+        assert "bffs manual flag: A1X -> good requested by tester" in caplog.text
+
+    def test_other_keys_and_bare_lists_survive(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path,
+                                  manual_text="note: keep me\nbad_inputs: [B1X]\n")
+        _login(client)
+        token = _csrf(client)
+        self._post(client, token, "A1X")
+        assert yaml.safe_load(manual_file.read_text()) == {
+            "note": "keep me", "bad_inputs": ["A1X", "B1X"]}
+        manual_file.write_text("[B1X, A1Y]\n")                # the bare-list shape
+        self._post(client, token, "B1X")
+        assert yaml.safe_load(manual_file.read_text()) == {"bad_inputs": ["A1Y"]}
+
+    def test_htmx_reply_swaps_the_grid_and_flashes(self, client, app, tmp_path):
+        from unittest.mock import patch
+        self._setup(app, tmp_path)
+        _login(client)
+        token = _csrf(client)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = self._post(client, token, "A1X", htmx=True)
+        body = resp.data.decode()
+        assert resp.status_code == 200
+        assert 'id="service-flash" hx-swap-oob="true"' in body
+        assert "A1X flagged manually; the job applies it on its next run" in body
+        # the grid comes back with the new flag marked, ahead of the state file
+        assert 'class="feed-good feed-manual"' in body
+        assert "manual flag set, applied on the next run" in body
+
+    def test_job_reading_another_file_refuses(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path, run="other")
+        _login(client)
+        resp = self._post(client, _csrf(client), "A1X", htmx=True)
+        body = resp.data.decode()
+        assert resp.status_code == 200
+        assert "manual source reads /elsewhere/flags.yaml" in body
+        assert not manual_file.exists()
+
+    def test_job_without_a_manual_source_refuses(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path, run="none")
+        _login(client)
+        resp = self._post(client, _csrf(client), "A1X", htmx=True)
+        assert "runs with no manual source" in resp.data.decode()
+        assert not manual_file.exists()
+
+    def test_no_run_file_means_nothing_to_check_against(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path, run=None)
+        _login(client)
+        self._post(client, _csrf(client), "A1X")
+        assert yaml.safe_load(manual_file.read_text()) == {"bad_inputs": ["A1X"]}
+
+    def test_unparseable_file_is_not_overwritten(self, client, app, tmp_path):
+        manual_file = self._setup(app, tmp_path, manual_text="bad_inputs: [A1X\n")
+        _login(client)
+        resp = self._post(client, _csrf(client), "B1Y", htmx=True)
+        assert "manual file not rewritten" in resp.data.decode()
+        assert manual_file.read_text() == "bad_inputs: [A1X\n"
+
+    def test_grid_cells_are_forms_when_enabled(self, client, app, tmp_path):
+        self._setup(app, tmp_path, manual_text="bad_inputs: [A1Y]\n")
+        _login(client)
+        body = self._page(client)
+        assert body.count('hx-post="/service/bffs/manual"') == 4
+        assert body.count('name="label"') == 4
+        assert 'class="feed-good feed-manual"' in body            # A1Y: pending
+        assert 'click to remove the manual flag' in body
+        assert 'click to flag it manually' in body
+        assert "Click a cell to add or remove a manual flag" in body
+        assert 'data-confirm="Flag A1X as bad manually?"' in body
+        assert 'data-confirm="Remove the manual flag on A1Y?"' in body
+
+    def test_grid_is_plain_when_control_is_off(self, client, app, tmp_path):
+        self._setup(app, tmp_path, manual=False)
+        _login(client)
+        body = self._page(client)
+        assert "/service/bffs/manual" not in body
+        assert 'feed-manual"' not in body                        # no cell, no key swatch
+        assert 'title="element 1: bad (power)"' in body         # unchanged tooltip
+
+    def test_grid_read_only_on_a_path_mismatch(self, client, app, tmp_path):
+        self._setup(app, tmp_path, run="other")
+        _login(client)
+        body = self._page(client)
+        assert "/service/bffs/manual" not in body
+        assert "but the bffs job reads <code>/elsewhere/flags.yaml</code>" in body
+
+    def test_grid_read_only_on_an_unreadable_file(self, client, app, tmp_path):
+        self._setup(app, tmp_path, manual_text="bad_inputs: [A1X\n")
+        _login(client)
+        body = self._page(client)
+        assert "/service/bffs/manual" not in body
+        assert "Manual flags cannot be edited" in body

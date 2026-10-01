@@ -8,9 +8,8 @@ measurements and dates are from when each part was built.
 a "job" is a standalone script that pushes through choco's localhost JSON API
 (auth is bypassed for localhost callers), keeps its state under the shared
 ``/var/lib/choco/<name>/`` namespace (``StateDirectory=choco/<name>``, so
-systemd owns creation and ownership; ``choco.sh install`` migrates pre-
-namespace ``/var/lib/<name>`` directories and warns about stale paths in the
-deployed configs), and lives in its own ``jobs/<name>/`` directory (units,
+systemd owns creation and ownership and exports the path to the job as
+``$STATE_DIRECTORY``), and lives in its own ``jobs/<name>/`` directory (units,
 wrapper script, and code together), shipping as ``choco-<name>.service``
 (oneshot) + ``choco-<name>.timer``, installed and enabled by the
 ``jobs/*/choco-*.{service,timer}`` glob in ``choco.sh install``.  Jobs share
@@ -32,13 +31,27 @@ cheap UI-facing monitoring (``FpgaMonitor``, ``PdbMonitor``).  A header badge
 ``_services_status.html``, and (optionally) a state-file summary branch in
 ``web._service_detail``.
 
+**State paths are a convention (2026-10).**  Until then every job had a
+``state_file`` (or ``state.path``, ``archive_dir``, ``lock_file``,
+``output``) in its own YAML *and* a matching key in choco's config.yaml, and
+the only thing the second copy ever did was drift — the bffs manual-flag
+route grew a path cross-check purely to catch it.  Now ``choco.jobclient.job_state_dir(name)``
+resolves a job's directory (``--state-dir`` > ``$STATE_DIRECTORY`` >
+``/var/lib/choco/<name>``), the files inside have fixed names (``state.json``,
+``run.json``, ``manual_overrides.yaml``, ``waterfall.lock``,
+``gain_<tag>_<source>.h5``, ``skymap.png`` / ``skymap-night.png``), and choco
+reads them from its one ``state_dir`` root (``web._state_root``; the test
+app and ``./choco.sh develop`` point it at a scratch directory).  The old
+keys are refused on both sides with the fix named — choco's
+``_RETIRED_KEYS``, each job's ``load_config`` — never read; there were no
+deployments worth a migration shim.
+
 **Per-run files (bffs, 2026-10).**  The exit code says *that* a run was
 degraded; it cannot say which input was missing, and a state file that is
 rewritten only on change cannot either.  bffs therefore keeps two files.
 ``state.json`` is what the flags *are* — bad list, element axis,
 transitions — and changes only when the bad list does, so its mtime stays
-"last change".  ``run.json`` (``state.run_path``, default a sibling) is
-rewritten on every non-dry run, whatever the outcome, with ``status`` /
+"last change".  ``run.json`` beside it is rewritten on every non-dry run, whatever the outcome, with ``status`` /
 ``exit_code`` / ``error``, the ``degraded`` reasons, the N² file chosen (or
 why none was), and one report per configured source.  Each source's
 ``mask()`` may return ``(mask, report)`` — ``sources.common.report``: ``ok``
@@ -70,6 +83,19 @@ older than ``max_stale_s`` — the ``/sk`` EMAs freeze when frames stop — and
 no longer raises when every endpoint fails: it abstains with
 ``n_measured`` 0 and lets the core decide whether the run as a whole measured
 anything.  ``/api/nodes`` carries each node's live ``status`` for this.
+
+The one deliberate exception is the power source's *absent* rule (2026-10):
+a feed the master PDB table has no channel for is flagged ``not in PDB
+table``, because the table is the inventory of what is wired, not a
+measurement that failed — the E/F/G/H dishes before installation, which
+kotekan already types as not live.  The guard is ``power.table_trusted``:
+an operator's ``map:`` CSV, or choco's table when the cross-check found no
+``unknown_to_kotekan`` rows (``missing_in_map`` counts only live feeds, so
+unbuilt dishes do not trip it, while a renamed label would, and *that* is
+the case where unmapped feeds must be left good and reported).  Sources may
+put a per-feed reason in ``detail.feed_reasons``; the core lifts it into
+``run.json`` and the state file's ``flag_reasons`` so the grid's hover text
+reads ``power: not in PDB table`` rather than ``power``.
 
 ## EOP merge policy
 

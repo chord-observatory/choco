@@ -16,14 +16,15 @@ the old names, which keeps the label-keyed hardware maps working.  The N² data 
 (power-outlier); when it is missing or stale those sources are skipped with a
 warning and the rest still flag.
 
-A small JSON file (``state.path`` in the config) records the change history of
-the feeds — every transition, by stable feed label, with the flagging source(s)
+Two small JSON files live in the job's state directory
+(``/var/lib/choco/bffs``, systemd's ``StateDirectory``; ``--state-dir``
+overrides for hand runs).  ``state.json`` records the change history of the
+feeds — every transition, by stable feed label, with the flagging source(s)
 per feed — and lets the script send to choco only when the bad list actually
-changes. Without it, the script is stateless and sends every run.  A second
-file (``state.run_path``, default ``run.json`` beside the state file) is
-rewritten on *every* run with how it went: exit status, the degraded
-reasons, the N² file used, and each source's report — what it measured,
-what it flagged, why it abstained.  choco's BFFS page reads it.
+changes.  ``run.json`` is rewritten on *every* run with how it went: exit
+status, the degraded reasons, the N² file used, and each source's report —
+what it measured, what it flagged, why it abstained.  choco's BFFS page reads
+both from the same directory, so neither path is configured anywhere.
 
     python bffs.py --config bffs.example.yaml
 
@@ -62,7 +63,7 @@ import sources
 from choco.dishlabels import (PLACEHOLDER_LABEL, expand_dish_labels,
                               find_dish_inputs, find_key,
                               labels_are_per_element)
-from choco.jobclient import post_json, write_json_atomic
+from choco.jobclient import job_state_dir, post_json, write_json_atomic
 from kotekan_io import read_labels
 from sources.common import choco_group_config
 
@@ -81,12 +82,22 @@ class Config:
     group: str | None = None       # choco node group to broadcast to
     endpoint: str = "updatable_config/bad_inputs"  # kotekan updatable endpoint
     sync_delay: float = 5.0
-    state_path: str | None = None  # JSON change-history file; unset -> stateless
+    state_dir: str | None = None   # the job's state directory; unset -> stateless
+    state_path: str | None = None  # <state_dir>/state.json, the change history
+    run_path: str | None = None    # <state_dir>/run.json, rewritten every run
     max_history: int = 0           # cap on history entries kept (0 = keep all)
-    run_path: str | None = None    # per-run status file (every run); unset -> none
 
 
-def load_config(path: str | Path) -> Config:
+#: Config keys that named state paths.  Refused, not read: the paths are
+#: the job's convention (``job_state_dir``), shared with choco, and a key
+#: that is silently ignored leaves a config that lies about what runs.
+_RETIRED_STATE_KEYS = ("path", "run_path")
+
+
+def load_config(path: str | Path, state_dir: str | Path | None = None) -> Config:
+    """Parse the job config; *state_dir* (``--state-dir``) overrides where
+    the state and run files live, otherwise systemd's ``$STATE_DIRECTORY``
+    or ``/var/lib/choco/bffs``."""
     raw = yaml.safe_load(Path(path).read_text()) or {}
     kotekan_file = raw.get("kotekan_file")
     if not kotekan_file:
@@ -95,12 +106,14 @@ def load_config(path: str | Path) -> Config:
     if choco.get("url") and not choco.get("group"):
         raise ValueError("config needs 'choco.group' (the choco node group) when choco.url is set")
     state = raw.get("state") or {}
-    state_path = state.get("path")
-    # The run file defaults to a sibling of the state file, so a deployed
-    # config from before it existed grows one without an edit.
-    run_path = state.get("run_path")
-    if not run_path and state_path:
-        run_path = str(Path(state_path).with_name("run.json"))
+    retired = [k for k in _RETIRED_STATE_KEYS if k in state]
+    if retired:
+        raise ValueError(
+            f"state.{' and state.'.join(retired)} retired: remove it; bffs keeps "
+            f"state.json and run.json in its state directory "
+            f"({job_state_dir('bffs')}; systemd's StateDirectory=choco/bffs, "
+            f"or --state-dir), and choco reads them there")
+    sdir = job_state_dir("bffs", state_dir)
     return Config(
         kotekan_file=kotekan_file,
         max_age=float(raw.get("max_age", 3600)),
@@ -108,8 +121,10 @@ def load_config(path: str | Path) -> Config:
         url=choco.get("url"), group=choco.get("group"),
         endpoint=str(choco.get("endpoint", "updatable_config/bad_inputs")),
         sync_delay=float(choco.get("sync_delay", 5.0)),
-        state_path=state_path, max_history=int(state.get("max_history", 0)),
-        run_path=str(run_path) if run_path else None,
+        state_dir=str(sdir),
+        state_path=str(sdir / "state.json"),
+        run_path=str(sdir / "run.json"),
+        max_history=int(state.get("max_history", 0)),
     )
 
 
@@ -319,8 +334,11 @@ def combine_sources(config: Config, run: dict | None = None,
     *run*, if given, is filled in as the run proceeds (so a caller that
     catches an exception still has the partial record): the N² file
     facts from :func:`resolve_kotekan_file`, ``n_elements``, the same
-    ``degraded`` list, and ``sources`` — one normalised report per
-    configured source, in config order, including the ones skipped.
+    ``degraded`` list, ``sources`` — one normalised report per
+    configured source, in config order, including the ones skipped — and
+    ``flag_reasons``, ``{label: {kind: reason}}`` for the flagged feeds a
+    source gave a reason for (its report's ``detail.feed_reasons``; the
+    power source says ``off`` or ``not in PDB table``).
 
     A missing or stale kotekan file sidelines only the sources that need
     it (``NEEDS_FILE``, e.g. power-outlier) — the rest still flag, so a
@@ -329,17 +347,20 @@ def combine_sources(config: Config, run: dict | None = None,
     (``OSError``, exit 2): nothing measurable is a systematic problem,
     not an all-good.
 
-    Each source's config dict is passed with the choco context merged in
-    as defaults (``choco_url`` / ``choco_group``; explicit keys win), so
-    a source can derive per-node endpoints from choco's node registry —
-    the rfi source polls every started node of the broadcast group unless
-    given explicit ``urls``.
+    Each source's config dict is passed with the job context merged in
+    as defaults (``choco_url`` / ``choco_group`` / ``state_dir``; explicit
+    keys win), so a source can derive per-node endpoints from choco's
+    node registry — the rfi source polls every started node of the
+    broadcast group unless given explicit ``urls`` — or default a file
+    into the state directory, as the manual source does.
     """
     run = {} if run is None else run
     degraded: list[str] = []
     reports: list[dict] = []
+    flag_reasons: dict[str, dict[str, str]] = {}
     run["degraded"] = degraded
     run["sources"] = reports
+    run["flag_reasons"] = flag_reasons
     path = resolve_kotekan_file(config, run)
     labels = resolve_labels(config, path)
     run["n_elements"] = len(labels)
@@ -360,7 +381,8 @@ def combine_sources(config: Config, run: dict | None = None,
                           + str(run.get("kotekan_file_reason") or "none"),
                 "n_measured": 0, "n_flagged": 0, "detail": {}})
             continue
-        src = {"choco_url": config.url, "choco_group": config.group, **src}
+        src = {"choco_url": config.url, "choco_group": config.group,
+               "state_dir": config.state_dir, **src}
         result = source.mask(src, labels, path)
         mask, rep = result if isinstance(result, tuple) else (result, None)
         mask = np.asarray(mask, dtype=bool)
@@ -371,8 +393,13 @@ def combine_sources(config: Config, run: dict | None = None,
         reports.append(report)
         if report["status"] == "degraded":
             degraded.append(f"{kind}: {report['reason'] or 'degraded'}")
+        feed_reasons = report["detail"].get("feed_reasons")
+        feed_reasons = feed_reasons if isinstance(feed_reasons, dict) else {}
         for i in np.nonzero(~mask)[0]:
-            flagged_by.setdefault(str(labels[i]), []).append(kind)
+            label = str(labels[i])
+            flagged_by.setdefault(label, []).append(kind)
+            if feed_reasons.get(label):
+                flag_reasons.setdefault(label, {})[kind] = str(feed_reasons[label])
         good &= mask
     # A source that was skipped, or ran but judged no feed at all, had
     # nothing to measure; when that is every source the run must not
@@ -403,7 +430,7 @@ def run(
     the run was incomplete (see :func:`combine_sources`) for the caller
     to turn into exit code 2.  *report*, if given, is the run record
     :func:`combine_sources` fills, plus ``n_bad``, ``update_id`` and
-    ``sent`` from here (see :func:`main`).  With ``state.path`` set, the bad-feed set
+    ``sent`` from here (see :func:`main`).  With a state directory, the bad-feed set
     (tracked by stable feed *label*) is diffed against the last recorded run: a
     change makes ``send`` true and appends a history entry to the (re)written
     file; an unchanged run sends nothing unless ``force``. Without a state file
@@ -478,6 +505,11 @@ def run(
         # bookkeeping only, never part of the payload sent to kotekan
         state["flagged_by"] = {label: flagged_by.get(label, [])
                                for label in bad_labels}
+        # ... and the reason a source gave, where it gave one ("power:
+        # not in PDB table" reads better on the grid than "power")
+        state["flag_reasons"] = {label: report["flag_reasons"][label]
+                                 for label in bad_labels
+                                 if report.get("flag_reasons", {}).get(label)}
         history = state.get("history", [])
         history.append({
             "time": now,
@@ -520,6 +552,9 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="bffs", description="feed-flagging script")
     p.add_argument("-c", "--config", required=True, help="path to YAML config")
     p.add_argument("--kotekan-file", default=None, help="override the kotekan N² output path")
+    p.add_argument("--state-dir", default=None,
+                   help="where state.json / run.json live (default: systemd's "
+                        "$STATE_DIRECTORY, else /var/lib/choco/bffs)")
     p.add_argument("-n", "--dry-run", action="store_true", help="compute only; write and send nothing")
     p.add_argument("-f", "--force", action="store_true", help="send even if the bad list is unchanged")
     p.add_argument("-v", "--verbose", action="count", default=0)
@@ -531,7 +566,7 @@ def main(argv=None) -> int:
     )
 
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, state_dir=args.state_dir)
     except (OSError, ValueError, yaml.YAMLError) as e:
         log.error("bad config %s: %s", args.config, e)
         return 1
@@ -586,7 +621,8 @@ _RUN_STATUS = {0: "ok", 2: "degraded", 1: "failed"}
 
 def _write_run_report(config: Config, report: dict, rc: int,
                       error: str | None, *, write: bool) -> None:
-    """Record how this run went (``state.run_path``), whatever the outcome.
+    """Record how this run went (``run.json`` in the state directory),
+    whatever the outcome.
 
     Unlike the state file, which changes only when the bad list does,
     this is rewritten every run so choco's BFFS page can show which

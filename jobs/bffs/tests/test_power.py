@@ -129,21 +129,87 @@ class TestReport:
         return power.mask({"kind": "power", "url": "http://pdb:5000",
                            "choco_url": "https://localhost:5000"}, labels, "n2.h5")
 
-    def test_ok_report_counts_and_names_the_map(self, monkeypatch):
-        payload = dict(TestResolveMap.CHOCO_PAYLOAD, channels=[
-            {"spi_bus": 0, "board": 7, "chip": "B", "channel": 1, "dish_input": "A1X"},
-            {"spi_bus": 0, "board": 0, "chip": "A", "channel": 0, "dish_input": "A2X"},
-            {"spi_bus": 0, "board": 0, "chip": "A", "channel": 1, "dish_input": "Z9X"},
-        ])
+    CHANNELS = [
+        {"spi_bus": 0, "board": 7, "chip": "B", "channel": 1, "dish_input": "A1X"},
+        {"spi_bus": 0, "board": 0, "chip": "A", "channel": 0, "dish_input": "A2X"},
+        {"spi_bus": 0, "board": 0, "chip": "A", "channel": 1, "dish_input": "Z9X"},
+    ]
+
+    def test_report_counts_and_the_unmapped_feed_is_absent(self, monkeypatch):
+        """A1X on, A2X off, A3X not in the table at all: the table is
+        trusted (choco cross-checked it, no stale rows) so A3X is flagged
+        absent, with a reason per flagged feed."""
+        payload = dict(TestResolveMap.CHOCO_PAYLOAD, channels=self.CHANNELS)
         good, rep = self._run(monkeypatch, payload, np.array(["A1X", "A2X", "A3X"]))
-        np.testing.assert_array_equal(good, [True, False, True])
+        np.testing.assert_array_equal(good, [True, False, False])
         assert rep["status"] == "ok" and rep["reason"] is None
-        assert rep["n_measured"] == 2                      # A1X, A2X on the axis
+        assert rep["n_measured"] == 3                      # all three judged
         d = rep["detail"]
         assert d["map_source"] == "choco master table" and d["map_check"] == "ok"
         assert d["n_mapped"] == 3 and d["n_watched"] == 2
-        assert d["n_unwatched"] == 1 and d["n_unpowered"] == 1
+        assert d["n_unmapped"] == 1 and d["unmapped_flagged"] is True
+        assert d["n_unpowered"] == 1
+        assert d["feed_reasons"] == {"A2X": "off", "A3X": "not in PDB table"}
         assert d["channels_read"] == 32 * 8
+
+    def test_stale_table_leaves_unmapped_feeds_good(self, monkeypatch):
+        """A row kotekan does not know means labels may have moved: the
+        unmapped feeds could be real ones under new names, so they are
+        left good and the run says so."""
+        check = dict(TestResolveMap.CHOCO_PAYLOAD["check"], ok=False,
+                     unknown_to_kotekan=["Z9X"])
+        payload = dict(TestResolveMap.CHOCO_PAYLOAD, channels=self.CHANNELS, check=check)
+        good, rep = self._run(monkeypatch, payload, np.array(["A1X", "A2X", "A3X"]))
+        np.testing.assert_array_equal(good, [True, False, True])
+        assert rep["status"] == "degraded"
+        assert "1 feed(s) not in the PDB table left unjudged" in rep["reason"]
+        assert "kotekan does not know" in rep["reason"]
+        assert rep["n_measured"] == 2
+        assert rep["detail"]["unmapped_flagged"] is False
+        assert rep["detail"]["feed_reasons"] == {"A2X": "off"}
+
+    def test_uncheckable_table_leaves_unmapped_feeds_good(self, monkeypatch):
+        check = {"available": False, "reason": "no kotekan config loaded"}
+        payload = dict(TestResolveMap.CHOCO_PAYLOAD, channels=self.CHANNELS, check=check)
+        good, rep = self._run(monkeypatch, payload, np.array(["A1X", "A3X"]))
+        np.testing.assert_array_equal(good, [True, True])
+        assert rep["status"] == "degraded" and "could not cross-check" in rep["reason"]
+
+    def test_placeholder_map_never_flags_unmapped_feeds(self, monkeypatch):
+        def boom(url, **k):
+            raise OSError("connection refused")
+        monkeypatch.setattr(power, "choco_pdb_map", boom)
+        monkeypatch.setattr(power, "read_power_state",
+                            lambda url: power.decode_channel_states(_LIVE_BUF, 0))
+        good, rep = power.mask({"kind": "power", "url": "http://pdb:5000",
+                                "choco_url": "https://localhost:5000"},
+                               np.array(["E01X", "E02X"]), "n2.h5")
+        np.testing.assert_array_equal(good, [True, True])
+        assert rep["status"] == "degraded" and "bundled placeholder" in rep["reason"]
+
+    def test_operator_csv_is_trusted(self, tmp_path, monkeypatch):
+        csv_file = tmp_path / "map.csv"
+        csv_file.write_text("spi_bus,board,chip,channel,dish_input\n0,7,B,1,A1X\n")
+        monkeypatch.setattr(power, "read_power_state",
+                            lambda url: power.decode_channel_states(_LIVE_BUF, 0))
+        good, rep = power.mask({"kind": "power", "url": "http://pdb:5000",
+                                "map": str(csv_file)},
+                               np.array(["A1X", "E01X"]), "n2.h5")
+        np.testing.assert_array_equal(good, [True, False])
+        assert rep["status"] == "ok"
+        assert rep["detail"]["feed_reasons"] == {"E01X": "not in PDB table"}
+
+    def test_table_trusted_rules(self):
+        assert power.table_trusted({"map_source": "config CSV"}) == (True, None)
+        assert power.table_trusted({"map_source": "choco master table",
+                                    "map_check_available": True,
+                                    "map_unknown_to_kotekan": 0}) == (True, None)
+        ok, why = power.table_trusted({"map_source": "choco master table",
+                                       "map_check_available": True,
+                                       "map_unknown_to_kotekan": 2})
+        assert not ok and "2 dish input(s)" in why
+        ok, why = power.table_trusted({"map_source": "bundled placeholder"})
+        assert not ok and "placeholder" in why
 
     def test_unread_channel_is_degraded(self, monkeypatch):
         # a map row for a bus the controller did not report
@@ -155,6 +221,7 @@ class TestReport:
         assert rep["status"] == "degraded"
         assert "1 mapped channel(s) absent" in rep["reason"]
         assert rep["detail"]["unread"] == ["A1X"]
+        assert rep["detail"]["feed_reasons"] == {"A1X": "unread"}
 
     def test_fallback_map_is_named(self, monkeypatch):
         def boom(url, **k):

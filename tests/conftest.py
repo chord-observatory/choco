@@ -35,9 +35,12 @@ def configs_dir(tmp_path):
 
 
 @pytest.fixture
-def app(configs_dir):
+def app(configs_dir, tmp_path):
     app = create_app(configs_dir=configs_dir)
     app.config["TESTING"] = True
+    # The jobs' state root.  A scratch directory, never /var/lib/choco:
+    # the host running the tests may have real job state there.
+    app.config["state_dir"] = tmp_path / "state"
     return app
 
 

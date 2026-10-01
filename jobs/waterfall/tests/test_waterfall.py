@@ -43,7 +43,6 @@ def write_cfg(tmp_path, root, **over):
     cfg = {
         "roots": [{"name": "subset", "path": str(root)}],
         "waterfalls_dir": str(tmp_path / "wf"),
-        "state_file": str(tmp_path / "state.json"),
         "max_files_per_run": 40,
     }
     cfg.update(over)
@@ -375,10 +374,28 @@ def test_cli_overrides_config(tree, tmp_path):
 
 def test_state_file_failure_does_not_fail_the_run(tree, tmp_path):
     _, root = tree
-    cfg_path = write_cfg(tmp_path, root,
-                         state_file=str(tmp_path / "vis_a.h5" / "state.json"))
+    cfg_path = write_cfg(tmp_path, root)
     (tmp_path / "vis_a.h5").write_text("not a directory")
-    assert W.main(["-c", str(cfg_path)]) == 0
+    # --state-dir pointed at a file: no lock, no state.json, still renders
+    assert W.main(["-c", str(cfg_path), "--state-dir", str(tmp_path / "vis_a.h5")]) == 0
+
+
+@pytest.mark.parametrize("key", ["state_file", "lock_file"])
+def test_retired_state_paths_are_refused(tree, tmp_path, key):
+    _, root = tree
+    cfg_path = write_cfg(tmp_path, root, **{key: str(tmp_path / "x")})
+    with pytest.raises(ValueError, match="retired"):
+        W.load_config(cfg_path)
+    assert W.main(["-c", str(cfg_path)]) == 1
+
+
+def test_state_dir_override(tree, tmp_path):
+    _, root = tree
+    cfg_path = write_cfg(tmp_path, root)
+    assert W.main(["-c", str(cfg_path), "--state-dir", str(tmp_path / "elsewhere")]) == 0
+    assert (tmp_path / "elsewhere" / "state.json").exists()
+    assert (tmp_path / "elsewhere" / "waterfall.lock").exists()
+    assert not (tmp_path / "state.json").exists()
 
 
 # --- not reopening what is already done ----------------------------------

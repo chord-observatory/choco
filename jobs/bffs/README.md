@@ -150,16 +150,21 @@ nothing.
 
 | Source | Evidence | What it flags |
 |---|---|---|
-| `manual` | a watched override file (`bad_inputs:` list of labels) | feeds an operator marked bad |
+| `manual` | a watched override file (`bad_inputs:` list of labels), edited by hand or by clicking choco's BFFS element grid | feeds an operator marked bad |
 | `power-outlier` | kotekan N² output (`hdf5N2write`) → per-feed band-averaged power | feeds whose power is an outlier across the other feeds |
-| `power` *(provisional)* | the power controller's live `/channel_states` (power_db) | feeds whose amplifier is unpowered |
+| `power` | the power controller's live `/channel_states` (power_db) joined to choco's master PDB table | feeds whose amplifier is unpowered, and feeds the table has no channel for at all (not installed: flagged *absent*) |
 | `fpga` *(provisional)* | the F-engine `raw_acq` metrics (pychfpga) | feeds with FFT overflow, no frames, or out-of-range ADC RMS |
 | `rfi` *(provisional)* | kotekan's per-feed spectral kurtosis (RfiSKMetrics `/sk` endpoints) | feeds whose SK sits persistently away from 1 (RFI or a broken signal chain) |
 
 Each source is a module under `sources/` exposing `mask(src, labels, kotekan_file)`
 (`True` = good); `bffs.combine_sources` dispatches via `sources.get(kind)`.
-`manual` and `power-outlier` read the kotekan file and work today. `power`,
-`fpga`, and `rfi` poll an external service. `power` and `fpga` join to the feed
+`manual` reads its override file — YAML or JSON, `bad_inputs: [A1X, ...]`
+or a bare list.  By default it is `manual_overrides.yaml` in the state
+directory, the file choco's BFFS page edits when an element in the grid is
+clicked (choco checks the label against the element axis and the path
+against what this source reported reading in the run file, and rewrites the
+file atomically, keeping other keys); `path:` names another file instead. `power-outlier` reads the kotekan
+file. `power`, `fpga`, and `rfi` poll an external service. `power` and `fpga` join to the feed
 labels through a channel→input map: `fpga`'s map is the real rack wiring table
 (Slot 1–4 × ADC1–8 → feed), keyed to `raw_acq`'s 0-based slot/chan metric labels
 (remaining assumptions — crate 0, ADC N → chan N−1 — await a live F-engine);
@@ -167,12 +172,19 @@ labels through a channel→input map: `fpga`'s map is the real rack wiring table
 backed by one CSV beside choco's `nodes.yaml`), so this job and choco's PDB
 page read the same wiring instead of each keeping a copy; choco cross-checks
 that table against kotekan's `dish_inputs` and the verdict is logged on every
-run (a mismatch is a warning, not a failure — a label off the element axis
-projects onto nothing, so a stale row leaves a feed unwatched rather than
-mis-flagging one). Setting `map:` in the source config overrides it with a
-local CSV, and the bundled `sources/power_map.csv` is the fallback for dry
-runs and choco outages. The wiring itself is still a placeholder —
-**pending the hardware database (padloper)**. `rfi` needs no map: kotekan's `RfiSKMetrics` stage serves a JSON
+run. The table is also read as the inventory of what is wired: a feed on the
+element axis with no channel in it (the E/F/G/H dishes before they are
+installed, placeholder elements) has nothing to power and is flagged **not in
+PDB table** — ch_flag's `layout` idea — so the grid shows it as bad with that
+reason on hover. That rule applies only when the table can be trusted: an
+operator's `map:` CSV, or choco's table when the cross-check finds no row
+naming a dish input kotekan does not know (a stale or renamed label would
+otherwise make real feeds look unmapped). With a stale table, or the bundled
+`sources/power_map.csv` fallback (dry runs, choco down), unmapped feeds are
+left good and the run reports degraded saying how many and why. Each flagged
+feed carries its reason (`off`, `unread`, `not in PDB table`) in the report's
+`feed_reasons`; the core copies it into the state file's `flag_reasons` for
+the page. `rfi` needs no map: kotekan's `RfiSKMetrics` stage serves a JSON
 `/sk` endpoint whose arrays are indexed by element — the feed's position in the
 label list. By default `rfi` derives its endpoints from choco's node registry
 (`GET /api/nodes`): every *started* node of the broadcast group, polled at each
@@ -212,7 +224,9 @@ feed the same cells and counts against none of them.
 
 ### State & change history
 
-If the config has a `state.path`, bffs keeps a small JSON file there recording
+bffs keeps a small JSON file, `state.json` in its state directory
+(`/var/lib/choco/bffs`, systemd's `StateDirectory`; `--state-dir` redirects a
+hand run), recording
 the feed change history — and sends to choco only when the bad list changes. It
 holds the current bad list (by stable feed *label*, not index), the element
 axis those labels sit on (`labels`, one per element in kotekan's order — what
@@ -234,7 +248,10 @@ next run) and an append-only `history` of transitions:
 ```
 
 `flagged_by` records which source(s) flagged each currently-bad feed (as of
-the last change) — display bookkeeping for choco's BFFS page. The payload
+the last change), and `flag_reasons` the reason a source gave where it gave
+one (`{"E01X": {"power": "not in PDB table"}}`) — display bookkeeping for
+choco's BFFS page, whose grid shows "bad (power: not in PDB table)" on hover.
+The payload
 sent to kotekan is unchanged: exactly `{update_id, start_time, bad_inputs}`
 with integer element indices.
 
@@ -243,14 +260,13 @@ then appends one history entry, rewriting the file (atomically); an unchanged
 run does nothing. The send comes *before* the state write, so a failed send
 leaves the state untouched and the next run retries. `--force` re-sends the
 current list even when unchanged (e.g. to re-sync choco after a restart);
-`max_history` caps the kept entries (0 = keep all). Omit the `state` block to
-run stateless — every invocation sends.
+`max_history` caps the kept entries (0 = keep all).
 
 ### Run file
 
 The state file says what the flags *are*; it cannot say how they were measured,
 because it changes only when they do.  So every non-dry run also rewrites
-`state.run_path` (default `run.json` beside the state file) with how it went:
+`run.json` beside it with how it went:
 
 ```json
 {
@@ -266,7 +282,9 @@ because it changes only when they do.  So every non-dry run also rewrites
     {"kind": "power-outlier", "status": "skipped", "reason": "no usable kotekan file: ...",
      "n_measured": 0, "n_flagged": 0, "detail": {}},
     {"kind": "power", "status": "ok", "n_measured": 80, "n_flagged": 36,
-     "detail": {"n_mapped": 80, "n_watched": 80, "n_unwatched": 48, "n_unpowered": 36,
+     "detail": {"n_mapped": 80, "n_watched": 80, "n_unpowered": 36,
+                "n_unmapped": 48, "unmapped_flagged": true,
+                "feed_reasons": {"B01X": "off", "E01X": "not in PDB table", "...": "..."},
                 "map_source": "choco master table", "map_check": "ok", "...": "..."}},
     {"kind": "rfi", "status": "ok", "n_measured": 47, "n_flagged": 0,
      "detail": {"n_endpoints": 12, "n_failed": 0, "n_stale": 0, "skipped_nodes": [],
@@ -288,8 +306,9 @@ failure is logged and never changes the exit code.
 
 A single YAML file (see `bffs.example.yaml`): the `kotekan_file` (the one N²
 output that supplies both the feed labels and the autocorrelation data), a `choco`
-block (`url` + `sync_delay`), an optional `state` block (`path` + `max_history`
-+ `run_path`), and a list of `sources`, each a `kind` plus its parameters. There
+block (`url` + `sync_delay`), an optional `state` block (`max_history`), and a
+list of `sources`, each a `kind` plus its parameters.  Where the state lives is
+not in the file: see the run-file section.  There
 is no per-source cadence or hysteresis — the timer sets the cadence, and each run
 is independent.
 
@@ -319,7 +338,7 @@ the telescope-specific acquisition behind each is **not** carried over.
 
 | `ch_flag` source | Idea | `bffs` status |
 |---|---|---|
-| `layout` | which feeds are connected/on | kotekan `enabled` dropped (latch); live connectivity via **`power`** |
+| `layout` | which feeds are connected/on | kotekan `enabled` dropped (latch); **`power`**: unpowered, or absent from the master PDB table |
 | `manual` | operator overrides | `manual` (watched file) |
 | `autovar` | outlier band-averaged autocorrelation deviation | **`power-outlier`** |
 | `ampvar` | band-averaged gain-amplitude variance | covered by `power-outlier` |

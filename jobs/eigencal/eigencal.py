@@ -44,7 +44,7 @@ from astropy.time import Time
 
 import n2_io
 from choco.dishlabels import pol_suffix
-from choco.jobclient import post_json, write_json_atomic
+from choco.jobclient import job_state_dir, post_json, write_json_atomic
 from transit_fit import (fit_transits, fringestop_phase, interpolate_gaps,
                          invert_no_zero)
 
@@ -72,9 +72,9 @@ DEFAULTS = {
     "daytime": {"skip": True, "sun_alt_max_deg": -10.0},
     "run": {
         "max_age_s": 7200.0,       # process only transits completed this recently
-        "archive_dir": "/var/lib/choco/eigencal",
-        "state_file": "/var/lib/choco/eigencal/state.json",
         "gate_freq_mhz": 300.0,    # widest beam in the band, for gate sizing
+        # The per-transit HDF5 archive and state.json live in the job's
+        # state directory (/var/lib/choco/eigencal; --state-dir overrides).
     },
     "telescope": {
         # Feed layout: by default derived from the N² file itself (kotekan's
@@ -124,8 +124,20 @@ def merge_config(base, override):
     return out
 
 
+#: run.* keys that named state paths; refused, not read (the paths are
+#: the job's convention, shared with choco).
+_RETIRED_RUN_KEYS = ("archive_dir", "state_file")
+
+
 def load_config(path):
     raw = yaml.safe_load(Path(path).read_text()) or {}
+    retired = [k for k in _RETIRED_RUN_KEYS if k in (raw.get("run") or {})]
+    if retired:
+        raise ValueError(
+            f"run.{' and run.'.join(retired)} retired: remove it; the archive "
+            f"and state.json live in the job's state directory "
+            f"({job_state_dir('eigencal')}; systemd's StateDirectory=choco/eigencal, "
+            f"or --state-dir)")
     cfg = merge_config(DEFAULTS, raw)
     if not cfg["kotekan_file"]:
         raise ValueError("config needs 'kotekan_file' (the kotekan N² output glob)")
@@ -598,10 +610,7 @@ def write_archive(result, path, cfg):
     log.info("wrote %s", path)
 
 
-def write_state(cfg, result, sent):
-    state_file = cfg["run"].get("state_file")
-    if not state_file:
-        return
+def write_state(state_file, result, sent):
     write_json_atomic(state_file, {
         "updated": time.time(), "transit_time": result["transit_time"],
         "source": result["source"], "good_frac": result["good_frac"],
@@ -621,8 +630,12 @@ def main(argv=None) -> int:
                    help="fit and archive, but send nothing")
     p.add_argument("-f", "--force", action="store_true",
                    help="ignore the daytime/age/already-done gates")
+    p.add_argument("--state-dir", default=None,
+                   help="where the archive and state.json live (default: "
+                        "systemd's $STATE_DIRECTORY, else /var/lib/choco/eigencal)")
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv)
+    state_dir = job_state_dir("eigencal", args.state_dir)
 
     logging.basicConfig(
         level=logging.WARNING - 10 * min(args.verbose, 2),
@@ -650,8 +663,7 @@ def main(argv=None) -> int:
                             + cfg["analysis"]["nsigma_fit"] * sig / np.cos(dec)) \
             / np.radians(SIDEREAL_RATE_DEG_S)
         tag = datetime.fromtimestamp(transit, tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        outfile = os.path.join(cfg["run"]["archive_dir"],
-                               f"gain_{tag}_{cfg['source']['name'].lower()}.h5")
+        outfile = str(state_dir / f"gain_{tag}_{cfg['source']['name'].lower()}.h5")
 
         if not args.force:
             if now < t_done:
@@ -680,12 +692,12 @@ def main(argv=None) -> int:
                      "dry run" if args.dry_run else "no choco url",
                      payload["update_id"], result["gain"].shape,
                      100 * result["good_frac"])
-            write_state(cfg, result, sent=False)
+            write_state(state_dir / "state.json", result, sent=False)
         else:
             send_to_choco(cfg["choco"], payload)
             log.info("sent %s to choco group %s", payload["update_id"],
                      cfg["choco"]["group"])
-            write_state(cfg, result, sent=True)
+            write_state(state_dir / "state.json", result, sent=True)
         return 0
 
     except OSError as e:

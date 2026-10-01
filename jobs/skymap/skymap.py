@@ -44,7 +44,7 @@ import numpy as np
 import yaml
 
 from choco.dishlabels import find_key
-from choco.jobclient import get_json
+from choco.jobclient import get_json, job_state_dir
 
 import matplotlib
 matplotlib.use("Agg")
@@ -79,8 +79,10 @@ DEFAULTS = {
     "beams": ["pointing"],  # beams to draw, in order: "pointing" (the live
                             # pointing(s) from choco), a MAJOR_SOURCES name
                             # ("Cyg A"), or a declination in degrees
-    "output": "/var/lib/choco/skymap/skymap.png",
-    "output_night": "/var/lib/choco/skymap/skymap-night.png",  # "" = no night render
+    # The renders land in the job's state directory (/var/lib/choco/skymap;
+    # --state-dir overrides) as skymap.png and skymap-night.png, where
+    # choco serves them from; night: false skips the dark-palette render.
+    "night": True,
     "background_image": str(SCRIPT_DIR / "sky_background.png"),
     "background_fade": 0.42,   # 0 = flat page colour; 1 = full sky image
     "dpi": 130,
@@ -451,18 +453,20 @@ class LabelPlacer:
 
 
 def plot_skymap(cfg, beams, now=None, theme="day", output=None):
-    """Render the strip plot for *beams* = [(dec_deg, origin), ...].
+    """Render the strip plot for *beams* = [(dec_deg, origin), ...] to
+    the PNG path *output*.
 
-    *theme* names an entry of THEMES; *output* defaults to cfg["output"].
-    The day and night images of one run are drawn from the same *now*,
-    so pass it explicitly when rendering both.
+    *theme* names an entry of THEMES.  The day and night images of one
+    run are drawn from the same *now*, so pass it explicitly when
+    rendering both.
     """
     if theme not in THEMES:
         raise ValueError(f"unknown theme {theme!r}; one of {list(THEMES)}")
+    if output is None:
+        raise ValueError("plot_skymap needs an output path")
     T = THEMES[theme]
     with plt.rc_context(T["rc"]):
-        return _plot_skymap(cfg, beams, now, T,
-                            output if output is not None else cfg["output"])
+        return _plot_skymap(cfg, beams, now, T, output)
 
 
 def _plot_skymap(cfg, beams, now, T, output):
@@ -818,6 +822,11 @@ def _plot_skymap(cfg, beams, now, T, output):
     }
 
 
+#: Keys that named output paths; refused, not read (the paths are the
+#: job's convention, shared with choco's /skymap.png routes).
+_RETIRED_KEYS = ("output", "output_night", "state_file")
+
+
 def load_config(path):
     cfg = dict(DEFAULTS)
     if path and os.path.exists(path):
@@ -825,7 +834,15 @@ def load_config(path):
             loaded = yaml.safe_load(f) or {}
         if not isinstance(loaded, dict):
             raise ValueError(f"{path}: top level must be a mapping")
+        retired = [k for k in _RETIRED_KEYS if k in loaded]
+        if retired:
+            raise ValueError(
+                f"{path}: {' and '.join(retired)} retired: remove it; the job "
+                f"writes skymap.png and skymap-night.png in its state directory "
+                f"({job_state_dir('skymap')}; systemd's StateDirectory=choco/skymap, "
+                f"or --state-dir); set night: false to skip the night render")
         cfg.update({k: v for k, v in loaded.items() if v is not None})
+    cfg["night"] = bool(cfg["night"])
     return cfg
 
 
@@ -833,7 +850,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", default=None,
                         help="skymap.yaml (defaults apply if absent)")
+    parser.add_argument("--state-dir", default=None,
+                        help="where the PNGs land (default: systemd's "
+                             "$STATE_DIRECTORY, else /var/lib/choco/skymap)")
     args = parser.parse_args(argv)
+    state_dir = job_state_dir("skymap", args.state_dir)
 
     try:
         cfg = load_config(args.config)
@@ -868,9 +889,9 @@ def main(argv=None):
     # before either render.  Each write is atomic on its own; a failure
     # partway leaves whichever images did land, both from this run or
     # both from the last.
-    renders = [("day", cfg["output"])]
-    if cfg["output_night"]:
-        renders.append(("night", cfg["output_night"]))
+    renders = [("day", str(state_dir / "skymap.png"))]
+    if cfg["night"]:
+        renders.append(("night", str(state_dir / "skymap-night.png")))
     now = Time.now()
     try:
         for theme, output in renders:

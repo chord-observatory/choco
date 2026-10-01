@@ -32,21 +32,21 @@ choco:
   sync_delay: 5.0
 
 state:
-  # A JSON file recording the feed change history (every transition, by label).
-  # When set, bffs sends to choco only when the bad list changes. Omit the whole
-  # block to run stateless (send every invocation).
-  path: /var/lib/choco/bffs/state.json
+  # state.json (the change history; bffs sends to choco only when the bad
+  # list changes) and run.json (how each run went, source by source) live
+  # in the job's state directory, /var/lib/choco/bffs -- systemd's
+  # StateDirectory, which choco reads from too.  Not a setting here;
+  # --state-dir redirects a hand run.
   max_history: 0                 # cap on history entries (0 = keep all)
-  # A second file rewritten on EVERY run (dry runs excepted) with how it
-  # went: exit status, the degraded reasons, the N² file used and each
-  # source's report — what it measured, what it flagged, why it
-  # abstained. choco's BFFS page shows it. Default: run.json beside path.
-  # run_path: /var/lib/choco/bffs/run.json
 
 # A feed is bad if any source flags it. Each source is one entry below.
 sources:
-  - kind: manual                 # feeds an operator listed in a watched file
-    path: /data/bffs/manual_overrides.yaml
+  - kind: manual                 # feeds an operator listed in an override file
+    # bad_inputs: [A1X, ...] (YAML or JSON).  Default: manual_overrides.yaml
+    # in the state directory, the file choco's BFFS page edits when the
+    # element grid is clicked.  path: names another file instead (choco
+    # then refuses to write until the two agree).
+    # path: /somewhere/else/manual_overrides.yaml
 
   - kind: power-outlier          # band-averaged power, outlier across feeds
     chunk: 16                     # most recent N filled time rows to average

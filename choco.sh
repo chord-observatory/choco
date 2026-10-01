@@ -400,6 +400,7 @@ server:
   http_redirect_port:             # empty: no second listener
 
 configs_dir: $dev_configs
+state_dir: $dev_dir/state       # where a dev instance reads job state (and writes manual flags)
 
 kotekan:
   timeout: 10

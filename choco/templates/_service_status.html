@@ -104,17 +104,38 @@
 </figure>
 {% endif %}
 {% if detail.element_rows %}
+{% set manual = detail.manual or {} %}
+{% set clickable = manual.enabled and not manual.error and not manual.mismatch %}
 <h4 style="margin-bottom: 0.25em;">Elements</h4>
 <figure style="margin: 0 0 1.5em 0; overflow-x: auto;">
-<table class="feed-grid">
+<table class="feed-grid{% if clickable %} feed-grid-clickable{% endif %}">
     <tbody>
     {% for row in detail.element_rows %}
-    <tr>{% for cell in row %}{% if cell %}<td class="feed-{{ 'bad' if cell.bad else 'good' }}" title="element {{ cell.index }}: {{ 'bad' if cell.bad else 'good' }}{% if cell.sources %} ({{ cell.sources }}){% endif %}">{{ cell.label }}</td>{% else %}<td class="feed-none"></td>{% endif %}{% endfor %}</tr>
+    <tr>{% for cell in row %}{% if cell %}
+        {%- set tip = 'element ' ~ cell.index ~ ': ' ~ ('bad' if cell.bad else 'good')
+                      ~ (' (' ~ cell.sources ~ ')' if cell.sources else '')
+                      ~ (' — manual flag set, applied on the next run' if cell.manual else '')
+                      ~ (('\nclick to ' ~ ('remove the manual flag' if cell.manual else 'flag it manually')) if clickable else '') -%}
+        <td class="feed-{{ 'bad' if cell.bad else 'good' }}{% if cell.manual %} feed-manual{% endif %}" title="{{ tip }}">
+        {%- if clickable -%}
+        <form method="post" action="/service/bffs/manual"
+              hx-post="/service/bffs/manual" hx-target="#service-status" hx-swap="innerHTML"
+              data-confirm="{{ 'Remove the manual flag on ' ~ cell.label ~ '?' if cell.manual else 'Flag ' ~ cell.label ~ ' as bad manually?' }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="label" value="{{ cell.label }}">
+            <button type="submit" class="feed-cell">{{ cell.label }}</button>
+        </form>
+        {%- else -%}{{ cell.label }}{%- endif -%}
+        </td>{% else %}<td class="feed-none"></td>{% endif %}{% endfor %}</tr>
     {% endfor %}
     </tbody>
 </table>
 <figcaption style="font-size: 0.8em; margin-top: 0.4em;">Every element in kotekan's order, eight per column, left to right:
-    <span class="feed-key feed-good">good</span> <span class="feed-key feed-bad">bad</span>. Hover a cell for the flagging source.</figcaption>
+    <span class="feed-key feed-good">good</span> <span class="feed-key feed-bad">bad</span>{% if manual.enabled %} <span class="feed-key feed-bad feed-manual" title="flagged by hand: in the override file, bad once the job applies it">manual</span>{% endif %}. Hover a cell for the flagging source.
+    {% if clickable %}Click a cell to add or remove a manual flag in <code>{{ manual.path }}</code>; the job applies it on its next run.{% endif %}
+    {% if manual.error %}<br><span class="err">Manual flags cannot be edited: {{ manual.error }}</span>{% endif %}
+    {% if manual.mismatch %}<br><span class="err">Manual flags cannot be edited: choco would write <code>{{ manual.path }}</code> but the bffs job reads {% if manual.job_path %}<code>{{ manual.job_path }}</code>{% else %}no manual file (no manual source configured){% endif %}.</span>{% endif %}
+</figcaption>
 </figure>
 {% endif %}
 {% if detail.history %}

@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from choco.jobclient import write_json_atomic
+from choco.jobclient import job_state_dir, write_json_atomic
 
 import reduce as R
 import wfpng
@@ -48,14 +48,18 @@ log = logging.getLogger("waterfall")
 
 DEFAULTS = {
     "waterfalls_dir": "/mnt/cs00/data/kotekan_vis_files/waterfalls",
-    "state_file": "/var/lib/choco/waterfall/state.json",
     "level": wfpng.DEFAULT_LEVEL,
     # ~5 min of work: enough to stay ahead of the ~3.2 min file cadence
     # with room left over for backfill, while still returning promptly.
     "max_files_per_run": 40,
-    "lock_file": None,          # defaults to waterfall.lock beside the state file
     "roots": [],
+    # state.json and the run lock live in the job's state directory
+    # (/var/lib/choco/waterfall; --state-dir overrides), not here.
 }
+
+#: Keys that named state paths; refused, not read (the paths are the
+#: job's convention, shared with choco).
+_RETIRED_KEYS = ("state_file", "lock_file")
 
 
 #: kotekan names a completed file ``vis_<abs_file_idx>_<stamp>.h5``.  The
@@ -111,6 +115,13 @@ def load_config(path) -> dict:
         raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
         raise ValueError("config must be a mapping")
+    retired = [k for k in _RETIRED_KEYS if k in raw]
+    if retired:
+        raise ValueError(
+            f"{' and '.join(retired)} retired: remove it; state.json and "
+            f"waterfall.lock live in the job's state directory "
+            f"({job_state_dir('waterfall')}; systemd's StateDirectory=choco/waterfall, "
+            f"or --state-dir)")
     cfg = dict(DEFAULTS)
     cfg.update(raw)
     roots = cfg.get("roots") or []
@@ -473,6 +484,9 @@ def main(argv=None) -> int:
     ap.add_argument("--relabel", action="store_true",
                     help="re-derive every acquisition's element labels from "
                          "its source files and exit (touches no pixels)")
+    ap.add_argument("--state-dir", default=None,
+                    help="where state.json and the run lock live (default: "
+                         "systemd's $STATE_DIRECTORY, else /var/lib/choco/waterfall)")
     ap.add_argument("-v", "--verbose", action="count", default=0)
     args = ap.parse_args(argv)
 
@@ -485,6 +499,7 @@ def main(argv=None) -> int:
     except (OSError, ValueError, yaml.YAMLError) as e:
         log.error("bad config %s: %s", args.config, e)
         return 1
+    state_dir = job_state_dir("waterfall", args.state_dir)
     if args.max_files is not None:
         cfg["max_files_per_run"] = args.max_files
     if args.level is not None:
@@ -509,7 +524,7 @@ def main(argv=None) -> int:
         print(f"{total} files pending")
         return 0
 
-    lock_path = cfg.get("lock_file") or (Path(cfg["state_file"]).parent / "waterfall.lock")
+    lock_path = state_dir / "waterfall.lock"
     with single_run(lock_path) as acquired:
         if not acquired:
             log.info("another run holds %s; nothing to do", lock_path)
@@ -532,7 +547,7 @@ def main(argv=None) -> int:
                      report["run_seconds"])
             return 2 if report["degraded"] else 0
         report = run(cfg, only_acq=args.acq)
-        write_state(cfg["state_file"], cfg, report)
+        write_state(state_dir / "state.json", cfg, report)
 
     for e in report["errors"][:20]:
         log.warning("%s", e)

@@ -52,6 +52,11 @@ _DEFAULT_CONFIG = {
     "skymap": {},
     "vis_files": {},
     "ldap": {},
+    # Where the jobs keep their state (systemd's StateDirectory=choco/<job>).
+    # choco reads <state_dir>/<job>/... here; a dev instance points it at
+    # a scratch directory.  The per-job state_file keys this replaced are
+    # refused (see _RETIRED_KEYS).
+    "state_dir": "/var/lib/choco",
 }
 
 # Secret keys that ship in a template or a default and were never meant
@@ -66,11 +71,24 @@ _MIN_SECRET_LEN = 16
 # key that is silently ignored, or quietly folded into its successor,
 # leaves a config.yaml that lies about what is running.  Each entry
 # names the fix; extend this table rather than adding a fallback.
+_STATE_FIX = ("remove it; every job keeps its files under <state_dir>/<job>/ "
+              "(default /var/lib/choco, systemd's StateDirectory) and choco "
+              "reads them there")
 _RETIRED_KEYS = (
     (("sync", "num_workers"), "rename it to sync.max_concurrent_pushes"),
     (("psu",), "rename the block to pdb:"),
     (("eop", "fpga_master_host"), "move it to a top-level fpga_master.host"),
     (("eop", "fpga_master_port"), "move it to a top-level fpga_master.port"),
+    # 2026-10: state paths are a convention shared with the jobs, not
+    # configuration -- two copies of the same path only ever drifted.
+    (("eop", "state_file"), _STATE_FIX),
+    (("bffs", "state_file"), _STATE_FIX),
+    (("bffs", "run_file"), _STATE_FIX),
+    (("bffs", "manual_file"), _STATE_FIX),
+    (("eigencal", "state_file"), _STATE_FIX),
+    (("waterfall", "state_file"), _STATE_FIX),
+    (("skymap", "image_file"), _STATE_FIX + "; the job writes skymap/skymap.png"),
+    (("skymap", "night_image_file"), _STATE_FIX + "; the job writes skymap/skymap-night.png"),
 )
 
 
@@ -84,12 +102,6 @@ def _refuse_retired_keys(raw: dict) -> None:
                 break
         if node is not None:
             problems.append(f"{'.'.join(path)}: {fix}")
-    state_file = (raw.get("eop") or {}).get("state_file")
-    if state_file and not Path(str(state_file)).is_absolute():
-        problems.append(
-            f"eop.state_file: must be an absolute path; move the table to "
-            f"/var/lib/choco/eop/state.json (it is at "
-            f"<configs_dir>/{state_file}) and point the key there")
     if problems:
         raise ValueError("config.yaml carries retired keys: "
                          + "; ".join(problems))
@@ -150,6 +162,12 @@ def load_config(path: str | Path) -> dict:
     parse_trusted_hosts(config["server"].get("trusted_hosts"))
     _refuse_retired_keys(raw)
     config["configs_dir"] = raw.get("configs_dir", "configs")
+    # The jobs resolve the same root from systemd, so a relative path here
+    # would name a different place depending on choco's working directory.
+    state_dir = str(raw.get("state_dir") or _DEFAULT_CONFIG["state_dir"])
+    if not Path(state_dir).is_absolute():
+        raise ValueError(f"state_dir must be an absolute path, not {state_dir!r}")
+    config["state_dir"] = state_dir
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
     config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
     config["fpga_master"] = raw.get("fpga_master") or {}
@@ -256,6 +274,7 @@ def create_app(
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)
+    app.config["state_dir"] = Path(config.get("state_dir") or _DEFAULT_CONFIG["state_dir"])
     app.config["eop_cfg"] = config.get("eop") or {}
     app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["eigencal_cfg"] = config.get("eigencal") or {}

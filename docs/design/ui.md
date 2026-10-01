@@ -78,8 +78,9 @@ nested under ``eop`` historically, and ``pdb`` was called ``psu`` before the
 rename); ``app.load_config`` accepts the legacy ``psu:`` block and (with
 ``jobs/eop/eop_update.py``) the legacy ``eop.fpga_master_host`` /
 ``eop.fpga_master_port`` keys, logging a deprecation warning for each.  The
-``bffs`` and ``eigencal`` config blocks (``service_unit``, ``state_file``)
-feed their badges.
+jobs' files are read from ``<state_dir>/<job>/`` by name (``state_dir`` in
+config.yaml, default ``/var/lib/choco``; see jobs.md); the per-job blocks
+carry only ``service_unit`` (and ``bffs.control``).
 
 ## Service pages
 
@@ -112,8 +113,8 @@ error path); a PDB poll failure keeps the last-known grid with an explicit
 "showing stale states" banner; and ``web._service_detail`` wraps all state-
 file summarising so corrupt job state degrades to "no summary", never a 500.
 
-The BFFS page additionally reads the job's per-run file (``bffs.run_file``,
-default ``run.json`` beside ``state_file``; see jobs.md) through
+The BFFS page additionally reads the job's per-run file (``run.json`` in
+its state directory; see jobs.md) through
 ``web._bffs_detail`` / ``_bffs_run_summary``: a **Last run** fact (status
 pill, time, bad count, whether it was sent, the degraded reasons or the
 error) and an **N² file** fact (the file used, its age, or why none was),
@@ -127,6 +128,30 @@ the strip's badge tooltip ("why: …") and the landing table's job row via
 is degraded or failed, so the badge colour and its explanation cannot
 disagree.  ``/api/nodes`` entries carry the sync loop's live ``status``
 beside the desired ``started``.
+
+**Manual flags from the grid (2026-10).**  Unless ``bffs.control`` is
+false, every cell of the element grid is a one-button form posting to
+``POST /service/bffs/manual`` (login + CSRF, like the PDB toggles; one
+``logger.warning`` audit line naming the operator), which adds the label to
+``manual_overrides.yaml`` in the job's state directory — the file the job's
+``manual`` source reads by default — or removes it (``services.toggle_manual_flag``:
+other keys kept, comments not, temp-file-and-rename so the job never reads
+a torn file).  The label is accepted only if it is on the element axis the
+state file records — the allowlist for this write, so nothing a browser
+sends reaches the file unchecked.  Before writing, the route compares that
+file with the one the job's ``manual`` source reported reading in
+``run.json`` (a source given an explicit ``path:`` reads elsewhere) and
+refuses a mismatch, or a job with no manual source, with an error notice,
+since the click would otherwise land where the job never looks; with no run
+file there is nothing to check against and the write proceeds.
+A cell in the file but not yet in the state's bad list (the job runs every
+30 s) shows a yellow inset border ("manual flag set, applied on the next
+run"), so the click is visible at once and the red follows.  The reply is
+the status block swapped in place plus an out-of-band notice into
+``#service-flash`` (outside the polled region), or flash-and-redirect for a
+plain form POST; a once-per-session confirm gate in ``service.html`` mirrors
+the PDB page's.  An unreadable override file or a path mismatch renders the
+grid read-only with the reason in the caption.
 
 ## Monitoring endpoints
 

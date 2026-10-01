@@ -69,7 +69,7 @@ and does real work only once per transit, at night.
    (batched over all freq × input), χ²-gated, raw-transit fallback
                           │
                           ▼  gap-fill over frequency, final good-fraction gate
-        one HDF5 in archive_dir  +  POST {update_id, start_time,
+        one HDF5 in the state dir  +  POST {update_id, start_time,
                                           gain, weight} → choco → kotekan
 ```
 

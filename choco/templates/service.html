@@ -38,6 +38,7 @@ dl.service-facts dd { margin: 0; }
     {% endif %}
 </hgroup>
 
+<div id="service-flash"></div>
 <div id="service-status"
      hx-get="/partials/service-status/{{ name }}"
      hx-trigger="every 5s"
@@ -70,4 +71,23 @@ dl.service-facts dd { margin: 0; }
          hx-trigger="load, every 30s"
          hx-swap="innerHTML"></div>
 </section>
+{% if name == 'bffs' %}
+<script>
+    // Confirmation gate for manual-flag toggles, hooked into htmx's own
+    // confirm event (the cells post over htmx, so an onsubmit handler
+    // would fire too late).  Asks once per browsing session: the
+    // acknowledgement lives in sessionStorage so bulk flagging isn't
+    // nagged, and resets when the tab is closed.
+    document.body.addEventListener('htmx:confirm', function (evt) {
+        var question = (evt.detail.elt.dataset || {}).confirm;
+        if (!question) return;          // status polls and everything else
+        if (sessionStorage.getItem('bffs-manual-ack') === '1') return;
+        evt.preventDefault();
+        if (confirm(question + '\n\n(Further clicks will not ask again until you reload or reopen this tab.)')) {
+            sessionStorage.setItem('bffs-manual-ack', '1');
+            setTimeout(function () { evt.detail.issueRequest(true); }, 0);
+        }
+    });
+</script>
+{% endif %}
 {% endblock %}

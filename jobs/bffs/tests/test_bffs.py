@@ -3,6 +3,7 @@
 import json
 
 import numpy as np
+import pytest
 
 import bffs
 from testhelpers import write_chord_n2, write_manual, write_normalized
@@ -795,6 +796,34 @@ def test_every_source_measuring_nothing_fails_the_run(tmp_path, monkeypatch):
     raise AssertionError("expected OSError when no source measured anything")
 
 
+def test_feed_reasons_reach_the_state_file(tmp_path, monkeypatch):
+    """A source may say why it flagged each feed (the power source: off,
+    or not in the PDB table); the reason rides into the run record and
+    the state file beside flagged_by, never into the kotekan payload."""
+    import types
+    import sources
+    from sources.common import report
+    mod = types.SimpleNamespace(mask=lambda src, labels, path: (
+        np.array([True, False, False]),
+        report("ok", n_measured=3, feed_reasons={"f1X": "off", "f2X": "not in PDB table",
+                                                 "f0X": "ignored: not flagged"})))
+    monkeypatch.setattr(sources, "get", lambda kind: mod if kind == "pwr" else sources_get(kind))
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0", "f1", "f2"], [400.0], np.ones((1, 1, 3), "f4"))
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f2X"])
+    statef = tmp_path / "state.json"
+    cfg = bffs.Config(kotekan_file=str(n2), state_path=str(statef), sources=[
+        {"kind": "pwr"}, {"kind": "manual", "path": str(manualf)}])
+    run = {}
+    payload, _, _ = bffs.run(cfg, now=1000.0, report=run)
+    assert set(payload) == {"update_id", "start_time", "bad_inputs"}
+    assert run["flag_reasons"] == {"f1X": {"pwr": "off"}, "f2X": {"pwr": "not in PDB table"}}
+    state = json.loads(statef.read_text())
+    assert state["flagged_by"] == {"f1X": ["pwr"], "f2X": ["pwr", "manual"]}
+    assert state["flag_reasons"] == {"f1X": {"pwr": "off"}, "f2X": {"pwr": "not in PDB table"}}
+
+
 def test_bad_source_report_is_a_bug(tmp_path, monkeypatch):
     import types
     import sources
@@ -812,29 +841,59 @@ def test_bad_source_report_is_a_bug(tmp_path, monkeypatch):
 
 
 def _run_file_config(tmp_path, n2, sources, state=True):
+    # the state directory is not in the config: the tests' conftest puts
+    # systemd's $STATE_DIRECTORY at tmp_path/state
     cfg_file = tmp_path / "cfg.yaml"
-    raw = {"kotekan_file": str(n2), "sources": sources}
-    if state:
-        raw["state"] = {"path": str(tmp_path / "state" / "state.json")}
-    cfg_file.write_text(json.dumps(raw))
+    cfg_file.write_text(json.dumps({"kotekan_file": str(n2), "sources": sources}))
     return cfg_file
 
 
-def test_run_path_defaults_beside_the_state_file(tmp_path):
+def test_state_dir_is_a_convention_not_a_setting(tmp_path, monkeypatch):
     cfg_file = tmp_path / "cfg.yaml"
-    cfg_file.write_text(json.dumps({
-        "kotekan_file": "n2.h5",
-        "state": {"path": "/var/lib/choco/bffs/state.json"},
-    }))
-    assert bffs.load_config(cfg_file).run_path == "/var/lib/choco/bffs/run.json"
-    cfg_file.write_text(json.dumps({
-        "kotekan_file": "n2.h5",
-        "state": {"path": "/var/lib/choco/bffs/state.json",
-                  "run_path": "/tmp/elsewhere.json"},
-    }))
-    assert bffs.load_config(cfg_file).run_path == "/tmp/elsewhere.json"
     cfg_file.write_text(json.dumps({"kotekan_file": "n2.h5"}))
-    assert bffs.load_config(cfg_file).run_path is None
+    # systemd's StateDirectory (set by the conftest) ...
+    cfg = bffs.load_config(cfg_file)
+    assert cfg.state_dir == str(tmp_path / "state")
+    assert cfg.state_path == str(tmp_path / "state" / "state.json")
+    assert cfg.run_path == str(tmp_path / "state" / "run.json")
+    # ... unless --state-dir says otherwise ...
+    cfg = bffs.load_config(cfg_file, state_dir=tmp_path / "elsewhere")
+    assert cfg.run_path == str(tmp_path / "elsewhere" / "run.json")
+    # ... and without either it is /var/lib/choco/bffs
+    monkeypatch.delenv("STATE_DIRECTORY")
+    assert bffs.load_config(cfg_file).state_dir == "/var/lib/choco/bffs"
+
+
+@pytest.mark.parametrize("state", [
+    {"path": "/var/lib/choco/bffs/state.json"},
+    {"run_path": "/tmp/run.json"},
+    {"path": "/x/state.json", "run_path": "/x/run.json", "max_history": 5},
+])
+def test_retired_state_paths_are_refused(tmp_path, state):
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({"kotekan_file": "n2.h5", "state": state}))
+    with pytest.raises(ValueError, match="retired"):
+        bffs.load_config(cfg_file)
+
+
+def test_max_history_still_configurable(tmp_path):
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({"kotekan_file": "n2.h5",
+                                    "state": {"max_history": 7}}))
+    assert bffs.load_config(cfg_file).max_history == 7
+
+
+def test_manual_source_defaults_into_the_state_dir(tmp_path):
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    sdir = tmp_path / "state"
+    sdir.mkdir()
+    (sdir / "manual_overrides.yaml").write_text("bad_inputs: [f1X]\n")
+    cfg_file = _run_file_config(tmp_path, n2, [{"kind": "manual"}])
+    assert bffs.main(["--config", str(cfg_file)]) == 0
+    run = json.loads((sdir / "run.json").read_text())
+    assert run["n_bad"] == 1
+    assert run["sources"][0]["detail"]["path"] == str(sdir / "manual_overrides.yaml")
 
 
 def test_main_writes_the_run_file_on_an_ok_run(tmp_path):
@@ -866,14 +925,12 @@ def test_main_writes_the_run_file_on_a_degraded_run(tmp_path, monkeypatch):
     cfg_file.write_text(json.dumps({
         "kotekan_file": str(tmp_path / "nope_*.h5"),
         "choco": {"url": "https://localhost:5000", "group": "cx"},
-        "state": {"path": str(tmp_path / "state.json"),
-                  "run_path": str(tmp_path / "run.json")},
         "sources": [{"kind": "power-outlier"},
                     {"kind": "manual", "path": str(manualf)}],
     }))
     sent = []
     monkeypatch.setattr(bffs, "send_to_choco", lambda cfg, payload: sent.append(payload))
-    rc = bffs.main(["--config", str(cfg_file)])
+    rc = bffs.main(["--config", str(cfg_file), "--state-dir", str(tmp_path)])
     assert rc == 2
     run = json.loads((tmp_path / "run.json").read_text())
     assert run["status"] == "degraded" and run["exit_code"] == 2
@@ -907,11 +964,8 @@ def test_dry_run_writes_no_run_file(tmp_path):
 def test_unwritable_run_file_does_not_change_the_exit_code(tmp_path, caplog):
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
-    cfg_file = tmp_path / "cfg.yaml"
-    cfg_file.write_text(json.dumps({
-        "kotekan_file": str(n2), "sources": [],
-        "state": {"path": str(tmp_path / "state.json"),
-                  "run_path": str(n2 / "run.json")},   # a file is not a directory
-    }))
+    cfg_file = _run_file_config(tmp_path, n2, [])
+    (tmp_path / "state" / "run.json").mkdir(parents=True)   # a directory cannot be replaced
     assert bffs.main(["--config", str(cfg_file)]) == 0
     assert "could not write run file" in caplog.text
+    assert (tmp_path / "state" / "state.json").exists()

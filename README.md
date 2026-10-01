@@ -89,8 +89,9 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 | `kotekan` | REST timeout for node calls |
 | `sync` | `poll_interval`, `restart_timeout`, `max_concurrent_pushes`, `max_retry_interval` |
 | `fpga_master`, `pdb` | the two hardware monitors: host, port, timeout, `control`; `pdb.map_file`, `pdb.kotekan_group` |
-| `eop`, `bffs`, `eigencal`, `waterfall` | each job's `service_unit` and `state_file` for its badge; EOP's table window and endpoint; `waterfall.images_dir` and `timezone` |
-| `skymap` | `image_file`, where the sky-map job writes its PNG; optional `night_image_file` for the dark-palette render |
+| `state_dir` | where the jobs keep state (`/var/lib/choco`, systemd's `StateDirectory`); choco reads each job's files there by name |
+| `eop`, `bffs`, `eigencal`, `waterfall` | each job's `service_unit` for its badge; EOP's table window and endpoint; `bffs.control` (clickable element grid); `waterfall.images_dir` and `timezone` |
+| `skymap` | the sky-map job's `service_unit`; its PNGs are read from `<state_dir>/skymap/` |
 | `vis_files` | the data roots `/files` scans |
 | `ldap` | FreeIPA host, port, `use_ssl`, `ca_cert`, `base_dn`, `user_dn`, `user_login_attr` |
 
@@ -353,7 +354,7 @@ A companion oneshot service generates an Earth Orientation Parameter (EOP) table
 **Pipeline** (`jobs/eop/eop_update.py`):
 1. Read `frame0_ns` from `fpga_master` over TCP.
 2. Build a fresh EOP table on the UTC-midnight grid using `astropy` + IERS auto-download, covering `(now − intervals_before, now + intervals_after)` days.
-3. If the state file (`eop.state_file`, default `/var/lib/choco/eop/state.json`) exists, merge with stored state (policy below).
+3. If the state file (`state.json` in the job's state directory, `/var/lib/choco/eop`) exists, merge with stored state (policy below).
 4. Wait for choco's web port, then `POST /update/<group>` for every group in `nodes.yaml`.
 5. If *all* groups succeed, write the merged table back to the state file. On any failure, it is left alone so the next run merges from a known-good baseline.
 
@@ -388,7 +389,7 @@ sudo journalctl -u choco-bffs-flag -f          # per-run logs
 ```
 
 The header's **BFFS** badge tracks this job; its `bffs:` block in choco's
-`config.yaml` (`service_unit`, `state_file`) tells choco where to look.
+`config.yaml` names the unit; the job's files are read from `<state_dir>/bffs/`.
 
 bffs reads two tables from choco rather than keeping its own copies: the feed
 labels its flags are indexed against come from a group's kotekan `dish_inputs`
