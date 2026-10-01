@@ -112,6 +112,22 @@ error path); a PDB poll failure keeps the last-known grid with an explicit
 "showing stale states" banner; and ``web._service_detail`` wraps all state-
 file summarising so corrupt job state degrades to "no summary", never a 500.
 
+The BFFS page additionally reads the job's per-run file (``bffs.run_file``,
+default ``run.json`` beside ``state_file``; see jobs.md) through
+``web._bffs_detail`` / ``_bffs_run_summary``: a **Last run** fact (status
+pill, time, bad count, whether it was sent, the degraded reasons or the
+error) and an **N² file** fact (the file used, its age, or why none was),
+then a **Sources** table — one row per configured source with a status
+pill (``source_color``: ok green, degraded/skipped yellow), the counts it
+flagged and judged, its reason, and a one-line per-kind digest of its detail
+(``_bffs_source_summary``; unknown kinds fall back to ``key=value``).  Either
+file may be missing; the page renders what it has.  The same reasons reach
+the strip's badge tooltip ("why: …") and the landing table's job row via
+``_services_health`` → ``_run_reasons``, attached only when systemd's verdict
+is degraded or failed, so the badge colour and its explanation cannot
+disagree.  ``/api/nodes`` entries carry the sync loop's live ``status``
+beside the desired ``started``.
+
 ## Monitoring endpoints
 
 ``/api/status`` (localhost bypass) is the simple overall-health JSON: choco

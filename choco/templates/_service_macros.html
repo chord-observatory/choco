@@ -25,6 +25,16 @@
 {%- else -%}#ff4136
 {%- endif -%}
 {%- endmacro %}
+{# bffs source statuses (from the job's run file): ok green; degraded
+   (ran, abstained or lost coverage) and skipped (not run: no N² file)
+   yellow; unknown grey; anything else red. #}
+{% macro source_color(h) -%}
+{%- if h == 'ok' -%}#008000
+{%- elif h in ('degraded', 'skipped') -%}#ffdc00
+{%- elif h == 'unknown' -%}#aaa
+{%- else -%}#ff4136
+{%- endif -%}
+{%- endmacro %}
 {# running: a run is in flight; the health shown is the last completed
    one, so only a badge with no verdict yet says "running". #}
 {% macro job_label(h, running=false) -%}

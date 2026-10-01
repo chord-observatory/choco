@@ -132,11 +132,38 @@ def test_read_autocorr_subset_products_mark_measured(tmp_path):
 
 
 def test_read_autocorr_chord_frames_added_validity(tmp_path):
+    # A channel the receiver never filled inside the window (an X-engine
+    # node down) is invalid for every feed, in that cell only.
     path = tmp_path / "chord.h5"
     power = np.ones((3, 2, 2), "f4")
     frames_added = np.ones((2, 3), "u1")  # [freq, time]
-    frames_added[:, 2] = 0                # newest time column never arrived
+    frames_added[1, 2] = 0                # channel 1 missing in the newest row
     write_chord_n2(path, ["A1"], [400.0, 500.0], power, num_elements=2,
                    frames_added=frames_added)
     frame = kotekan_io.read_autocorr(path, chunk=2)
-    np.testing.assert_array_equal(frame.valid, [[True, True], [False, False]])
+    np.testing.assert_array_equal(frame.valid, [[True, True], [True, False]])
+    assert frame.tail_skipped == 0 and frame.file_ntime == 3
+
+
+def test_read_autocorr_chord_skips_the_empty_tail(tmp_path):
+    """A stopped acquisition leaves rows no frame ever reached; the
+    window ends at the newest filled row instead, so those rows cannot
+    read as every feed dead."""
+    path = tmp_path / "chord.h5"
+    power = np.ones((5, 2, 2), "f4")
+    frames_added = np.ones((2, 5), "u1")
+    frames_added[:, 3:] = 0               # the last two rows are empty
+    write_chord_n2(path, ["A1"], [400.0, 500.0], power, num_elements=2,
+                   frames_added=frames_added)
+    frame = kotekan_io.read_autocorr(path, chunk=2)
+    assert frame.ntime == 2               # rows 1 and 2
+    assert frame.valid.all()
+    assert frame.tail_skipped == 2 and frame.file_ntime == 5
+
+
+def test_read_autocorr_chord_no_filled_rows_is_none(tmp_path):
+    path = tmp_path / "chord.h5"
+    power = np.ones((3, 2, 2), "f4")
+    write_chord_n2(path, ["A1"], [400.0, 500.0], power, num_elements=2,
+                   frames_added=np.zeros((2, 3), "u1"))
+    assert kotekan_io.read_autocorr(path) is None

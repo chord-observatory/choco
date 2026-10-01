@@ -178,6 +178,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Jobs reach choco through `choco.jobclient` and derive feed labels through
   `choco.dishlabels`; both are stdlib-only so the jobs' venv is the only
   requirement.  Do not copy either into a job.
+- A bffs source that cannot measure a feed leaves it good and reports
+  `degraded`; "no data" is never turned into "bad" (power-outlier abstains
+  below `min_coverage`, rfi skips down nodes and stale gauges).  Run facts
+  go to `run.json` every run; `state.json` changes only with the bad list.
 - `jobs/eop/eop_utils.py` is vendored from kotekan: do not modify, update
   from upstream.  EOP merging is append-only and never overwrites a stored
   entry ([jobs.md](docs/design/jobs.md)).
@@ -197,7 +201,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - The fleet runs mixed kotekan versions: both pipeline palettes are styled
   (guarded by `tests/test_pipeline_palette.py`), and both N² subset wire
   forms (sparse `product_list`, compact `input_list`) are decoded, with the
-  computed layout cross-checked against kotekan's `frame_size`.
+  computed layout cross-checked against kotekan's `frame_size`.  A compact
+  `DishInputs` descriptor from kotekan develop carries no list: the peek
+  route fills it in from the pushed `dish_inputs` table
+  (`dishlabels.connected_elements`), count-checked, never guessed.
 - Peeks speak only `GET /buffer_frame?name=&len=`; 402/404/500 from kotekan
   are meaningful replies, not outages.
 

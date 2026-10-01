@@ -682,6 +682,62 @@ class TestNodeBufferDataApi:
         assert data["frame_desc"]["value_type"] == "int32"
         assert data["frame_id"] == 7
 
+    DISH_TABLE = [{"label": "B4", "type": "ArrayDish"},
+                  {"label": "Missing", "type": "Missing"},
+                  {"label": "A1", "type": "ArrayDish"},
+                  {"label": "RFIA1", "type": "RFIDish"}]
+
+    def _desc_reply(self, client, desc, config):
+        from unittest.mock import patch, PropertyMock
+        from choco.state import Node
+        frame = self.frame(frame_desc=desc)
+        del frame["data"], frame["encoding"]
+        with patch.object(Node, "get_buffer_frame", return_value=frame), \
+                patch.object(Node, "desired_config", new_callable=PropertyMock,
+                             return_value=config):
+            resp = client.get(
+                "/api/node-buffer-data/cx/cx1?buffer=n2_subset_buffer&len=0")
+        assert resp.status_code == 200
+        return resp.get_json()["frame_desc"]
+
+    def test_dish_inputs_descriptor_gets_the_implicit_input_list(self, client):
+        # kotekan develop sends a compact DishInputs descriptor with only
+        # the element count; the identities are implied by the dish table
+        # choco pushed, so the reply spells them out for the plotter.
+        desc = {"frame_desc_type": "N2", "n2_layout": "DishInputs",
+                "num_elements": 6, "num_ev": 0}
+        config = {"telescope": {"num_polarizations": 2,
+                                "dish_inputs": self.DISH_TABLE}}
+        out = self._desc_reply(client, desc, config)
+        assert out["input_list"] == [0, 2, 3, 4, 6, 7]
+        assert out["num_elements"] == 6
+
+    def test_implicit_input_list_needs_the_count_to_agree(self, client):
+        # A table that does not reproduce num_elements means the rule has
+        # drifted: better no identities than wrong ones.
+        desc = {"frame_desc_type": "N2", "n2_layout": "DishInputs",
+                "num_elements": 48, "num_ev": 0}
+        config = {"telescope": {"dish_inputs": self.DISH_TABLE}}
+        assert "input_list" not in self._desc_reply(client, desc, config)
+        # No table at all (config failed to load, or no telescope block).
+        assert "input_list" not in self._desc_reply(client, desc, None)
+        assert "input_list" not in self._desc_reply(client, desc, {"a": 1})
+
+    def test_explicit_wire_forms_are_left_alone(self, client):
+        config = {"telescope": {"dish_inputs": self.DISH_TABLE}}
+        # The kv-branch build already names its elements.
+        desc = {"frame_desc_type": "N2", "n2_layout": "DishInputs",
+                "num_elements": 6, "num_ev": 0, "input_list": [1, 2, 3, 4, 5, 6]}
+        assert self._desc_reply(client, desc, config)["input_list"] == \
+            [1, 2, 3, 4, 5, 6]
+        # Dense layouts and non-N2 descriptors carry no list.
+        desc = {"frame_desc_type": "N2", "n2_layout": "FullUpperTri",
+                "num_elements": 6, "num_ev": 0}
+        assert "input_list" not in self._desc_reply(client, desc, config)
+        desc = {"frame_desc_type": "ndarray", "value_type": "int32",
+                "extents": [6]}
+        assert "input_list" not in self._desc_reply(client, desc, config)
+
     def test_data_returned_as_raw_bytes(self, client):
         from unittest.mock import patch
         from choco.state import Node
@@ -2342,3 +2398,197 @@ class TestNodeStatusPartial:
     def test_unknown_node_404s(self, client):
         _login(client)
         assert client.get("/nodes/partials/node-status/cx/nope").status_code == 404
+
+
+class TestBffsRunFile:
+    """The BFFS page's last-run block and Sources table, and the badge
+    reasons, all read from the job's per-run file."""
+
+    RUN = {
+        "time": 1790873972.8, "dry_run": False, "status": "degraded",
+        "exit_code": 2, "error": None,
+        "degraded": ["no usable kotekan file — skipped: power-outlier",
+                     "rfi: 2 of 14 /sk endpoints unreachable"],
+        "kotekan_file": "/mnt/cs00/data/kotekan_vis_files/full/acq_x/vis_0004227923.h5",
+        "kotekan_file_age_s": 937000.0,
+        "kotekan_file_reason": "last written 260.3 h ago, older than max_age 3600 s",
+        "n_elements": 128, "n_bad": 36, "sent": True,
+        "update_id": "bffs-1790873972777",
+        "sources": [
+            {"kind": "manual", "status": "ok", "reason": None,
+             "n_measured": 128, "n_flagged": 0,
+             "detail": {"path": "/data/bffs/manual_overrides.yaml",
+                        "exists": False, "n_listed": 0}},
+            {"kind": "power-outlier", "status": "skipped",
+             "reason": "no usable kotekan file: last written 260.3 h ago, "
+                       "older than max_age 3600 s",
+             "n_measured": 0, "n_flagged": 0, "detail": {}},
+            {"kind": "power", "status": "ok", "reason": None,
+             "n_measured": 128, "n_flagged": 36,
+             "detail": {"url": "http://10.222.0.30:5000", "channels_read": 256,
+                        "n_mapped": 136, "n_watched": 128, "n_unwatched": 0,
+                        "n_unpowered": 36, "map_source": "choco master table",
+                        "map_check": "ok"}},
+            {"kind": "rfi", "status": "degraded",
+             "reason": "2 of 14 /sk endpoints unreachable",
+             "n_measured": 48, "n_flagged": 0,
+             "detail": {"n_endpoints": 14, "n_failed": 2, "n_stale": 0,
+                        "skipped_nodes": [{"node": "cx47", "status": "down"}],
+                        "sk_bounds": [0.7, 1.5], "endpoints": []}},
+        ],
+    }
+    STATE = {"updated": 1790000000.0, "update_id": "bffs-1790000000000",
+             "bad_inputs": ["B01X"], "labels": ["B01X", "B02X"],
+             "flagged_by": {"B01X": ["power"]}}
+
+    def _page(self, client, app, tmp_path, run=None, state=None, cfg=None):
+        from unittest.mock import patch
+        _login(client)
+        cfg = dict(cfg or {})
+        if state is not None:
+            f = tmp_path / "state.json"
+            f.write_text(json.dumps(state))
+            cfg["state_file"] = str(f)
+        if run is not None:
+            f = tmp_path / "run.json"
+            f.write_text(run if isinstance(run, str) else json.dumps(run))
+            cfg["run_file"] = str(f)
+        app.config["bffs_cfg"] = cfg
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            resp = client.get("/service/bffs")
+        assert resp.status_code == 200
+        return resp.data.decode()
+
+    def test_sources_table_from_the_run_file(self, client, app, tmp_path):
+        body = self._page(client, app, tmp_path, run=self.RUN, state=self.STATE)
+        assert "Sources" in body
+        # one row per configured source, with its status pill
+        for kind in ("manual", "power-outlier", "power", "rfi"):
+            assert f"<code>{kind}</code>" in body
+        assert body.count(">skipped</span>") == 1
+        # the reasons and the per-kind detail lines
+        assert "2 of 14 /sk endpoints unreachable" in body
+        assert "not polled: cx47 (down)" in body
+        assert "12 of 14 /sk endpoints used" in body
+        assert "map: choco master table" in body
+        assert "128 feeds watched" in body and "36 unpowered" in body
+        assert "override file absent" in body
+        assert "no usable kotekan file: last written 260.3 h ago" in body
+        # the last-run facts
+        assert "36 bad of 128" in body
+        assert "sent to kotekan" in body
+        assert "written 10.8 d ago" in body
+        assert "older than max_age 3600 s" in body
+        # the state summary is still there beside it
+        assert "1 of 2 elements" in body
+
+    def test_run_file_alone_renders_without_a_state_summary(self, client, app, tmp_path):
+        body = self._page(client, app, tmp_path, run=self.RUN)
+        assert "Last run" in body and "Sources" in body
+        assert "Bad feeds" not in body
+        assert "Recent transitions" not in body
+
+    def test_run_file_defaults_beside_the_state_file(self, client, app, tmp_path):
+        # only state_file configured: run.json next to it is picked up
+        (tmp_path / "run.json").write_text(json.dumps(self.RUN))
+        body = self._page(client, app, tmp_path, state=self.STATE)
+        assert "Sources" in body and "not polled: cx47 (down)" in body
+
+    @pytest.mark.parametrize("run", [
+        "{ not json",
+        {"sources": "nope", "time": "then"},
+        {"time": 1.0, "sources": [{"kind": "x", "n_flagged": "lots"}]},
+        {"time": 1.0, "sources": [None, 7, {"kind": "x", "detail": "flat"}],
+         "degraded": None, "kotekan_file_age_s": "old"},
+    ])
+    def test_garbage_run_file_keeps_the_state_summary(self, client, app, tmp_path, run):
+        body = self._page(client, app, tmp_path, run=run, state=self.STATE)
+        assert "Bad feeds" in body
+        assert "1 of 2 elements" in body
+        if not isinstance(run, dict) or "kind" not in json.dumps(run) or "lots" in json.dumps(run) or "old" in json.dumps(run):
+            assert "Sources" not in body
+
+    def test_unknown_source_kind_falls_back_to_key_values(self, client, app, tmp_path):
+        run = dict(self.RUN, sources=[{"kind": "noise", "status": "ok",
+                                       "n_measured": 3, "n_flagged": 1,
+                                       "detail": {"sigma": 2.5, "window": "10m"}}])
+        body = self._page(client, app, tmp_path, run=run)
+        assert "<code>noise</code>" in body
+        assert "sigma=2.5" in body and "window=10m" in body
+
+    def test_strip_tooltip_says_why_when_degraded(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        f = tmp_path / "run.json"
+        f.write_text(json.dumps(self.RUN))
+        app.config["bffs_cfg"] = {"run_file": str(f)}
+        degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
+        with patch("choco.web.job_status", return_value=degraded):
+            body = client.get("/partials/services").data.decode()
+        assert "why: no usable kotekan file — skipped: power-outlier" in body
+        assert "why: rfi: 2 of 14 /sk endpoints unreachable" in body
+        # an ok badge carries no reasons, whatever the run file says
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)):
+            body = client.get("/partials/services").data.decode()
+        assert "why:" not in body
+
+    def test_landing_table_carries_the_reasons(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        f = tmp_path / "run.json"
+        f.write_text(json.dumps(self.RUN))
+        app.config["bffs_cfg"] = {"run_file": str(f)}
+        degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
+        with patch("choco.web.job_status", return_value=degraded), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/partials/landing-services").data.decode()
+        assert "rfi: 2 of 14 /sk endpoints unreachable" in body
+
+    def test_failed_run_error_is_a_reason(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        f = tmp_path / "run.json"
+        f.write_text(json.dumps({"status": "failed", "exit_code": 1,
+                                 "error": "ValueError: unknown source kind 'nope'",
+                                 "degraded": [], "sources": []}))
+        app.config["bffs_cfg"] = {"run_file": str(f)}
+        failed = dict(_JOB_STUB, health="failed", result="exit-code", exit_status="1")
+        with patch("choco.web.job_status", return_value=failed):
+            body = client.get("/partials/services").data.decode()
+        assert "why: ValueError: unknown source kind" in body
+
+    def test_api_nodes_carries_the_live_status(self, client):
+        data = client.get("/api/nodes").get_json()
+        nodes = [n for group in data["groups"].values() for n in group]
+        assert nodes and all(n["status"] == "unknown" for n in nodes)
+
+    def test_source_summary_lines(self):
+        from choco.web import _bffs_source_summary as line
+        assert line("power-outlier", {"band_coverage": 0.125, "rows": 16,
+                                      "tail_rows_skipped": 4, "median_power": 1234.5678,
+                                      "file": "/a/b/vis_0001.h5"}) == (
+            "band coverage 12% · 16 rows (4 empty tail rows skipped) · "
+            "median power 1235 · vis_0001.h5")
+        assert line("rfi", {"n_endpoints": 14, "n_failed": 1, "n_stale": 1,
+                            "skipped_nodes": [{"node": "cx47", "status": "idle"}],
+                            "sk_bounds": [0.7, 1.5]}) == (
+            "12 of 14 /sk endpoints used · 1 unreachable · 1 stale · "
+            "not polled: cx47 (idle) · SK bounds 0.7–1.5")
+        assert line("power", {"n_watched": 128, "n_unpowered": 36, "n_unwatched": 2,
+                              "map_source": "choco master table",
+                              "map_check": "disagrees with the cx kotekan config: 1 of 3 dish inputs mapped"}) == (
+            "128 feeds watched · 36 unpowered · 2 on the axis unmapped · "
+            "map: choco master table · disagrees with the cx kotekan config: 1 of 3 dish inputs mapped")
+        assert line("manual", {"n_listed": 2, "exists": True, "not_on_axis": ["A1x"]}) == (
+            "2 listed · not on the axis: A1x")
+        assert line("fpga", {"n_watched": 8, "channels_sampled": 32}) == (
+            "8 feeds watched · 32 channels sampled")
+        assert line("power-outlier", {}) == ""
+
+    def test_fmt_age(self):
+        from choco.web import _fmt_age
+        assert _fmt_age(30) == "30 s"
+        assert _fmt_age(600) == "10 min"
+        assert _fmt_age(7200) == "2.0 h"
+        assert _fmt_age(937000) == "10.8 d"

@@ -19,15 +19,22 @@ warning and the rest still flag.
 A small JSON file (``state.path`` in the config) records the change history of
 the feeds — every transition, by stable feed label, with the flagging source(s)
 per feed — and lets the script send to choco only when the bad list actually
-changes. Without it, the script is stateless and sends every run.
+changes. Without it, the script is stateless and sends every run.  A second
+file (``state.run_path``, default ``run.json`` beside the state file) is
+rewritten on *every* run with how it went: exit status, the degraded
+reasons, the N² file used, and each source's report — what it measured,
+what it flagged, why it abstained.  choco's BFFS page reads it.
 
     python bffs.py --config bffs.example.yaml
 
 A feed is bad if *any* source flags it (the per-source good masks are AND-ed).
 Each source is one module under ``sources/`` exposing
-``mask(src, labels, kotekan_file)``; ``combine_sources`` dispatches via
-``sources.get(kind)``. Built-in kinds: ``manual``, ``power-outlier``, ``power``,
-``fpga``, ``rfi`` (see ``sources/``).
+``mask(src, labels, kotekan_file)`` — a good-mask, or ``(mask, report)`` with
+a ``sources.common.report`` saying how the measurement went; ``combine_sources``
+dispatches via ``sources.get(kind)``. Built-in kinds: ``manual``,
+``power-outlier``, ``power``, ``fpga``, ``rfi`` (see ``sources/``).  A source
+that cannot measure abstains (leaves feeds good) and reports ``degraded``
+rather than flagging; the run then exits 2 with the reason on record.
 
 The flag values are ``{update_id, start_time, bad_inputs}``; ``start_time`` is
 ``now + sync_delay`` (a few seconds ahead) so every consumer switches flags at
@@ -76,6 +83,7 @@ class Config:
     sync_delay: float = 5.0
     state_path: str | None = None  # JSON change-history file; unset -> stateless
     max_history: int = 0           # cap on history entries kept (0 = keep all)
+    run_path: str | None = None    # per-run status file (every run); unset -> none
 
 
 def load_config(path: str | Path) -> Config:
@@ -87,6 +95,12 @@ def load_config(path: str | Path) -> Config:
     if choco.get("url") and not choco.get("group"):
         raise ValueError("config needs 'choco.group' (the choco node group) when choco.url is set")
     state = raw.get("state") or {}
+    state_path = state.get("path")
+    # The run file defaults to a sibling of the state file, so a deployed
+    # config from before it existed grows one without an edit.
+    run_path = state.get("run_path")
+    if not run_path and state_path:
+        run_path = str(Path(state_path).with_name("run.json"))
     return Config(
         kotekan_file=kotekan_file,
         max_age=float(raw.get("max_age", 3600)),
@@ -94,7 +108,8 @@ def load_config(path: str | Path) -> Config:
         url=choco.get("url"), group=choco.get("group"),
         endpoint=str(choco.get("endpoint", "updatable_config/bad_inputs")),
         sync_delay=float(choco.get("sync_delay", 5.0)),
-        state_path=state.get("path"), max_history=int(state.get("max_history", 0)),
+        state_path=state_path, max_history=int(state.get("max_history", 0)),
+        run_path=str(run_path) if run_path else None,
     )
 
 
@@ -188,31 +203,42 @@ def uniquify_labels(labels) -> np.ndarray:
                      for i, s in enumerate(strs)])
 
 
-def resolve_kotekan_file(config: Config) -> str | None:
+def resolve_kotekan_file(config: Config, run: dict | None = None) -> str | None:
     """The newest usable N² file, or None (no match / too old).
 
     ``kotekan_file`` may be a glob spanning directories; the newest
     match by mtime wins.  A file older than ``max_age`` is unusable —
-    a stopped acquisition's empty tail rows would mark every feed dead —
-    but that only sidelines the file-based sources, not the run.
+    the acquisition that wrote it has stopped, and its data says nothing
+    about the feeds now — but that only sidelines the file-based
+    sources, not the run.  *run*, if given, records the newest match, its
+    age and why it was passed over (``kotekan_file``,
+    ``kotekan_file_age_s``, ``kotekan_file_reason``).
     """
+    run = {} if run is None else run
     path = config.kotekan_file
     if path and any(c in path for c in "*?["):
         matches = glob.glob(path)
         path = max(matches, key=os.path.getmtime) if matches else None
     if path and not os.path.exists(path):
         path = None
+    run["kotekan_file"] = path
+    run["kotekan_file_age_s"] = None
+    run["kotekan_file_reason"] = None
     if path is None:
         log.warning("no kotekan file matches %r", config.kotekan_file)
+        run["kotekan_file_reason"] = f"no file matches {config.kotekan_file}"
         return None
-    if config.max_age:
-        age = time.time() - os.path.getmtime(path)
-        if age > config.max_age:
-            log.warning(
-                "kotekan data stale: %s was last written %.1f h ago "
-                "(max_age %.0f s); file-based sources skipped",
-                path, age / 3600, config.max_age)
-            return None
+    age = time.time() - os.path.getmtime(path)
+    run["kotekan_file_age_s"] = round(age, 1)
+    if config.max_age and age > config.max_age:
+        log.warning(
+            "kotekan data stale: %s was last written %.1f h ago "
+            "(max_age %.0f s); file-based sources skipped",
+            path, age / 3600, config.max_age)
+        run["kotekan_file_reason"] = (
+            f"last written {age / 3600:.1f} h ago, older than max_age "
+            f"{config.max_age:.0f} s")
+        return None
     log.info("kotekan file: %s", path)
     return path
 
@@ -252,21 +278,56 @@ def resolve_labels(config: Config, path: str | None) -> np.ndarray:
 # -- combine sources ------------------------------------------------------
 
 
-def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict, list]:
+def _source_report(kind: str, rep, mask: np.ndarray) -> dict:
+    """Normalise what a source returned beside its mask into a run-file entry.
+
+    A bare mask (``rep`` None) is an ``ok`` report.  Anything else must be
+    a ``sources.common.report`` dict; a status other than ``ok`` /
+    ``degraded`` is a source bug (``ValueError``, exit 1).
+    """
+    out = {"kind": kind, "status": "ok", "reason": None, "n_measured": None,
+           "n_flagged": int(np.count_nonzero(~mask)), "detail": {}}
+    if rep is None:
+        return out
+    if not isinstance(rep, dict):
+        raise ValueError(f"source {kind!r} returned a {type(rep).__name__} "
+                         f"instead of a report dict")
+    status = str(rep.get("status") or "ok")
+    if status not in ("ok", "degraded"):
+        raise ValueError(f"source {kind!r} reported status {status!r}")
+    out["status"] = status
+    out["reason"] = str(rep["reason"]) if rep.get("reason") else None
+    n_measured = rep.get("n_measured")
+    out["n_measured"] = int(n_measured) if n_measured is not None else None
+    detail = rep.get("detail")
+    out["detail"] = dict(detail) if isinstance(detail, dict) else {}
+    return out
+
+
+def combine_sources(config: Config, run: dict | None = None,
+                    ) -> tuple[np.ndarray, np.ndarray, dict, list]:
     """AND together each source's good-mask.
 
     Returns ``(labels, good, flagged_by, degraded)``; ``flagged_by``
     maps each bad feed's label to the source kinds that flagged it (the
     wire payload stays indices-only — attribution is bookkeeping for
     the state file and the web UI), and ``degraded`` lists reasons the
-    run was incomplete (skipped sources) — the caller exits 2 so the
-    badge shows *degraded*, not ok and not failed.
+    run was incomplete (skipped sources, sources that abstained or lost
+    coverage) — the caller exits 2 so the badge shows *degraded*, not
+    ok and not failed.
+
+    *run*, if given, is filled in as the run proceeds (so a caller that
+    catches an exception still has the partial record): the N² file
+    facts from :func:`resolve_kotekan_file`, ``n_elements``, the same
+    ``degraded`` list, and ``sources`` — one normalised report per
+    configured source, in config order, including the ones skipped.
 
     A missing or stale kotekan file sidelines only the sources that need
     it (``NEEDS_FILE``, e.g. power-outlier) — the rest still flag, so a
     data outage doesn't take feed flagging down with it.  If *every*
-    configured source is sidelined the run fails (red badge): nothing
-    measurable is a systematic problem, not an all-good.
+    configured source is sidelined or measured nothing, the run fails
+    (``OSError``, exit 2): nothing measurable is a systematic problem,
+    not an all-good.
 
     Each source's config dict is passed with the choco context merged in
     as defaults (``choco_url`` / ``choco_group``; explicit keys win), so
@@ -274,8 +335,14 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict, list]
     the rfi source polls every started node of the broadcast group unless
     given explicit ``urls``.
     """
-    path = resolve_kotekan_file(config)
+    run = {} if run is None else run
+    degraded: list[str] = []
+    reports: list[dict] = []
+    run["degraded"] = degraded
+    run["sources"] = reports
+    path = resolve_kotekan_file(config, run)
     labels = resolve_labels(config, path)
+    run["n_elements"] = len(labels)
     good = np.ones(len(labels), dtype=bool)
     flagged_by: dict[str, list[str]] = {}
     skipped: list[str] = []
@@ -287,19 +354,38 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict, list]
         if path is None and getattr(source, "NEEDS_FILE", False):
             log.warning("%s: no usable kotekan file; source skipped", kind)
             skipped.append(kind)
+            reports.append({
+                "kind": kind, "status": "skipped",
+                "reason": "no usable kotekan file: "
+                          + str(run.get("kotekan_file_reason") or "none"),
+                "n_measured": 0, "n_flagged": 0, "detail": {}})
             continue
         src = {"choco_url": config.url, "choco_group": config.group, **src}
-        mask = np.asarray(source.mask(src, labels, path), dtype=bool)
+        result = source.mask(src, labels, path)
+        mask, rep = result if isinstance(result, tuple) else (result, None)
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != (len(labels),):
+            raise ValueError(f"source {kind!r} returned a mask of shape "
+                             f"{mask.shape} for {len(labels)} elements")
+        report = _source_report(kind, rep, mask)
+        reports.append(report)
+        if report["status"] == "degraded":
+            degraded.append(f"{kind}: {report['reason'] or 'degraded'}")
         for i in np.nonzero(~mask)[0]:
             flagged_by.setdefault(str(labels[i]), []).append(kind)
         good &= mask
-    if config.sources and len(skipped) == len(config.sources):
+    # A source that was skipped, or ran but judged no feed at all, had
+    # nothing to measure; when that is every source the run must not
+    # pass as an all-good.
+    unavailable = [r["kind"] for r in reports
+                   if r["status"] == "skipped"
+                   or (r["status"] == "degraded" and not r["n_measured"])]
+    if config.sources and len(unavailable) == len(config.sources):
         raise OSError(
-            f"all {len(skipped)} sources skipped (no usable kotekan "
-            f"file) — nothing to measure")
-    degraded = []
+            f"all {len(unavailable)} sources had nothing to measure "
+            f"({', '.join(unavailable)}) — nothing to measure")
     if skipped:
-        degraded.append("no usable kotekan file — skipped: "
+        degraded.insert(0, "no usable kotekan file — skipped: "
                         + ", ".join(skipped))
     return labels, good, flagged_by, degraded
 
@@ -309,13 +395,15 @@ def combine_sources(config: Config) -> tuple[np.ndarray, np.ndarray, dict, list]
 
 def run(
     config: Config, *, now: float | None = None, force: bool = False, write: bool = True,
-    sender=None,
+    sender=None, report: dict | None = None,
 ) -> tuple[dict, bool, list]:
     """Evaluate the sources, send if needed, and update the change-history state.
 
     Returns ``(payload, send, degraded)``; ``degraded`` lists reasons
     the run was incomplete (see :func:`combine_sources`) for the caller
-    to turn into exit code 2.  With ``state.path`` set, the bad-feed set
+    to turn into exit code 2.  *report*, if given, is the run record
+    :func:`combine_sources` fills, plus ``n_bad``, ``update_id`` and
+    ``sent`` from here (see :func:`main`).  With ``state.path`` set, the bad-feed set
     (tracked by stable feed *label*) is diffed against the last recorded run: a
     change makes ``send`` true and appends a history entry to the (re)written
     file; an unchanged run sends nothing unless ``force``. Without a state file
@@ -333,16 +421,21 @@ def run(
     untouched, so the next run sees the change again and retries.
     """
     now = time.time() if now is None else now
-    labels, good, flagged_by, degraded = combine_sources(config)
+    report = {} if report is None else report
+    report["sent"] = False
+    labels, good, flagged_by, degraded = combine_sources(config, report)
     bad_idx = np.nonzero(~good)[0]
     payload = {
         "update_id": f"bffs-{int(now * 1000)}",
         "start_time": now + config.sync_delay,
         "bad_inputs": [int(i) for i in bad_idx],
     }
+    report["n_bad"] = len(payload["bad_inputs"])
+    report["update_id"] = payload["update_id"]
     if not config.state_path:
         if sender is not None:
             sender(payload)
+            report["sent"] = True
         return payload, True, degraded
 
     # Load prior state; a missing or corrupt file is treated as a first run.
@@ -371,6 +464,7 @@ def run(
     send = changed or force
     if send and sender is not None:
         sender(payload)  # deliver first; a raised error leaves the state unwritten
+        report["sent"] = True
 
     if changed and write:
         state = state or {}
@@ -452,33 +546,64 @@ def main(argv=None) -> int:
     #   0 ok; 2 degraded — the job is fine but a dependency or input
     #   wasn't (no/stale data, choco or nodes unreachable; retries
     #   self-heal); 1 failed — config error or bug, needs a human.
+    now = time.time()
+    report: dict = {"time": now, "dry_run": bool(args.dry_run)}
+    rc, error = 0, None
     try:
         payload, send, degraded = run(
-            config, force=args.force, write=not args.dry_run, sender=sender)
+            config, now=now, force=args.force, write=not args.dry_run,
+            sender=sender, report=report)
     except OSError as e:
         # Environmental: no usable kotekan file with nothing else to
         # measure, unreadable HDF5, choco/nodes unreachable (urllib
         # errors are OSError). One useful line; -vv adds the traceback.
         log.error("%s: %s", type(e).__name__, e)
         log.debug("traceback:", exc_info=True)
-        return 2
+        rc, error = 2, f"{type(e).__name__}: {e}"
     except (ValueError, yaml.YAMLError) as e:
         # Config or consistency errors (unknown source kind, element
         # count mismatch, a bad override file) — needs a human.
         log.error("%s: %s", type(e).__name__, e)
         log.debug("traceback:", exc_info=True)
-        return 1
-    if args.dry_run or not config.url:
-        print(json.dumps(payload))
-        log.info("not sent (%s)", "dry run" if args.dry_run else "no choco url")
-    elif send:
-        log.info("sent %s (%d bad)", payload["update_id"], len(payload["bad_inputs"]))
+        rc, error = 1, f"{type(e).__name__}: {e}"
     else:
-        log.info("unchanged; nothing sent")
-    if degraded:
-        log.warning("degraded run: %s", "; ".join(degraded))
-        return 2
-    return 0
+        if args.dry_run or not config.url:
+            print(json.dumps(payload))
+            log.info("not sent (%s)", "dry run" if args.dry_run else "no choco url")
+        elif send:
+            log.info("sent %s (%d bad)", payload["update_id"], len(payload["bad_inputs"]))
+        else:
+            log.info("unchanged; nothing sent")
+        if degraded:
+            log.warning("degraded run: %s", "; ".join(degraded))
+            rc = 2
+    _write_run_report(config, report, rc, error, write=not args.dry_run)
+    return rc
+
+
+_RUN_STATUS = {0: "ok", 2: "degraded", 1: "failed"}
+
+
+def _write_run_report(config: Config, report: dict, rc: int,
+                      error: str | None, *, write: bool) -> None:
+    """Record how this run went (``state.run_path``), whatever the outcome.
+
+    Unlike the state file, which changes only when the bad list does,
+    this is rewritten every run so choco's BFFS page can show which
+    sources measured, which abstained and why, and what the exit status
+    meant.  A dry run writes nothing.  Failing to write it is logged and
+    never changes the exit code — it is a window onto the run, not part
+    of it.
+    """
+    report.update(status=_RUN_STATUS.get(rc, "failed"), exit_code=rc, error=error)
+    report.setdefault("degraded", [])
+    report.setdefault("sources", [])
+    if not write or not config.run_path:
+        return
+    try:
+        write_json_atomic(config.run_path, report)
+    except OSError as e:
+        log.warning("could not write run file %s: %s", config.run_path, e)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ import math
 import urllib.request
 from pathlib import Path
 
-from .common import iter_metrics, load_map, project
+from .common import iter_metrics, load_map, project, report
 
 # An F-engine channel is addressed by (crate, slot, chan); see pychfpga raw_acq.
 Channel = tuple[int, int, int]
@@ -111,12 +111,27 @@ def health_mask(health: dict[Channel, dict], *, max_overflows: int = 0,
 def mask(src: dict, labels, kotekan_file: str):
     """Good-mask over ``labels`` from F-engine per-channel health.
 
-    A mapped channel absent from the health sample counts as bad (fail-safe).
+    A mapped channel absent from the health sample counts as bad
+    (fail-safe) and the run is reported ``degraded`` for it.
     """
     fpga_map = load_map(src.get("map", _DEFAULT_MAP), _key)
-    good = health_mask(read_channel_health(src["url"]))
+    health = read_channel_health(src["url"])
+    good = health_mask(health)
     input_good = {inp: good.get(ch, False) for ch, inp in fpga_map.items()}
-    return project(input_good, labels)
+    axis = {str(lbl) for lbl in labels}
+    watched = [inp for inp in input_good if inp in axis]
+    unsampled = sorted(inp for ch, inp in fpga_map.items()
+                       if ch not in health and inp in axis)
+    detail = {"url": src["url"], "channels_sampled": len(health),
+              "n_mapped": len(fpga_map), "n_watched": len(watched)}
+    status, reason = "ok", None
+    if unsampled:
+        detail["unsampled"] = unsampled[:10]
+        status = "degraded"
+        reason = (f"{len(unsampled)} mapped channel(s) had no health "
+                  f"sample; their feeds are judged bad")
+    return project(input_good, labels), report(
+        status, reason, n_measured=len(watched), **detail)
 
 
 def main(argv=None) -> int:

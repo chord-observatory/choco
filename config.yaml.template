@@ -75,6 +75,11 @@ eop:
 bffs:
   service_unit: choco-bffs-flag.service  # systemd unit to query for last-run status
   state_file: /var/lib/choco/bffs/state.json   # bffs state.path (absolute; "last change" in the badge tooltip)
+  # bffs state.run_path: rewritten every run with each source's report
+  # (what it measured, what it abstained from and why).  Feeds the BFFS
+  # page's Sources table and the badge's "why" line.  Defaults to
+  # run.json beside state_file, as in the job itself.
+  # run_file: /var/lib/choco/bffs/run.json
 
 # eigencal gain-calibration job (EIGENCAL badge in the web UI header).
 eigencal:

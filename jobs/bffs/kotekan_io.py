@@ -86,6 +86,11 @@ class Frame:
     # construction*, which is different from a wired feed gone silent,
     # and sources must not read the gap as "dead".
     measured: np.ndarray | None = None
+    # Where the window sits in the file: the file's row count, and how
+    # many empty rows at its end were skipped to reach the newest row
+    # that holds any frame (a stopped acquisition leaves such a tail).
+    file_ntime: int | None = None
+    tail_skipped: int = 0
 
     @property
     def ntime(self) -> int:
@@ -105,8 +110,14 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
     ``vis[freq, prod, time]`` (CHORD hdf5N2Write; told apart by matching the
     axes against the index map). The feed axis is the element axis
     (:func:`element_labels`, one label per element); products beyond it
-    are dropped. Returns ``None`` if the file is missing or has no time
-    rows.
+    are dropped.
+
+    In the CHORD layout the window ends at the newest row with any
+    frame (``frames_added[freq, time] > 0``), not at the file's last
+    row: a stopped acquisition leaves a tail of empty rows, and judging
+    feeds on those would read every feed as dead.  ``Frame.tail_skipped``
+    says how many were passed over.  Returns ``None`` if the file is
+    missing, has no time rows, or (CHORD) no row holds a frame.
     """
     if not Path(path).exists():
         return None
@@ -129,7 +140,8 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
                       if "weight" in f else np.ones_like(auto))
             valid = (np.asarray(f["valid"][lo:ntime], dtype=bool)
                      if "valid" in f else np.ones((nrows, nfreq), dtype=bool))
-            return Frame(auto=auto, weight=weight, valid=valid, freq=freq)
+            return Frame(auto=auto, weight=weight, valid=valid, freq=freq,
+                         file_ntime=ntime)
 
         # visibility products: the autocorrelation diagonal (input_a == input_b)
         # of the labelled feeds
@@ -147,8 +159,20 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         ntime = vis.shape[0] if time_first else vis.shape[2]
         if ntime == 0:
             return None
-        lo = max(0, ntime - int(chunk))
-        nrows = ntime - lo
+        # frames_added[freq, time] (CHORD) tracks which (f, t) cells have
+        # data.  It is small (nfreq x ntime counters), so read it whole
+        # and end the window at the newest row that holds any frame.
+        frames_added = None
+        hi = ntime
+        if not time_first and "frames_added" in f:
+            frames_added = np.asarray(f["frames_added"][()])
+            filled = np.flatnonzero(frames_added.sum(axis=0) > 0)
+            if filled.size == 0:
+                return None
+            hi = int(filled[-1]) + 1
+        tail_skipped = ntime - hi
+        lo = max(0, hi - int(chunk))
+        nrows = hi - lo
 
         # CHIME keeps weights in a /flags GROUP; CHORD files instead have a
         # root-level `flags` DATASET (kotekan's own per-input flag state —
@@ -163,17 +187,16 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
             weight_ds = f["vis_weight"]
 
         if time_first:
-            power = np.real(np.asarray(vis[lo:ntime])[..., diag]).astype(np.float32)
-            wdiag = (np.asarray(weight_ds[lo:ntime], dtype=np.float32)[..., diag]
+            power = np.real(np.asarray(vis[lo:hi])[..., diag]).astype(np.float32)
+            wdiag = (np.asarray(weight_ds[lo:hi], dtype=np.float32)[..., diag]
                      if weight_ds is not None else None)
             valid = np.ones((nrows, nfreq), dtype=bool)
         else:  # vis[freq, prod, time] -> (time, freq, prod)
-            power = np.real(vis[:, diag, lo:ntime]).astype(np.float32).transpose(2, 0, 1)
-            wdiag = (np.asarray(weight_ds[:, diag, lo:ntime], dtype=np.float32).transpose(2, 0, 1)
+            power = np.real(vis[:, diag, lo:hi]).astype(np.float32).transpose(2, 0, 1)
+            wdiag = (np.asarray(weight_ds[:, diag, lo:hi], dtype=np.float32).transpose(2, 0, 1)
                      if weight_ds is not None else None)
-            # frames_added[freq, time] tracks which (f, t) cells have data
-            valid = (np.asarray(f["frames_added"][:, lo:ntime]).T > 0
-                     if "frames_added" in f else np.ones((nrows, nfreq), dtype=bool))
+            valid = (frames_added[:, lo:hi].T > 0 if frames_added is not None
+                     else np.ones((nrows, nfreq), dtype=bool))
 
         auto = np.zeros((nrows, nfreq, nfeed), dtype=np.float32)
         auto[..., feed_idx] = power
@@ -182,4 +205,4 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         measured = np.zeros(nfeed, dtype=bool)
         measured[feed_idx] = True
     return Frame(auto=auto, weight=weight, valid=valid, freq=freq,
-                 measured=measured)
+                 measured=measured, file_ntime=ntime, tail_skipped=tail_skipped)

@@ -117,3 +117,49 @@ def test_power_join_projects_onto_labels():
     labels = np.array(["feed_0000", "feed_0121", "feed_9999"])
     # feed_0000 unpowered -> bad, feed_0121 powered -> good, feed_9999 uncovered -> good
     np.testing.assert_array_equal(project(input_good, labels), [False, True, True])
+
+
+class TestReport:
+    """What the power source says about its own run."""
+
+    def _run(self, monkeypatch, payload, labels, buf=_LIVE_BUF):
+        monkeypatch.setattr(power, "choco_pdb_map", lambda url, **k: payload)
+        monkeypatch.setattr(power, "read_power_state",
+                            lambda url: power.decode_channel_states(buf, 0))
+        return power.mask({"kind": "power", "url": "http://pdb:5000",
+                           "choco_url": "https://localhost:5000"}, labels, "n2.h5")
+
+    def test_ok_report_counts_and_names_the_map(self, monkeypatch):
+        payload = dict(TestResolveMap.CHOCO_PAYLOAD, channels=[
+            {"spi_bus": 0, "board": 7, "chip": "B", "channel": 1, "dish_input": "A1X"},
+            {"spi_bus": 0, "board": 0, "chip": "A", "channel": 0, "dish_input": "A2X"},
+            {"spi_bus": 0, "board": 0, "chip": "A", "channel": 1, "dish_input": "Z9X"},
+        ])
+        good, rep = self._run(monkeypatch, payload, np.array(["A1X", "A2X", "A3X"]))
+        np.testing.assert_array_equal(good, [True, False, True])
+        assert rep["status"] == "ok" and rep["reason"] is None
+        assert rep["n_measured"] == 2                      # A1X, A2X on the axis
+        d = rep["detail"]
+        assert d["map_source"] == "choco master table" and d["map_check"] == "ok"
+        assert d["n_mapped"] == 3 and d["n_watched"] == 2
+        assert d["n_unwatched"] == 1 and d["n_unpowered"] == 1
+        assert d["channels_read"] == 32 * 8
+
+    def test_unread_channel_is_degraded(self, monkeypatch):
+        # a map row for a bus the controller did not report
+        payload = dict(TestResolveMap.CHOCO_PAYLOAD, channels=[
+            {"spi_bus": 1, "board": 0, "chip": "A", "channel": 0, "dish_input": "A1X"},
+        ])
+        good, rep = self._run(monkeypatch, payload, np.array(["A1X"]))
+        np.testing.assert_array_equal(good, [False])       # fail-safe: unpowered
+        assert rep["status"] == "degraded"
+        assert "1 mapped channel(s) absent" in rep["reason"]
+        assert rep["detail"]["unread"] == ["A1X"]
+
+    def test_fallback_map_is_named(self, monkeypatch):
+        def boom(url, **k):
+            raise OSError("connection refused")
+        monkeypatch.setattr(power, "choco_pdb_map", boom)
+        _, info = power.resolve_map_info({"choco_url": "https://localhost:5000"})
+        assert info["map_source"] == "bundled placeholder"
+        assert "connection refused" in info["map_fallback_reason"]

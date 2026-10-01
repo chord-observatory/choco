@@ -20,6 +20,7 @@ from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
 from .datafiles import human_bytes
+from . import dishlabels
 from .pdbmap import PdbMap, cross_check, kotekan_dish_labels
 from .waterfalls import (
     IMAGE_RE as WF_IMAGE_RE, freq_ticks as wf_freq_ticks, open_stream,
@@ -733,6 +734,7 @@ def api_node_buffer_data(node_key):
     if frame.get("error"):
         return {"error": frame["error"]}, 404
     if length == 0:
+        _fill_implicit_input_list(node, frame)
         return frame
 
     encoded = frame.get("data")
@@ -752,6 +754,41 @@ def api_node_buffer_data(node_key):
     resp.headers["X-Frame-Size"] = str(frame_size) if isinstance(frame_size, int) else ""
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+def _fill_implicit_input_list(node, frame: dict) -> None:
+    """Spell out the element identities a compact ``DishInputs`` descriptor implies.
+
+    kotekan (develop since PR #1658, 2026-09-11) compacts a ``DishInputs``
+    frame to the telescope's connected elements and sends only their
+    count: which fiducial inputs they are is implied by the
+    ``dish_inputs`` table it runs with — the one choco pushed.  Derive
+    the list the same way (``dishlabels.connected_elements``) from the
+    node's desired config and hand it to the plotter as ``input_list``,
+    the wire form the kv-branch builds send explicitly (a descriptor that
+    already carries one is left alone).  The result is used only when it
+    is exactly ``num_elements`` long: a rule drift between kotekan and
+    choco then shows as a frame without identities (the plotter renders
+    it generically) rather than as mislabelled inputs.
+    """
+    desc = frame.get("frame_desc")
+    if (not isinstance(desc, dict) or desc.get("frame_desc_type") != "N2"
+            or desc.get("n2_layout") != "DishInputs" or "input_list" in desc):
+        return
+    num_elements = desc.get("num_elements")
+    if isinstance(num_elements, bool) or not isinstance(num_elements, int):
+        return
+    config = node.desired_config
+    table = dishlabels.find_dish_inputs(config) if config else None
+    if not table:
+        return
+    npol = dishlabels.find_key(config, "num_polarizations")
+    try:
+        inputs = dishlabels.connected_elements(table, 2 if npol is None else npol)
+    except (TypeError, ValueError):
+        return
+    if len(inputs) == num_elements:
+        desc["input_list"] = inputs
 
 
 _GAIN_DATASET_RE = re.compile(r"[A-Za-z0-9_./\-]+")
@@ -1111,9 +1148,16 @@ def _service_registry() -> dict[str, dict]:
     # the mtime doubles as "last successful run" and goes stale.
     eop_state = (Path(str(eop_cfg["state_file"]))
                  if eop_cfg.get("state_file") else None)
+    bffs_state = (Path(str(bffs_cfg["state_file"]))
+                  if bffs_cfg.get("state_file") else None)
+    # bffs also rewrites a run file on *every* run — what each source
+    # measured, what it abstained from and why the exit status was what
+    # it was.  It defaults to a sibling of the state file, as in the job.
+    bffs_run = (Path(str(bffs_cfg["run_file"])) if bffs_cfg.get("run_file")
+                else bffs_state.with_name("run.json") if bffs_state else None)
 
     def job(label: str, unit: str, state_file, stale_after_s=None,
-            mtime_label="last run") -> dict:
+            mtime_label="last run", run_file=None) -> dict:
         return {
             "kind": "job",
             "label": label,
@@ -1122,6 +1166,7 @@ def _service_registry() -> dict[str, dict]:
             "state_file": state_file,
             "stale_after_s": stale_after_s,
             "mtime_label": mtime_label,
+            "run_file": run_file,
         }
 
     # Dict order is the order of the strip's job badges and the landing
@@ -1129,7 +1174,7 @@ def _service_registry() -> dict[str, dict]:
     return {
         "choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
                   "timer": None, "state_file": None, "stale_after_s": None,
-                  "mtime_label": None},
+                  "mtime_label": None, "run_file": None},
         "eop": job("EOP",
                    eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
                    eop_state, EOP_STALE_AFTER_S, "last run"),
@@ -1137,9 +1182,7 @@ def _service_registry() -> dict[str, dict]:
         # changes, so no staleness threshold — the mtime is "last change".
         "bffs": job("BFFS",
                     bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
-                    Path(str(bffs_cfg["state_file"]))
-                    if bffs_cfg.get("state_file") else None,
-                    None, "last change"),
+                    bffs_state, None, "last change", run_file=bffs_run),
         # eigencal rewrites its state file once per processed transit;
         # transits skipped for daytime are silent by design, so an old
         # mtime is informational, not a health downgrade.
@@ -1183,9 +1226,30 @@ def _services_health(registry: dict | None = None) -> dict:
     }
     for name, svc in (registry or _service_registry()).items():
         if svc["kind"] == "job":
-            health[name] = job_status(svc["unit"], state_file=svc["state_file"],
-                                      stale_after_s=svc["stale_after_s"])
+            # a copy: the reasons below belong to this job alone
+            health[name] = dict(job_status(svc["unit"], state_file=svc["state_file"],
+                                           stale_after_s=svc["stale_after_s"]))
+            if svc.get("run_file") and health[name]["health"] in ("degraded", "failed"):
+                health[name]["reasons"] = _run_reasons(svc["run_file"])
     return health
+
+
+def _run_reasons(run_file) -> list[str]:
+    """Why a job's last run was not plain ok, in the job's own words.
+
+    Read from the job's per-run file (bffs: ``degraded`` reasons and
+    ``error``), so a yellow badge can say *which* input was unavailable
+    instead of just "degraded".  A missing or malformed file contributes
+    nothing; the verdict itself stays systemd's.
+    """
+    run = read_state_json(run_file)
+    if not isinstance(run, dict):
+        return []
+    reasons = run.get("degraded")
+    out = [str(r) for r in reasons] if isinstance(reasons, list) else []
+    if run.get("error"):
+        out.append(str(run["error"]))
+    return out[:5]
 
 
 def _nodes_health() -> dict:
@@ -1329,6 +1393,180 @@ def _element_grid(labels: list[str], bad: set[str], sources: dict,
     return rows
 
 
+def _bffs_detail(state: dict | None, run: dict | None) -> dict | None:
+    """The BFFS page's summary from the job's two files.
+
+    The state file says what the flags *are* (bad list, element axis,
+    transitions; rewritten only when the list changes); the run file
+    says how the last run *measured* them (per-source status, what was
+    skipped or abstained and why; rewritten every run).  Either may be
+    missing; ``None`` only when both are.
+    """
+    run_summary = _bffs_run_summary(run)
+    if state is None and run_summary is None:
+        return None
+    has_state = state is not None
+    state = state or {}
+    history = [h for h in (state.get("history") or [])
+               if isinstance(h, dict)]
+    flagged_by = state.get("flagged_by") or {}
+    # which source(s) flagged each feed (absent for state files
+    # written before attribution existed)
+    sources = ({str(label): ", ".join(map(str, kinds or []))
+                for label, kinds in flagged_by.items()}
+               if isinstance(flagged_by, dict) else {})
+    bad_inputs = [str(label) for label in (state.get("bad_inputs") or [])]
+    # the element axis the flags index, recorded by bffs since
+    # 2026-09; an older state file has none and the page shows the
+    # bad list alone
+    labels = [str(label) for label in (state.get("labels") or [])]
+    return {
+        "has_state": has_state,
+        "updated": _fmt_utc(state.get("updated")),
+        "update_id": state.get("update_id"),
+        "bad_inputs": bad_inputs,
+        "flagged_by": sources,
+        "n_elements": len(labels),
+        "element_rows": _element_grid(labels, set(bad_inputs), sources),
+        # pre-shape everything the template touches, so a malformed
+        # entry fails here (-> detail None) and not mid-render
+        "history": [{
+            "time_fmt": _fmt_utc(h.get("time")),
+            "became_bad": list(h.get("became_bad") or []),
+            "became_good": list(h.get("became_good") or []),
+            "n_bad": len(h.get("bad_inputs") or []),
+        } for h in reversed(history[-10:])],
+        "history_total": len(history),
+        "run": run_summary,
+    }
+
+
+def _opt_int(value):
+    return None if value is None else int(value)
+
+
+def _fmt_age(seconds) -> str:
+    s = float(seconds)
+    if s < 90:
+        return f"{s:.0f} s"
+    if s < 5400:
+        return f"{s / 60:.0f} min"
+    if s < 172800:
+        return f"{s / 3600:.1f} h"
+    return f"{s / 86400:.1f} d"
+
+
+def _bffs_run_summary(run) -> dict | None:
+    """The run file pre-shaped for the template, or ``None``.
+
+    Parsed under its own guard so a malformed run file costs only the
+    "last run" block, not the state summary beside it.
+    """
+    if not isinstance(run, dict):
+        return None
+    try:
+        sources = []
+        for src in run.get("sources") or []:
+            if not isinstance(src, dict):
+                continue
+            detail = src.get("detail") if isinstance(src.get("detail"), dict) else {}
+            kind = str(src.get("kind") or "?")
+            sources.append({
+                "kind": kind,
+                "status": str(src.get("status") or "unknown"),
+                "reason": str(src["reason"]) if src.get("reason") else None,
+                "n_flagged": _opt_int(src.get("n_flagged")),
+                "n_measured": _opt_int(src.get("n_measured")),
+                "summary": _bffs_source_summary(kind, detail),
+            })
+        age = run.get("kotekan_file_age_s")
+        return {
+            "time": float(run["time"]) if run.get("time") is not None else None,
+            "time_fmt": _fmt_utc(run.get("time")),
+            "status": str(run.get("status") or "unknown"),
+            "exit_code": _opt_int(run.get("exit_code")),
+            "degraded": [str(r) for r in (run.get("degraded") or [])],
+            "error": str(run["error"]) if run.get("error") else None,
+            "kotekan_file": (str(run["kotekan_file"])
+                             if run.get("kotekan_file") else None),
+            "kotekan_file_age": _fmt_age(age) if age is not None else None,
+            "kotekan_file_reason": (str(run["kotekan_file_reason"])
+                                    if run.get("kotekan_file_reason") else None),
+            "n_elements": _opt_int(run.get("n_elements")),
+            "n_bad": _opt_int(run.get("n_bad")),
+            "sent": run.get("sent"),
+            "sources": sources,
+        }
+    except (TypeError, ValueError, KeyError, AttributeError) as e:
+        logger.warning(f"bffs run file: unusable contents: {e}")
+        return None
+
+
+def _bffs_source_summary(kind: str, d: dict) -> str:
+    """One line from a source's free-form report detail, by source kind.
+
+    Every key is optional (older run files, future sources); anything
+    unrecognised falls back to ``key=value`` pairs.
+    """
+    parts: list[str] = []
+    if kind == "power-outlier":
+        if d.get("band_coverage") is not None:
+            parts.append(f"band coverage {float(d['band_coverage']):.0%}")
+        if d.get("rows") is not None:
+            rows = f"{int(d['rows'])} rows"
+            if d.get("tail_rows_skipped"):
+                rows += f" ({int(d['tail_rows_skipped'])} empty tail rows skipped)"
+            parts.append(rows)
+        if d.get("median_power") is not None:
+            parts.append(f"median power {float(d['median_power']):.4g}")
+        if d.get("file"):
+            parts.append(Path(str(d["file"])).name)
+    elif kind == "rfi":
+        n = d.get("n_endpoints")
+        if n is not None:
+            used = int(n) - int(d.get("n_failed") or 0) - int(d.get("n_stale") or 0)
+            parts.append(f"{used} of {int(n)} /sk endpoints used")
+        if d.get("n_failed"):
+            parts.append(f"{int(d['n_failed'])} unreachable")
+        if d.get("n_stale"):
+            parts.append(f"{int(d['n_stale'])} stale")
+        skipped = [n for n in (d.get("skipped_nodes") or []) if isinstance(n, dict)]
+        if skipped:
+            parts.append("not polled: " + ", ".join(
+                f"{n.get('node')} ({n.get('status')})" for n in skipped))
+        bounds = d.get("sk_bounds")
+        if isinstance(bounds, list) and len(bounds) == 2:
+            parts.append(f"SK bounds {bounds[0]}–{bounds[1]}")
+    elif kind == "power":
+        if d.get("n_watched") is not None:
+            parts.append(f"{int(d['n_watched'])} feeds watched")
+        if d.get("n_unpowered") is not None:
+            parts.append(f"{int(d['n_unpowered'])} unpowered")
+        if d.get("n_unwatched"):
+            parts.append(f"{int(d['n_unwatched'])} on the axis unmapped")
+        if d.get("map_source"):
+            parts.append(f"map: {d['map_source']}")
+        if d.get("map_check") and d["map_check"] != "ok":
+            parts.append(str(d["map_check"]))
+    elif kind == "manual":
+        if d.get("n_listed") is not None:
+            parts.append(f"{int(d['n_listed'])} listed")
+        if d.get("exists") is False:
+            parts.append("override file absent")
+        if d.get("not_on_axis"):
+            parts.append("not on the axis: "
+                         + ", ".join(str(x) for x in d["not_on_axis"]))
+    elif kind == "fpga":
+        if d.get("n_watched") is not None:
+            parts.append(f"{int(d['n_watched'])} feeds watched")
+        if d.get("channels_sampled") is not None:
+            parts.append(f"{int(d['channels_sampled'])} channels sampled")
+    if not parts:
+        parts = [f"{k}={v}" for k, v in d.items()
+                 if isinstance(v, (str, int, float, bool))][:6]
+    return " · ".join(parts)
+
+
 def _service_detail_inner(name: str, svc: dict) -> dict | None:
     if name == "choco":
         registry = _registry()
@@ -1344,6 +1582,8 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
         }
 
     state = read_state_json(svc.get("state_file"))
+    if name == "bffs":
+        return _bffs_detail(state, read_state_json(svc.get("run_file")))
     if state is None:
         return None
 
@@ -1359,38 +1599,6 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
             "entries": len(table),
             "first": _fmt_utc(stamps[0] / 1e9),
             "last": _fmt_utc(stamps[-1] / 1e9),
-        }
-
-    if name == "bffs":
-        history = [h for h in (state.get("history") or [])
-                   if isinstance(h, dict)]
-        flagged_by = state.get("flagged_by") or {}
-        # which source(s) flagged each feed (absent for state files
-        # written before attribution existed)
-        sources = ({str(label): ", ".join(map(str, kinds or []))
-                    for label, kinds in flagged_by.items()}
-                   if isinstance(flagged_by, dict) else {})
-        bad_inputs = [str(label) for label in (state.get("bad_inputs") or [])]
-        # the element axis the flags index, recorded by bffs since
-        # 2026-09; an older state file has none and the page shows the
-        # bad list alone
-        labels = [str(label) for label in (state.get("labels") or [])]
-        return {
-            "updated": _fmt_utc(state.get("updated")),
-            "update_id": state.get("update_id"),
-            "bad_inputs": bad_inputs,
-            "flagged_by": sources,
-            "n_elements": len(labels),
-            "element_rows": _element_grid(labels, set(bad_inputs), sources),
-            # pre-shape everything the template touches, so a malformed
-            # entry fails here (-> detail None) and not mid-render
-            "history": [{
-                "time_fmt": _fmt_utc(h.get("time")),
-                "became_bad": list(h.get("became_bad") or []),
-                "became_good": list(h.get("became_good") or []),
-                "n_bad": len(h.get("bad_inputs") or []),
-            } for h in reversed(history[-10:])],
-            "history_total": len(history),
         }
 
     if name == "eigencal":
@@ -2066,6 +2274,9 @@ def api_nodes():
             "host": node.host,
             "port": node.port,
             "started": node.started,
+            # the sync loop's last probe, so a job can tell a node that
+            # is down from one worth polling (bffs's rfi source)
+            "status": node.status.value,
         })
     return {"groups": groups}
 

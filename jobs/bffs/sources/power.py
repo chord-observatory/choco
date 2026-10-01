@@ -29,7 +29,7 @@ import logging
 import urllib.request
 from pathlib import Path
 
-from .common import choco_pdb_map, load_map, project
+from .common import choco_pdb_map, load_map, project, report
 
 log = logging.getLogger("bffs.power")
 
@@ -50,23 +50,52 @@ def resolve_map(src: dict) -> dict[Channel, str]:
     path), falling back to the bundled placeholder CSV so dry runs and a
     choco outage still produce a mask rather than failing the source.
     """
+    return resolve_map_info(src)[0]
+
+
+def resolve_map_info(src: dict) -> tuple[dict[Channel, str], dict]:
+    """:func:`resolve_map` plus where the map came from, for the report.
+
+    The info dict carries ``map_source`` (``config CSV``, ``choco master
+    table`` or ``bundled placeholder``), ``map_path`` for the CSVs, and
+    for choco's table its ``check`` verdict against kotekan's
+    ``dish_inputs`` and the number of unparseable rows.
+    """
     if src.get("map"):
-        return load_map(src["map"], _key)
+        return load_map(src["map"], _key), {
+            "map_source": "config CSV", "map_path": str(src["map"])}
     choco_url = src.get("choco_url")
+    fallback_reason = None
     if choco_url:
         try:
             payload = choco_pdb_map(choco_url)
         except (OSError, ValueError) as e:
             log.warning("no PDB map from choco (%s); using %s",
                         e, _DEFAULT_MAP)
+            fallback_reason = f"no PDB map from choco: {e}"
         else:
-            _log_check(payload.get("check") or {}, payload.get("errors") or [])
+            check = payload.get("check") or {}
+            errors = payload.get("errors") or []
+            _log_check(check, errors)
             rows = payload.get("channels") or []
-            return {(int(r["spi_bus"]), int(r["board"]),
-                     str(r["chip"]).strip().upper(), int(r["channel"])):
-                    str(r.get("dish_input") or r.get("correlator_input", "")).strip()
-                    for r in rows}
-    return load_map(_DEFAULT_MAP, _key)
+            table = {(int(r["spi_bus"]), int(r["board"]),
+                      str(r["chip"]).strip().upper(), int(r["channel"])):
+                     str(r.get("dish_input") or r.get("correlator_input", "")).strip()
+                     for r in rows}
+            info = {"map_source": "choco master table",
+                    "map_bad_rows": len(errors)}
+            if check.get("available"):
+                info["map_check"] = "ok" if check.get("ok") else (
+                    f"disagrees with the {check.get('group')} kotekan config: "
+                    f"{check.get('n_matched', 0)} of {check.get('n_kotekan', 0)} "
+                    f"dish inputs mapped")
+            else:
+                info["map_check"] = f"not cross-checked ({check.get('reason')})"
+            return table, info
+    info = {"map_source": "bundled placeholder", "map_path": _DEFAULT_MAP}
+    if fallback_reason:
+        info["map_fallback_reason"] = fallback_reason
+    return load_map(_DEFAULT_MAP, _key), info
 
 
 def _log_check(check: dict, errors: list) -> None:
@@ -127,12 +156,37 @@ def read_power_state(base_url: str) -> dict[Channel, bool]:
 def mask(src: dict, labels, kotekan_file: str):
     """Good-mask over ``labels``: a feed whose power channel reads off is bad.
 
-    A mapped channel absent from the live read counts as unpowered (fail-safe).
+    A mapped channel absent from the live read counts as unpowered
+    (fail-safe) and the run is reported ``degraded`` for it: that is a
+    read problem being turned into a flag, and the page should say so.
+    The report also counts the feeds on the axis the map does not cover
+    (their power is not watched) and names where the map came from.
     """
-    power_map = resolve_map(src)
+    power_map, info = resolve_map_info(src)
     state = read_power_state(src["url"])
     input_good = {inp: state.get(ch, False) for ch, inp in power_map.items()}
-    return project(input_good, labels)
+    axis = {str(lbl) for lbl in labels}
+    watched = [inp for inp in input_good if inp in axis]
+    unread = sorted(inp for ch, inp in power_map.items()
+                    if ch not in state and inp in axis)
+    detail = {
+        "url": src["url"],
+        "channels_read": len(state),
+        "n_mapped": len(power_map),
+        "n_watched": len(watched),
+        "n_unwatched": len(axis.difference(input_good)),
+        "n_unpowered": sum(1 for inp in watched if not input_good[inp]),
+        **info,
+    }
+    status, reason = "ok", None
+    if unread:
+        detail["unread"] = unread[:10]
+        status = "degraded"
+        reason = (f"{len(unread)} mapped channel(s) absent from the "
+                  f"controller's read; their feeds are judged unpowered")
+        log.warning("power: %s: %s", reason, ", ".join(unread[:10]))
+    return project(input_good, labels), report(
+        status, reason, n_measured=len(watched), **detail)
 
 
 def main(argv=None) -> int:

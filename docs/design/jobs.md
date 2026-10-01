@@ -32,6 +32,45 @@ cheap UI-facing monitoring (``FpgaMonitor``, ``PdbMonitor``).  A header badge
 ``_services_status.html``, and (optionally) a state-file summary branch in
 ``web._service_detail``.
 
+**Per-run files (bffs, 2026-10).**  The exit code says *that* a run was
+degraded; it cannot say which input was missing, and a state file that is
+rewritten only on change cannot either.  bffs therefore keeps two files.
+``state.json`` is what the flags *are* — bad list, element axis,
+transitions — and changes only when the bad list does, so its mtime stays
+"last change".  ``run.json`` (``state.run_path``, default a sibling) is
+rewritten on every non-dry run, whatever the outcome, with ``status`` /
+``exit_code`` / ``error``, the ``degraded`` reasons, the N² file chosen (or
+why none was), and one report per configured source.  Each source's
+``mask()`` may return ``(mask, report)`` — ``sources.common.report``: ``ok``
+or ``degraded``, a reason, ``n_measured`` (feeds it actually judged) and
+free-form ``detail`` — and the core adds ``skipped`` entries for sources it
+did not run and ``n_flagged`` for all.  ``n_measured`` is what tells "ran and
+flagged nothing" from "had nothing to measure"; a run in which every source
+is skipped or measured nothing still fails (``OSError``, exit 2) rather than
+pass as all-good.  The web side reads the file in ``web._bffs_run_summary``
+(its own guard: a malformed run file costs only the last-run block) and in
+``web._run_reasons`` for the badge tooltip and landing table, only when
+systemd's verdict is degraded or failed — the verdict stays systemd's; the
+file supplies the words.
+
+**Abstain, never flag for lack of data.**  Measured 2026-10-01 against the
+state history: the stopped-acquisition tail file (20 rows, frames in 1 of
+6145 channels) had twice flagged all 128 elements bad (09-19 02:30, 09-20
+20:40 — for a day), because ``max_age`` does not trip on a just-written file
+and ``min_valid_frac`` was measured against the whole band, so every feed
+looked dead.  The same arithmetic would have flagged everything with four of
+the eight X-engine nodes (each 2 GPUs × 384 of the 6144 channels) down.  The
+rule now: the reader ends the window at the newest row holding any frame
+(``Frame.tail_skipped``); power-outlier gates on ``band_coverage`` (the
+fraction of (time, band-freq) cells delivered; ``min_coverage`` 0.25) and
+measures ``min_valid_frac`` relative to the delivered cells; rfi leaves a
+down or idle node's band unmeasured, ignores an instance whose gauges
+(``/metrics`` timestamps on ``kotekan_rfi_sk_per_feed_valid_frac``) are
+older than ``max_stale_s`` — the ``/sk`` EMAs freeze when frames stop — and
+no longer raises when every endpoint fails: it abstains with
+``n_measured`` 0 and lets the core decide whether the run as a whole measured
+anything.  ``/api/nodes`` carries each node's live ``status`` for this.
+
 ## EOP merge policy
 
 ``jobs/eop/eop_update.py::merge_tables`` is **append-only and no-overwrite**.

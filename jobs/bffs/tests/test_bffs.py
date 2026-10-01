@@ -396,6 +396,7 @@ def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(rfi, "choco_group_nodes",
                         lambda url, group: seen.update(url=url, group=group) or [node])
     monkeypatch.setattr(rfi, "read_sk", lambda url: {})
+    monkeypatch.setattr(rfi, "read_sk_freshness", lambda base: {})  # no network
     monkeypatch.setattr(bffs, "choco_group_config", lambda url, group: {})
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
@@ -681,3 +682,236 @@ def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
     assert all(isinstance(i, int) for i in payload["bad_inputs"])
     state = json.loads(statef.read_text())
     assert state["flagged_by"] == {"f1X": ["manual"]}
+
+
+# -- per-source reports and the run file --------------------------------------
+
+
+def _bare_source(monkeypatch, mask_values):
+    """Register a source kind whose mask() returns a bare array (the
+    pre-report protocol) — it must still be accepted as an ok report."""
+    import types
+    import sources
+    mod = types.SimpleNamespace(mask=lambda src, labels, path: np.array(mask_values))
+    monkeypatch.setattr(sources, "get",
+                        lambda kind: mod if kind == "bare" else sources_get(kind))
+
+
+sources_get = __import__("sources").get
+
+
+def test_run_report_collects_one_entry_per_source(tmp_path, monkeypatch):
+    n2 = tmp_path / "n2.h5"
+    auto = np.ones((2, 4, 3), "f4") * 10.0
+    auto[..., 1] = 900.0                                   # f1 is a power outlier
+    write_normalized(n2, ["f0", "f1", "f2"], np.linspace(400, 800, 4), auto)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f2X"])
+    _bare_source(monkeypatch, [True, True, True])
+    cfg = bffs.Config(kotekan_file=str(n2), sources=[
+        {"kind": "power-outlier", "nsigma": 5.0},
+        {"kind": "manual", "path": str(manualf)},
+        {"kind": "bare"},
+    ])
+    run = {}
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg, run)
+    assert list(good) == [True, False, False]
+    assert degraded == []
+    assert run["kotekan_file"] == str(n2) and run["kotekan_file_reason"] is None
+    assert run["kotekan_file_age_s"] >= 0 and run["n_elements"] == 3
+    kinds = [r["kind"] for r in run["sources"]]
+    assert kinds == ["power-outlier", "manual", "bare"]
+    po, man, bare = run["sources"]
+    assert po["status"] == "ok" and po["n_flagged"] == 1 and po["n_measured"] == 3
+    assert po["detail"]["band_coverage"] == 1.0
+    assert man["status"] == "ok" and man["n_flagged"] == 1 and man["n_measured"] == 3
+    assert bare == {"kind": "bare", "status": "ok", "reason": None,
+                    "n_measured": None, "n_flagged": 0, "detail": {}}
+
+
+def test_skipped_source_is_in_the_run_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _PER_DISH_CONFIG)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["A3X"])
+    cfg = bffs.Config(
+        kotekan_file=str(tmp_path / "nope_*.h5"),
+        url="https://localhost:5000", group="cx",
+        sources=[{"kind": "power-outlier"},
+                 {"kind": "manual", "path": str(manualf)}],
+    )
+    run = {}
+    _, _, _, degraded = bffs.combine_sources(cfg, run)
+    assert run["kotekan_file"] is None
+    assert "no file matches" in run["kotekan_file_reason"]
+    po = run["sources"][0]
+    assert po["status"] == "skipped" and po["n_measured"] == 0
+    assert "no usable kotekan file" in po["reason"]
+    assert degraded == ["no usable kotekan file — skipped: power-outlier"]
+    assert run["degraded"] is degraded                      # the same list, live
+
+
+def test_degraded_source_report_degrades_the_run(tmp_path, monkeypatch):
+    """A source that ran but abstained (rfi with every endpoint down)
+    makes the run degraded with its reason, while the other sources'
+    flags still go out."""
+    from sources import rfi
+    monkeypatch.setattr(rfi, "read_sk", lambda url: (_ for _ in ()).throw(OSError("refused")))
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1X"])
+    cfg = bffs.Config(kotekan_file=str(n2), sources=[
+        {"kind": "rfi", "urls": ["u0", "u1"], "max_stale_s": 0},
+        {"kind": "manual", "path": str(manualf)},
+    ])
+    run = {}
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg, run)
+    assert list(good) == [True, False]
+    assert degraded == ["rfi: 2 of 2 /sk endpoints unreachable"]
+    assert run["sources"][0]["status"] == "degraded"
+
+
+def test_every_source_measuring_nothing_fails_the_run(tmp_path, monkeypatch):
+    """Skipped for lack of a file plus abstained for lack of endpoints:
+    nothing was measured anywhere, which must not pass as all-good."""
+    from sources import rfi
+    monkeypatch.setattr(rfi, "read_sk", lambda url: (_ for _ in ()).throw(OSError("refused")))
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _PER_DISH_CONFIG)
+    cfg = bffs.Config(
+        kotekan_file=str(tmp_path / "nope_*.h5"),
+        url="https://localhost:5000", group="cx",
+        sources=[{"kind": "power-outlier"},
+                 {"kind": "rfi", "urls": ["u0"], "max_stale_s": 0}],
+    )
+    run = {}
+    try:
+        bffs.combine_sources(cfg, run)
+    except OSError as e:
+        assert "nothing to measure" in str(e)
+        assert [r["status"] for r in run["sources"]] == ["skipped", "degraded"]
+        return
+    raise AssertionError("expected OSError when no source measured anything")
+
+
+def test_bad_source_report_is_a_bug(tmp_path, monkeypatch):
+    import types
+    import sources
+    mod = types.SimpleNamespace(
+        mask=lambda src, labels, path: (np.ones(1, bool), {"status": "weird"}))
+    monkeypatch.setattr(sources, "get", lambda kind: mod)
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    try:
+        bffs.combine_sources(bffs.Config(kotekan_file=str(n2), sources=[{"kind": "x"}]))
+    except ValueError as e:
+        assert "weird" in str(e)
+        return
+    raise AssertionError("expected ValueError for an unknown report status")
+
+
+def _run_file_config(tmp_path, n2, sources, state=True):
+    cfg_file = tmp_path / "cfg.yaml"
+    raw = {"kotekan_file": str(n2), "sources": sources}
+    if state:
+        raw["state"] = {"path": str(tmp_path / "state" / "state.json")}
+    cfg_file.write_text(json.dumps(raw))
+    return cfg_file
+
+
+def test_run_path_defaults_beside_the_state_file(tmp_path):
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": "n2.h5",
+        "state": {"path": "/var/lib/choco/bffs/state.json"},
+    }))
+    assert bffs.load_config(cfg_file).run_path == "/var/lib/choco/bffs/run.json"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": "n2.h5",
+        "state": {"path": "/var/lib/choco/bffs/state.json",
+                  "run_path": "/tmp/elsewhere.json"},
+    }))
+    assert bffs.load_config(cfg_file).run_path == "/tmp/elsewhere.json"
+    cfg_file.write_text(json.dumps({"kotekan_file": "n2.h5"}))
+    assert bffs.load_config(cfg_file).run_path is None
+
+
+def test_main_writes_the_run_file_on_an_ok_run(tmp_path):
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1X"])
+    cfg_file = _run_file_config(tmp_path, n2, [{"kind": "manual", "path": str(manualf)}])
+    rc = bffs.main(["--config", str(cfg_file)])
+    assert rc == 0
+    run = json.loads((tmp_path / "state" / "run.json").read_text())
+    assert run["status"] == "ok" and run["exit_code"] == 0 and run["error"] is None
+    assert run["degraded"] == [] and run["n_bad"] == 1 and run["n_elements"] == 2
+    assert run["sent"] is False                     # no choco url configured
+    assert run["dry_run"] is False
+    assert run["update_id"].startswith("bffs-")
+    assert run["kotekan_file"] == str(n2)
+    assert [s["kind"] for s in run["sources"]] == ["manual"]
+    # the state file keeps its on-change semantics: written once, same run
+    assert (tmp_path / "state" / "state.json").exists()
+
+
+def test_main_writes_the_run_file_on_a_degraded_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: _PER_DISH_CONFIG)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["A3X"])
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": str(tmp_path / "nope_*.h5"),
+        "choco": {"url": "https://localhost:5000", "group": "cx"},
+        "state": {"path": str(tmp_path / "state.json"),
+                  "run_path": str(tmp_path / "run.json")},
+        "sources": [{"kind": "power-outlier"},
+                    {"kind": "manual", "path": str(manualf)}],
+    }))
+    sent = []
+    monkeypatch.setattr(bffs, "send_to_choco", lambda cfg, payload: sent.append(payload))
+    rc = bffs.main(["--config", str(cfg_file)])
+    assert rc == 2
+    run = json.loads((tmp_path / "run.json").read_text())
+    assert run["status"] == "degraded" and run["exit_code"] == 2
+    assert run["degraded"] == ["no usable kotekan file — skipped: power-outlier"]
+    assert run["sent"] is True and len(sent) == 1
+    assert run["kotekan_file"] is None and "no file matches" in run["kotekan_file_reason"]
+    assert [s["status"] for s in run["sources"]] == ["skipped", "ok"]
+
+
+def test_main_writes_the_run_file_on_a_failed_run(tmp_path):
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    cfg_file = _run_file_config(tmp_path, n2, [{"kind": "nope"}])
+    rc = bffs.main(["--config", str(cfg_file)])
+    assert rc == 1
+    run = json.loads((tmp_path / "state" / "run.json").read_text())
+    assert run["status"] == "failed" and run["exit_code"] == 1
+    assert "unknown source kind" in run["error"]
+    assert run["sources"] == [] and run["n_elements"] == 1   # partial record kept
+    assert not (tmp_path / "state" / "state.json").exists()
+
+
+def test_dry_run_writes_no_run_file(tmp_path):
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    cfg_file = _run_file_config(tmp_path, n2, [])
+    assert bffs.main(["--config", str(cfg_file), "--dry-run"]) == 0
+    assert not (tmp_path / "state" / "run.json").exists()
+
+
+def test_unwritable_run_file_does_not_change_the_exit_code(tmp_path, caplog):
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(json.dumps({
+        "kotekan_file": str(n2), "sources": [],
+        "state": {"path": str(tmp_path / "state.json"),
+                  "run_path": str(n2 / "run.json")},   # a file is not a directory
+    }))
+    assert bffs.main(["--config", str(cfg_file)]) == 0
+    assert "could not write run file" in caplog.text

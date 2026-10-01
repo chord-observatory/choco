@@ -17,6 +17,10 @@ element of the file's own axis — a full frame's 128 or a compact
 :func:`file_element_labels` turns that into choco's names (``B4p1`` →
 ``B4X``) and is the only accepted file layout: per-dish tables and the
 pre-2026-08 per-element tables are refused, never expanded or guessed.
+
+A compact (``DishInputs``) frame's element axis is the table's *connected*
+dishes — every row whose ``type`` is not ``Missing`` — in that same [P][D]
+order; :func:`connected_elements` is the one copy of that rule.
 """
 
 from __future__ import annotations
@@ -151,3 +155,29 @@ def file_element_labels(labels, num_elements: int | None = None,
                 f"index_map/pol says {pol[i]}")
         out.append(m["dish"] + pol_suffix(p))
     return out
+
+
+def connected_elements(dish_inputs, num_polarizations: int = 2) -> list[int]:
+    """Fiducial element indices of a compact ``DishInputs`` axis, in order.
+
+    Mirrors ``CHORDTelescope::get_connected_elements`` (kotekan develop,
+    PR #1658): walk the full [P][D] element axis and keep every element
+    whose dish ``type`` is not ``Missing``, so compact element *c* is
+    fiducial element ``result[c]``.  kotekan's ``DishInputs`` descriptor
+    does not carry this list — the selection is implied by the
+    ``dish_inputs`` table it was configured with, which is the table
+    choco pushed — so a consumer with that table derives it here.  The
+    caller must still check the length against the descriptor's
+    ``num_elements``: a disagreement means the rule has drifted, and a
+    wrong identity on an element is worse than none.
+    """
+    npol = int(num_polarizations)
+    if npol < 1:
+        raise ValueError(f"num_polarizations must be positive, got {npol}")
+    num_dishes = len(dish_inputs)
+    connected = [
+        dish for dish, row in enumerate(dish_inputs)
+        if not (isinstance(row, dict)
+                and str(row.get("type")) == PLACEHOLDER_LABEL)
+    ]
+    return [dish + pol * num_dishes for pol in range(npol) for dish in connected]

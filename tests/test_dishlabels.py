@@ -87,3 +87,37 @@ class TestFileElementLabels:
 
     def test_empty_table(self):
         assert dl.file_element_labels([], 0) == []
+
+
+class TestConnectedElements:
+    TABLE = [{"label": "B4", "type": "ArrayDish"},
+             {"label": "Missing", "type": "Missing"},
+             {"label": "A1", "type": "ArrayDish"},
+             {"label": "RFIA1", "type": "RFIDish"}]
+
+    def test_skips_missing_rows_in_pol_major_order(self):
+        # Compact element c is fiducial element result[c]: X block first,
+        # then the Y block at + num_dishes, Missing rows dropped from both.
+        assert dl.connected_elements(self.TABLE) == [0, 2, 3, 4, 6, 7]
+
+    def test_only_an_explicit_missing_type_is_dropped(self):
+        table = [{"label": "A1"}, "A2", {"label": "A3", "type": "Missing"}]
+        assert dl.connected_elements(table, 1) == [0, 1]
+
+    def test_polarization_count(self):
+        assert dl.connected_elements(self.TABLE, 1) == [0, 2, 3]
+        assert dl.connected_elements(self.TABLE, 3) == \
+            [0, 2, 3, 4, 6, 7, 8, 10, 11]
+        with pytest.raises(ValueError):
+            dl.connected_elements(self.TABLE, 0)
+
+    def test_live_pathfinder_table(self):
+        # cx52, 2026-10: 16 ArrayDish + 8 RFIDish rows among 64, both
+        # pols — the 48-element compact axis kotekan reports.
+        table = [{"type": "ArrayDish"}] * 16 + [{"type": "Missing"}] * 40 \
+            + [{"type": "RFIDish"}] * 8
+        out = dl.connected_elements(table)
+        assert len(out) == 48
+        assert out == list(range(16)) + list(range(56, 64)) \
+            + list(range(64, 80)) + list(range(120, 128))
+

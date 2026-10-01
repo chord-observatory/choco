@@ -9,7 +9,9 @@ so downstream processing can exclude them.
 
 There is no daemon: one pass — read the data, combine, send — then exit. A small
 JSON file records the feed change history and lets it send to choco only when the
-bad list changes. It is a small package — a core (`bffs.py`), the kotekan reader
+bad list changes; a second one, rewritten every run, records how the run went
+(which sources measured, which abstained and why — see
+[Run file](#run-file)). It is a small package — a core (`bffs.py`), the kotekan reader
 (`kotekan_io.py`), and one module per source under `sources/` — on the standard
 library plus four packages (`numpy`, `h5py`, `hdf5plugin`, `PyYAML`).
 
@@ -55,14 +57,14 @@ The timer interval is the flagging cadence — there is no internal scheduling.
                           │
                           ▼  kotekan_io.read_labels()  (the feed axis)
    ┌──────────────────── sources/ ───────────────────┐
-   │ manual · power-outlier · power · fpga             │  each → per-feed good/bad mask
+   │ manual · power-outlier · power · fpga · rfi       │  each → per-feed good/bad mask + a report
    └────────────────────────┬─────────────────────────┘
                           ▼  AND the good masks  (a feed is bad if ANY source flags it)
-                 diff vs state.json ── unchanged ─▶ done
-                          │ changed
-                          ▼
-              push {update_id, start_time,    + append the transition
-              bad_inputs} → choco → kotekan     to state.json's history
+                 diff vs state.json ── unchanged ─▶ done ─┐
+                          │ changed                       │
+                          ▼                               ▼
+              push {update_id, start_time,    + append the transition     write run.json
+              bad_inputs} → choco → kotekan     to state.json's history   (every run)
 ```
 
 The flag values are tiny: `{update_id, start_time, bad_inputs}`. `start_time`
@@ -135,7 +137,16 @@ measurable is a systematic problem, not an all-good.
 ### Sources
 
 A source produces a length-`nfeed` boolean good-mask (`True` = good). They are
-AND-ed: a feed is bad if any source flags it.
+AND-ed: a feed is bad if any source flags it.  Beside the mask a source returns
+a **report** (`sources.common.report`): `ok` or `degraded`, a reason, how many
+feeds it actually judged (`n_measured`), and free-form detail.  The rule every
+source follows: **a feed it cannot measure is left good and the shortfall is
+reported, never flagged.**  No data in the window, an endpoint down, too little
+of the band present — none of these is evidence about a feed, and turning them
+into flags is how a stopped acquisition once marked all 128 elements bad for a
+day (see the run-file section).  The core adds `skipped` reports for sources it
+did not run and fails the run only when *every* source is skipped or measured
+nothing.
 
 | Source | Evidence | What it flags |
 |---|---|---|
@@ -166,20 +177,38 @@ runs and choco outages. The wiring itself is still a placeholder —
 label list. By default `rfi` derives its endpoints from choco's node registry
 (`GET /api/nodes`): every *started* node of the broadcast group, polled at each
 `sk_paths` entry (which must match the kotekan config's RfiSKMetrics
-instances); explicit `urls` override. An unreachable node is skipped with a
-warning — one down node doesn't stall flagging — but nothing measurable at
-all fails the run (red badge): every endpoint unreachable, or no started
-nodes in the group. kotekan computes the single-feed SK for every feed regardless of the
-current bad-feed mask, so an `rfi`-flagged feed keeps being measured and heals
-on recovery. All three are built and tested (and runnable standalone, e.g.
-`python -m sources.power`) but not yet wired into a live config.
+instances); explicit `urls` override. A node choco's sync loop reports `down`
+or `idle` is not polled at all (its band is simply unmeasured this run), and an
+endpoint that fails anyway is skipped — one down X-engine node doesn't stall
+flagging for the rest — but both are reported `degraded` with the node named.
+The `/sk` values are moving averages that freeze when a stage stops receiving
+frames, so each node's `/metrics` is read once for the SK gauges' last-update
+timestamps and an instance older than `max_stale_s` (default 60 s; 0
+disables) is ignored and reported *stale*; with no `/metrics` the freshness is
+unknown and the readings are used. Nothing measurable at all (no node up,
+every endpoint down or stale) is a `degraded` report with nothing judged; the
+core fails the run only if every source ends up that way. kotekan computes the
+single-feed SK for every feed regardless of the current bad-feed mask, so an
+`rfi`-flagged feed keeps being measured and heals on recovery. `power` and
+`rfi` are live in the deployed config; `fpga` is built and tested (runnable
+standalone, `python -m sources.fpga`) but awaits the F-engine.
 
-The main heuristic, `power_outlier_mask`, reduces the most recent time rows to one
-power level per feed (a weighted average over time and a frequency band), then
-flags any feed sitting more than `nsigma` from the median of the other feeds —
-using the median absolute deviation as the spread, so a few bad feeds don't skew
-the threshold — plus any dead feed (no valid/positive data) or any feed outside
-the absolute bounds.
+The main heuristic, `power_outlier_mask`, reduces the most recent *filled* time
+rows to one power level per feed (a weighted average over time and a frequency
+band), then flags any feed sitting more than `nsigma` from the median of the
+other feeds — using the median absolute deviation as the spread, so a few bad
+feeds don't skew the threshold — plus any dead feed (no valid/positive data) or
+any feed outside the absolute bounds.  Two guards keep a thin data stream from
+reading as dead feeds.  The reader ends the window at the newest row holding
+any frame, skipping the empty tail a stopped acquisition leaves.  Then, before
+any feed is judged, the source measures **band coverage** — the fraction of
+(time, frequency) cells in the band the receiver actually filled, a property
+of the stream (which X-engine nodes delivered), not of any feed — and
+abstains below `min_coverage` (default 0.25: one node is 1/8 of the band, so
+the source keeps working with most of the cluster down, while a tail file with
+one live channel in thousands abstains).  `min_valid_frac` is per feed and
+relative to the delivered cells, so a band only partly delivered costs every
+feed the same cells and counts against none of them.
 
 ### State & change history
 
@@ -217,13 +246,52 @@ current list even when unchanged (e.g. to re-sync choco after a restart);
 `max_history` caps the kept entries (0 = keep all). Omit the `state` block to
 run stateless — every invocation sends.
 
+### Run file
+
+The state file says what the flags *are*; it cannot say how they were measured,
+because it changes only when they do.  So every non-dry run also rewrites
+`state.run_path` (default `run.json` beside the state file) with how it went:
+
+```json
+{
+  "time": 1790873972.8, "status": "degraded", "exit_code": 2, "error": null,
+  "degraded": ["no usable kotekan file — skipped: power-outlier"],
+  "kotekan_file": ".../vis_0004227923_20260920T_203902_494116150.h5",
+  "kotekan_file_age_s": 938880.0,
+  "kotekan_file_reason": "last written 260.8 h ago, older than max_age 3600 s",
+  "n_elements": 128, "n_bad": 36, "sent": false, "update_id": "bffs-1790873972777",
+  "sources": [
+    {"kind": "manual", "status": "ok", "reason": null, "n_measured": 128, "n_flagged": 0,
+     "detail": {"path": "/data/bffs/manual_overrides.yaml", "exists": false, "n_listed": 0}},
+    {"kind": "power-outlier", "status": "skipped", "reason": "no usable kotekan file: ...",
+     "n_measured": 0, "n_flagged": 0, "detail": {}},
+    {"kind": "power", "status": "ok", "n_measured": 80, "n_flagged": 36,
+     "detail": {"n_mapped": 80, "n_watched": 80, "n_unwatched": 48, "n_unpowered": 36,
+                "map_source": "choco master table", "map_check": "ok", "...": "..."}},
+    {"kind": "rfi", "status": "ok", "n_measured": 47, "n_flagged": 0,
+     "detail": {"n_endpoints": 12, "n_failed": 0, "n_stale": 0, "skipped_nodes": [],
+                "endpoints": [{"url": "http://cx19...:12048/rfi_sk_metrics/sk_metrics_0/sk",
+                               "ok": true, "age_s": 0.0, "n_measured": 47, "n_flagged": 0}, "..."]}}
+  ]
+}
+```
+
+`status` follows the exit code (`ok` / `degraded` / `failed`); `error` is the
+one-line exception of a failed run, with whatever sources had reported before
+it.  `n_measured` is what tells "ran and flagged nothing" from "had nothing to
+measure".  choco's BFFS page renders the file as a *Last run* line and a
+*Sources* table, and puts the `degraded` reasons in the badge's tooltip, so a
+yellow badge says which input was unavailable.  Writing it is best-effort: a
+failure is logged and never changes the exit code.
+
 ### Config
 
 A single YAML file (see `bffs.example.yaml`): the `kotekan_file` (the one N²
 output that supplies both the feed labels and the autocorrelation data), a `choco`
-block (`url` + `sync_delay`), an optional `state` block (`path` + `max_history`),
-and a list of `sources`, each a `kind` plus its parameters. There is no per-source
-cadence or hysteresis — the timer sets the cadence, and each run is independent.
+block (`url` + `sync_delay`), an optional `state` block (`path` + `max_history`
++ `run_path`), and a list of `sources`, each a `kind` plus its parameters. There
+is no per-source cadence or hysteresis — the timer sets the cadence, and each run
+is independent.
 
 ## What it deliberately isn't
 

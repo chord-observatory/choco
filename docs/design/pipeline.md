@@ -388,7 +388,19 @@ unwired baseline reads as absent, never as zero correlation — while newer ones
 **compact** the frame: ``num_elements`` *is* the subset size, the payload is
 byte-for-byte a dense ``FullUpperTri`` over it, and an ``input_list`` maps
 each compact element to its fiducial input number (verified against live cx52
-frames, 6772/7292 B exact).  The list is labels, not layout: the matrix axes
+frames, 6772/7292 B exact).  That list is on the wire only from the kv-branch
+builds; kotekan develop (PR #1658, 2026-09-11) sends a ``DishInputs``
+descriptor with nothing but the count, because the selection is *implied* —
+every dish whose ``type`` is not ``Missing``, in [P][D] order — by the
+``dish_inputs`` table kotekan runs with, which is the table choco pushed.
+So the ``len=0`` proxy (``web._fill_implicit_input_list``) derives it from
+the node's desired config with ``dishlabels.connected_elements`` and fills
+``input_list`` in, only when the result is exactly ``num_elements`` long
+(a rule drift then reads as "no identities", never as the wrong ones), and
+the plotter sees one compact wire form.  (First seen 2026-10-01: cx52 on
+develop 3bfbba126 rendered its 48-element subset as a histogram, with no
+note, because the layout mirror treated a list-less ``DishInputs`` as
+unknown.)  The list is labels, not layout: the matrix axes
 are ticked **per contiguous run** of it (``bufferplot.js`` ``inputTicks`` — a
 mandatory tick at every run's first element so the 15 → 64 jump is drawn at
 the cell where it happens, round *fiducial* values inside each run mapped back

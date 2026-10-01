@@ -1,4 +1,4 @@
-{% from "_service_macros.html" import job_color, job_label, since, pill_style %}
+{% from "_service_macros.html" import job_color, job_label, source_color, since, pill_style %}
 <dl class="service-facts">
     <dt>Unit</dt>
     <dd><code>{{ job.unit }}</code>{% if job.active_state %} ({{ job.active_state }}{% if job.sub_state %}/{{ job.sub_state }}{% endif %}){% endif %}</dd>
@@ -43,6 +43,7 @@
 </dl>
 {% elif name == 'bffs' and detail %}
 <dl class="service-facts">
+    {% if detail.has_state %}
     <dt>Bad feeds</dt>
     <dd>
         {{ detail.bad_inputs | length }}
@@ -62,7 +63,46 @@
     <dt>Last change</dt>
     <dd>{{ detail.updated }}{% if detail.update_id %} (<code>{{ detail.update_id }}</code>){% endif %}</dd>
     {% endif %}
+    {% endif %}
+    {% if detail.run %}{% set run = detail.run %}
+    <dt>Last run</dt>
+    <dd>
+        <span class="run-status" style="{{ pill_style() }} background: {{ source_color(run.status) }}; font-size: 0.8em;">{{ run.status }}</span>
+        {% if run.time_fmt %} {{ run.time_fmt }} ({{ since(run.time, now_ts) }}){% endif %}
+        {%- if run.n_bad is not none %} &middot; {{ run.n_bad }} bad{% if run.n_elements %} of {{ run.n_elements }}{% endif %}{% endif %}
+        {%- if run.sent %} &middot; sent to kotekan{% elif run.sent is false and run.status != 'failed' %} &middot; unchanged, nothing sent{% endif %}
+        {% for r in run.degraded %}<br><small class="err">{{ r }}</small>{% endfor %}
+        {% if run.error %}<br><small class="err">{{ run.error }}</small>{% endif %}
+    </dd>
+    <dt>N&sup2; file</dt>
+    <dd>
+        {% if run.kotekan_file %}<code>{{ run.kotekan_file }}</code>{% if run.kotekan_file_age %} &middot; written {{ run.kotekan_file_age }} ago{% endif %}{% else %}none{% endif %}
+        {% if run.kotekan_file_reason %}<br><small class="err">{{ run.kotekan_file_reason }}</small>{% endif %}
+    </dd>
+    {% endif %}
 </dl>
+{% if detail.run and detail.run.sources %}
+<h4 style="margin-bottom: 0.25em;">Sources</h4>
+<figure style="margin: 0 0 1.5em 0; overflow-x: auto;">
+<table class="bffs-sources" style="margin: 0; font-size: 0.85em;">
+    <thead>
+        <tr><th>Source</th><th>Status</th><th>Flagged</th><th>Judged</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+        {% for s in detail.run.sources %}
+        <tr>
+            <td><code>{{ s.kind }}</code></td>
+            <td><span style="{{ pill_style() }} background: {{ source_color(s.status) }}; font-size: 0.85em;">{{ s.status }}</span></td>
+            <td>{{ s.n_flagged if s.n_flagged is not none else '&mdash;' }}</td>
+            <td>{{ s.n_measured if s.n_measured is not none else '&mdash;' }}</td>
+            <td>{% if s.reason %}{{ s.reason }}{% if s.summary %}<br>{% endif %}{% endif %}{% if s.summary %}<small>{{ s.summary }}</small>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<figcaption style="font-size: 0.8em; margin-top: 0.4em;">Each configured source as of the last run: <em>judged</em> counts the elements it could measure; a source that could not measure leaves feeds good and reports degraded rather than flagging them.</figcaption>
+</figure>
+{% endif %}
 {% if detail.element_rows %}
 <h4 style="margin-bottom: 0.25em;">Elements</h4>
 <figure style="margin: 0 0 1.5em 0; overflow-x: auto;">

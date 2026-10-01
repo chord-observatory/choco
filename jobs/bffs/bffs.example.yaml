@@ -37,6 +37,11 @@ state:
   # block to run stateless (send every invocation).
   path: /var/lib/choco/bffs/state.json
   max_history: 0                 # cap on history entries (0 = keep all)
+  # A second file rewritten on EVERY run (dry runs excepted) with how it
+  # went: exit status, the degraded reasons, the N² file used and each
+  # source's report — what it measured, what it flagged, why it
+  # abstained. choco's BFFS page shows it. Default: run.json beside path.
+  # run_path: /var/lib/choco/bffs/run.json
 
 # A feed is bad if any source flags it. Each source is one entry below.
 sources:
@@ -44,11 +49,21 @@ sources:
     path: /data/bffs/manual_overrides.yaml
 
   - kind: power-outlier          # band-averaged power, outlier across feeds
-    chunk: 16                     # most recent N time rows to average
+    chunk: 16                     # most recent N filled time rows to average
     nsigma: 5.0
     freq_lo: 400.0
     freq_hi: 800.0
+    # Per feed: the least fraction of the delivered (time, freq) cells a
+    # feed must have weight on to count as alive. Relative to the cells
+    # that hold data at all, so a band only partly delivered (X-engine
+    # nodes down) costs every feed the same cells and counts against none.
     min_valid_frac: 0.5
+    # Least fraction of the band's cells (over the window) that must hold
+    # data before any feed is judged; below it the source abstains (all
+    # feeds left good, run degraded) instead of reading a stopped
+    # acquisition's empty tail, or most of the cluster being down, as
+    # every feed dead. One X-engine node is 1/8 of the band.
+    min_coverage: 0.25
 
   # External-service sources (provisional until the hardware is live).
   # - kind: power                # feeds whose amplifier is unpowered (power_db)
@@ -80,3 +95,9 @@ sources:
   #   sk_lo: 0.7                 # SK bounds: clean Gaussian noise has SK ~= 1
   #   sk_hi: 1.5
   #   min_valid_frac: 0.25       # ignore feeds with fewer valid SK cells
+  #   # The /sk values are moving averages that freeze when a stage stops
+  #   # seeing frames; each node's /metrics gives the SK gauges' last
+  #   # update time and an instance older than this is ignored (reported
+  #   # stale). 0 disables the check. Nodes choco reports down or idle are
+  #   # not polled at all, and are named in the report.
+  #   max_stale_s: 60
