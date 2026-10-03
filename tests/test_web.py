@@ -2814,3 +2814,339 @@ class TestBffsManualFlags:
         body = self._page(client)
         assert "/service/bffs/manual" not in body
         assert "Manual flags cannot be edited" in body
+
+
+# --- Config library ------------------------------------------------------
+
+from unittest.mock import patch as _patch  # noqa: E402
+from choco.state import Node, NodeStatus  # noqa: E402
+
+
+class TestConfigLibrary:
+    @pytest.fixture
+    def library(self, configs_dir, app):
+        """A shared chord/ library with cx1 rendering chord/pathfinder.j2,
+        which includes chord/telescope.j2; cx2 and recv1 stay on their
+        per-node files."""
+        chord = configs_dir / "chord"
+        chord.mkdir()
+        (chord / "pathfinder.j2").write_text(
+            'num_elements: 128\n{% include "telescope.j2" %}\n')
+        (chord / "telescope.j2").write_text("telescope: {name: a}\n")
+        data = yaml.safe_load((configs_dir / "nodes.yaml").read_text())
+        data["groups"]["cx"]["cx1"]["config"] = "chord/pathfinder.j2"
+        (configs_dir / "nodes.yaml").write_text(yaml.safe_dump(data))
+        app.config["registry"].reload()
+        return configs_dir
+
+    def test_requires_login(self, client, library):
+        assert client.get("/configs").status_code == 302
+        assert client.get("/configs/edit/chord/telescope.j2").status_code == 302
+
+    def test_page_lists_files_and_users(self, client, library):
+        _login(client)
+        body = client.get("/configs").get_data(as_text=True)
+        assert "chord/pathfinder.j2" in body and "chord/telescope.j2" in body
+        assert "cx/cx1.yaml" in body and "recv/recv1.yaml" in body
+        assert 'href="/configs/edit/.updatable' not in body
+        assert 'href="/configs/edit/nodes.yaml"' not in body
+        row = body[body.index("chord/telescope.j2"):]
+        row = row[:row.index("</tr>")]
+        assert "cx/cx1" in row
+
+    @pytest.mark.parametrize("path", [
+        "chord/nope.j2", "nodes.yaml", ".updatable/cx/cx1.json",
+        "chord/telescope.txt", "chord/.hidden.j2",
+    ])
+    def test_bad_or_missing_path_is_404(self, client, library, path):
+        _login(client)
+        assert client.get("/configs/edit/" + path).status_code == 404
+
+    def test_editor_shows_file_and_users(self, client, library):
+        _login(client)
+        body = client.get("/configs/edit/chord/telescope.j2").get_data(as_text=True)
+        assert "telescope: {name: a}" in body
+        assert "Included by: cx/cx1" in body
+        body = client.get("/configs/edit/chord/pathfinder.j2").get_data(as_text=True)
+        assert "Rendered by: cx/cx1" in body
+
+    def test_save_rerenders_every_user_now(self, client, app, library):
+        _login(client)
+        token = _csrf(client)
+        orch = app.config["orchestrator"]
+        orch._file_mtimes = orch._config_file_mtimes()  # scan baseline
+        polled = []
+        orch.submit_node = lambda key, item: polled.append((key, item.type))
+        resp = client.post("/configs/edit/chord/telescope.j2",
+                           data={"_csrf_token": token,
+                                 "content": "telescope: {name: b}\r\n"})
+        assert resp.status_code == 302
+        # CRLF normalised, written atomically, no temp file left behind.
+        assert (library / "chord" / "telescope.j2").read_text() == \
+            "telescope: {name: b}\n"
+        assert not list((library / "chord").glob("*.tmp"))
+        node = app.config["registry"].get_node("cx/cx1")
+        assert node.rendered_config["telescope"] == {"name": "b"}
+        assert polled == [("cx/cx1", ChangeType.POLL)]
+        # The scan does not take choco's own write for an external edit.
+        polled.clear()
+        orch.check_config_files()
+        assert polled == []
+
+    def test_save_refused_when_a_user_would_not_render(self, client, app, library):
+        _login(client)
+        token = _csrf(client)
+        before = (library / "chord" / "telescope.j2").read_text()
+        resp = client.post("/configs/edit/chord/telescope.j2",
+                           data={"_csrf_token": token,
+                                 "content": '{% include "absent.j2" %}\n'})
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Not saved" in body and "cx/cx1" in body
+        assert (library / "chord" / "telescope.j2").read_text() == before
+        assert app.config["registry"].get_node("cx/cx1").rendered_config[
+            "telescope"] == {"name": "a"}
+
+    def test_unused_file_only_needs_template_syntax(self, client, library):
+        _login(client)
+        token = _csrf(client)
+        (library / "chord" / "spare.j2").write_text("x: 1\n")
+        resp = client.post("/configs/edit/chord/spare.j2",
+                           data={"_csrf_token": token, "content": "{% if %}"})
+        assert resp.status_code == 200 and "Not saved" in resp.get_data(as_text=True)
+        resp = client.post("/configs/edit/chord/spare.j2",
+                           data={"_csrf_token": token, "content": "not: [a mapping\n"})
+        assert resp.status_code == 302  # YAML is not checked for a fragment
+
+    def test_vars_yaml_must_be_a_mapping(self, client, app, library):
+        _login(client)
+        token = _csrf(client)
+        (library / "vars.yaml").write_text("n: 1\n")
+        app.config["registry"].reload()
+        resp = client.post("/configs/edit/vars.yaml",
+                           data={"_csrf_token": token, "content": "- a\n"})
+        assert resp.status_code == 200 and "mapping" in resp.get_data(as_text=True)
+        body = client.get("/configs").get_data(as_text=True)
+        assert "every node" in body
+
+    def test_new_file(self, client, library):
+        _login(client)
+        token = _csrf(client)
+        resp = client.post("/configs/new",
+                           data={"_csrf_token": token, "name": "chord/extra.yaml"})
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/configs/edit/chord/extra.yaml")
+        assert (library / "chord" / "extra.yaml").read_text() == ""
+        resp = client.post("/configs/new",
+                           data={"_csrf_token": token, "name": "../x.yaml"},
+                           follow_redirects=True)
+        assert "Not created" in resp.get_data(as_text=True)
+        assert not (library / "x.yaml").exists()
+
+    def test_csrf_required(self, client, library):
+        _login(client)
+        _csrf(client)
+        resp = client.post("/configs/edit/chord/telescope.j2",
+                           data={"_csrf_token": "bogus", "content": "a: 1\n"})
+        assert resp.status_code == 403
+
+
+class TestNodeConfigSelection:
+    @pytest.fixture
+    def library(self, configs_dir, app):
+        chord = configs_dir / "chord"
+        chord.mkdir()
+        (chord / "pathfinder.j2").write_text("num_elements: 128\n")
+        return configs_dir
+
+    def test_node_page_offers_the_library(self, client, library):
+        _login(client)
+        body = client.get("/nodes/edit/cx/cx1").get_data(as_text=True)
+        assert 'name="action" value="set_config"' in body
+        assert '<option value="chord/pathfinder.j2"' in body
+        assert "shared with" not in body
+
+    def test_use_rewrites_nodes_yaml_and_rebuilds(self, client, app, library):
+        _login(client)
+        token = _csrf(client)
+        registry = app.config["registry"]
+        for n in registry.nodes.values():
+            n.maintenance = False
+        with _patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+            resp = client.post("/nodes/edit/cx/cx1",
+                               data={"_csrf_token": token, "action": "set_config",
+                                     "config": "chord/pathfinder.j2"},
+                               follow_redirects=True)
+        assert resp.status_code == 200
+        assert "now renders chord/pathfinder.j2" in resp.get_data(as_text=True)
+        on_disk = yaml.safe_load((library / "nodes.yaml").read_text())
+        assert on_disk["groups"]["cx"]["cx1"]["config"] == "chord/pathfinder.j2"
+        assert "config" not in on_disk["groups"]["cx"]["cx2"]
+        node = registry.get_node("cx/cx1")
+        assert node.config_filename == "chord/pathfinder.j2"
+        assert node.rendered_config == {"num_elements": 128}
+        assert all(n.maintenance for n in registry.nodes.values())
+
+        # Both nodes on the file: the page says so.
+        with _patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+            client.post("/nodes/edit/cx/cx2",
+                        data={"_csrf_token": token, "action": "set_config",
+                              "config": "chord/pathfinder.j2"})
+        body = client.get("/nodes/edit/cx/cx1").get_data(as_text=True)
+        assert "shared with cx/cx2" in body
+
+        # Back to the per-node file.
+        with _patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+            client.post("/nodes/edit/cx/cx1",
+                        data={"_csrf_token": token, "action": "set_config",
+                              "config": ""})
+        on_disk = yaml.safe_load((library / "nodes.yaml").read_text())
+        assert "config" not in on_disk["groups"]["cx"]["cx1"]
+        assert registry.get_node("cx/cx1").config_filename == "cx/cx1.yaml"
+
+    def test_missing_or_bad_file_refused(self, client, app, library):
+        _login(client)
+        token = _csrf(client)
+        before = (library / "nodes.yaml").read_text()
+        for bad in ("chord/absent.j2", "../x.j2", "nodes.yaml"):
+            resp = client.post("/nodes/edit/cx/cx1",
+                               data={"_csrf_token": token, "action": "set_config",
+                                     "config": bad}, follow_redirects=True)
+            assert resp.status_code == 200
+        assert (library / "nodes.yaml").read_text() == before
+        assert app.config["registry"].get_node("cx/cx1").explicit_config is None
+
+    def test_nodes_editor_round_trips_config(self, client, app, library):
+        _login(client)
+        token = _csrf(client)
+        payload = {"groups": {"cx": [
+            {"name": "cx1", "host": "cx1.example", "port": 12048,
+             "config": "chord/pathfinder.j2"},
+            {"name": "cx2", "host": "cx2.example", "port": 12048, "config": ""},
+        ]}}
+        with _patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+            resp = client.post("/nodes/edit", data=json.dumps(payload),
+                               content_type="application/json",
+                               headers={"X-CSRF-Token": token})
+        assert resp.status_code == 200
+        on_disk = yaml.safe_load((library / "nodes.yaml").read_text())
+        assert on_disk["groups"]["cx"] == {
+            "cx1": {"host": "cx1.example", "port": 12048,
+                    "config": "chord/pathfinder.j2"},
+            "cx2": {"host": "cx2.example", "port": 12048},
+        }
+        body = client.get("/nodes/edit").get_data(as_text=True)
+        assert 'value="chord/pathfinder.j2"' in body
+        assert '<datalist id="config-files">' in body
+
+        payload["groups"]["cx"][0]["config"] = "../../etc/x.yaml"
+        resp = client.post("/nodes/edit", data=json.dumps(payload),
+                           content_type="application/json",
+                           headers={"X-CSRF-Token": token})
+        assert resp.status_code == 400
+        assert "cx/cx1" in resp.get_json()["error"]
+
+
+class TestConfigLibraryApi:
+    """The loopback JSON API the CLI and a deploy script use."""
+
+    @pytest.fixture
+    def library(self, configs_dir, app):
+        chord = configs_dir / "chord"
+        chord.mkdir()
+        (chord / "pathfinder.j2").write_text(
+            'num_elements: 128\n{% include "telescope.j2" %}\n')
+        (chord / "telescope.j2").write_text("telescope: {name: a}\n")
+        data = yaml.safe_load((configs_dir / "nodes.yaml").read_text())
+        data["groups"]["cx"]["cx1"]["config"] = "chord/pathfinder.j2"
+        (configs_dir / "nodes.yaml").write_text(yaml.safe_dump(data))
+        app.config["registry"].reload()
+        return configs_dir
+
+    def test_list_and_get(self, client, library):
+        files = client.get("/api/configs").get_json()["files"]
+        by_path = {f["path"]: f for f in files}
+        assert by_path["chord/pathfinder.j2"]["used_by"] == ["cx/cx1"]
+        assert by_path["chord/telescope.j2"]["included_by"] == ["cx/cx1"]
+        assert "nodes.yaml" not in by_path
+        got = client.get("/api/configs/chord/telescope.j2").get_json()
+        assert got["content"] == "telescope: {name: a}\n"
+        assert got["included_by"] == ["cx/cx1"]
+        assert client.get("/api/configs/chord/absent.j2").status_code == 404
+        assert client.get("/api/configs/../x.yaml").status_code in (400, 404)
+        assert client.get("/api/configs/nodes.yaml").status_code == 400
+
+    def test_put_creates_validates_and_reloads(self, client, app, library):
+        orch = app.config["orchestrator"]
+        polled = []
+        orch.submit_node = lambda key, item: polled.append(key)
+        resp = client.put("/api/configs/chord/common.j2",
+                          json={"content": "log_level: WARN\n"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"status": "saved", "path": "chord/common.j2",
+                                   "created": True, "reloaded": []}
+        assert (library / "chord" / "common.j2").read_text() == "log_level: WARN\n"
+
+        resp = client.put("/api/configs/chord/telescope.j2",
+                          json={"content": "telescope: {name: api}\n"})
+        assert resp.get_json()["reloaded"] == ["cx/cx1"]
+        assert resp.get_json()["created"] is False
+        assert app.config["registry"].get_node("cx/cx1").rendered_config[
+            "telescope"] == {"name": "api"}
+        assert polled == ["cx/cx1"]
+
+        resp = client.put("/api/configs/chord/telescope.j2",
+                          json={"content": "{% include 'absent.j2' %}"})
+        assert resp.status_code == 400 and "cx/cx1" in resp.get_json()["error"]
+        assert (library / "chord" / "telescope.j2").read_text() == \
+            "telescope: {name: api}\n"
+
+        assert client.put("/api/configs/chord/x.j2", json={}).status_code == 400
+        assert client.put("/api/configs/../x.j2",
+                          json={"content": "a: 1"}).status_code in (400, 404)
+        assert client.put("/api/configs/.updatable/cx/cx1.json",
+                          json={"content": "{}"}).status_code == 400
+
+    def test_set_config_through_update(self, client, app, library):
+        with _patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+            resp = client.post("/update/cx/cx2",
+                               json={"action": "set_config",
+                                     "config": "chord/pathfinder.j2"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["status"] == "reloaded" and body["node"] == "cx/cx2"
+        assert body["maintenance"] is True
+        registry = app.config["registry"]
+        assert registry.get_node("cx/cx2").config_filename == "chord/pathfinder.j2"
+        assert all(n.maintenance for n in registry.nodes.values())
+
+        with _patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+            resp = client.post("/update/cx", json={"action": "set_config",
+                                                   "config": None})
+        assert resp.status_code == 200 and resp.get_json()["group"] == "cx"
+        assert registry.get_node("cx/cx1").explicit_config is None
+        assert registry.get_node("cx/cx2").explicit_config is None
+
+        resp = client.post("/update/cx/cx1", json={"action": "set_config",
+                                                   "config": 42})
+        assert resp.status_code == 400
+        resp = client.post("/update/cx/cx1", json={"action": "set_config",
+                                                   "config": "chord/absent.j2"})
+        assert resp.status_code == 404
+
+    def test_node_config_endpoint(self, client, app, library):
+        assert client.get("/api/config/cx/cx1").get_json() == {
+            "num_elements": 128, "telescope": {"name": "a"}}
+        assert client.get("/api/config/cx/cx2").get_json() == {"num_elements": 2048}
+        assert client.get("/api/config/cx/nope").status_code == 404
+        (library / "chord" / "telescope.j2").unlink()
+        app.config["registry"].get_node("cx/cx1").load_config()
+        resp = client.get("/api/config/cx/cx1")
+        assert resp.status_code == 503 and "telescope.j2" in resp.get_json()["error"]
+
+    def test_nodes_api_carries_config(self, client, library):
+        nodes = client.get("/api/nodes").get_json()["groups"]["cx"]
+        assert {n["name"]: n["config"] for n in nodes} == {
+            "cx1": "chord/pathfinder.j2", "cx2": "cx/cx2.yaml"}
+        status = client.get("/api/nodes/status").get_json()["nodes"]
+        assert any(n["config"] == "chord/pathfinder.j2" for n in status)

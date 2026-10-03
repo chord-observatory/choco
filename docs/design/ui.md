@@ -9,7 +9,16 @@ measurements and dates are from when each part was built.
 management lives under ``/nodes/*`` — the dashboard at ``/nodes``, the
 ``nodes.yaml`` registry editor at ``/nodes/edit``, the per-node config editor
 at ``/nodes/edit/<key>``, the group editor at ``/nodes/edit-group/<group>``,
-the started/maintenance toggles, and the node-status partial.
+the started/maintenance toggles, and the node-status partial — and the config
+library under ``/configs`` (the files under the configs directory with the
+nodes that render or include each, a New-file form) and
+``/configs/edit/<path>`` (one file; a save is checked against every node that
+uses it first, see [sync.md](sync.md)).  The node page names the file it
+renders, says which other nodes share it, links it into the library, and has
+the selector that changes it (a nodes.yaml edit, so the cluster is paused as
+the registry editor's banner says); the dashboard's Config column links each
+file the same way, and the landing table's NODES row links the library beside
+the dashboard.
 ``landing.html`` renders one table row per header badge (CHOCO itself plus
 NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / WF) with the detail the
 strip only carries in a tooltip: monitor host:port and error, job unit and

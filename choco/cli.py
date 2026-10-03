@@ -14,13 +14,19 @@ the jobs talk to choco the same way (``choco.jobclient``).
     choco push    <target> <file|->      queue a base config
     choco set     <target> <endpoint> <json|@file|->   queue an updatable push
     choco oneshot <target> <file|->      start an unrecorded config
+    choco config ls [-j]                 the config library and who renders what
+    choco config get <path>              print a library file
+    choco config put <path> <file|->     write a library file (its users must still render)
+    choco config use <target> <path|none>  make nodes render a library file
     choco help [<command>]               this, or one command's usage
 
 A *target* is a group (``cx``) or a node key (``cx/cx19``), exactly as
-choco prints them.  start, stop, push and set record *desired* state
-for the sync loop to apply, and the loop makes no REST write to a node
-in maintenance -- so on a paused node nothing reaches kotekan until
-``maint off`` (a choco restart pauses the whole cluster).  Exit status
+choco prints them; a library *path* is relative to the configs directory
+(``chord/pathfinder.j2``).  start, stop, push and set record *desired*
+state for the sync loop to apply, and the loop makes no REST write to a
+node in maintenance -- so on a paused node nothing reaches kotekan until
+``maint off`` (a choco restart pauses the whole cluster, and so does
+``config use``, which rebuilds the node registry).  Exit status
 follows the jobs' convention: 0 ok, 1 the request was rejected (the
 server's error on stderr) or misused, 2 choco unreachable.
 """
@@ -102,6 +108,9 @@ class Client:
     def post(self, path: str, body: dict) -> tuple[int, str]:
         return self._call("POST", path, body)
 
+    def put(self, path: str, body: dict) -> tuple[int, str]:
+        return self._call("PUT", path, body)
+
 
 # --- helpers -------------------------------------------------------------
 
@@ -113,6 +122,12 @@ def target_path(target: str) -> str:
         raise ValueError(
             f"target must be <group> or <group>/<node>, not {target!r}")
     return "/" + "/".join(urllib.parse.quote(p, safe="") for p in parts)
+
+
+def library_path(path: str) -> str:
+    """A library file's path quoted for the URL, slashes kept (the server
+    validates the shape; the client only has to not mangle it)."""
+    return "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))
 
 
 def read_text(arg: str) -> str:
@@ -168,6 +183,24 @@ def _emit(status: int, text: str) -> int:
 def _emit_each(replies: list[tuple[int, str]]) -> int:
     """Several targets: report every reply, fail if any did."""
     return max(_emit(status, text) for status, text in replies)
+
+
+def _configs_table(data: dict) -> str:
+    cols = ("PATH", "SIZE", "MODIFIED", "RENDERED BY", "INCLUDED BY")
+    rows = []
+    for f in data.get("files", []):
+        rows.append((
+            f.get("path", ""),
+            "" if f.get("size") is None else str(f["size"]),
+            str(f.get("modified") or ""),
+            "every node" if f.get("is_vars") else ", ".join(f.get("used_by") or []),
+            ", ".join(f.get("included_by") or []),
+        ))
+    widths = [max(len(c), *(len(r[i]) for r in rows)) if rows else len(c)
+              for i, c in enumerate(cols)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths[:-1]) + "  {}"
+    lines = [fmt.format(*cols)] + [fmt.format(*r) for r in rows]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _nodes_table(data: dict) -> str:
@@ -256,6 +289,30 @@ def cmd_oneshot(c: Client, a) -> int:
     return _emit(*c.post("/oneshot" + path, {"config_content": content}))
 
 
+def cmd_config(c: Client, a) -> int:
+    if a.what == "ls":
+        status, text = c.get("/api/configs")
+        if a.json or status != 200:
+            return _emit(status, text)
+        print(_configs_table(json.loads(text)), end="")
+        return 0
+    if a.what == "get":
+        status, text = c.get("/api/configs/" + library_path(a.path))
+        if status != 200:
+            return _emit(status, text)
+        sys.stdout.write(json.loads(text)["content"])
+        return 0
+    if a.what == "put":
+        content = read_text(a.file)
+        return _emit(*c.put("/api/configs/" + library_path(a.path),
+                            {"content": content}))
+    # use: a nodes.yaml edit through /update, not a queue item
+    target = target_path(a.target)
+    config = None if a.path == "none" else a.path
+    return _emit(*c.post("/update" + target,
+                         {"action": "set_config", "config": config}))
+
+
 # --- entry point ---------------------------------------------------------
 
 class _Parser(argparse.ArgumentParser):
@@ -329,6 +386,30 @@ def build_parser() -> argparse.ArgumentParser:
             "recording nothing (reverted by the loop once maintenance lifts)")
     s.add_argument("target", metavar="<target>", help=TARGET)
     s.add_argument("file", metavar="<file>", help=FILE)
+
+    PATH = "a library file, relative to the configs directory (chord/pathfinder.j2)"
+    s = add("config", cmd_config,
+            "the config library: the files under the configs directory and "
+            "which node renders which (ls, get, put, use)")
+    cs = s.add_subparsers(dest="what", metavar="<what>", required=True)
+    w = cs.add_parser("ls", parents=[common],
+                      help="list the library files and the nodes that use them")
+    w.add_argument("-j", "--json", action="store_true",
+                   help="raw JSON instead of the table")
+    w = cs.add_parser("get", parents=[common], help="print a library file")
+    w.add_argument("path", metavar="<path>", help=PATH)
+    w = cs.add_parser("put", parents=[common],
+                      help="write a library file, creating it if needed; refused "
+                           "if any node that renders or includes it would no "
+                           "longer render")
+    w.add_argument("path", metavar="<path>", help=PATH)
+    w.add_argument("file", metavar="<file>", help=FILE)
+    w = cs.add_parser("use", parents=[common],
+                      help="make nodes render a library file (none: their own "
+                           "per-node files); rewrites nodes.yaml and rebuilds the "
+                           "registry, so the whole cluster lands in maintenance")
+    w.add_argument("target", metavar="<target>", help=TARGET)
+    w.add_argument("path", metavar="<path|none>", help=PATH)
 
     s = sub.add_parser("help", help="show help for a command",
                        description="show help for a command")

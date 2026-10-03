@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import gevent
+import jinja2
+import yaml
 
 from flask import (
     Blueprint, Response, render_template, request, redirect, url_for, flash,
@@ -34,7 +36,7 @@ from .services import (
     sanitize_pipeline_svg, EOP_STALE_AFTER_S, PIPELINE_LAYOUTS,
     read_manual_flags, toggle_manual_flag,
 )
-from .state import NodeStatus, find_updatable_blocks
+from .state import NodeStatus, find_updatable_blocks, resolve_config_path
 from .sync import ChangeItem, ChangeType
 
 logger = logging.getLogger(__name__)
@@ -347,6 +349,19 @@ def node_edit(node_key):
                 flash(f"One-off not started on {node_key}: "
                       f"{body['skipped'][node_key]}", "error")
 
+        elif action == "set_config":
+            # Which library file this node renders: a nodes.yaml edit,
+            # so a registry rebuild (see _set_node_configs).
+            body, status = _set_node_configs(
+                [node], request.form.get("config") or None, _audit_user())
+            if status == 200:
+                fresh = registry.get_node(node_key)
+                flash(f"{node_key} now renders {fresh.config_filename}; "
+                      "the registry was rebuilt, so every node is in "
+                      "maintenance mode.", "success")
+            else:
+                flash(body["error"], "error")
+
         elif action == "update_config":  # updatable_config change
             endpoint = request.form.get("endpoint", "")
             raw_json = request.form.get("updatable_content", "")
@@ -376,12 +391,19 @@ def node_edit(node_key):
         for endpoint, values in updatable_blocks.items()
     }
 
+    # Other nodes rendering the same file: a save here is a save for
+    # them too, which the page says beside the file name.
+    direct, _ = registry.users_of(node.config_filename)
+    shared_with = [n.key for n in direct if n is not node]
+
     return render_template(
         "edit.html",
         node=node,
         node_key=node_key,
         config_content=config_content,
         updatable_json=updatable_json,
+        shared_with=shared_with,
+        config_files=registry.config_files(),
     )
 
 
@@ -499,7 +521,8 @@ def nodes_edit():
     groups: dict[str, list] = {}
     for node in registry.nodes.values():
         groups.setdefault(node.group, []).append(node)
-    return render_template("nodes.html", groups=groups)
+    return render_template("nodes.html", groups=groups,
+                           config_files=registry.config_files())
 
 
 @bp.route("/nodes/edit", methods=["POST"])
@@ -546,6 +569,17 @@ def nodes_save():
                 return {"error": f"Duplicate node {key!r}"}, 400
             seen_keys.add(key)
             members[name] = {"host": host, "port": port}
+            # Optional library file; blank means the per-node file.
+            # Validated as a path here (so a bad value is refused, not
+            # joined to anything later); existence is the node's own
+            # "No config file" error if it is missing.
+            config = str(item.get("config") or "").strip()
+            if config:
+                try:
+                    resolve_config_path(_registry().configs_dir, config)
+                except ValueError as e:
+                    return {"error": f"Node {key}: {e}"}, 400
+                members[name]["config"] = config
 
         new_data["groups"][group_name] = members
 
@@ -587,6 +621,207 @@ def group_edit(group):
         return redirect(url_for("web.dashboard"))
 
     return render_template("edit_group.html", group=group, config_content="")
+
+
+# --- Config library: the files under configs_dir, and which node uses which ---
+
+def _library_entry(registry, rel: str) -> dict:
+    """One row of the config library: *rel*'s size and mtime plus the
+    nodes that render it (``used_by``) or include it (``included_by``)."""
+    path = registry.configs_dir / rel
+    try:
+        st = path.stat()
+        size, mtime = st.st_size, st.st_mtime
+    except OSError:
+        size, mtime = None, None
+    direct, includers = registry.users_of(rel)
+    return {
+        "path": rel,
+        "size": size,
+        "mtime": mtime,
+        "modified": (time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+                     if mtime else None),
+        "used_by": [n.key for n in direct],
+        "included_by": [n.key for n in includers],
+        # vars.yaml is the shared template context: every node reads it.
+        "is_vars": rel == "vars.yaml",
+    }
+
+
+def _check_library_save(registry, rel: str, content: str
+                        ) -> tuple[list[str], str | None]:
+    """Validate *content* as the new text of library file *rel* without
+    writing it: every node that renders or includes the file is rendered
+    with the text overlaid on disk.
+
+    Returns ``(affected node keys, error)``; the error is None when every
+    user renders.  vars.yaml must parse as a YAML mapping (every node
+    reads it); a file no node uses is only parsed as a template, since
+    nothing says it must render to a config on its own.
+    """
+    if rel == "vars.yaml":
+        try:
+            data = yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            return [], f"Invalid YAML: {e}"
+        if data is not None and not isinstance(data, dict):
+            return [], "vars.yaml must be a YAML mapping"
+        return list(registry.nodes), None
+    path = registry.configs_dir / rel
+    overlay = {path: content}
+    direct, includers = registry.users_of(rel)
+    for node in direct:
+        try:
+            node.render(content, overlay=overlay)
+        except Exception as e:
+            return [], f"{node.key} would not render: {e}"
+    for node in includers:
+        if node.base_content is None:
+            continue
+        try:
+            node.render(node.base_content, overlay=overlay)
+        except Exception as e:
+            return [], f"{node.key} would not render: {e}"
+    if not direct and not includers:
+        try:
+            jinja2.Environment(autoescape=False).parse(content)
+        except jinja2.TemplateSyntaxError as e:
+            return [], f"Template syntax: {e}"
+    return [n.key for n in direct + includers], None
+
+
+def _write_library_file(registry, rel: str, content: str, user: str
+                        ) -> list[str]:
+    """Write library file *rel* atomically and hand the change to the
+    sync loop now (the mtime scan would see it within a tick anyway).
+
+    Returns the keys of the nodes re-rendered.  Audit-logged, since one
+    library write can change what several nodes run.
+    """
+    path = registry.configs_dir / rel
+    created = not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content)
+    tmp.replace(path)
+    if rel == "vars.yaml":
+        affected = list(registry.nodes)
+    else:
+        direct, includers = registry.users_of(rel)
+        affected = [n.key for n in direct + includers]
+    logger.warning(
+        f"config library: {rel} {'created' if created else 'replaced'} by "
+        f"{user}, {len(content)} bytes; re-rendering {affected or 'no nodes'}")
+    _orchestrator().file_written(path)
+    return affected
+
+
+def _set_node_configs(nodes: list, config: str | None, user: str
+                      ) -> tuple[dict, int]:
+    """Point *nodes* at library file *config* (None: back to each node's
+    per-node file) by rewriting nodes.yaml and rebuilding the registry.
+
+    A registry rebuild is the mechanism, so this carries its cost: the
+    whole cluster lands in maintenance until the operator lifts it
+    (``Orchestrator.apply_nodes_update``).  The file must exist: the
+    selectors offer only existing files, and a node pointed at a missing
+    one would just sit on "No config file".
+    """
+    registry = _registry()
+    if config is not None:
+        try:
+            resolve_config_path(registry.configs_dir, config)
+        except ValueError as e:
+            return {"error": str(e)}, 400
+        if not (registry.configs_dir / config).is_file():
+            return {"error": f"No such config file: {config}"}, 404
+    nodes_file = registry.configs_dir / "nodes.yaml"
+    try:
+        data = yaml.safe_load(nodes_file.read_text()) or {}
+    except (OSError, yaml.YAMLError) as e:
+        return {"error": f"nodes.yaml unreadable: {e}"}, 500
+    for node in nodes:
+        entry = ((data.get("groups") or {}).get(node.group) or {}).get(node.name)
+        if not isinstance(entry, dict):
+            return {"error": f"{node.key} is not in nodes.yaml"}, 409
+        if config is None:
+            entry.pop("config", None)
+        else:
+            entry["config"] = config
+    keys = [n.key for n in nodes]
+    logger.warning(
+        f"config selection by {user}: {keys} -> {config or 'per-node file'}; "
+        "registry rebuilt, cluster in maintenance")
+    _orchestrator().apply_nodes_update(data)
+    return {"status": "reloaded", "config": config, "nodes": keys,
+            "maintenance": True}, 200
+
+
+@bp.route("/configs")
+@login_required
+def configs_page():
+    """The config library: every config file under configs_dir, with
+    the nodes that render or include each."""
+    registry = _registry()
+    files = [_library_entry(registry, rel) for rel in registry.config_files()]
+    return render_template("configs.html", files=files)
+
+
+@bp.route("/configs/new", methods=["POST"])
+@login_required
+def config_new():
+    """Create an empty library file and open it in the editor."""
+    _check_csrf()
+    registry = _registry()
+    name = request.form.get("name", "").strip()
+    try:
+        resolve_config_path(registry.configs_dir, name)
+    except ValueError as e:
+        flash(f"Not created: {e}", "error")
+        return redirect(url_for("web.configs_page"))
+    if (registry.configs_dir / name).exists():
+        flash(f"{name} already exists", "error")
+    else:
+        _write_library_file(registry, name, "", _audit_user())
+        flash(f"Created {name}", "success")
+    return redirect(url_for("web.config_edit", name=name))
+
+
+@bp.route("/configs/edit/<path:name>", methods=["GET", "POST"])
+@login_required
+def config_edit(name):
+    """Edit one library file.
+
+    A save is rendered through every node that uses the file before it
+    is written; a change that would break any of them is refused with
+    that node's error.  The path comes from the URL, so it is validated
+    (``resolve_config_path``) before anything is opened: 404 otherwise.
+    """
+    registry = _registry()
+    try:
+        resolve_config_path(registry.configs_dir, name)
+    except ValueError:
+        abort(404)
+    path = registry.configs_dir / name
+    if not path.is_file():
+        abort(404)
+    entry = _library_entry(registry, name)
+    if request.method == "POST":
+        _check_csrf()
+        # Browsers submit textarea text with CRLF line endings.
+        content = request.form.get("content", "").replace("\r\n", "\n")
+        affected, error = _check_library_save(registry, name, content)
+        if error:
+            flash(f"Not saved: {error}", "error")
+            return render_template("config_edit.html", entry=entry,
+                                   content=content)
+        _write_library_file(registry, name, content, _audit_user())
+        flash(f"Saved {name}"
+              + (f"; re-rendered {', '.join(affected)}" if affected else ""),
+              "success")
+        return redirect(url_for("web.config_edit", name=name))
+    return render_template("config_edit.html", entry=entry,
+                           content=path.read_text())
 
 
 # --- htmx partial endpoints for live updates ---
@@ -2112,8 +2347,9 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
 
     ``base_config`` and ``updatable_config`` queue one :class:`ChangeItem`
     on every node; ``set_started`` / ``set_maintenance`` set the flag and
-    wake the workers exactly as the dashboard toggles do.  *scope* is
-    echoed in the reply (``{"group": g}`` or ``{"node": key}``).
+    wake the workers exactly as the dashboard toggles do; ``set_config``
+    rewrites nodes.yaml and rebuilds the registry.  *scope* is echoed in
+    the reply (``{"group": g}`` or ``{"node": key}``).
     """
     action = data.get("action", "")
     if action == "base_config":
@@ -2137,6 +2373,15 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
             return {"error": f"{attr} must be a boolean"}, 400
         _set_flag(nodes, attr, value)
         return {"status": "ok", **scope, attr: value}, 200
+    elif action == "set_config":
+        # Which library file the nodes render (null: their per-node
+        # files).  Not a queue item: a nodes.yaml edit and registry
+        # rebuild, which pauses the cluster (see _set_node_configs).
+        config = data.get("config")
+        if config is not None and not isinstance(config, str):
+            return {"error": "config must be a string or null"}, 400
+        body, status = _set_node_configs(nodes, config or None, _audit_user())
+        return (body | scope if status == 200 else body), status
     else:
         return {"error": f"Unknown action '{action}'"}, 400
     orchestrator = _orchestrator()
@@ -2285,6 +2530,7 @@ def _node_to_dict(node) -> dict:
         "name": node.name,
         "host": node.host,
         "port": node.port,
+        "config": node.config_filename,
         "started": node.started,
         "maintenance": node.maintenance,
         "status": node.status.value,
@@ -2421,6 +2667,7 @@ def api_nodes():
             "name": node.name,
             "host": node.host,
             "port": node.port,
+            "config": node.config_filename,
             "started": node.started,
             # the sync loop's last probe, so a job can tell a node that
             # is down from one worth polling (bffs's rfi source)
@@ -2450,6 +2697,72 @@ def api_group_config(group):
         return {"error": sample.load_error
                 or f"No config file ({sample.config_filename})"}, 503
     return desired
+
+
+@bp.route("/api/config/<group>/<node>", methods=["GET"])
+@localhost_or_login_required
+def api_node_config(group, node):
+    """One node's desired kotekan config, as JSON: what its worker would
+    push.  The check that moving a node onto a library file changed
+    nothing is a diff of this before and after."""
+    node_obj = _registry().get_node(f"{group}/{node}")
+    if node_obj is None:
+        return {"error": f"Node '{group}/{node}' not found"}, 404
+    desired = node_obj.desired_config
+    if desired is None:
+        return {"error": node_obj.load_error
+                or f"No config file ({node_obj.config_filename})"}, 503
+    return desired
+
+
+@bp.route("/api/configs", methods=["GET"])
+@localhost_or_login_required
+def api_configs():
+    """The config library: every file under configs_dir with the nodes
+    that render or include it (what /configs shows)."""
+    registry = _registry()
+    return {"files": [_library_entry(registry, rel)
+                      for rel in registry.config_files()]}
+
+
+@bp.route("/api/configs/<path:name>", methods=["GET"])
+@localhost_or_login_required
+def api_config_get(name):
+    """One library file's text, with its users."""
+    registry = _registry()
+    try:
+        resolve_config_path(registry.configs_dir, name)
+    except ValueError as e:
+        return {"error": str(e)}, 400
+    path = registry.configs_dir / name
+    if not path.is_file():
+        return {"error": f"No such config file: {name}"}, 404
+    return _library_entry(registry, name) | {"content": path.read_text()}
+
+
+@bp.route("/api/configs/<path:name>", methods=["PUT"])
+@localhost_or_login_required
+def api_config_put(name):
+    """Write a library file (``{"content": ...}``), creating it if
+    needed, after the check the editor makes: every node that uses the
+    file must still render.  This is how a config reaches the configs
+    directory without a root shell (``choco config put``)."""
+    registry = _registry()
+    try:
+        resolve_config_path(registry.configs_dir, name)
+    except ValueError as e:
+        return {"error": str(e)}, 400
+    data = request.get_json(silent=True) or {}
+    content = data.get("content")
+    if not isinstance(content, str):
+        return {"error": "'content' must be a string"}, 400
+    affected, error = _check_library_save(registry, name, content)
+    if error:
+        return {"error": error}, 400
+    created = not (registry.configs_dir / name).exists()
+    _write_library_file(registry, name, content, _audit_user())
+    return {"status": "saved", "path": name, "created": created,
+            "reloaded": affected}
 
 
 @bp.route("/api/pdb/map", methods=["GET"])

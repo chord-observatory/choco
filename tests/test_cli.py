@@ -381,3 +381,56 @@ def test_usage_error_is_exit_1(capsys):
         cli.main(["frobnicate"])
     assert e.value.code == 1
     assert "invalid choice" in capsys.readouterr().err
+
+
+# --- config library ------------------------------------------------------
+
+def test_config_put_ls_get_and_use(run, app, configs_dir, tmp_path):
+    from choco.state import Node, NodeStatus
+
+    src = tmp_path / "t.j2"
+    src.write_text("telescope: {name: cli}\n")
+    code, out, err = run("config", "put", "chord/telescope.j2", str(src))
+    assert code == 0 and err == ""
+    body = json.loads(out)
+    assert body["status"] == "saved" and body["created"] is True
+    assert (configs_dir / "chord" / "telescope.j2").read_text() == \
+        "telescope: {name: cli}\n"
+
+    code, out, err = run("config", "ls")
+    assert code == 0
+    assert out.splitlines()[0].startswith("PATH")
+    assert "chord/telescope.j2" in out and "cx/cx1.yaml" in out
+    code, out, err = run("config", "ls", "-j")
+    assert any(f["path"] == "chord/telescope.j2"
+               for f in json.loads(out)["files"])
+
+    code, out, err = run("config", "get", "chord/telescope.j2")
+    assert code == 0 and out == "telescope: {name: cli}\n"
+
+    with patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+        code, out, err = run("config", "use", "cx/cx1", "chord/telescope.j2")
+    assert code == 0 and json.loads(out)["status"] == "reloaded"
+    assert _node(app, "cx/cx1").config_filename == "chord/telescope.j2"
+    assert _node(app, "cx/cx1").rendered_config == {"telescope": {"name": "cli"}}
+    assert _node(app, "cx/cx2").explicit_config is None
+    assert all(n.maintenance for n in app.config["registry"].nodes.values())
+
+    with patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+        code, out, err = run("config", "use", "cx/cx1", "none")
+    assert code == 0
+    assert _node(app, "cx/cx1").explicit_config is None
+    assert _node(app, "cx/cx1").config_filename == "cx/cx1.yaml"
+
+
+def test_config_errors_are_the_servers(run, tmp_path):
+    code, out, err = run("config", "get", "chord/absent.j2")
+    assert code == 1 and "HTTP 404" in err
+    src = tmp_path / "t.j2"
+    src.write_text("x: 1\n")
+    code, out, err = run("config", "put", "../escape.j2", str(src))
+    assert code == 1 and "HTTP 400" in err
+    code, out, err = run("config", "use", "cx/cx1", "chord/absent.j2")
+    assert code == 1 and "HTTP 404" in err
+    code, out, err = run("config", "put", "chord/x.j2", str(tmp_path / "missing"))
+    assert code == 1 and "missing" in err

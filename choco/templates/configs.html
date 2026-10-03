@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}CHOCO - Configs{% endblock %}
+
+{% block content %}
+<h2>Config library</h2>
+<p><small>Every config file under the configs directory. A node renders the file
+<code>nodes.yaml</code> names for it, or its own <code>&lt;group&gt;/&lt;node&gt;</code>
+file when it names none. A file may <code>{% raw %}{% include %}{% endraw %}</code>
+others, which resolve from its own directory first and the configs root second,
+exactly as kotekan's own loader resolves them. Saving a file re-renders every node
+that uses it, and a change that would not render on one of them is refused.
+Outside maintenance each re-rendered node then restarts onto the new config.</small></p>
+
+<table>
+    <thead>
+        <tr>
+            <th>File</th>
+            <th>Size</th>
+            <th>Modified</th>
+            <th>Rendered by</th>
+            <th>Included by</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in files %}
+        <tr>
+            <td><a href="/configs/edit/{{ f.path }}"><code>{{ f.path }}</code></a></td>
+            <td>{{ f.size if f.size is not none else "—" }}</td>
+            <td>{{ f.modified or "—" }}</td>
+            <td>{% if f.is_vars %}<em>every node (template variables)</em>{% else %}{{ f.used_by | join(", ") or "—" }}{% endif %}</td>
+            <td>{{ f.included_by | join(", ") or "—" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No config files yet.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h3>New file</h3>
+<form method="post" action="/configs/new" style="display: flex; gap: 0.5em; align-items: center;">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="text" name="name" placeholder="chord/pathfinder.j2" required
+           style="margin: 0; flex: 1; font-family: monospace;">
+    <button type="submit" style="margin: 0; width: auto;">Create</button>
+</form>
+<p><small>A path under the configs directory ending in <code>.yaml</code>, <code>.yml</code>
+or <code>.j2</code>; directories are created as needed.</small></p>
+{% endblock %}

@@ -50,7 +50,7 @@
                 </div>
                 {% endif %}
             </td>
-            <td>{{ node.config_filename }}</td>
+            <td><a href="/configs/edit/{{ node.config_filename }}">{{ node.config_filename }}</a></td>
             <td>
                 {% if node.status.value == "started" %}
                     Yes

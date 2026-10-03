@@ -3,12 +3,15 @@
 import copy
 import json
 import logging
+import re
 import time
 from collections import deque
 from enum import Enum
 from pathlib import Path
 
 import jinja2
+import jinja2.loaders
+from jinja2 import meta as _jinja_meta
 import requests
 import yaml
 
@@ -32,6 +35,93 @@ except ImportError:  # pragma: no cover - depends on the PyYAML build
 def _yaml_load(stream):
     """``yaml.safe_load`` via libyaml's parser when it is available."""
     return yaml.load(stream, Loader=_YamlLoader)
+
+
+# One component of a config path: a plain file or directory name.  No
+# leading dot, so neither ``..`` nor anything hidden (the ``.updatable/``
+# store) can be named.
+_PATH_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
+
+
+def resolve_config_path(configs_dir: Path, rel: str) -> Path:
+    """The absolute path of config file *rel* under *configs_dir*.
+
+    *rel* is operator-supplied text (a ``config:`` value in nodes.yaml,
+    the path in a config-library route), so it is checked before it is
+    joined to anything: relative, ``/``-separated, every component a
+    plain name (no ``..``, nothing hidden, no backslashes or control
+    characters), one of the config suffixes, not ``nodes.yaml`` (the
+    registry, which has its own editor), and the result inside
+    *configs_dir*.  Raises ``ValueError`` naming the problem.
+    """
+    if not isinstance(rel, str) or not rel:
+        raise ValueError("config path must be a non-empty string")
+    if "\\" in rel or any(ord(c) < 32 for c in rel):
+        raise ValueError(
+            f"config path {rel!r} contains a backslash or control character")
+    if rel.startswith("/"):
+        raise ValueError(
+            f"config path {rel!r} must be relative to the configs directory")
+    parts = rel.split("/")
+    if any(not _PATH_PART_RE.fullmatch(part) for part in parts):
+        raise ValueError(
+            f"config path {rel!r} has an empty, hidden or '..' component")
+    if not rel.endswith(_CONFIG_SUFFIXES):
+        raise ValueError(
+            f"config path {rel!r} must end in {' / '.join(_CONFIG_SUFFIXES)}")
+    if parts == ["nodes.yaml"]:
+        raise ValueError("nodes.yaml is the node registry, not a config")
+    root = Path(configs_dir).resolve()
+    path = (root / rel).resolve()
+    if root not in path.parents:
+        raise ValueError(f"config path {rel!r} escapes the configs directory")
+    return path
+
+
+def list_config_files(configs_dir: Path) -> list[str]:
+    """Relative (POSIX) paths of every config file under *configs_dir*.
+
+    The library the web UI edits and nodes.yaml's ``config:`` selects
+    from: ``.yaml`` / ``.yml`` / ``.j2`` files anywhere below the root,
+    except hidden entries (so not the ``.updatable/`` store) and
+    nodes.yaml itself.  Sorted, so listings are stable.
+    """
+    root = Path(configs_dir)
+    if not root.is_dir():
+        return []
+    out = []
+    for path in root.rglob("*"):
+        if path.suffix not in _CONFIG_SUFFIXES or not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if rel.as_posix() == "nodes.yaml":
+            continue
+        out.append(rel.as_posix())
+    return sorted(out)
+
+
+class _OverlayLoader(jinja2.BaseLoader):
+    """Serve unsaved text for the files in *overlay* (keyed by the
+    absolute path the FileSystemLoader beside it would open), resolving
+    template names against the same search *dirs*.  Lets a config-
+    library edit be test-rendered through every node that includes the
+    file before anything is written.  Names not in the overlay raise
+    ``TemplateNotFound`` so the ``ChoiceLoader`` falls through to disk.
+    """
+
+    def __init__(self, dirs: list[Path], overlay: dict[Path, str]):
+        self.dirs = dirs
+        self.overlay = overlay
+
+    def get_source(self, environment, template):
+        pieces = jinja2.loaders.split_template_path(template)  # rejects '..'
+        for d in self.dirs:
+            candidate = d.joinpath(*pieces)
+            if candidate in self.overlay:
+                return self.overlay[candidate], str(candidate), lambda: False
+        raise jinja2.TemplateNotFound(template)
 
 
 def strip_updatable_values(config: dict) -> dict:
@@ -105,6 +195,16 @@ class Node:
         - **updatable_config** — runtime-mutable overrides stored in JSON
         - **desired_config** — rendered + updatable merged; what gets pushed
 
+    The file rendered is nodes.yaml's ``config:`` for the node when set
+    (a path under the configs directory, typically a library file that
+    several nodes share), else the legacy per-node
+    ``<group>/<name>.{yaml,yml,j2}``.  Either may ``{% include %}``
+    other files; names resolve against the file's own directory first
+    and the configs root second, which is how kotekan's own loader
+    resolves them, so the same files render in both trees.  The
+    include closure is recorded in ``dependencies`` so the sync loop
+    knows which nodes a shared file's change re-renders.
+
     REST methods return ``None`` / ``False`` on connection failure rather
     than raising, so callers can treat unreachable nodes as a normal state.
 
@@ -118,7 +218,8 @@ class Node:
                  started: bool = False,
                  maintenance: bool = False,
                  configs_dir: Path | None = None,
-                 template_vars: dict | None = None):
+                 template_vars: dict | None = None,
+                 config: str | None = None):
         # Identity
         self.name = name
         self.group = group
@@ -143,6 +244,20 @@ class Node:
         self.rendered_config: dict | None = None
         self._file_suffix: str = ".yaml"
         self.updatable_config: dict[str, dict] | None = None
+        # nodes.yaml's ``config:``, validated here so a bad value shows
+        # as this node's load error and is never joined to a path; None
+        # means the legacy per-node file.
+        self._config_file: str | None = config
+        self._config_error: str | None = None
+        if config is not None and configs_dir is not None:
+            try:
+                resolve_config_path(configs_dir, config)
+            except ValueError as e:
+                self._config_error = f"Bad config path: {e}"
+        # Files the base config includes (absolute paths), from the last
+        # load; see referenced_files.
+        self.dependencies: set[Path] = set()
+        self._env = self._make_env()
 
         # Runtime state (ephemeral, rebuilt from polling)
         self.status: NodeStatus = NodeStatus.UNKNOWN
@@ -205,7 +320,89 @@ class Node:
     @property
     def config_filename(self) -> str:
         """Relative path of this node's base config file."""
+        if self._config_file is not None:
+            return self._config_file
         return f"{self.group}/{self.name}{self._file_suffix}"
+
+    @property
+    def explicit_config(self) -> str | None:
+        """nodes.yaml's ``config:`` for this node, or None for the legacy
+        per-node file."""
+        return self._config_file
+
+    @property
+    def config_abspath(self) -> Path | None:
+        """Absolute path of the base config file; None without a configs
+        directory or with a ``config:`` value that failed validation."""
+        if self.configs_dir is None or self._config_error:
+            return None
+        return self.configs_dir / self.config_filename
+
+    def _search_dirs(self) -> list[Path]:
+        """Where this node's includes resolve: the config file's own
+        directory, then the configs root (kotekan's loader uses the
+        first; the second lets a file name another directory)."""
+        if self.configs_dir is None or self._config_error:
+            return []
+        own = self.configs_dir / Path(self.config_filename).parent
+        return [own, self.configs_dir] if own != self.configs_dir else [own]
+
+    def _make_env(self, overlay: dict[Path, str] | None = None
+                  ) -> jinja2.Environment:
+        """The Jinja2 environment this node renders with.
+
+        Autoescape stays off and undefined variables render empty, as
+        the bare ``jinja2.Template`` this replaced did (and as kotekan's
+        loader does for ``.j2`` names).  With *overlay*, unsaved text
+        for those absolute paths is served ahead of the files on disk.
+        """
+        dirs = self._search_dirs()
+        loader = None
+        if dirs:
+            loader = jinja2.FileSystemLoader([str(d) for d in dirs])
+            if overlay:
+                loader = jinja2.ChoiceLoader(
+                    [_OverlayLoader(dirs, overlay), loader])
+        return jinja2.Environment(loader=loader, autoescape=False)
+
+    def referenced_files(self, base_content: str) -> set[Path]:
+        """Every file *base_content* includes, directly or through
+        another include, as absolute paths: the files whose change must
+        re-render this node.
+
+        Static analysis of the include names (``jinja2.meta``), so a
+        computed name is not followed.  A name that resolves to no file
+        is recorded where the loader would look first, so creating it
+        later triggers the reload that makes the config load.
+        """
+        env = self._env
+        found: set[Path] = set()
+        dirs = self._search_dirs()
+        if env.loader is None or not dirs:
+            return found
+        pending = [base_content]
+        seen: set[str] = set()
+        while pending:
+            try:
+                ast = env.parse(pending.pop())
+            except jinja2.TemplateSyntaxError:
+                continue
+            for name in _jinja_meta.find_referenced_templates(ast):
+                if name is None or name in seen:
+                    continue
+                seen.add(name)
+                try:
+                    source, filename, _ = env.loader.get_source(env, name)
+                except jinja2.TemplateNotFound:
+                    try:
+                        pieces = jinja2.loaders.split_template_path(name)
+                    except jinja2.TemplateNotFound:
+                        continue
+                    found.add(dirs[0].joinpath(*pieces))
+                    continue
+                found.add(Path(filename))
+                pending.append(source)
+        return found
 
     @property
     def desired_config(self) -> dict | None:
@@ -244,14 +441,26 @@ class Node:
         dashboard rather than crashing service startup.
         """
         self._base_load_error = None
+        self.dependencies = set()
         if self.configs_dir is None:
             return
-        for suffix in _CONFIG_SUFFIXES:
-            path = self.configs_dir / self.group / f"{self.name}{suffix}"
+        if self._config_error:
+            self.base_content = None
+            self.rendered_config = None
+            self._base_load_error = self._config_error
+            return
+        if self._config_file is not None:
+            candidates = [self.configs_dir / self._config_file]
+        else:
+            candidates = [self.configs_dir / self.group / f"{self.name}{s}"
+                          for s in _CONFIG_SUFFIXES]
+        for path in candidates:
             if path.exists():
-                self._file_suffix = suffix
+                if self._config_file is None:
+                    self._file_suffix = path.suffix
                 try:
                     self.base_content = path.read_text()
+                    self.dependencies = self.referenced_files(self.base_content)
                     self.rendered_config = self.render(self.base_content)
                 except Exception as e:
                     logger.error(
@@ -302,10 +511,13 @@ class Node:
         error — the file on disk is now valid by construction.
         """
         rendered = self.render(base_content)
-        path = self.configs_dir / self.group / f"{self.name}{self._file_suffix}"
+        path = self.config_abspath
+        if path is None:
+            raise ValueError(self._config_error or "node has no configs directory")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(base_content)
         self.base_content = base_content
+        self.dependencies = self.referenced_files(base_content)
         self.rendered_config = rendered
         self._base_load_error = None
 
@@ -336,12 +548,17 @@ class Node:
                 json.dump(self.updatable_config, f, indent=2)
         self._updatable_load_error = None
 
-    def render(self, base_content: str) -> dict:
+    def render(self, base_content: str, *,
+               overlay: dict[Path, str] | None = None) -> dict:
         """Render base config text through Jinja2 and parse as YAML.
 
-        Also serves as validation — raises on invalid content.
+        Also serves as validation — raises on invalid content.  Includes
+        resolve from disk, except that *overlay* (absolute path -> text)
+        stands in for files about to be written, so an edit to a shared
+        include can be checked through every node that uses it first.
         """
-        rendered = jinja2.Template(base_content).render(self.template_vars)
+        env = self._make_env(overlay) if overlay else self._env
+        rendered = env.from_string(base_content).render(self.template_vars)
         config = _yaml_load(rendered)
         if not isinstance(config, dict):
             raise ValueError("Config must render to a YAML mapping")
@@ -623,6 +840,7 @@ class Registry:
                 host = node_info.get("host", node_name)
                 port = node_info.get("port", 12048)
                 started = node_info.get("started", False)
+                config = node_info.get("config")
                 node = Node(
                     node_name, group_name, host, port,
                     timeout=self.kotekan_timeout,
@@ -632,6 +850,7 @@ class Registry:
                     maintenance=True,
                     configs_dir=self.configs_dir,
                     template_vars=template_vars,
+                    config=None if config is None else str(config),
                 )
                 node.load_config()
                 node.load_updatable()
@@ -650,6 +869,21 @@ class Registry:
 
     def get_node(self, key: str) -> Node | None:
         return self.nodes.get(key)
+
+    def config_files(self) -> list[str]:
+        """The config library: every config file under the configs
+        directory, as relative paths (see ``list_config_files``)."""
+        return list_config_files(self.configs_dir)
+
+    def users_of(self, rel: str) -> tuple[list[Node], list[Node]]:
+        """``(direct, includers)`` for config file *rel*: the nodes whose
+        base config it is, and the nodes whose base config includes it
+        (directly or through another include).  Registry order."""
+        path = self.configs_dir / rel
+        direct = [n for n in self.nodes.values() if n.config_abspath == path]
+        includers = [n for n in self.nodes.values()
+                     if path in n.dependencies and n.config_abspath != path]
+        return direct, includers
 
     def in_group(self, group: str) -> list[Node]:
         """The nodes of *group* in registry order; empty for an unknown group."""

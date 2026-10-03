@@ -28,7 +28,22 @@
 </table>
 
 
-<h3>Config: {{ node.config_filename }}</h3>
+<h3>Config: <a href="/configs/edit/{{ node.config_filename }}"><code>{{ node.config_filename }}</code></a>
+    {% if shared_with %}<small style="font-weight: normal;">— shared with {{ shared_with | join(", ") }}</small>{% endif %}
+</h3>
+<form method="post" style="display: flex; gap: 0.5em; align-items: center; margin-bottom: 0.75em;">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="set_config">
+    <label for="config-select" style="margin: 0; white-space: nowrap;">Render file</label>
+    <select id="config-select" name="config" style="margin: 0; flex: 1; font-family: monospace;">
+        <option value="" {% if not node.explicit_config %}selected{% endif %}>per-node file ({{ node.group }}/{{ node.name }}.yaml or .j2)</option>
+        {% for f in config_files %}
+        <option value="{{ f }}" {% if f == node.explicit_config %}selected{% endif %}>{{ f }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit" class="outline" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;"
+            onclick="return confirm('Change which file {{ node_key }} renders?\n\nThis rewrites nodes.yaml and rebuilds the registry: every node is placed in maintenance mode until you lift it.')">Use</button>
+</form>
 <form method="post">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="save_config">

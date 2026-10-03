@@ -28,13 +28,52 @@ result.  ``Registry`` just loads ``nodes.yaml`` and provides lookup.
 
 ## File-based config
 
-each node's base config is `<group>/<node>.yaml` (or `.j2`); local edits are
-picked up automatically
+each node's base config is the file nodes.yaml's ``config:`` names for it, a
+path under the configs directory (``chord/pathfinder.j2``), else the legacy
+per-node `<group>/<node>.yaml` (or `.yml` / `.j2`); local edits are picked up
+automatically.  Several nodes naming one file is the normal case (2026-10:
+the eight cx nodes were byte-identical copies of kotekan's
+``chord_pathfinder.j2``, and the receiver carried a second copy of the dish
+table that had drifted before), so the directory is treated as a **config
+library**: ``/configs`` lists every file with the nodes that render or include
+it, ``/configs/edit/<path>`` edits one, the node page's selector (and
+``choco config use``) picks which file a node renders, and
+``/api/configs[/<path>]`` (``choco config ls|get|put``) is how a file gets
+into ``/etc/choco/configs`` without a root shell.  Selecting is a nodes.yaml
+edit and so a registry rebuild, with the rebuild's cost: the whole cluster
+lands in maintenance.  A library save is validated by rendering every node
+that uses the file with the new text overlaid on disk
+(``Node.render(overlay=)``) and refused with that node's error if any would
+not render; the write is then atomic and dispatched to the sync loop at once
+(``Orchestrator.file_written``, which also re-baselines the mtime scan so
+choco's own write is not taken for a second, external edit).  Every path from
+nodes.yaml or a URL goes through ``state.resolve_config_path`` before it is
+joined to anything: relative, plain components (so no ``..``, nothing hidden —
+the ``.updatable/`` store is out of reach), a config suffix, not nodes.yaml,
+inside the configs directory; a bad ``config:`` value is the node's load
+error, which the push guard already respects.
 
 ## Jinja2 rendering
 
 all config files (both `.yaml` and `.j2`) are rendered through Jinja2 using
-shared variables from `vars.yaml`, then sent to kotekan as JSON
+shared variables from `vars.yaml`, then sent to kotekan as JSON.  A file may
+``{% include %}`` others: names resolve against the file's own directory first
+and the configs root second (``Node._search_dirs``), which is where kotekan's
+own loader (``python/kotekan/config.py``, ``tools/j2lint.py``) roots, so the
+same files render in both trees and ``kotekan -c config/chord/pathfinder.j2``
+on a node agrees with what choco pushes.  Rendering is still from *text*
+(``Environment.from_string`` over a ``FileSystemLoader``), so the edit page
+textarea, one-offs and the ``/update`` body keep working unchanged; autoescape
+is off and undefined variables render empty, as the bare ``jinja2.Template``
+this replaced did.  After every load the include closure is recorded on the
+node (``Node.dependencies``, static analysis via ``jinja2.meta``, nested
+includes followed, a missing include recorded where the loader would look so
+its creation reloads), and ``Orchestrator.on_file_changed`` re-renders exactly
+the nodes whose own file or dependency changed — not the fleet, and not a
+file nobody uses.  A render-identical refactor is the acceptance test for
+splitting a config this way: kotekan's ``tools/j2diff.py`` renders two
+templates as kotekan does and diffs the parsed dicts (duplicate keys
+rejected), and the first node moved onto a shared file must show no drift.
 
 ## Config drift detection
 

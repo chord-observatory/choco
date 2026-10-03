@@ -544,11 +544,28 @@ class Orchestrator:
             logger.info(f"Config file {action}: {path}")
             self.on_file_changed(str(path))
 
+    def file_written(self, path: Path):
+        """Dispatch a config-file write choco made itself.
+
+        Re-baselines the scan on the file's new mtime first, so the next
+        tick does not take the write for a second, external edit, then
+        hands it to :meth:`on_file_changed` as a scan would.
+        """
+        path = Path(path)
+        try:
+            self._file_mtimes[path] = path.stat().st_mtime
+        except OSError:
+            self._file_mtimes.pop(path, None)
+        self.on_file_changed(str(path))
+
     def on_file_changed(self, path: str):
-        """Reload the affected node's config from disk and queue a poll.
+        """Reload the affected nodes' config from disk and queue a poll.
 
         If vars.yaml changed, all nodes are re-rendered.  If nodes.yaml
-        changed, the registry is fully reloaded (clear and rebuild).
+        changed, the registry is fully reloaded (clear and rebuild).  Any
+        other config file re-renders the nodes that render it or include
+        it, so an edit to a shared library file reaches every node that
+        uses it and no other.
         """
         p = Path(path)
         configs_dir = self.registry.configs_dir
@@ -567,24 +584,32 @@ class Orchestrator:
             self.submit_all(ChangeItem(ChangeType.POLL))
             return
 
-        # Resolve path to a node key: strip configs_dir prefix, .updatable/
-        # prefix, and file extension to get <group>/<name>.
         try:
             rel = p.relative_to(configs_dir)
         except ValueError:
             return
-        rel_str = str(rel)
-        if rel_str.startswith(".updatable/"):
-            rel = Path(rel_str.removeprefix(".updatable/"))
-        node_key = str(rel.with_suffix(""))
+        rel_str = rel.as_posix()
 
-        node = self.registry.get_node(node_key)
-        if node is None:
+        # The updatable store is per node: <.updatable>/<group>/<name>.json.
+        if rel_str.startswith(".updatable/"):
+            node_key = str(Path(rel_str.removeprefix(".updatable/")).with_suffix(""))
+            node = self.registry.get_node(node_key)
+            if node is None:
+                return
+            node.load_updatable()
+            self.submit_node(node_key, ChangeItem(ChangeType.POLL))
             return
 
-        node.load_config()
-        node.load_updatable()
-        self.submit_node(node_key, ChangeItem(ChangeType.POLL))
+        # A base config or something it includes: every node whose own
+        # file this is, or whose file includes it, re-renders.  A node on
+        # the legacy per-node file is matched by key as well, so one whose
+        # file was missing picks up its creation under any config suffix.
+        node_key = str(rel.with_suffix(""))
+        for node in self.registry.nodes.values():
+            if (node.config_abspath == p or p in node.dependencies
+                    or (node.explicit_config is None and node.key == node_key)):
+                node.load_config()
+                self.submit_node(node.key, ChangeItem(ChangeType.POLL))
 
     # --- Main loop ---
 

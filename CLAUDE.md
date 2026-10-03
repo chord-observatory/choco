@@ -69,7 +69,7 @@ jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
 ├── eigencal/       # Point-source gain calibration (10 min timer, self-gating)
 ├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
 └── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
-configs/            # nodes.yaml, vars.yaml, pdb_map.csv, <group>/<node>.yaml|.j2
+configs/            # nodes.yaml, vars.yaml, pdb_map.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
 tests/              # pytest; test_<module>.py per module, test_web.py for routes
 docs/design/        # Design rationale, one file per subsystem (see the end of this file)
 ```
@@ -83,6 +83,14 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   (blocks marked `kotekan_update_endpoint`, stored in `.updatable/*.json`).
 - No database.  Desired state is the YAML on disk; runtime state (status,
   started, maintenance) is ephemeral and rebuilt by polling.
+- A node renders the file nodes.yaml's `config:` names (a library file,
+  typically shared), else its legacy `<group>/<node>.{yaml,yml,j2}`.
+  Includes resolve against the file's own directory first, then the configs
+  root — kotekan's own loader order, so the same files render in both trees.
+  A library save is rendered through every node that uses the file before
+  it is written; selecting a node's file is a nodes.yaml edit and pauses the
+  cluster like any registry rebuild.  Only the nodes whose file or include
+  changed re-render, never the fleet.
 - Local edits are picked up by an mtime scan each tick; browser freshness is
   htmx polling.  Do not add inotify or WebSockets.
 - A node whose config failed to load is never pushed to: `desired_config`
@@ -119,7 +127,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **Never hand a caller's string to a tool or a path**
 - Journal units come from `web._service_registry()`; dot layout presets from
-  `services.PIPELINE_LAYOUTS`; buffer names must match `_BUFFER_NAME_RE`;
+  `services.PIPELINE_LAYOUTS`; a config path from nodes.yaml or a URL goes
+  through `state.resolve_config_path` (relative, plain components, config
+  suffix, inside the configs directory); buffer names must match `_BUFFER_NAME_RE`;
   gain dataset names are checked against the manifest; waterfall path parts
   against `NAME_RE` / `SHARD_RE` / `IMAGE_RE`; a manual bffs flag's label
   against the element axis in the job's state file.  Extend the allowlist,
@@ -133,7 +143,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Every route requires login except `/metrics`, `/skymap.png` and
   `/skymap-night.png`, which are cross-host and must stay aggregate-only: no
   node names, hosts or configs.
-- `/update/*`, `/oneshot/*` and `/api/*` bypass login for loopback callers
+- `/update/*`, `/oneshot/*` and `/api/*` (including the config library's
+  `/api/configs`) bypass login for loopback callers
   (`localhost_or_login_required`); the jobs and the CLI use only these.  FPGA
   and PDB controls stay login + CSRF because their audit line names a person
   or a trusted-host label.
@@ -227,7 +238,7 @@ a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
 
 ## Design docs
 
-- [sync.md](docs/design/sync.md) — config model, workers, maintenance, one-offs, drift, load resilience
+- [sync.md](docs/design/sync.md) — config model, config library and includes, workers, maintenance, one-offs, drift, load resilience
 - [cli.md](docs/design/cli.md) — the `choco` command
 - [auth.md](docs/design/auth.md) — config.yaml, LDAP direct bind, dev mode
 - [ui.md](docs/design/ui.md) — landing page, service strip, service pages, `/api/status`, `/metrics`

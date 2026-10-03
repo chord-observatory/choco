@@ -1137,3 +1137,117 @@ class TestRestartWait:
 
         assert NodeWorker(node, orchestrator)._push_config({"cfg": 1}) is True
         assert sleeps == [0.5]
+
+
+class TestSharedConfigScan:
+    """A library file's change re-renders the nodes that render or
+    include it, and no other."""
+
+    @pytest.fixture
+    def shared(self, tmp_path):
+        nodes = {
+            "groups": {
+                "cx": {
+                    "cx1": {"host": "cx1.chord.ca", "config": "chord/pathfinder.j2"},
+                    "cx2": {"host": "cx2.chord.ca", "config": "chord/pathfinder.j2"},
+                    "cx3": {"host": "cx3.chord.ca"},
+                },
+            }
+        }
+        (tmp_path / "nodes.yaml").write_text(yaml.safe_dump(nodes))
+        (tmp_path / "chord").mkdir()
+        (tmp_path / "chord" / "pathfinder.j2").write_text(
+            'num_elements: 128\n{% include "telescope.j2" %}\n')
+        (tmp_path / "chord" / "telescope.j2").write_text("telescope: {name: a}\n")
+        (tmp_path / "cx").mkdir()
+        (tmp_path / "cx" / "cx3.yaml").write_text("num_elements: 64\n")
+        reg = Registry(tmp_path)
+        orch = Orchestrator(reg, poll_interval=1, max_concurrent_pushes=2)
+        orch._file_mtimes = orch._config_file_mtimes()
+        return tmp_path, reg, orch
+
+    def _bump(self, path):
+        future = time.time() + 10
+        os.utime(path, (future, future))
+
+    def test_include_change_reloads_its_users_only(self, shared):
+        root, reg, orch = shared
+        tel = root / "chord" / "telescope.j2"
+        tel.write_text("telescope: {name: b}\n")
+        self._bump(tel)
+
+        orch.check_config_files()
+
+        for key in ("cx/cx1", "cx/cx2"):
+            node = reg.get_node(key)
+            assert node.rendered_config["telescope"] == {"name": "b"}
+            assert node.queue_pop().type == ChangeType.POLL
+        assert reg.get_node("cx/cx3").queue_empty
+        assert reg.get_node("cx/cx3").rendered_config == {"num_elements": 64}
+
+    def test_shared_base_change_reloads_every_user(self, shared):
+        root, reg, orch = shared
+        pf = root / "chord" / "pathfinder.j2"
+        pf.write_text("num_elements: 256\n")
+        self._bump(pf)
+
+        orch.check_config_files()
+
+        for key in ("cx/cx1", "cx/cx2"):
+            node = reg.get_node(key)
+            assert node.rendered_config == {"num_elements": 256}
+            assert node.dependencies == set()
+            assert node.queue_pop().type == ChangeType.POLL
+        assert reg.get_node("cx/cx3").queue_empty
+
+    def test_unused_library_file_reloads_nobody(self, shared):
+        root, reg, orch = shared
+        (root / "chord" / "spare.j2").write_text("x: 1\n")
+
+        orch.check_config_files()
+
+        for node in reg.nodes.values():
+            assert node.queue_empty
+
+    def test_creating_a_missing_include_heals_the_node(self, shared):
+        root, reg, orch = shared
+        tel = root / "chord" / "telescope.j2"
+        tel.unlink()
+        orch.check_config_files()
+        node = reg.get_node("cx/cx1")
+        assert node.rendered_config is None and node.load_error
+        node.queue_pop()
+
+        tel.write_text("telescope: {name: back}\n")
+        orch.check_config_files()
+        assert node.rendered_config["telescope"] == {"name": "back"}
+        assert node.load_error is None
+        assert node.queue_pop().type == ChangeType.POLL
+
+    def test_file_written_dispatches_once(self, shared):
+        """A write choco made itself is dispatched immediately and the
+        next scan does not take it for a second, external edit."""
+        root, reg, orch = shared
+        tel = root / "chord" / "telescope.j2"
+        tel.write_text("telescope: {name: c}\n")
+        self._bump(tel)
+        orch.file_written(tel)
+        node = reg.get_node("cx/cx1")
+        assert node.rendered_config["telescope"] == {"name": "c"}
+        assert node.queue_pop().type == ChangeType.POLL
+
+        orch.check_config_files()
+        assert node.queue_empty
+
+    def test_legacy_node_still_matched_by_key(self, shared):
+        root, reg, orch = shared
+        # cx3's file goes away and comes back as .j2: matched by key.
+        (root / "cx" / "cx3.yaml").unlink()
+        orch.check_config_files()
+        node = reg.get_node("cx/cx3")
+        assert node.rendered_config is None
+        node.queue_pop()
+        (root / "cx" / "cx3.j2").write_text("num_elements: 32\n")
+        orch.check_config_files()
+        assert node.rendered_config == {"num_elements": 32}
+        assert node.config_filename == "cx/cx3.j2"
