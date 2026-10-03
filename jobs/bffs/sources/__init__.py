@@ -20,6 +20,7 @@ import importlib
 # config `kind` string -> module name within this package
 _KINDS = {
     "manual": "manual",
+    "dish-type": "dish_type",
     "power-outlier": "power_outlier",
     "power": "power",
     "fpga": "fpga",

@@ -204,6 +204,13 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   or choco's table with no row kotekan does not know — and abstains
   otherwise.  Run facts go to `run.json` every run; `state.json` changes
   only with the bad list.
+- bffs reads the receiver's `subset/` files (48 wired elements of 128) and
+  joins them to the flag axis by label, never by position: a file label the
+  config does not know sidelines the file like a stale one (file sources
+  skipped), it does not fail the run.  The config's `dish_inputs` `type` is
+  the authority on what is a feed: `Missing` elements are always bad
+  (`dish-type` source) and `RFIDish` elements are never power-outlier
+  flagged nor part of its median (`exclude_types`).
 - `jobs/eop/eop_utils.py` is vendored from kotekan: do not modify, update
   from upstream.  EOP merging is append-only and never overwrites a stored
   entry ([jobs.md](docs/design/jobs.md)).
@@ -213,13 +220,17 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   once, per-element labels derived as label + X/Y).  Pre-2026-08 per-element
   tables are refused everywhere because their element ordering was wrong.
 - N² files are labelled per element since kotekan chord.2021.10+988
-  (2026-09-11): `index_map/label` has one `B4p1`/`B4p2` entry per element of
-  the file's own axis, compact `DishInputs` frames included, plus
-  `index_map/pol`.  Every reader goes through `dishlabels.file_element_labels`
-  (`p1`→X, `p2`→Y, count and `pol` cross-checked) and refuses any other file
-  layout: no expansion of per-dish tables, no `input_list` mapping, no
-  positional guess — bffs and eigencal exit degraded, the waterfall stores no
-  labels ([waterfall.md](docs/design/waterfall.md)).
+  (2026-09-11): `index_map/label` has one entry per element of the file's
+  own axis, compact `DishInputs` frames included, plus `index_map/pol`.  Two
+  spellings are on disk — `B4p1`/`B4p2` (+988 to PR #1695) and `A01X`/`A01Y`
+  (PR #1695, 2026-09-22; in the data from 2026-10-01) — and both are read.
+  Every reader goes through `dishlabels.file_element_labels` (`p1`→X,
+  `p2`→Y, count and `pol` cross-checked; the X/Y spelling only when
+  `index_map/pol` is present, since by text alone it is the pre-2026-08
+  layout) and refuses any other file layout: no expansion of per-dish
+  tables, no `input_list` mapping, no positional guess — bffs and eigencal
+  exit degraded, the waterfall stores no labels
+  ([waterfall.md](docs/design/waterfall.md)).
 - The fleet runs mixed kotekan versions: both pipeline palettes are styled
   (guarded by `tests/test_pipeline_palette.py`), and both N² subset wire
   forms (sparse `product_list`, compact `input_list`) are decoded, with the

@@ -187,6 +187,20 @@ def test_chime_style_file_is_refused(chime_file):
         n2_io.read_meta(chime_file)
 
 
+def test_xy_spelling_is_read_with_the_pol_index(tmp_path, chord_file):
+    # kotekan PR #1695 (2026-09-22; files from 2026-10-01): the
+    # polarization name is the suffix, vouched for by index_map/pol.
+    xy = [b"d0X", b"d1X", b"d0Y", b"d1Y"]
+    with h5py.File(chord_file, "r+") as f:
+        del f["index_map"]["label"]
+        f["index_map"].create_dataset("label", data=np.array(xy, dtype="S10"))
+    assert list(n2_io.read_meta(chord_file).labels) == ["d0X", "d1X", "d0Y", "d1Y"]
+    with h5py.File(chord_file, "r+") as f:
+        del f["index_map"]["pol"]
+    with pytest.raises(OSError, match="per-element label"):
+        n2_io.read_meta(chord_file)
+
+
 def test_pre_2026_08_per_element_labels_are_refused(tmp_path, chord_file):
     with h5py.File(chord_file, "r+") as f:
         del f["index_map"]["label"]

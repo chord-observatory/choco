@@ -33,7 +33,8 @@ Each source is one module under ``sources/`` exposing
 ``mask(src, labels, kotekan_file)`` — a good-mask, or ``(mask, report)`` with
 a ``sources.common.report`` saying how the measurement went; ``combine_sources``
 dispatches via ``sources.get(kind)``. Built-in kinds: ``manual``,
-``power-outlier``, ``power``, ``fpga``, ``rfi`` (see ``sources/``).  A source
+``dish-type``, ``power-outlier``, ``power``, ``fpga``, ``rfi`` (see
+``sources/``).  A source
 that cannot measure abstains (leaves feeds good) and reports ``degraded``
 rather than flagging; the run then exits 2 with the reason on record.
 
@@ -64,7 +65,7 @@ from choco.dishlabels import (PLACEHOLDER_LABEL, expand_dish_labels,
                               find_dish_inputs, find_key,
                               labels_are_per_element)
 from choco.jobclient import job_state_dir, post_json, write_json_atomic
-from kotekan_io import read_labels
+from kotekan_io import read_labels, uniquify_labels  # noqa: F401 (re-exported)
 from sources.common import choco_group_config
 
 log = logging.getLogger("bffs")
@@ -150,7 +151,7 @@ def _config_int(config, key, default=None):
             f"(a kotekan expression?) — cannot size the element axis")
 
 
-def element_labels_from_config(config: dict, file_labels=None) -> list[str] | None:
+def element_labels_from_config(config: dict) -> list[str] | None:
     """Element labels from a kotekan config's per-dish ``dish_inputs`` table.
 
     Only the 2026-08 per-dish layout is accepted: the table names each
@@ -163,11 +164,37 @@ def element_labels_from_config(config: dict, file_labels=None) -> list[str] | No
     would flag the wrong feeds.  Raises ``OSError`` so the run reports
     degraded (exit 2) and heals once the config is migrated, with no
     job-side action needed.
+    """
+    table = _per_dish_table(config)
+    if table is None:
+        return None
+    dish_labels, _types, npol = table
+    return list(expand_dish_labels(dish_labels, npol))
 
-    ``file_labels`` is the N² file's element axis
-    (``kotekan_io.read_labels``); the config is the naming authority and
-    the file is a cross-check — a file whose axis disagrees with the
-    config predates it, and positions would be ambiguous.
+
+#: kotekan's ``DishType`` names (lib/utils/CHORDTelescope.hpp): an
+#: unpopulated slot, a main-array dish, an RFI-monitor antenna.
+DISH_MISSING, DISH_ARRAY, DISH_RFI = "Missing", "ArrayDish", "RFIDish"
+
+
+def element_types_from_config(config: dict) -> list[str] | None:
+    """Each element's kotekan ``DishType`` name, on the same [P][D] axis
+    as :func:`element_labels_from_config` (a dish's type applies to both
+    of its polarizations).  A slot the table leaves out is ``Missing``,
+    like its label.  None when the config has no usable table.
+    """
+    table = _per_dish_table(config)
+    if table is None:
+        return None
+    _labels, dish_types, npol = table
+    return [dish_types[d] for _p in range(npol) for d in range(len(dish_types))]
+
+
+def _per_dish_table(config: dict) -> tuple[list[str], list[str], int] | None:
+    """``(dish labels, dish types, num_polarizations)`` from the config's
+    per-dish ``dish_inputs`` table, indexed by ``dish_idx`` over
+    ``num_dishes`` slots, or None without a table; the checks behind
+    :func:`element_labels_from_config`.
     """
     table = find_dish_inputs(config)
     if not table or not all(isinstance(e, dict) for e in table):
@@ -178,10 +205,11 @@ def element_labels_from_config(config: dict, file_labels=None) -> list[str] | No
             "dish_inputs table — its element ordering is untrustworthy; "
             "refusing to flag until the config is migrated to the "
             "per-dish layout")
-    by_idx = {}
+    by_idx, type_by_idx = {}, {}
     for i, entry in enumerate(table):
         idx = int(entry.get("dish_idx", i))
         by_idx[idx] = str(entry.get("label", f"dish{idx}"))
+        type_by_idx[idx] = str(entry.get("type") or DISH_MISSING)
     ndish = _config_int(config, "num_dishes")
     if ndish is None:
         ndish = max(by_idx) + 1
@@ -193,47 +221,76 @@ def element_labels_from_config(config: dict, file_labels=None) -> list[str] | No
             f"num_dishes ({ndish}) — refusing to flag with ambiguous "
             f"indexing")
     npol = _config_int(config, "num_polarizations", default=2)
-    dish_labels = [by_idx.get(i, PLACEHOLDER_LABEL) for i in range(ndish)]
-    labels = list(expand_dish_labels(dish_labels, npol))
-    if file_labels is not None and [str(l) for l in file_labels] != labels:
-        raise ValueError(
-            "the N² file's element axis disagrees with the kotekan "
-            "config's dish_inputs (a file from before the running "
-            "config?) — refusing to flag with ambiguous indexing")
-    return labels
+    return ([by_idx.get(i, PLACEHOLDER_LABEL) for i in range(ndish)],
+            [type_by_idx.get(i, DISH_MISSING) for i in range(ndish)],
+            npol)
 
 
-def uniquify_labels(labels) -> np.ndarray:
-    """Suffix repeated labels with their element index (Missing -> Missing[7]).
+def file_axis_mismatch(axis, file_labels) -> str | None:
+    """Why the N² file's element axis cannot be projected onto *axis*, or None.
 
-    Placeholder elements share the label ``Missing`` (``MissingX``/``MissingY``
-    on a per-dish axis); state diffing and per-source projection key by
-    label, so duplicates must be made per-element.  Unique labels pass
-    through untouched.
+    The file-based sources judge the file's own axis and project each
+    element's verdict onto the flag axis by label, so the file may carry
+    a subset of the axis (a compact ``subset/`` file: 48 of 128) in any
+    order — but every label it carries must be on the axis.  One that is
+    not means the file was written under a different ``dish_inputs``
+    table (it predates the running config, or came from another group),
+    and the labels that happen to match cannot be trusted either.  Both
+    sides are compared uniquified, so a full file identical to the config
+    matches placeholder for placeholder, while a subset file with a
+    duplicated label is refused: its duplicates have no unique name to
+    project by.
     """
-    from collections import Counter
-    strs = [str(label) for label in labels]
-    counts = Counter(strs)
-    return np.array([f"{s}[{i}]" if counts[s] > 1 else s
-                     for i, s in enumerate(strs)])
+    known = set(str(lbl) for lbl in axis)
+    unknown = [lbl for lbl in uniquify_labels(file_labels) if lbl not in known]
+    if not unknown:
+        return None
+    shown = ", ".join(unknown[:4]) + (", ..." if len(unknown) > 4 else "")
+    return (f"the N² file's element axis names {len(unknown)} element(s) "
+            f"not in the kotekan config's dish_inputs ({shown}): a file "
+            f"from before the running config?")
+
+
+def newest_file(pattern: str) -> str | None:
+    """The most recently written match of *pattern*, or None.
+
+    Two-stage so the cost does not grow with the archive: the matches'
+    directories are compared by mtime first (an acquisition directory's
+    mtime moves each time kotekan renames a finished file into it), then
+    only that directory's files are stat'ed.  ``subset/`` holds some
+    15,000 files and gains ~400 a day; a flat stat of every match took
+    2.6 s per 30 s tick over NFS when measured (2026-10-03) and would
+    only climb.  A directory touched for another reason wins for a
+    moment, its newest file then fails ``max_age`` and the live
+    directory takes over again at its next file.
+    """
+    matches = glob.glob(pattern)
+    if not matches:
+        return None
+    by_dir: dict[str, list[str]] = {}
+    for m in matches:
+        by_dir.setdefault(os.path.dirname(m), []).append(m)
+    if len(by_dir) > 1:
+        newest_dir = max(by_dir, key=os.path.getmtime)
+        matches = by_dir[newest_dir]
+    return max(matches, key=os.path.getmtime)
 
 
 def resolve_kotekan_file(config: Config, run: dict | None = None) -> str | None:
     """The newest usable N² file, or None (no match / too old).
 
     ``kotekan_file`` may be a glob spanning directories; the newest
-    match by mtime wins.  A file older than ``max_age`` is unusable —
-    the acquisition that wrote it has stopped, and its data says nothing
-    about the feeds now — but that only sidelines the file-based
-    sources, not the run.  *run*, if given, records the newest match, its
-    age and why it was passed over (``kotekan_file``,
-    ``kotekan_file_age_s``, ``kotekan_file_reason``).
+    match by mtime wins (:func:`newest_file`).  A file older than
+    ``max_age`` is unusable — the acquisition that wrote it has stopped,
+    and its data says nothing about the feeds now — but that only
+    sidelines the file-based sources, not the run.  *run*, if given,
+    records the newest match, its age and why it was passed over
+    (``kotekan_file``, ``kotekan_file_age_s``, ``kotekan_file_reason``).
     """
     run = {} if run is None else run
     path = config.kotekan_file
     if path and any(c in path for c in "*?["):
-        matches = glob.glob(path)
-        path = max(matches, key=os.path.getmtime) if matches else None
+        path = newest_file(path)
     if path and not os.path.exists(path):
         path = None
     run["kotekan_file"] = path
@@ -258,18 +315,42 @@ def resolve_kotekan_file(config: Config, run: dict | None = None) -> str | None:
     return path
 
 
-def resolve_labels(config: Config, path: str | None) -> np.ndarray:
-    """The element labels (and axis) every source masks against.
+@dataclass(frozen=True)
+class FlagAxis:
+    """The element axis every source masks against, as :func:`resolve_labels`
+    resolves it.
+
+    ``labels`` is one label per element in kotekan's order (uniquified);
+    ``types`` maps each label to its kotekan ``DishType`` name when the
+    axis came from the config (None when it is the file's own axis, which
+    carries no types bffs reads); ``file_mismatch`` says why the N² file
+    must not be used against this axis, None when it may.
+    """
+
+    labels: np.ndarray
+    types: dict[str, str] | None = None
+    file_mismatch: str | None = None
+
+
+def resolve_labels(config: Config, path: str | None) -> FlagAxis:
+    """The element labels (and axis) every source masks against, with
+    each element's dish type and whether the N² file at *path* may be
+    used against it (:class:`FlagAxis`).
 
     The kotekan config's ``dish_inputs`` (fetched through choco) is the
     naming authority — it is the same table kotekan indexes its bad-input
     mask with, and its labels (``A1X``...; derived as label + X/Y when
     the table is the 2026-08 per-dish layout) are the ones operators
-    know.  The file's own index map is the fallback (dry runs, choco
-    down; ``read_labels`` spells the file's per-element ``B4p1`` labels
-    the same way).  When both are available they must agree — a mismatch means
-    the file predates the running config and positions would be
-    ambiguous (see :func:`element_labels_from_config`).
+    know — and the type authority: its ``type`` per dish is what the
+    dish-type source flags on and what power-outlier excludes RFI
+    antennas by.  The file's own label table is the fallback (dry runs,
+    choco down; ``read_labels`` spells the file's per-element labels the
+    same way), with no types.  The file may cover only part of the axis
+    — a ``subset/`` file carries the 48 wired elements of 128 — since the
+    file-based sources project by label; but a file naming an element
+    the config does not know predates it, and is sidelined like a stale
+    one (:func:`file_axis_mismatch`), the run continuing on the other
+    sources.
     """
     cfg = None
     if config.url and config.group:
@@ -279,12 +360,18 @@ def resolve_labels(config: Config, path: str | None) -> np.ndarray:
             log.warning("no kotekan config from choco: %s", e)
     file_labels = read_labels(path) if path else None
     if cfg is not None:
-        cfg_labels = element_labels_from_config(cfg, file_labels=file_labels)
+        cfg_labels = element_labels_from_config(cfg)
         if cfg_labels is not None:
-            return uniquify_labels(cfg_labels)
+            axis = uniquify_labels(cfg_labels)
+            types = dict(zip((str(l) for l in axis), element_types_from_config(cfg)))
+            mismatch = (file_axis_mismatch(axis, file_labels)
+                        if file_labels is not None else None)
+            if mismatch:
+                log.warning("%s; file-based sources skipped", mismatch)
+            return FlagAxis(axis, types, mismatch)
         log.warning("kotekan config has no dish_inputs; using file labels")
     if file_labels is not None:
-        return uniquify_labels(file_labels)
+        return FlagAxis(uniquify_labels(file_labels))
     raise OSError(
         "no feed labels: no usable kotekan file and no dish_inputs "
         "from choco — nothing to index flags against")
@@ -340,19 +427,23 @@ def combine_sources(config: Config, run: dict | None = None,
     source gave a reason for (its report's ``detail.feed_reasons``; the
     power source says ``off`` or ``not in PDB table``).
 
-    A missing or stale kotekan file sidelines only the sources that need
-    it (``NEEDS_FILE``, e.g. power-outlier) — the rest still flag, so a
-    data outage doesn't take feed flagging down with it.  If *every*
+    A missing or stale kotekan file, or one whose element axis is not
+    on the flag axis (:func:`resolve_labels`), sidelines only the sources
+    that need it (``NEEDS_FILE``, e.g. power-outlier) — the rest still
+    flag, so a data outage doesn't take feed flagging down with it.  If *every*
     configured source is sidelined or measured nothing, the run fails
     (``OSError``, exit 2): nothing measurable is a systematic problem,
     not an all-good.
 
     Each source's config dict is passed with the job context merged in
-    as defaults (``choco_url`` / ``choco_group`` / ``state_dir``; explicit
-    keys win), so a source can derive per-node endpoints from choco's
-    node registry — the rfi source polls every started node of the
-    broadcast group unless given explicit ``urls`` — or default a file
-    into the state directory, as the manual source does.
+    as defaults (``choco_url`` / ``choco_group`` / ``state_dir`` /
+    ``dish_types``; explicit keys win), so a source can derive per-node
+    endpoints from choco's node registry — the rfi source polls every
+    started node of the broadcast group unless given explicit ``urls`` —
+    default a file into the state directory, as the manual source does,
+    or read each element's kotekan dish type (``{label: type}``, None
+    without a config), as dish-type and power-outlier do.  *run* also
+    gets ``n_by_type``, the axis's element count per dish type.
     """
     run = {} if run is None else run
     degraded: list[str] = []
@@ -362,8 +453,19 @@ def combine_sources(config: Config, run: dict | None = None,
     run["sources"] = reports
     run["flag_reasons"] = flag_reasons
     path = resolve_kotekan_file(config, run)
-    labels = resolve_labels(config, path)
+    axis = resolve_labels(config, path)
+    labels = axis.labels
+    if axis.file_mismatch:
+        # The file is as unusable as a stale one: the sources that read
+        # it are skipped, the rest still flag.
+        run["kotekan_file_reason"] = axis.file_mismatch
+        path = None
     run["n_elements"] = len(labels)
+    if axis.types:
+        counts: dict[str, int] = {}
+        for t in axis.types.values():
+            counts[t] = counts.get(t, 0) + 1
+        run["n_by_type"] = counts
     good = np.ones(len(labels), dtype=bool)
     flagged_by: dict[str, list[str]] = {}
     skipped: list[str] = []
@@ -382,7 +484,7 @@ def combine_sources(config: Config, run: dict | None = None,
                 "n_measured": 0, "n_flagged": 0, "detail": {}})
             continue
         src = {"choco_url": config.url, "choco_group": config.group,
-               "state_dir": config.state_dir, **src}
+               "state_dir": config.state_dir, "dish_types": axis.types, **src}
         result = source.mask(src, labels, path)
         mask, rep = result if isinstance(result, tuple) else (result, None)
         mask = np.asarray(mask, dtype=bool)

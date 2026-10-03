@@ -120,15 +120,35 @@ def test_read_axes_per_dish_table_stores_nothing(tmp_path, caplog):
     assert "2 entries for 4 elements" in caplog.text
 
 
-def test_read_axes_labels_without_pol_suffix_store_nothing(tmp_path, caplog):
+def test_read_axes_xy_labels_are_read_as_written(tmp_path):
+    """kotekan PR #1695 (2026-09-22; subset acquisitions from 2026-10-01):
+    the polarization *name* is the suffix and index_map/pol is alongside.
+    (Live case: A01X..RFIB4X, A01Y..RFIB4Y.)"""
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["A01X", "RFIB4X", "A01Y", "RFIB4Y"], pol=[0, 0, 1, 1])
+    with h5py.File(path, "a") as f:
+        f.attrs["n2_layout"] = "DishInputs"
+    assert R.read_axes(path).labels == ["A01X", "RFIB4X", "A01Y", "RFIB4Y"]
+
+
+def test_read_axes_xy_labels_without_pol_index_store_nothing(tmp_path, caplog):
     """Pre-2026-08 per-element labels (A0X) carried a wrong element
-    ordering; they lack the current writer's p<n> suffix and are refused,
-    not reinterpreted."""
+    ordering and are the same text as the PR #1695 spelling; without
+    index_map/pol to vouch for them they are refused, not reinterpreted."""
     path = tmp_path / "vis_0000000001_x.h5"
     make_file(path, n_elem=4)
     _labels(path, ["A0X", "A1X", "A0Y", "A1Y"])
     assert R.read_axes(path).labels == []
-    assert "no p<n> polarization suffix" in caplog.text
+    assert "no index_map/pol to vouch" in caplog.text
+
+
+def test_read_axes_labels_without_either_suffix_store_nothing(tmp_path, caplog):
+    path = tmp_path / "vis_0000000001_x.h5"
+    make_file(path, n_elem=4)
+    _labels(path, ["d0_pA", "d1_pA", "d0_pB", "d1_pB"], pol=[0, 0, 1, 1])
+    assert R.read_axes(path).labels == []
+    assert "no polarization suffix" in caplog.text
 
 
 def test_read_axes_pol_index_disagreeing_with_suffix_stores_nothing(tmp_path, caplog):

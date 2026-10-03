@@ -46,13 +46,15 @@ def _element_labels(labels: list, n_elements: int, pol=None) -> list:
 
     kotekan (chord.2021.10+988, acquisitions from 2026-09-11 on) writes
     ``index_map/label`` per element — a full frame's 128 or a compact
-    ``DishInputs`` frame's 48, each spelled dish label + ``p1``/``p2`` —
-    and ``file_element_labels`` turns that into choco's ``B4X``/``B4Y``
-    after checking the count against ``num_elements`` and the suffix
-    against ``index_map/pol``.  Any other layout (a per-dish table, a
-    table wider than the axis, pre-2026-08 ``A1X`` labels) is stored as
-    *no* labels rather than expanded or guessed: the viewer already falls
-    back to element indices, and a wrong name on an axis is worse than none.
+    ``DishInputs`` frame's 48, spelled dish label + ``p1``/``p2`` up to
+    PR #1695 and dish label + ``X``/``Y`` from then on (2026-10-01 in the
+    data) — and ``file_element_labels`` turns either into choco's
+    ``B4X``/``B4Y`` after checking the count against ``num_elements`` and
+    the suffix against ``index_map/pol``.  Any other layout (a per-dish
+    table, a table wider than the axis, pre-2026-08 ``A1X`` labels with
+    no ``pol`` to vouch for them) is stored as *no* labels rather than
+    expanded or guessed: the viewer already falls back to element
+    indices, and a wrong name on an axis is worse than none.
     """
     if not labels:
         return []

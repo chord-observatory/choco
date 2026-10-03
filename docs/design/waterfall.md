@@ -107,15 +107,24 @@ kotekan's per-element label table (chord.2021.10+988, acquisitions from
 2026-09-11 on): ``index_map/label`` has one entry per element of *this
 file's* axis — a ``subset/`` file is a ``DishInputs`` frame over the
 populated dishes only (16 dishes + 8 RFI antennas × 2 pol = 48 elements) and
-carries exactly 48 labels — spelled dish label + ``p1``/``p2``, which
-``dishlabels.file_element_labels`` maps to choco's ``B4X``/``B4Y`` after
-checking the count against ``num_elements`` and the suffix against
-``index_map/pol``.  Earlier layouts are not read: a per-dish table needing
-expansion, a whole-telescope table needing the ``input_list`` lookup (the
-2026-09-09 subset files, whose ``label[compact]`` named the Y block as the
-next row of unpopulated dishes), pre-2026-08 ``A1X`` labels — anything that is
-not the current layout is stored as no labels — the viewer shows indices —
-because a wrong name on an axis is worse than none.  Labels are written once,
+carries exactly 48 labels.  Two spellings exist: dish label + ``p1``/``p2``
+(+988 up to kotekan PR #1695) and dish label + ``X``/``Y`` (PR #1695,
+2026-09-22, which also put the dishes in physical order and renamed them
+``A01``; in the subset data from 2026-10-01), and
+``dishlabels.file_element_labels`` maps either to choco's ``B4X``/``B4Y``
+after checking the count against ``num_elements`` and the suffix against
+``index_map/pol``.  The ``X``/``Y`` text is also what the pre-2026-08
+per-element files carried, with the wrong element order, so that spelling
+is taken only when ``index_map/pol`` (written since +988) is there to vouch
+for it.  Earlier layouts are not read: a per-dish table needing expansion, a
+whole-telescope table needing the ``input_list`` lookup (the 2026-09-09
+subset files, whose ``label[compact]`` named the Y block as the next row of
+unpopulated dishes), pre-2026-08 ``A1X`` labels without ``pol`` — anything
+that is not the current layout is stored as no labels — the viewer shows
+indices — because a wrong name on an axis is worse than none.  The first
+acquisitions under PR #1695 (2026-10-01 to 10-03) were rendered before the
+``X``/``Y`` spelling was read and sit with no labels until ``--relabel``
+rewrites them.  Labels are written once,
 at ``store.start``, so ``waterfall.py --relabel`` exists to push a better
 reading to finished acquisitions: one source file per acquisition is re-read
 and only ``index.json``'s ``labels`` rewritten.  A re-read that resolves

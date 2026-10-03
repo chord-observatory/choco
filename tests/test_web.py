@@ -2558,6 +2558,23 @@ class TestBffsRunFile:
                                       "file": "/a/b/vis_0001.h5"}) == (
             "band coverage 12% · 16 rows (4 empty tail rows skipped) · "
             "median power 1235 · vis_0001.h5")
+        # a compact subset/ file: say how much of the axis it carries
+        assert line("power-outlier", {"band_coverage": 1.0, "rows": 16,
+                                      "n_in_file": 48, "n_not_in_file": 80}) == (
+            "band coverage 100% · 16 rows · 48 of 128 elements in the file")
+        # a full file carries the whole axis: nothing to say about it
+        assert line("power-outlier", {"rows": 16, "n_in_file": 128,
+                                      "n_not_in_file": 0}) == "16 rows"
+        assert line("power-outlier", {"rows": 16, "n_excluded": 16,
+                                      "exclude_types": ["RFIDish"]}) == (
+            "16 rows · 16 RFIDish elements not compared")
+        assert line("dish-type", {"type_counts": {"ArrayDish": 32, "Missing": 80,
+                                                  "RFIDish": 16},
+                                  "bad_types": ["Missing"], "n_untyped": 0}) == (
+            "32 ArrayDish / 80 Missing / 16 RFIDish · bad: Missing")
+        assert line("dish-type", {"type_counts": {"ArrayDish": 2}, "bad_types": ["Missing"],
+                                  "n_untyped": 3}) == (
+            "2 ArrayDish · bad: Missing · 3 untyped (left good)")
         assert line("rfi", {"n_endpoints": 14, "n_failed": 1, "n_stale": 1,
                             "skipped_nodes": [{"node": "cx47", "status": "idle"}],
                             "sk_bounds": [0.7, 1.5]}) == (

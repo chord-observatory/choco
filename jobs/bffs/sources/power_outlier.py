@@ -3,6 +3,22 @@
 Reads the kotekan N² autocorrelation; the marquee data-driven, self-healing
 flag. Sibling of CHIME's ``autovar``/``ampvar``.
 
+The file is judged on its *own* element axis and the verdict is projected
+onto the flag axis by label.  The ``subset/`` files this reads in
+production are compact ``DishInputs`` frames over the wired elements only
+(48 of the correlator's 128 as of 2026-10), so most of the flag axis is
+simply not in the file: those feeds are unmeasured and stay good, and the
+report says how many (``n_not_in_file``).  Position is never trusted
+across the two axes — the core checks beforehand that every file label is
+on the flag axis and skips the file otherwise.
+
+Only main-array dishes are judged against each other.  The RFI-monitor
+antennas (kotekan type ``RFIDish``) are real receivers but not feeds of
+the array: they see the horizon, not the sky the dishes see, so their
+power is no evidence about them *as feeds* and they are left out of the
+median and never flagged here (``exclude_types``, read from the dish
+types the core passes in).
+
 The source judges feeds only when enough of the band is present.  Every
 (time, frequency) cell the receiver never filled — the channels of an
 X-engine node that is down, the empty tail of a stopped acquisition — is
@@ -18,9 +34,9 @@ import os
 
 import numpy as np
 
-from kotekan_io import Frame, read_autocorr
+from kotekan_io import Frame, read_autocorr, uniquify_labels
 
-from .common import report
+from .common import project, report
 
 log = logging.getLogger("bffs.sources.power_outlier")
 
@@ -30,6 +46,8 @@ NEEDS_FILE = True
 
 _MAD_TO_SIGMA = 1.4826  # turns a median-absolute-deviation into a standard deviation
 _KEYS = ("freq_lo", "freq_hi", "nsigma", "abs_lo", "abs_hi", "min_valid_frac")
+#: Elements of these kotekan dish types are neither compared nor flagged.
+DEFAULT_EXCLUDE_TYPES = ("RFIDish",)
 #: Least fraction of the band's (time, freq) cells that must hold data
 #: before feeds are judged at all.  One X-engine node is 1/8 of the
 #: band, so a quarter still lets the source work with most of the
@@ -71,6 +89,7 @@ def power_outlier_mask(
     abs_lo: float | None = None,
     abs_hi: float | None = None,
     min_valid_frac: float = 0.0,
+    eligible: np.ndarray | None = None,
     stats: dict | None = None,
 ) -> np.ndarray:
     """Good-mask (``True`` = good) over the frame's feeds, from each feed's band power.
@@ -89,7 +108,10 @@ def power_outlier_mask(
     zero on most of the delivered cells is dead, but a band only partly
     delivered (X-engine nodes down) costs every feed the same cells and
     counts against none of them.  Callers gate on :func:`band_coverage`
-    for that.  ``stats``, if given, receives ``n_live``, ``median`` and
+    for that.  ``eligible`` (``(nfeed,)`` bool) restricts the comparison
+    to those feeds: the others enter neither the median nor the spread
+    and are always good — the RFI antennas, which are not feeds of the
+    array.  ``stats``, if given, receives ``n_live``, ``median`` and
     ``spread`` for reporting.
     """
     band = band_mask(frame, freq_lo, freq_hi)
@@ -110,6 +132,8 @@ def power_outlier_mask(
         has_data &= kept_frac >= min_valid_frac
 
     live = has_data & (power > 0)  # dead feeds (no valid/positive power) are bad
+    if eligible is not None:
+        live &= np.asarray(eligible, dtype=bool)
     good = live.copy()
 
     median = spread = None
@@ -136,6 +160,8 @@ def power_outlier_mask(
         # only flags what it can measure, so they stay good.  A feed
         # that *is* in the products but silent is still dead-and-bad.
         good |= ~frame.measured
+    if eligible is not None:
+        good |= ~np.asarray(eligible, dtype=bool)
     if stats is not None:
         n_live = int(live.sum()) if frame.measured is None else int((live & frame.measured).sum())
         stats.update(n_live=n_live, median=median, spread=spread)
@@ -145,10 +171,18 @@ def power_outlier_mask(
 def mask(src: dict, labels: np.ndarray, kotekan_file: str):
     """Good-mask over ``labels`` from the kotekan file's autocorrelation power.
 
-    ``frame.inputs`` is the same ``index_map/input`` as ``labels`` (same file),
-    so the mask is already in axis order — no re-mapping needed.  Abstains
-    (all good, ``degraded``) when the file's newest filled rows cover less
-    than ``min_coverage`` of the band — see the module docstring.
+    The outlier statistics run over the file's own axis (``frame.labels``,
+    every element the file carries); each element's verdict is then
+    projected onto ``labels`` by name, so a compact ``subset/`` file judges
+    the feeds it holds and leaves the rest of the axis good.  Abstains (all
+    good, ``degraded``) when the file's newest filled rows cover less than
+    ``min_coverage`` of the band — see the module docstring.  The report's
+    ``n_measured`` counts the live feeds judged; ``n_in_file`` /
+    ``n_not_in_file`` split the flag axis by whether the file carries it.
+    Elements whose dish type (``src["dish_types"]``, from the core) is in
+    ``exclude_types`` (default ``RFIDish``) are left out of the comparison
+    and never flagged, ``n_excluded`` of them; without types every
+    element is judged.
     """
     all_good = np.ones(len(labels), dtype=bool)
     name = os.path.basename(str(kotekan_file))
@@ -181,9 +215,29 @@ def mask(src: dict, labels: np.ndarray, kotekan_file: str):
             f"little N² data to judge feeds (X-engine nodes down, or the "
             f"acquisition has ended)",
             n_measured=0, **detail)
+    # The file's own axis; its elements are judged in place and projected
+    # onto the flag axis by label below.
+    file_axis = uniquify_labels(frame.labels)
+    types = src.get("dish_types")
+    exclude = {str(t) for t in (src.get("exclude_types") or DEFAULT_EXCLUDE_TYPES)}
+    eligible = None
+    if types:
+        eligible = np.array([types.get(lbl) not in exclude for lbl in file_axis],
+                            dtype=bool)
+    detail["exclude_types"] = sorted(exclude)
+    detail["n_excluded"] = int((~eligible).sum()) if eligible is not None else 0
+    detail["types_known"] = bool(types)
     stats: dict = {}
-    good = power_outlier_mask(frame, stats=stats, **params)
+    file_good = power_outlier_mask(frame, stats=stats, eligible=eligible, **params)
     if stats.get("median") is not None:
         detail["median_power"] = float(f"{stats['median']:.4g}")
         detail["spread"] = float(f"{stats['spread']:.4g}")
-    return good, report("ok", n_measured=stats.get("n_live"), **detail)
+    # Feeds the file does not carry have no entry and project to good
+    # (unmeasured).
+    verdict = {lbl: bool(g) for lbl, g in zip(file_axis, file_good)}
+    in_file = [lbl for lbl in (str(l) for l in labels) if lbl in verdict]
+    detail["n_file_elements"] = int(frame.nfeed)
+    detail["n_in_file"] = len(in_file)
+    detail["n_not_in_file"] = len(labels) - len(in_file)
+    return project(verdict, labels), report(
+        "ok", n_measured=stats.get("n_live"), **detail)

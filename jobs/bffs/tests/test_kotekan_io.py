@@ -41,6 +41,23 @@ def test_read_autocorr_visibility_diagonal(tmp_path):
     np.testing.assert_allclose(frame.auto[0, 0], [5, 5, 5, 50])
 
 
+def test_read_autocorr_carries_the_file_axis(tmp_path):
+    """Both layouts hand the file's own element labels back on the frame:
+    the sources project by them, never by position."""
+    path = tmp_path / "n2.h5"
+    write_normalized(path, ["f0", "f1"], [400.0], np.ones((1, 1, 2), "f4"))
+    assert list(kotekan_io.read_autocorr(path).labels) == ["f0X", "f1X"]
+    path = tmp_path / "chord.h5"
+    write_chord_n2(path, ["A1", "B1"], [400.0], np.ones((1, 1, 4), "f4"),
+                   num_elements=4)
+    assert list(kotekan_io.read_autocorr(path).labels) == ["A1X", "B1X", "A1Y", "B1Y"]
+
+
+def test_uniquify_labels_suffixes_duplicates():
+    out = list(kotekan_io.uniquify_labels(["A1X", "Fake", "Fake", "B2Y"]))
+    assert out == ["A1X", "Fake[1]", "Fake[2]", "B2Y"]
+
+
 def test_read_autocorr_takes_recent_chunk(tmp_path):
     path = tmp_path / "n2.h5"
     write_normalized(path, ["f0", "f1"], [400.0, 500.0], np.ones((10, 2, 2), "f4"))
@@ -90,6 +107,24 @@ def test_pol_index_disagreeing_with_the_suffix_is_refused(tmp_path):
     with h5py.File(path, "r+") as f:
         f["index_map/pol"][...] = np.array([0, 0, 0, 1], "i4")
     with pytest.raises(OSError, match="index_map/pol says 0"):
+        kotekan_io.read_labels(path)
+
+
+def test_read_labels_xy_spelling(tmp_path):
+    # kotekan PR #1695 (2026-09-22; files from 2026-10-01): the
+    # polarization name is the suffix, vouched for by index_map/pol.
+    path = tmp_path / "chord.h5"
+    write_chord_n2(path, ["A01", "B01"], [400.0], np.ones((1, 1, 4), "f4"),
+                   num_elements=4)
+    with h5py.File(path, "r+") as f:
+        del f["index_map/label"]
+        f["index_map"].create_dataset(
+            "label", data=np.array(["A01X", "B01X", "A01Y", "B01Y"], dtype=object),
+            dtype=h5py.string_dtype(encoding="utf-8"))
+    assert list(kotekan_io.read_labels(path)) == ["A01X", "B01X", "A01Y", "B01Y"]
+    with h5py.File(path, "r+") as f:
+        del f["index_map/pol"]
+    with pytest.raises(OSError, match="no index_map/pol to vouch"):
         kotekan_io.read_labels(path)
 
 

@@ -384,9 +384,33 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     os.utime(old, (1_000_000, 1_000_000))
     os.utime(mid, (2_000_000, 2_000_000))
     os.utime(new, (3_000_000, 3_000_000))
+    os.utime(old_acq, (1_000_000, 1_000_000))
+    os.utime(new_acq, (3_000_000, 3_000_000))
     labels, good, _, _ = bffs.combine_sources(
         bffs.Config(kotekan_file=str(tmp_path / "acq_*" / "*.h5"), max_age=0))
     assert list(labels) == ["new0X", "new1X"]
+
+
+def test_newest_file_compares_directories_first(tmp_path):
+    """Only the newest directory's files are stat'ed, so the lookup does
+    not grow with the archive: a newer file in an older directory is not
+    seen until that directory's mtime moves."""
+    import os
+    a, b = tmp_path / "acq_a", tmp_path / "acq_b"
+    a.mkdir(), b.mkdir()
+    (a / "x.h5").write_bytes(b""), (a / "y.h5").write_bytes(b"")
+    (b / "z.h5").write_bytes(b"")
+    os.utime(a / "x.h5", (1_000, 1_000))
+    os.utime(a / "y.h5", (9_000, 9_000))     # newest file overall ...
+    os.utime(b / "z.h5", (5_000, 5_000))
+    os.utime(a, (1_000, 1_000))
+    os.utime(b, (5_000, 5_000))              # ... but b is the live directory
+    assert bffs.newest_file(str(tmp_path / "acq_*" / "*.h5")) == str(b / "z.h5")
+    os.utime(a, (9_000, 9_000))
+    assert bffs.newest_file(str(tmp_path / "acq_*" / "*.h5")) == str(a / "y.h5")
+    assert bffs.newest_file(str(tmp_path / "nothing" / "*.h5")) is None
+    # a single directory: plain newest-by-mtime
+    assert bffs.newest_file(str(a / "*.h5")) == str(a / "y.h5")
 
 
 def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
@@ -406,6 +430,47 @@ def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
     labels, good, _, _ = bffs.combine_sources(cfg)
     assert seen == {"url": "https://localhost:5000", "group": "cx"}
     assert list(good) == [True]
+
+
+def test_dish_types_injected_into_sources(tmp_path, monkeypatch):
+    """Each source also gets ``dish_types`` — the config's per-element
+    kotekan dish type by label — and the run record the counts."""
+    import sources
+    seen = {}
+
+    class Probe:
+        @staticmethod
+        def mask(src, labels, path):
+            seen.update(src)
+            return np.ones(len(labels), dtype=bool)
+
+    monkeypatch.setattr(sources, "get", lambda kind: Probe if kind == "probe" else None)
+    cfg_dict = {
+        "num_dishes": 3, "num_polarizations": 2,
+        "telescope": {"dish_inputs": [
+            {"dish_idx": 0, "type": "ArrayDish", "label": "A01"},
+            {"dish_idx": 1, "type": "Missing", "label": "E01"},
+            {"dish_idx": 2, "type": "RFIDish", "label": "RFIA1"},
+        ]},
+    }
+    monkeypatch.setattr(bffs, "choco_group_config", lambda url, group: cfg_dict)
+    run = {}
+    bffs.combine_sources(bffs.Config(kotekan_file=str(tmp_path / "none.h5"),
+                                     url="https://localhost:5000", group="cx",
+                                     sources=[{"kind": "probe"}]), run)
+    assert seen["dish_types"] == {
+        "A01X": "ArrayDish", "E01X": "Missing", "RFIA1X": "RFIDish",
+        "A01Y": "ArrayDish", "E01Y": "Missing", "RFIA1Y": "RFIDish"}
+    assert run["n_by_type"] == {"ArrayDish": 2, "Missing": 2, "RFIDish": 2}
+    # the file's own axis carries no types
+    seen.clear()
+    monkeypatch.setattr(bffs, "choco_group_config", lambda url, group: {})
+    n2 = tmp_path / "n2.h5"
+    write_normalized(n2, ["f0"], [400.0], np.ones((1, 1, 1), "f4"))
+    run = {}
+    bffs.combine_sources(bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                                     group="cx", sources=[{"kind": "probe"}]), run)
+    assert seen["dish_types"] is None and "n_by_type" not in run
 
 
 def test_stale_file_with_no_other_labels_fails(tmp_path):
@@ -489,22 +554,45 @@ def test_element_labels_per_dish_expands_pol_blocks():
     assert bffs.element_labels_from_config(_PER_DISH_CONFIG) == _PER_DISH_LABELS
 
 
-def test_element_labels_per_dish_file_agreement():
-    got = bffs.element_labels_from_config(
-        _PER_DISH_CONFIG, file_labels=_PER_DISH_LABELS)
-    assert got == _PER_DISH_LABELS
+def test_file_axis_identical_to_config_matches():
+    axis = bffs.uniquify_labels(_PER_DISH_LABELS)
+    assert bffs.file_axis_mismatch(axis, _PER_DISH_LABELS) is None
 
 
-def test_element_labels_per_dish_stale_file_refuses():
-    # An old per-element file (unexpanded axis) against a per-dish
-    # config means the file predates the cutover — refuse.
-    try:
-        bffs.element_labels_from_config(
-            _PER_DISH_CONFIG, file_labels=["A1X", "Fake", "A3X"])
-    except ValueError as e:
-        assert "ambiguous" in str(e)
-        return
-    raise AssertionError("expected ValueError on a pre-cutover file")
+def test_file_axis_may_be_a_subset_in_any_order():
+    """A compact subset/ file carries the wired elements only, in its own
+    order; the file sources project by label, so that is fine."""
+    axis = bffs.uniquify_labels(_PER_DISH_LABELS)
+    assert bffs.file_axis_mismatch(axis, ["A3Y", "A1X"]) is None
+
+
+def test_file_axis_with_an_unknown_label_mismatches():
+    # A file naming an element the config does not know was written
+    # under another dish_inputs table — none of it can be trusted.
+    axis = bffs.uniquify_labels(_PER_DISH_LABELS)
+    why = bffs.file_axis_mismatch(axis, ["A1X", "Fake", "A3X"])
+    assert why and "Fake" in why and "1 element" in why
+
+
+def test_file_axis_duplicate_labels_mismatch_on_a_subset():
+    # Placeholders are uniquified by element index on both sides, so a
+    # subset file's duplicates have no unique name to project by.
+    axis = bffs.uniquify_labels(_PER_DISH_LABELS)
+    why = bffs.file_axis_mismatch(axis, ["MissingX", "MissingX", "A1X"])
+    assert why and "2 element" in why and "MissingX[0]" in why
+    # one placeholder, unique on both sides, projects by name like any label
+    assert bffs.file_axis_mismatch(axis, ["MissingX", "A1X"]) is None
+
+
+def test_element_types_follow_the_label_axis():
+    # a dish's type on both of its polarizations; a slot the table skips
+    # is Missing, like its label; an entry without a type too
+    assert bffs.element_types_from_config(_PER_DISH_CONFIG) == [
+        "ArrayDish", "Missing", "ArrayDish", "ArrayDish", "Missing", "ArrayDish"]
+    cfg = {"num_dishes": 2, "telescope": {"dish_inputs": [
+        {"dish_idx": 0, "label": "A01"}, {"dish_idx": 1, "type": "RFIDish", "label": "R1"}]}}
+    assert bffs.element_types_from_config(cfg) == ["Missing", "RFIDish", "Missing", "RFIDish"]
+    assert bffs.element_types_from_config({}) is None
 
 
 def test_element_labels_per_dish_idx_beyond_num_dishes_refuses():
@@ -576,21 +664,104 @@ def test_per_element_choco_config_refuses_end_to_end(tmp_path, monkeypatch):
     raise AssertionError("expected OSError for a per-element table")
 
 
-def test_config_file_element_mismatch_refuses(tmp_path, monkeypatch):
-    """A file whose axis disagrees with the per-dish config predates
-    the running config — refuse rather than send wrong indices."""
+def test_config_file_element_mismatch_skips_the_file(tmp_path, monkeypatch):
+    """A file naming elements the per-dish config does not know predates
+    the running config: the file sources are skipped (degraded) with the
+    reason in the run record, the axis is still the config's, and the
+    other sources still flag."""
     monkeypatch.setattr(bffs, "choco_group_config",
                         lambda url, group: _PER_DISH_CONFIG)
     n2 = tmp_path / "n2.h5"
     write_normalized(n2, ["x0", "x1"], [400.0], np.ones((1, 1, 2), "f4"))
+    manual = tmp_path / "manual.json"
+    write_manual(manual, ["A3Y"])
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
-                      group="cx")
-    try:
-        bffs.combine_sources(cfg)
-    except ValueError as e:
-        assert "disagrees" in str(e)
-        return
-    raise AssertionError("expected ValueError on element-axis mismatch")
+                      group="cx", max_age=0,
+                      sources=[{"kind": "power-outlier"},
+                               {"kind": "manual", "path": str(manual)}])
+    run = {}
+    labels, good, _, degraded = bffs.combine_sources(cfg, run)
+    assert list(labels) == _PER_DISH_LABELS
+    assert list(good) == [True, True, True, True, True, False]
+    assert run["kotekan_file"] == str(n2)
+    assert "x0X" in run["kotekan_file_reason"]
+    assert run["sources"][0]["status"] == "skipped"
+    assert "x0X" in run["sources"][0]["reason"]
+    assert degraded and "skipped: power-outlier" in degraded[0]
+
+
+def test_subset_file_projects_onto_the_config_axis(tmp_path, monkeypatch):
+    """The production shape: the config's axis has 128 elements, the
+    compact subset/ file 48 of them in its own order.  A dead element in
+    the file lands on the axis by label; the elements the file does not
+    carry stay good and are counted in the report."""
+    cfg_dict = {
+        "num_dishes": 4, "num_polarizations": 2,
+        "telescope": {"dish_inputs": [
+            {"dish_idx": i, "type": "ArrayDish", "label": lbl}
+            for i, lbl in enumerate(["A01", "A02", "C01", "RFIA1"])]},
+    }
+    monkeypatch.setattr(bffs, "choco_group_config",
+                        lambda url, group: cfg_dict)
+    # file axis: A01, RFIA1 (both pols) — dishes 0 and 3 of 4; RFIA1Y dead
+    power = np.ones((2, 8, 4), "f4") * 10.0
+    power[..., 3] = 0.0
+    n2 = tmp_path / "n2.h5"
+    write_chord_n2(n2, ["A01", "RFIA1"], np.linspace(400, 800, 8), power,
+                   num_elements=4)
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx", max_age=0,
+                      sources=[{"kind": "power-outlier"}])
+    run = {}
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg, run)
+    assert list(labels) == ["A01X", "A02X", "C01X", "RFIA1X",
+                            "A01Y", "A02Y", "C01Y", "RFIA1Y"]
+    assert run["kotekan_file_reason"] is None
+    assert list(np.nonzero(~good)[0]) == [7]           # RFIA1Y, by label
+    assert flagged_by == {"RFIA1Y": ["power-outlier"]}
+    assert degraded == []
+    rep = run["sources"][0]
+    assert rep["status"] == "ok" and rep["n_measured"] == 3
+    assert rep["detail"]["n_file_elements"] == 4
+    assert rep["detail"]["n_in_file"] == 4
+    assert rep["detail"]["n_not_in_file"] == 4
+
+
+def test_missing_dishes_bad_and_rfi_never_power_flagged_end_to_end(tmp_path, monkeypatch):
+    """The production shape with the config's dish types: the dish-type
+    source flags every element of a Missing dish (the subset file never
+    carries them), and power-outlier leaves the RFI antennas alone even
+    when one reads dead."""
+    cfg_dict = {
+        "num_dishes": 4, "num_polarizations": 2,
+        "telescope": {"dish_inputs": [
+            {"dish_idx": 0, "type": "ArrayDish", "label": "A01"},
+            {"dish_idx": 1, "type": "Missing", "label": "E01"},
+            {"dish_idx": 2, "type": "Missing", "label": "H04"},
+            {"dish_idx": 3, "type": "RFIDish", "label": "RFIA1"}]},
+    }
+    monkeypatch.setattr(bffs, "choco_group_config", lambda url, group: cfg_dict)
+    power = np.ones((2, 8, 4), "f4") * 10.0
+    power[..., 3] = 0.0                                  # RFIA1Y reads dead
+    n2 = tmp_path / "n2.h5"
+    write_chord_n2(n2, ["A01", "RFIA1"], np.linspace(400, 800, 8), power,
+                   num_elements=4)
+    cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
+                      group="cx", max_age=0,
+                      sources=[{"kind": "dish-type"}, {"kind": "power-outlier"}])
+    run = {}
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg, run)
+    assert list(labels) == ["A01X", "E01X", "H04X", "RFIA1X",
+                            "A01Y", "E01Y", "H04Y", "RFIA1Y"]
+    assert list(np.nonzero(~good)[0]) == [1, 2, 5, 6]
+    assert flagged_by == {lbl: ["dish-type"] for lbl in ("E01X", "H04X", "E01Y", "H04Y")}
+    assert run["flag_reasons"]["E01X"] == {"dish-type": "type Missing"}
+    assert degraded == []
+    by_kind = {r["kind"]: r for r in run["sources"]}
+    assert by_kind["dish-type"]["n_flagged"] == 4
+    assert by_kind["power-outlier"]["n_measured"] == 2       # A01X, A01Y
+    assert by_kind["power-outlier"]["detail"]["n_excluded"] == 2
+    assert run["n_by_type"] == {"ArrayDish": 2, "Missing": 4, "RFIDish": 2}
 
 
 def test_choco_config_fetch_failure_falls_back_to_file(tmp_path, monkeypatch):

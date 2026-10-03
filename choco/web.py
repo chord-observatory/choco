@@ -1801,8 +1801,24 @@ def _bffs_source_summary(kind: str, d: dict) -> str:
             parts.append(rows)
         if d.get("median_power") is not None:
             parts.append(f"median power {float(d['median_power']):.4g}")
+        if d.get("n_in_file") is not None and d.get("n_not_in_file"):
+            n_in, n_out = int(d["n_in_file"]), int(d["n_not_in_file"])
+            parts.append(f"{n_in} of {n_in + n_out} elements in the file")
+        if d.get("n_excluded"):
+            types = d.get("exclude_types")
+            named = ", ".join(str(t) for t in types) if isinstance(types, list) else "type"
+            parts.append(f"{int(d['n_excluded'])} {named} elements not compared")
         if d.get("file"):
             parts.append(Path(str(d["file"])).name)
+    elif kind == "dish-type":
+        counts = d.get("type_counts")
+        if isinstance(counts, dict) and counts:
+            parts.append(" / ".join(f"{int(n)} {t}" for t, n in counts.items()))
+        bad = d.get("bad_types")
+        if isinstance(bad, list) and bad:
+            parts.append("bad: " + ", ".join(str(t) for t in bad))
+        if d.get("n_untyped"):
+            parts.append(f"{int(d['n_untyped'])} untyped (left good)")
     elif kind == "rfi":
         n = d.get("n_endpoints")
         if n is not None:

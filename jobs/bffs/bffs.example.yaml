@@ -7,12 +7,20 @@
 # The kotekan hdf5N2Write output; its autocorrelation data drives the
 # power-outlier source. Feed labels (and the element axis bad_inputs
 # indices address) come from the kotekan config's dish_inputs table via
-# choco; the file's own index map is the fallback when choco is down.
-# A glob is allowed and may span directories — each run reads the newest
-# match by mtime, so with kotekan writing one acquisition directory at a
-# time this follows the most recently written file of the current
-# acquisition.
-kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/acq_*/*.h5
+# choco; the file's own label table is the fallback when choco is down.
+# The file need not carry the whole axis: the subset/ tree (the one the
+# receiver writes continuously) holds compact DishInputs frames over the
+# wired elements only — 48 of 128 — and the source projects its verdict
+# onto the axis by label, leaving the feeds the file does not carry
+# unmeasured.  full/ is written only on demand and goes stale between
+# runs.  A glob is allowed and may span directories — each run reads the
+# newest match by mtime (newest directory first, so the lookup does not
+# grow with the archive), so with kotekan writing one acquisition
+# directory at a time this follows the most recently written file of the
+# current acquisition.  kotekan finishes a file (~3.5 min of frames)
+# before renaming it out of .partial/, so a verdict lags the sky by up
+# to that much.
+kotekan_file: /mnt/cs00/data/kotekan_vis_files/subset/acq_*/*.h5
 
 # A newest kotekan file older than this many seconds is unusable (a
 # stopped acquisition's empty tail rows would mark every feed dead):
@@ -48,6 +56,18 @@ sources:
     # then refuses to write until the two agree).
     # path: /somewhere/else/manual_overrides.yaml
 
+  - kind: dish-type              # elements of a dish kotekan types as not there
+    # The kotekan config's dish_inputs types every dish: ArrayDish,
+    # RFIDish, or Missing for a slot with no dish behind it.  A Missing
+    # dish's elements have nothing to receive with and are bad by
+    # construction — the subset/ files do not even carry them, so no
+    # data-driven source would ever see them.  Redundant with kotekan's
+    # own baseline mask, deliberately: the bad list should say what is
+    # a feed.  Needs the config from choco; without it the source
+    # abstains (degraded).  RFI antennas are real receivers and are not
+    # flagged here.
+    # bad_types: [Missing]
+
   - kind: power-outlier          # band-averaged power, outlier across feeds
     chunk: 16                     # most recent N filled time rows to average
     nsigma: 5.0
@@ -64,6 +84,11 @@ sources:
     # acquisition's empty tail, or most of the cluster being down, as
     # every feed dead. One X-engine node is 1/8 of the band.
     min_coverage: 0.25
+    # Elements of these kotekan dish types (from the config via choco)
+    # are neither compared nor flagged: the RFI-monitor antennas see
+    # the horizon, not what the dishes see, so their power says nothing
+    # about them as feeds.  Without the config every element is judged.
+    # exclude_types: [RFIDish]
 
   # External-service sources (provisional until the hardware is live).
   # - kind: power                # feeds whose amplifier is unpowered (power_db)

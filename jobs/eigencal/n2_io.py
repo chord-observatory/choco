@@ -18,8 +18,9 @@ eigencal derives its feed layout from that instead of a hand-kept table.
 
 The label axis is the *element* axis, read from kotekan's per-element
 ``index_map/label`` (chord.2021.10+988, acquisitions from 2026-09-11 on:
-``A1p1`` … ``A1p2`` …, one entry per element) and spelled in choco's
-names (``A1X`` … ``A1Y`` …) by ``choco.dishlabels.file_element_labels``.
+one entry per element, ``A1p1`` … ``A1p2`` … up to kotekan PR #1695 and
+``A01X`` … ``A01Y`` … from then on) and spelled in choco's names
+(``A1X`` … ``A1Y`` …) by ``choco.dishlabels.file_element_labels``.
 Any other label layout — CHIME-style ``index_map/input``, a per-dish
 table, pre-2026-08 per-element labels — is refused.
 """
@@ -64,8 +65,9 @@ def element_labels(f: h5py.File) -> np.ndarray:
 
     Only kotekan's per-element layout (chord.2021.10+988, 2026-09-11 on)
     is accepted: ``index_map/label`` names every element of the file's
-    own axis as dish label + ``p1``/``p2``, cross-checked against
-    ``index_map/pol`` and ``num_elements``.  Anything else — CHIME-style
+    own axis as dish label + ``p1``/``p2`` (or + ``X``/``Y`` since
+    PR #1695), cross-checked against ``index_map/pol`` and
+    ``num_elements``.  Anything else — CHIME-style
     ``index_map/input``, a per-dish table, pre-2026-08 per-element
     labels — is refused with ``OSError`` so the run reports degraded
     (exit 2) rather than select feeds against a guessed axis.

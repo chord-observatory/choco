@@ -97,6 +97,54 @@ put a per-feed reason in ``detail.feed_reasons``; the core lifts it into
 ``run.json`` and the state file's ``flag_reasons`` so the grid's hover text
 reads ``power: not in PDB table`` rather than ``power``.
 
+**The N² file is joined to the flag axis by label (2026-10-03).**  bffs had
+read ``full/acq_*/*.h5`` and required the file's element axis to *equal*
+the config's, position for position (a mismatch was exit 1).  ``full/`` is
+written on demand and its newest file was 13 days old, so the
+power-outlier source had been skipped as stale since 2026-09-20 while the
+receiver wrote ``subset/`` continuously — compact ``DishInputs`` frames over
+the 48 wired elements (16 dishes + 8 RFI antennas × 2 pol; the file's
+``input_list`` attribute names their positions on the 128-element axis,
+its ``index_map/label`` their names).  The source now judges the file's
+own axis (``Frame.labels``) and projects onto the flag axis by name
+(``sources.common.project``), the 80 feeds the file does not carry staying
+good and counted (``n_in_file`` / ``n_not_in_file``, on the page as "48 of
+128 elements in the file" — not ``degraded``: it is the file's design, not
+a shortfall, the same way rfi measures 47 of 128 and reports ok).  The
+positional check became ``bffs.file_axis_mismatch``: every file label must
+be on the axis (both sides uniquified, so a full file with placeholders
+still matches and a subset file with a duplicated label does not), and a
+file that fails it is sidelined like a stale one — file sources skipped,
+reason in ``run.json`` — rather than failing the run, since no index is
+derived from the file any more.  Measured on the live tree: 6.8 s per run
+(1.6 GB file, diagonal of 1176 products, newest 16 of 20 rows), three
+feeds flagged (B04X hot, B04Y dead, RFIB1X hot) at the right indices.
+``bffs.newest_file`` compares the matches' directories by mtime before
+stat'ing files: a flat stat of ``subset/``'s 15,000 files cost 2.6 s per
+30 s tick and grows ~400 files a day.  kotekan renames a file out of
+``.partial/`` when complete, so the verdict lags the sky by up to one
+file (~3.5 min); reading the partial file was not attempted.
+
+**Dish types (2026-10-03, same day).**  With the subset files in use the
+first dry run flagged B04X, B04Y and RFIB1X, and left C–H good — the
+opposite of what an operator expects.  Two rules settle it, both reading
+the kotekan config's ``dish_inputs`` ``type`` (``Missing`` / ``ArrayDish``
+/ ``RFIDish``, kotekan's ``DishType``), which the core now derives per
+element beside the labels (``bffs.element_types_from_config``,
+``FlagAxis.types``) and hands to every source as ``dish_types``.  (1) A new
+``dish-type`` source flags every element of a ``Missing`` dish, 80 of 128
+today: a slot with no dish behind it is bad by construction, and since the
+subset files do not carry those elements no data-driven source could ever
+say so.  It duplicates kotekan's baseline mask on purpose — the bad list
+should say what is a feed — and the power source's *absent* rule, which
+stays for the case the PDB table and the config disagree.  (2)
+power-outlier takes an ``eligible`` mask and leaves ``RFIDish`` elements out
+of the median and the verdict (``exclude_types``): the RFI antennas are
+receivers pointed at the horizon, so their power is no evidence about them
+as feeds, and with 16 of the subset file's 48 elements they were a third
+of the statistic.  Both rules abstain without a config (choco down, the
+file's own axis), where ``dish_types`` is None.
+
 ## EOP merge policy
 
 ``jobs/eop/eop_update.py::merge_tables`` is **append-only and no-overwrite**.

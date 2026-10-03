@@ -12,11 +12,16 @@ out to be wrong, which is why every consumer refuses it.
 N² files are labelled per *element* since kotekan chord.2021.10+988
 (acquisitions from 2026-09-11 on): ``index_map/label`` has one entry per
 element of the file's own axis — a full frame's 128 or a compact
-(``n2_layout: DishInputs``) frame's 48 alike — spelled dish label +
-``p1``/``p2`` for polarization 0/1, with ``index_map/pol`` alongside.
-:func:`file_element_labels` turns that into choco's names (``B4p1`` →
-``B4X``) and is the only accepted file layout: per-dish tables and the
-pre-2026-08 per-element tables are refused, never expanded or guessed.
+(``n2_layout: DishInputs``) frame's 48 alike — with ``index_map/pol``
+alongside.  Two spellings exist on disk: dish label + ``p1``/``p2`` for
+polarization 0/1 (+988 up to kotekan PR #1695), and dish label + the
+polarization *name* ``X``/``Y`` (PR #1695, 2026-09-22; in the data from
+2026-10-01).  :func:`file_element_labels` turns either into choco's names
+(``B4p1`` → ``B4X``, ``A01X`` → ``A01X``) and is the only accepted file
+layout: per-dish tables and the pre-2026-08 per-element tables are
+refused, never expanded or guessed.  The ``X``/``Y`` spelling is the
+pre-2026-08 spelling too, so it is accepted only when ``index_map/pol``
+— written since +988 — is there to vouch for it.
 
 A compact (``DishInputs``) frame's element axis is the table's *connected*
 dishes — every row whose ``type`` is not ``Missing`` — in that same [P][D]
@@ -40,11 +45,19 @@ PER_ELEMENT_LABEL = re.compile(r"\d[XY]$|_p\w$")
 #: across the layout change.
 POL_SUFFIXES = "XY"
 
-#: How kotekan's N² writer spells an element (chord.2021.10+988 on): the
-#: dish label followed by ``p`` and the 1-based polarization number
-#: (``B4p1``, ``RFIA1p2``, ``Fakep1``).  Greedy, so the *last* ``p<n>``
-#: is the suffix.
+#: How kotekan's N² writer spelled an element from chord.2021.10+988 up
+#: to PR #1695: the dish label followed by ``p`` and the 1-based
+#: polarization number (``B4p1``, ``RFIA1p2``, ``Fakep1``).  Greedy, so
+#: the *last* ``p<n>`` is the suffix.
 FILE_ELEMENT_LABEL = re.compile(r"^(?P<dish>.+)p(?P<pol>[1-9]\d*)$")
+
+#: How it spells one since PR #1695 (2026-09-22): the dish label followed
+#: by the polarization *name* (``A01X``, ``RFIB4Y``) — the same text as
+#: choco's own names, and as the pre-2026-08 per-element config labels,
+#: which is why :func:`file_element_labels` takes it only on the word of
+#: ``index_map/pol``.  kotekan names at most two polarizations.
+FILE_ELEMENT_LABEL_XY = re.compile(
+    r"^(?P<dish>.+)(?P<pol>[" + POL_SUFFIXES + r"])$")
 
 
 def find_key(obj, key):
@@ -118,18 +131,23 @@ def file_element_labels(labels, num_elements: int | None = None,
                         pol=None) -> list[str]:
     """choco's per-element labels from an N² file's ``index_map/label``.
 
-    *labels* is the file's table as written (``B4p1`` … ``RFIA1p2``), one
-    entry per element of the file's own axis in the file's own order, so
-    the result needs no expansion and no lookup: ``B4p1`` → ``B4X``,
-    ``B4p2`` → ``B4Y`` (:func:`pol_suffix`), position for position.
+    *labels* is the file's table as written, one entry per element of the
+    file's own axis in the file's own order, so the result needs no
+    expansion and no lookup — position for position, in either spelling
+    kotekan has used: ``B4p1`` → ``B4X``, ``B4p2`` → ``B4Y``
+    (:func:`pol_suffix`; chord.2021.10+988 to PR #1695) and ``A01X`` →
+    ``A01X`` (PR #1695 on, the polarization name as the suffix).
 
     Raises ``ValueError`` — the caller decides whether that is a degraded
     run or "no labels" — when the table is not that layout: a count that
     disagrees with *num_elements* (a per-dish table, or the whole
-    telescope table on a compact axis), a label without the ``p<n>``
-    suffix (a per-dish ``A1`` or a pre-2026-08 ``A1X``), or a suffix that
-    disagrees with the file's ``index_map/pol`` when *pol* is given.
-    Nothing is guessed: a wrong name on an element is worse than none.
+    telescope table on a compact axis), a label with neither suffix (a
+    per-dish ``A1`` or a pre-2026-08 ``d0_pA``), a suffix that disagrees
+    with the file's ``index_map/pol`` when *pol* is given, or an ``X``/``Y``
+    suffix with no *pol* at all: by text alone that is the pre-2026-08
+    per-element layout, whose element order was wrong, and only
+    ``index_map/pol`` (written since +988) tells the two apart.  Nothing
+    is guessed: a wrong name on an element is worse than none.
     """
     labels = [str(label) for label in labels]
     if num_elements is not None and len(labels) != int(num_elements):
@@ -144,16 +162,27 @@ def file_element_labels(labels, num_elements: int | None = None,
     out: list[str] = []
     for i, label in enumerate(labels):
         m = FILE_ELEMENT_LABEL.match(label)
-        if m is None:
-            raise ValueError(
-                f"label {label!r} (element {i}) carries no p<n> polarization "
-                "suffix — not kotekan's per-element label layout")
-        p = int(m["pol"]) - 1
+        if m is not None:
+            dish, p = m["dish"], int(m["pol"]) - 1
+        else:
+            m = FILE_ELEMENT_LABEL_XY.match(label)
+            if m is None:
+                raise ValueError(
+                    f"label {label!r} (element {i}) carries no polarization "
+                    "suffix (p<n> or X/Y) — not kotekan's per-element label "
+                    "layout")
+            if pol is None:
+                raise ValueError(
+                    f"label {label!r} (element {i}) ends in a polarization "
+                    "name but the file has no index_map/pol to vouch for it — "
+                    "the pre-2026-08 per-element layout, whose element order "
+                    "was wrong")
+            dish, p = m["dish"], POL_SUFFIXES.index(m["pol"])
         if pol is not None and pol[i] != p:
             raise ValueError(
                 f"label {label!r} (element {i}) reads as polarization {p} but "
                 f"index_map/pol says {pol[i]}")
-        out.append(m["dish"] + pol_suffix(p))
+        out.append(dish + pol_suffix(p))
     return out
 
 

@@ -104,29 +104,49 @@ degraded exit: those tables carried a wrong element ordering, so indexing
 kotekan's bad-input mask with them would flag the wrong feeds; the run
 resumes by itself once the config is migrated. The labels shown name
 exactly the elements the `bad_inputs` indices address. The N² file's own
-index map is the fallback (dry runs, choco down); when both are available
-they must agree — a mismatch (the file predates the running config) fails
-the run rather than sending ambiguous indices. Duplicate placeholder labels
-are made per-element (`Fake[7]`) so label-keyed state stays exact.
+label table is the fallback (dry runs, choco down). Duplicate placeholder
+labels are made per-element (`Fake[7]`) so label-keyed state stays exact.
+
+The file's axis and the flag axis are two different things, joined by
+label and never by position. The `subset/` files bffs reads in production
+are compact `DishInputs` frames over the wired elements only — 48 of the
+correlator's 128 (16 dishes and 8 RFI antennas, both polarizations), in
+the receiver's own order — so the power-outlier source judges the file's
+own axis and projects each element's verdict onto the flag axis by name;
+the 80 feeds the file does not carry are unmeasured and stay good (the
+run file counts them, `n_in_file` / `n_not_in_file`). Every label the file
+carries must be on the flag axis (`bffs.file_axis_mismatch`): one that is
+not means the file was written under a different `dish_inputs` table (it
+predates the running config), and then the file is sidelined like a stale
+one — the file-based sources are skipped with the reason in the run file,
+the other sources still flag — rather than trusting the labels that happen
+to match.
 
 bffs reads CHORD `hdf5N2Write` output (`index_map/label`, `vis[freq,
 prod, time]`, compound freq, `frames_added` validity). Since kotekan
 chord.2021.10+988 (acquisitions from 2026-09-11 on) `index_map/label` is
-per *element* — dish label + `p1`/`p2`, one entry per element of the
-file's axis, with `index_map/pol` alongside — and `kotekan_io.read_labels`
-spells it in the same `X`/`Y` names the config derives
-(`choco.dishlabels.file_element_labels`), so the two lists compare
-directly. Any other file layout (a per-dish table, CHIME-style
-`index_map/input`, pre-2026-08 `A1X` labels) is refused with a degraded
-exit rather than expanded or guessed at.
+per *element* — one entry per element of the file's axis, with
+`index_map/pol` alongside, spelled dish label + `p1`/`p2` up to kotekan
+PR #1695 and dish label + `X`/`Y` from then on (files from 2026-10-01) —
+and `kotekan_io.read_labels` spells either in the same `X`/`Y` names the
+config derives (`choco.dishlabels.file_element_labels`), so the two lists
+compare directly. Any other file layout (a per-dish table, CHIME-style
+`index_map/input`, pre-2026-08 `A1X` labels with no `index_map/pol` to
+vouch for them) is refused with a degraded exit rather than expanded or
+guessed at.
 Products beyond the element axis are ignored, and elements the file's
 product list never correlates (unwired slots in a `DishInputs`-layout file)
 are reported as unmeasured — `power-outlier` leaves them good rather than
 flagging 96 unwired slots as "dead" (kotekan's baseline mask already covers
 them; a feed the products *do* cover but that reads nothing is still
 dead-and-bad). `kotekan_file` may be a glob, spanning directories if needed
-(e.g. `full/acq_*/*.h5`) — each run reads the newest match by mtime, i.e.
-the most recently written file of the current acquisition. If that newest
+(`subset/acq_*/*.h5`) — each run reads the newest match by mtime, i.e. the
+most recently written file of the current acquisition (`bffs.newest_file`
+compares the matches' directories first and stats only the newest one's
+files, so the lookup does not grow with the 15,000-file archive). kotekan
+writes a file in `.partial/` and renames it into the acquisition directory
+when it is complete, ~3.5 min of frames later, so the newest file is
+complete and the verdict lags the sky by up to that much. If that newest
 file is missing or older than `max_age` seconds (default 3600; 0 disables),
 it is treated as unusable — a stopped acquisition's empty tail rows would
 mark every feed dead — and the **file-based sources (power-outlier) are
@@ -151,7 +171,8 @@ nothing.
 | Source | Evidence | What it flags |
 |---|---|---|
 | `manual` | a watched override file (`bad_inputs:` list of labels), edited by hand or by clicking choco's BFFS element grid | feeds an operator marked bad |
-| `power-outlier` | kotekan N² output (`hdf5N2write`) → per-feed band-averaged power | feeds whose power is an outlier across the other feeds |
+| `dish-type` | the kotekan config's `dish_inputs` `type` per dish, via choco | every element of a `Missing` dish — a slot with no dish behind it is bad by construction (`bad_types`; RFI antennas are not flagged) |
+| `power-outlier` | kotekan N² output (`hdf5N2write`) → per-feed band-averaged power | main-array feeds whose power is an outlier across the other main-array feeds (`RFIDish` elements are neither compared nor flagged) |
 | `power` | the power controller's live `/channel_states` (power_db) joined to choco's master PDB table | feeds whose amplifier is unpowered, and feeds the table has no channel for at all (not installed: flagged *absent*) |
 | `fpga` *(provisional)* | the F-engine `raw_acq` metrics (pychfpga) | feeds with FFT overflow, no frames, or out-of-range ADC RMS |
 | `rfi` *(provisional)* | kotekan's per-feed spectral kurtosis (RfiSKMetrics `/sk` endpoints) | feeds whose SK sits persistently away from 1 (RFI or a broken signal chain) |
@@ -205,12 +226,27 @@ single-feed SK for every feed regardless of the current bad-feed mask, so an
 `rfi` are live in the deployed config; `fpga` is built and tested (runnable
 standalone, `python -m sources.fpga`) but awaits the F-engine.
 
+`dish-type` is inventory rather than measurement, like the power source's
+*absent* rule: the config types every dish `ArrayDish`, `RFIDish` or
+`Missing`, and an element of a `Missing` dish (the C–H rows today, 80
+elements) has nothing to receive with, so it is bad whatever any data says
+— and the `subset/` files do not carry those elements at all, so without
+this source nothing would ever flag them. kotekan's own baseline mask
+already excludes them; bffs flags them too so its bad list, the grid and
+the history say what is a feed. The core hands every source the config's
+`{label: type}` map (`dish_types`); with no config the source abstains.
+
 The main heuristic, `power_outlier_mask`, reduces the most recent *filled* time
 rows to one power level per feed (a weighted average over time and a frequency
 band), then flags any feed sitting more than `nsigma` from the median of the
 other feeds — using the median absolute deviation as the spread, so a few bad
 feeds don't skew the threshold — plus any dead feed (no valid/positive data) or
-any feed outside the absolute bounds.  Two guards keep a thin data stream from
+any feed outside the absolute bounds. Only main-array dishes take part:
+elements whose dish type is in `exclude_types` (default `RFIDish`) enter
+neither the median nor the spread and are never flagged — the RFI-monitor
+antennas are real receivers pointed at the horizon, and their power says
+nothing about them as feeds of the array (16 of the subset file's 48
+elements; left in, a hot one would be flagged and a dead one too).  Two guards keep a thin data stream from
 reading as dead feeds.  The reader ends the window at the newest row holding
 any frame, skipping the empty tail a stopped acquisition leaves.  Then, before
 any feed is judged, the source measures **band coverage** — the fraction of

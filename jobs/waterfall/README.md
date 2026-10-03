@@ -18,11 +18,14 @@ python waterfall.py -c waterfall.yaml --relabel      # re-read element labels
 ```
 
 Element labels come from the source file's per-element `index_map/label`
-(kotekan chord.2021.10+988 on: one `B4p1`-style entry per element of the
-file's own axis, mapped to `B4X`/`B4Y` by `choco.dishlabels`); a file in
-any other label layout gets no labels rather than a guess.  They are
-written once per acquisition; `--relabel` re-derives them from any one
-remaining source file and rewrites nothing else.
+(kotekan chord.2021.10+988 on: one entry per element of the file's own
+axis, `B4p1`-style up to kotekan PR #1695 and `A01X`-style from then on,
+both mapped to choco's `X`/`Y` names by `choco.dishlabels` against
+`index_map/pol`); a file in any other label layout gets no labels rather
+than a guess.  They are written once per acquisition; `--relabel`
+re-derives them from any one remaining source file and rewrites nothing
+else — the pass to run after a reader change, as for the first `A01X`
+acquisitions (2026-10-01 to 10-03), which were rendered unlabelled.
 
 ## Why it is shaped this way
 

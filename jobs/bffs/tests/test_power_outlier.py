@@ -145,6 +145,68 @@ def test_mask_reports_the_tail_rows_it_skipped(tmp_path):
     assert rep["detail"]["rows"] == 3 and rep["detail"]["rows_in_file"] == 6
 
 
+def test_mask_projects_the_file_axis_onto_the_flag_axis(tmp_path):
+    """A compact subset/ file holds a few of the axis's elements in its
+    own order: verdicts land by label, the rest of the axis stays good
+    (unmeasured) and the report counts both."""
+    power = np.ones((2, 8, 4), "f4") * 10.0
+    power[..., 2] = 0.0                                  # A1Y dead
+    path = tmp_path / "chord.h5"
+    write_chord_n2(path, ["A1", "B1"], np.linspace(400, 800, 8), power,
+                   num_elements=4)                       # file axis A1X B1X A1Y B1Y
+    labels = np.array(["C1X", "B1X", "A1X", "C1Y", "A1Y"])  # flag axis, 5 elements
+    good, rep = power_outlier.mask({"kind": "power-outlier"}, labels, path)
+    assert list(good) == [True, True, True, True, False]
+    assert rep["status"] == "ok" and rep["n_measured"] == 3
+    assert rep["detail"]["n_file_elements"] == 4
+    assert rep["detail"]["n_in_file"] == 3
+    assert rep["detail"]["n_not_in_file"] == 2
+
+
+def test_ineligible_feeds_are_neither_compared_nor_flagged():
+    """An RFI antenna reading 100x the dishes must not be flagged, and
+    must not drag the median either: with it in the comparison the
+    four dishes at 10 would sit 5 sigma from nothing; the real outlier
+    among the dishes still is."""
+    f = frame(6, bad={4: 1000.0, 5: 0.0, 2: 40.0})       # 4 = RFI hot, 5 = RFI dead, 2 = dish hot
+    eligible = np.array([True, True, True, True, False, False])
+    stats = {}
+    good = power_outlier_mask(f, nsigma=3.0, eligible=eligible, stats=stats)
+    assert list(good) == [True, True, False, True, True, True]
+    assert stats["n_live"] == 3 and stats["median"] == 10.0
+    # without the exclusion the dead RFI antenna would be flagged as dead
+    assert not power_outlier_mask(f, nsigma=3.0)[5]
+
+
+def test_mask_excludes_rfi_dishes_by_type(tmp_path):
+    """The core passes each element's kotekan dish type; RFIDish elements
+    are left out of the comparison and never flagged, and the report
+    counts them."""
+    power = np.ones((2, 8, 4), "f4") * 10.0
+    power[..., 1] = 500.0                                # RFIA1X hot
+    power[..., 3] = 0.0                                  # RFIA1Y dead
+    path = tmp_path / "chord.h5"
+    write_chord_n2(path, ["A1", "RFIA1"], np.linspace(400, 800, 8), power,
+                   num_elements=4)                       # A1X RFIA1X A1Y RFIA1Y
+    labels = np.array(["A1X", "RFIA1X", "A1Y", "RFIA1Y"])
+    types = {"A1X": "ArrayDish", "A1Y": "ArrayDish",
+             "RFIA1X": "RFIDish", "RFIA1Y": "RFIDish"}
+    good, rep = power_outlier.mask({"kind": "power-outlier", "dish_types": types},
+                                   labels, path)
+    assert good.all()
+    assert rep["n_measured"] == 2
+    assert rep["detail"]["n_excluded"] == 2
+    assert rep["detail"]["exclude_types"] == ["RFIDish"] and rep["detail"]["types_known"]
+    # exclude_types is configurable; with none excluded the dead one is flagged
+    good, rep = power_outlier.mask({"kind": "power-outlier", "dish_types": types,
+                                    "exclude_types": ["Nothing"]}, labels, path)
+    assert list(good) == [True, True, True, False] and rep["detail"]["n_excluded"] == 0
+    # no types at all: every element judged, as before
+    good, rep = power_outlier.mask({"kind": "power-outlier"}, labels, path)
+    assert list(good) == [True, True, True, False]
+    assert rep["detail"]["n_excluded"] == 0 and not rep["detail"]["types_known"]
+
+
 def test_mask_with_no_filled_rows_abstains(tmp_path):
     path = _chord_file(tmp_path, np.zeros((8, 4), "u1"))
     labels = np.array(["A1X", "B1X", "A1Y", "B1Y"])
