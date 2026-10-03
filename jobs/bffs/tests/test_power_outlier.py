@@ -173,7 +173,7 @@ def test_ineligible_feeds_are_neither_compared_nor_flagged():
     stats = {}
     good = power_outlier_mask(f, nsigma=3.0, eligible=eligible, stats=stats)
     assert list(good) == [True, True, False, True, True, True]
-    assert stats["n_live"] == 3 and stats["median"] == 10.0
+    assert stats["n_live"] == 4 and stats["median"] == 10.0   # the four dishes, hot one included
     # without the exclusion the dead RFI antenna would be flagged as dead
     assert not power_outlier_mask(f, nsigma=3.0)[5]
 
@@ -197,13 +197,14 @@ def test_mask_excludes_rfi_dishes_by_type(tmp_path):
     assert rep["n_measured"] == 2
     assert rep["detail"]["n_excluded"] == 2
     assert rep["detail"]["exclude_types"] == ["RFIDish"] and rep["detail"]["types_known"]
-    # exclude_types is configurable; with none excluded the dead one is flagged
+    # exclude_types is configurable; with none excluded the hot antenna
+    # and the dead one are both flagged
     good, rep = power_outlier.mask({"kind": "power-outlier", "dish_types": types,
                                     "exclude_types": ["Nothing"]}, labels, path)
-    assert list(good) == [True, True, True, False] and rep["detail"]["n_excluded"] == 0
+    assert list(good) == [True, False, True, False] and rep["detail"]["n_excluded"] == 0
     # no types at all: every element judged, as before
     good, rep = power_outlier.mask({"kind": "power-outlier"}, labels, path)
-    assert list(good) == [True, True, True, False]
+    assert list(good) == [True, False, True, False]
     assert rep["detail"]["n_excluded"] == 0 and not rep["detail"]["types_known"]
 
 
