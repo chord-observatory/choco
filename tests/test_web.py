@@ -1,4 +1,5 @@
-"""Tests for the nodes.yaml editor and group-config editor routes."""
+"""Tests for the web routes: the nodes.yaml editor, node pages, the config
+library, services and the JSON API."""
 
 import contextlib
 import hashlib
@@ -1173,23 +1174,28 @@ class TestOneshot:
         _login(client)
         body = client.get("/nodes/edit/cx/cx1").data.decode()
         assert 'value="oneshot"' in body
+        assert 'id="oneshot-select"' in body and 'value="cx/cx1.yaml"' in body
 
-    def test_edit_page_button_starts_without_saving(self, client, app, configs_dir):
+    def test_edit_page_button_starts_a_library_file_without_saving(
+            self, client, app, configs_dir):
         _login(client)
         token = _csrf(client)
         self._pause(app, "cx/cx1")
+        (configs_dir / "trial.j2").write_text(self.CONTENT)
         file_before = (configs_dir / "cx" / "cx1.yaml").read_text()
         with self._cluster(app) as calls:
             resp = client.post(
                 "/nodes/edit/cx/cx1",
                 data={"_csrf_token": token, "action": "oneshot",
-                      "config_content": self.CONTENT},
+                      "config": "trial.j2"},
                 follow_redirects=True,
             )
         assert resp.status_code == 200
         assert calls["start"] == [("cx/cx1", self.RENDERED, True)]
         assert (configs_dir / "cx" / "cx1.yaml").read_text() == file_before
-        assert "One-off config started on cx/cx1" in resp.data.decode()
+        assert "One-off trial.j2 started on cx/cx1" in resp.data.decode()
+        # The node still renders its own file: nothing was recorded.
+        assert app.config["registry"].get_node("cx/cx1").config_filename == "cx/cx1.yaml"
 
     def test_edit_page_button_explains_a_skip(self, client, app):
         _login(client)
@@ -1199,77 +1205,26 @@ class TestOneshot:
             resp = client.post(
                 "/nodes/edit/cx/cx1",
                 data={"_csrf_token": token, "action": "oneshot",
-                      "config_content": self.CONTENT},
+                      "config": "cx/cx2.yaml"},
                 follow_redirects=True,
             )
         assert calls["start"] == []
         assert "not in maintenance" in resp.data.decode()
 
-
-# --- GET / POST /edit-group/<group> ---
-
-class TestGroupEdit:
-    def test_requires_login(self, client):
-        resp = client.get("/nodes/edit-group/cx", follow_redirects=False)
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_unknown_group_redirects(self, client):
-        _login(client)
-        resp = client.get("/nodes/edit-group/nope", follow_redirects=False)
-        assert resp.status_code == 302
-        assert resp.headers["Location"].rstrip("/").endswith("")  # → "/"
-
-    def test_get_renders_empty_textarea(self, client):
-        _login(client)
-        resp = client.get("/nodes/edit-group/cx")
-        assert resp.status_code == 200
-        body = resp.data.decode()
-        # The seeded cx1.yaml has `num_elements` — it must NOT leak into the form.
-        assert "num_elements" not in body
-        # Empty textarea (the placeholder text is ok, but the value between tags is empty).
-        assert "<textarea" in body
-
-    def test_post_invalid_redisplays_form(self, client):
+    def test_edit_page_button_refuses_a_bad_or_missing_file(self, client, app):
         _login(client)
         token = _csrf(client)
-        resp = client.post(
-            "/nodes/edit-group/cx",
-            data={"config_content": "not_a_mapping", "_csrf_token": token},
-        )
-        assert resp.status_code == 200
-        assert b"Invalid config" in resp.data
-        assert b"not_a_mapping" in resp.data
-
-    def test_post_queues_and_redirects(self, client, app):
-        _login(client)
-        token = _csrf(client)
-        resp = client.post(
-            "/nodes/edit-group/cx",
-            data={"config_content": "num_elements: 512\n", "_csrf_token": token},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 302
-        assert resp.headers["Location"].rstrip("/").endswith("")  # → "/"
-
-        # Every cx node has a BASE_CONFIG item queued; recv is untouched.
-        registry = app.config["registry"]
-        for key in ("cx/cx1", "cx/cx2"):
-            node = registry.get_node(key)
-            assert not node.queue_empty
-            item = node.queue_pop()
-            assert item.type == ChangeType.BASE_CONFIG
-            assert item.config_content == "num_elements: 512\n"
-        assert registry.get_node("recv/recv1").queue_empty
-
-    def test_post_bad_csrf_rejected(self, client):
-        _login(client)
-        _csrf(client)
-        resp = client.post(
-            "/nodes/edit-group/cx",
-            data={"config_content": "num_elements: 1\n", "_csrf_token": "bogus"},
-        )
-        assert resp.status_code == 403
+        self._pause(app, "cx/cx1")
+        with self._cluster(app) as calls:
+            for bad in ("../x.yaml", "cx/absent.yaml", "nodes.yaml"):
+                resp = client.post(
+                    "/nodes/edit/cx/cx1",
+                    data={"_csrf_token": token, "action": "oneshot",
+                          "config": bad},
+                    follow_redirects=True,
+                )
+                assert "One-off not started" in resp.data.decode()
+        assert calls["start"] == []
 
 
 # --- Service logs partial ---
@@ -2965,6 +2920,27 @@ class TestNodeConfigSelection:
         assert 'name="action" value="set_config"' in body
         assert '<option value="chord/pathfinder.j2"' in body
         assert "shared with" not in body
+        # No text editor on the node page: the file is edited in the library.
+        assert "<textarea" not in body and 'value="save_config"' not in body
+        assert 'href="/configs/edit/cx/cx1.yaml"' in body
+        assert 'title="Edit cx/cx1.yaml in the config library"' in body
+        assert 'value="push_config"' in body
+
+    def test_dashboard_buttons(self, client, library):
+        _login(client)
+        body = client.get("/nodes").get_data(as_text=True)
+        assert 'href="/configs"' in body and ">Edit configs<" in body
+        assert 'href="/nodes/edit"' in body and ">Edit nodes<" in body
+        assert 'href="/configs/edit/cx/cx1.yaml"' in body
+        assert 'title="Edit cx/cx1.yaml in the config library"' in body
+        assert "edit-group" not in body
+        assert client.get("/nodes/edit-group/cx").status_code == 404
+
+    def test_library_page_has_edit_buttons(self, client, library):
+        _login(client)
+        body = client.get("/configs").get_data(as_text=True)
+        assert 'href="/configs/edit/chord/pathfinder.j2" role="button"' in body
+        assert "no node uses it yet" in body
 
     def test_use_rewrites_nodes_yaml_and_rebuilds(self, client, app, library):
         _login(client)

@@ -305,7 +305,10 @@ def dashboard():
 @bp.route("/nodes/edit/<path:node_key>", methods=["GET", "POST"])
 @login_required
 def node_edit(node_key):
-    """Edit base config or updatable config for a node."""
+    """A node's page: desired state and maintenance, live status, which
+    library file it renders (the selector; a nodes.yaml edit), re-push
+    and one-off controls, and its updatable config values.  The config
+    text itself is edited in the library (/configs/edit/<path>)."""
     registry = _registry()
     node = registry.get_node(node_key)
     if node is None:
@@ -321,28 +324,26 @@ def node_edit(node_key):
             orchestrator.submit_node(node_key, ChangeItem(ChangeType.RESYNC))
             flash(f"Config re-push queued for {node_key}", "success")
 
-        elif action == "save_config":
-            content = request.form.get("config_content", "")
-            try:
-                node.render(content)
-            except Exception as e:
-                flash(f"Invalid config: {e}", "error")
-                return redirect(url_for("web.node_edit", node_key=node_key))
-            orchestrator.submit_node(node_key, ChangeItem(
-                ChangeType.BASE_CONFIG, config_content=content))
-            flash(f"Config change queued for {node_key}.", "success")
-
         elif action == "oneshot":
-            # The textarea's text, started but never saved (see
-            # _run_oneshot).  The helper's JSON body is folded into a
-            # flash message since this caller is a form post.
-            body, status = _run_oneshot(
-                [node], request.form.get("config_content", ""),
-                _audit_user())
+            # A library file's text, started but never recorded as this
+            # node's config (see _run_oneshot).  The helper's JSON body
+            # is folded into a flash message since this caller is a
+            # form post.  The path is validated before it is read.
+            rel = request.form.get("config", "")
+            try:
+                resolve_config_path(registry.configs_dir, rel)
+            except ValueError as e:
+                flash(f"One-off not started: {e}", "error")
+                return redirect(url_for("web.node_edit", node_key=node_key))
+            path = registry.configs_dir / rel
+            if not path.is_file():
+                flash(f"One-off not started: no such config file {rel}", "error")
+                return redirect(url_for("web.node_edit", node_key=node_key))
+            body, status = _run_oneshot([node], path.read_text(), _audit_user())
             if status == 400:
                 flash(body["error"], "error")
             elif node_key in body["started"]:
-                flash(f"One-off config started on {node_key} "
+                flash(f"One-off {rel} started on {node_key} "
                       f"(sha256 {body['sha256']}); nothing saved.",
                       "success")
             else:
@@ -376,8 +377,6 @@ def node_edit(node_key):
 
         return redirect(url_for("web.node_edit", node_key=node_key))
 
-    config_content = node.base_content or ""
-
     # Extract updatable config blocks from the desired config (rendered
     # base + stored overrides). Using desired_config instead of the live
     # kotekan config means the UI still shows fields when a node is down
@@ -400,7 +399,6 @@ def node_edit(node_key):
         "edit.html",
         node=node,
         node_key=node_key,
-        config_content=config_content,
         updatable_json=updatable_json,
         shared_with=shared_with,
         config_files=registry.config_files(),
@@ -592,35 +590,6 @@ def nodes_save():
     flash("Node registry saved; all nodes placed in maintenance mode.",
           "success")
     return {"status": "ok"}
-
-
-# --- Group config editor (push one config to every node in a group) ---
-
-@bp.route("/nodes/edit-group/<group>", methods=["GET", "POST"])
-@login_required
-def group_edit(group):
-    """Edit a single config to broadcast to every node in *group*."""
-    nodes = _registry().in_group(group)
-    if not nodes:
-        flash(f"Group {group!r} not found", "error")
-        return redirect(url_for("web.dashboard"))
-
-    if request.method == "POST":
-        _check_csrf()
-        content = request.form.get("config_content", "")
-        try:
-            nodes[0].render(content)  # template vars are shared
-        except Exception as e:
-            flash(f"Invalid config: {e}", "error")
-            return render_template(
-                "edit_group.html", group=group, config_content=content,
-            )
-        _orchestrator().submit_group(group, ChangeItem(
-            ChangeType.BASE_CONFIG, config_content=content))
-        flash(f"Config change queued for group {group!r}.", "success")
-        return redirect(url_for("web.dashboard"))
-
-    return render_template("edit_group.html", group=group, config_content="")
 
 
 # --- Config library: the files under configs_dir, and which node uses which ---

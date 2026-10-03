@@ -62,8 +62,8 @@ and the configs root second (``Node._search_dirs``), which is where kotekan's
 own loader (``python/kotekan/config.py``, ``tools/j2lint.py``) roots, so the
 same files render in both trees and ``kotekan -c config/chord/pathfinder.j2``
 on a node agrees with what choco pushes.  Rendering is still from *text*
-(``Environment.from_string`` over a ``FileSystemLoader``), so the edit page
-textarea, one-offs and the ``/update`` body keep working unchanged; autoescape
+(``Environment.from_string`` over a ``FileSystemLoader``), so the library
+editor, one-offs and the ``/update`` body keep working unchanged; autoescape
 is off and undefined variables render empty, as the bare ``jinja2.Template``
 this replaced did.  After every load the include closure is recorded on the
 node (``Node.dependencies``, static analysis via ``jinja2.meta``, nested
@@ -190,8 +190,9 @@ in normal mode; ``Registry.reload`` is what forces it ``True`` for production.
 
 ``POST /oneshot/<group>`` and ``POST /oneshot/<group>/<node>`` (body
 ``{"config_content": ...}``; localhost bypass like ``/update``), plus a
-**Start as one-off** button on the node edit page that posts the textarea's
-text, start a supplied config on nodes that are **in maintenance and idle**
+**One-off** control on the node page that posts a library file's path (the
+text is read server-side after ``resolve_config_path``), start a supplied
+config on nodes that are **in maintenance and idle**
 without recording it anywhere: no base file, no ``.updatable`` store, no in-
 memory desired state — the only trace is the audit ``logger.warning`` line,
 which carries the config's sha256 prefix because nothing else does

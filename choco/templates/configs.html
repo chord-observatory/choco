@@ -19,19 +19,25 @@ Outside maintenance each re-rendered node then restarts onto the new config.</sm
             <th>Modified</th>
             <th>Rendered by</th>
             <th>Included by</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
         {% for f in files %}
         <tr>
-            <td><a href="/configs/edit/{{ f.path }}"><code>{{ f.path }}</code></a></td>
+            <td><code>{{ f.path }}</code></td>
             <td>{{ f.size if f.size is not none else "—" }}</td>
             <td>{{ f.modified or "—" }}</td>
             <td>{% if f.is_vars %}<em>every node (template variables)</em>{% else %}{{ f.used_by | join(", ") or "—" }}{% endif %}</td>
             <td>{{ f.included_by | join(", ") or "—" }}</td>
+            <td style="white-space: nowrap;">
+                <a href="/configs/edit/{{ f.path }}" role="button" class="outline"
+                   title="Edit {{ f.path }}{% if f.is_vars %} (template variables, read by every node){% elif f.used_by or f.included_by %}; saving re-renders {{ (f.used_by + f.included_by) | join(', ') }}{% else %}; no node uses it yet{% endif %}"
+                   style="padding: 0.1em 0.5em; margin: 0; font-size: 0.8em;">Edit</a>
+            </td>
         </tr>
         {% else %}
-        <tr><td colspan="5">No config files yet.</td></tr>
+        <tr><td colspan="6">No config files yet.</td></tr>
         {% endfor %}
     </tbody>
 </table>

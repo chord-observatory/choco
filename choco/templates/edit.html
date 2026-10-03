@@ -4,6 +4,7 @@
 {% block content %}
 <h2>{{ node.key }}
     <a href="/pipeline/{{ node_key }}" role="button" class="outline"
+       title="The live pipeline graph: stages, buffers and frame peeks on this node"
        style="width: auto; font-size: 0.55em; vertical-align: middle; margin-left: 0.75em; padding: 0.2em 0.8em;">Live pipeline</a>
 </h2>
 
@@ -16,46 +17,69 @@
         <tr><th>Maintenance</th>
             <td>{% with key=node_key %}{% include "_toggle_maintenance.html" %}{% endwith %}</td>
         </tr>
-        <tbody id="node-status"
-               hx-ext="morph"
-               hx-get="/nodes/partials/node-status/{{ node_key }}"
-               hx-trigger="load, every 2s"
-               hx-swap="morph:innerHTML">
-            {% include "_node_status.html" %}
-        </tbody>
-        <tr><th>Config File</th><td>{{ node.config_filename }}</td></tr>
+    </tbody>
+    <tbody id="node-status"
+           hx-ext="morph"
+           hx-get="/nodes/partials/node-status/{{ node_key }}"
+           hx-trigger="load, every 2s"
+           hx-swap="morph:innerHTML">
+        {% include "_node_status.html" %}
+    </tbody>
+    <tbody>
+        <tr><th>Config File</th>
+            <td>
+                <code>{{ node.config_filename }}</code>
+                <a href="/configs/edit/{{ node.config_filename }}" role="button" class="outline"
+                   title="Edit {{ node.config_filename }} in the config library{% if shared_with %} (also rendered by {{ shared_with | join(', ') }}){% endif %}"
+                   style="padding: 0.1em 0.5em; margin: 0 0 0 0.5em; font-size: 0.8em;">Edit config</a>
+                {% if shared_with %}<small style="margin-left: 0.5em;">shared with {{ shared_with | join(", ") }}</small>{% endif %}
+            </td>
+        </tr>
     </tbody>
 </table>
 
-
-<h3>Config: <a href="/configs/edit/{{ node.config_filename }}"><code>{{ node.config_filename }}</code></a>
-    {% if shared_with %}<small style="font-weight: normal;">— shared with {{ shared_with | join(", ") }}</small>{% endif %}
-</h3>
-<form method="post" style="display: flex; gap: 0.5em; align-items: center; margin-bottom: 0.75em;">
+<h3>Config</h3>
+<form method="post" style="display: flex; gap: 0.5em; align-items: center; margin-bottom: 0.25em;">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="set_config">
     <label for="config-select" style="margin: 0; white-space: nowrap;">Render file</label>
-    <select id="config-select" name="config" style="margin: 0; flex: 1; font-family: monospace;">
+    <select id="config-select" name="config" style="margin: 0; flex: 1; font-family: monospace;"
+            title="The library file this node renders; blank means its own per-node file">
         <option value="" {% if not node.explicit_config %}selected{% endif %}>per-node file ({{ node.group }}/{{ node.name }}.yaml or .j2)</option>
         {% for f in config_files %}
         <option value="{{ f }}" {% if f == node.explicit_config %}selected{% endif %}>{{ f }}</option>
         {% endfor %}
     </select>
-    <button type="submit" class="outline" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;"
-            onclick="return confirm('Change which file {{ node_key }} renders?\n\nThis rewrites nodes.yaml and rebuilds the registry: every node is placed in maintenance mode until you lift it.')">Use</button>
+    <button type="submit" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;"
+            title="Make {{ node_key }} render the selected file. Rewrites nodes.yaml and rebuilds the registry: every node is placed in maintenance until you lift it."
+            onclick="return confirm('Make {{ node_key }} render the selected file?\n\nThis rewrites nodes.yaml and rebuilds the registry: every node is placed in maintenance mode until you lift it.')">Apply</button>
 </form>
-<form method="post">
-    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="action" value="save_config">
-    <textarea id="config_content" name="config_content" rows="20"
-              style="font-family: monospace; font-size: 0.9em; tab-size: 2;">{{ config_content }}</textarea>
-    <div style="display: flex; gap: 0.5em; margin-top: 0.5em;">
-        <button type="submit">Save</button>
-        <button type="submit" name="action" value="push_config" class="outline">Re-push Current</button>
-        <button type="submit" name="action" value="oneshot" class="outline secondary"
-                onclick="return confirm('Start the text above on {{ node_key }} as a one-off?\n\nNothing is saved. The node must be in maintenance and idle, and lifting maintenance later reverts it to the saved config.')">Start as one-off</button>
-    </div>
-</form>
+<p><small>The selected file is this node's desired config; edit its text in the
+<a href="/configs">config library</a>. Applying a different file rewrites
+<code>nodes.yaml</code> and pauses every node until maintenance is lifted.</small></p>
+
+<div style="display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin-bottom: 1em;">
+    <form method="post" style="margin: 0;">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="push_config">
+        <button type="submit" class="outline" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;"
+                title="Kill and start {{ node_key }} on its current desired config (skipped while in maintenance)">Re-push current</button>
+    </form>
+    <form method="post" style="margin: 0; display: flex; gap: 0.5em; align-items: center;">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="oneshot">
+        <label for="oneshot-select" style="margin: 0; white-space: nowrap;">One-off</label>
+        <select id="oneshot-select" name="config" style="margin: 0; font-family: monospace;"
+                title="A library file to start on {{ node_key }} without recording it; the node must be in maintenance and idle">
+            {% for f in config_files %}
+            <option value="{{ f }}" {% if f == node.config_filename %}selected{% endif %}>{{ f }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="outline secondary" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;"
+                title="Start the selected file on {{ node_key }} as a one-off: nothing is saved, and lifting maintenance later reverts the node to its desired config"
+                onclick="return confirm('Start the selected file on {{ node_key }} as a one-off?\n\nNothing is saved. The node must be in maintenance and idle, and lifting maintenance later reverts it to its desired config.')">Start</button>
+    </form>
+</div>
 
 {% if updatable_json %}
 <h3>Updatable Config</h3>
@@ -67,7 +91,8 @@
     <strong style="white-space: nowrap;">/{{ endpoint }}</strong>
     <input type="text" name="updatable_content" value="{{ json_str }}"
            style="font-family: monospace; font-size: 0.9em; margin: 0; flex: 1;">
-    <button type="submit" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;">Update</button>
+    <button type="submit" style="margin: 0; width: auto; padding: 0.25rem 0.75rem;"
+            title="Push these values to /{{ endpoint }} on {{ node_key }} without a restart">Update</button>
 </form>
 {% endfor %}
 {% endif %}

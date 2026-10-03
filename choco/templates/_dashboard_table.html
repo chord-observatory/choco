@@ -7,7 +7,6 @@
     <div style="display: flex; gap: 1.5em; align-items: center;">
         {% with group=group %}{% include "_toggle_maintenance_all.html" %}{% endwith %}
         {% with group=group %}{% include "_toggle_started_all.html" %}{% endwith %}
-        <a href="/nodes/edit-group/{{ group }}" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;">Edit "{{ group }}" configs</a>
     </div>
 </div>
 <table style="margin-top: 0.25em;">
@@ -50,7 +49,12 @@
                 </div>
                 {% endif %}
             </td>
-            <td><a href="/configs/edit/{{ node.config_filename }}">{{ node.config_filename }}</a></td>
+            <td style="white-space: nowrap;">
+                <code>{{ node.config_filename }}</code>
+                <a href="/configs/edit/{{ node.config_filename }}" role="button" class="outline"
+                   title="Edit {{ node.config_filename }} in the config library"
+                   style="padding: 0.1em 0.5em; margin: 0 0 0 0.4em; font-size: 0.8em;">Edit config</a>
+            </td>
             <td>
                 {% if node.status.value == "started" %}
                     Yes
@@ -61,8 +65,10 @@
                 {% endif %}
             </td>
             <td style="white-space: nowrap;">
-                <a href="/pipeline/{{ key }}" role="button" class="outline">Pipeline</a>
-                <a href="/nodes/edit/{{ key }}" role="button" class="outline">Edit</a>
+                <a href="/pipeline/{{ key }}" role="button" class="outline"
+                   title="The live pipeline graph on {{ key }}">Pipeline</a>
+                <a href="/nodes/edit/{{ key }}" role="button" class="outline"
+                   title="Node page: state, maintenance, which config file {{ key }} renders, one-offs and updatable values">Node</a>
             </td>
         </tr>
         {% endfor %}
