@@ -49,12 +49,7 @@
                 </div>
                 {% endif %}
             </td>
-            <td style="white-space: nowrap;">
-                <code>{{ node.config_filename }}</code>
-                <a href="/configs/edit/{{ node.config_filename }}" role="button" class="outline"
-                   title="Edit {{ node.config_filename }} in the config library"
-                   style="padding: 0.1em 0.5em; margin: 0 0 0 0.4em; font-size: 0.8em;">Edit config</a>
-            </td>
+            <td><code>{{ node.config_filename }}</code></td>
             <td>
                 {% if node.status.value == "started" %}
                     Yes

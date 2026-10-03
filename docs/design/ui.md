@@ -23,10 +23,11 @@ a chosen library file without recording it.  The group editor
 (``/nodes/edit-group/<group>``, one textarea broadcast to a group) was
 removed with it: a group shares one library file now.  Everything that opens
 an editor is an explicit button with a tooltip — "Edit config" beside the
-file name in the dashboard's Config column and on the node page, "Edit"
-per row on the library page, "Edit nodes" / "Edit configs" in the dashboard
-header — never a bare clickable name; the landing table's NODES row links
-the library beside the dashboard.
+file name on the node page, "Edit" per row on the library page, "Edit
+nodes" / "Edit configs" in the dashboard header — never a bare clickable
+name.  The dashboard table itself only names each node's file: a per-row
+editor button made the page too busy, and the header button is one click
+away.  The landing table's NODES row links the library beside the dashboard.
 ``landing.html`` renders one table row per header badge (CHOCO itself plus
 NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / WF) with the detail the
 strip only carries in a tooltip: monitor host:port and error, job unit and

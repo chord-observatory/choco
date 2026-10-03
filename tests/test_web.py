@@ -2931,8 +2931,10 @@ class TestNodeConfigSelection:
         body = client.get("/nodes").get_data(as_text=True)
         assert 'href="/configs"' in body and ">Edit configs<" in body
         assert 'href="/nodes/edit"' in body and ">Edit nodes<" in body
-        assert 'href="/configs/edit/cx/cx1.yaml"' in body
-        assert 'title="Edit cx/cx1.yaml in the config library"' in body
+        # The table names each node's file but carries no per-row editor
+        # button: the library is one click away in the header.
+        assert "<code>cx/cx1.yaml</code>" in body
+        assert "/configs/edit/" not in body
         assert "edit-group" not in body
         assert client.get("/nodes/edit-group/cx").status_code == 404
 
