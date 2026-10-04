@@ -134,6 +134,30 @@ error path); a PDB poll failure keeps the last-known grid with an explicit
 "showing stale states" banner; and ``web._service_detail`` wraps all state-
 file summarising so corrupt job state degrades to "no summary", never a 500.
 
+The EIGENCAL page (2026-10) reads the job's ``run.json`` the same way
+(``web._eigencal_detail``): a **Last run** fact with a status tag and the
+reason, the **transit considered** with its completion and eligibility
+times and the sun's altitude, the **next transit**, the **last solution**
+(good fraction over the calibrated elements, sent or archived, the archive
+name) and the list of archives — so "why has it produced nothing?" is
+answered on the page.  Below the facts a **Latest solution** card, loaded
+on its own like the FPGA gains card, puts the newest archive's datasets
+(``gain`` complex with the plotter's abs/arg selector, ``weight``,
+``chisq_per_dof``, ``lam_peak``, ``dyn_rng``) in the shared plot panel via
+``services.FileArchive`` and ``/api/eigencal/gain-data``, with a full-screen
+page and a download link.
+
+**Who is here (2026-10).**  ``web._note_presence`` records every
+authenticated request in process (``app.config["presence"]``): the user, the
+time, the page (for an htmx poll, the page it belongs to from
+``HX-Current-URL``), and whether it was an action (a page load or POST) or
+only a poll.  The nav's username is ``/partials/presence`` on a 60 s poll:
+the operator's own name, "· N others" when others were seen within
+``PRESENCE_WINDOW_S`` (10 min), and the list in the tooltip with each
+person's page and how long since they last acted ("page open" for a tab
+that only polls).  Ephemeral like every other runtime fact; stale entries
+are dropped as the list is built.
+
 The BFFS page additionally reads the job's per-run file (``run.json`` in
 its state directory; see jobs.md) through
 ``web._bffs_detail`` / ``_bffs_run_summary``: a **Last run** fact (status

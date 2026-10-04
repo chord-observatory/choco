@@ -145,6 +145,29 @@ as feeds, and with 16 of the subset file's 48 elements they were a third
 of the statistic.  Both rules abstain without a config (choco down, the
 file's own axis), where ``dish_types`` is None.
 
+## eigencal's run record (2026-10)
+
+eigencal writes ``run.json`` on **every** exit (bffs's convention): ``status``
+(``ok`` / ``skipped`` / ``degraded`` / ``failed``), ``exit_code``, a one-line
+``reason`` ("transit not complete yet", "last transit too old", "transit in
+daytime", "transit already processed", "archived, not sent (no choco url)",
+"sent <id> to group <g>", the quality gate's numbers, or the OSError /
+ValueError text), the transit it considered (``transit``, ``transit_tag``,
+``transit_complete``, ``eligible_until``, ``sun_alt_deg``), ``next_transit``,
+and ``archive_only`` / ``dry_run``.  ``state.json`` still changes only when a
+solution is produced, and now names the ``archive`` and the calibrated
+element count.  The archive carries, beside ``gain`` / ``weight`` /
+``chisq_per_dof``, the per-(freq, pol) eigenvalue diagnostics ``lam_peak``
+(largest eigenvalue at the transit peak) and ``dyn_rng`` (its ratio to the
+off-source floor, the dynamic-range gate's own number) with
+``index_map/pol``.  Motivation: on 2026-10-04 twelve runs in the transit
+window exited "no N² data overlaps" and the page could only say *ok*,
+because exit 0 after a skipped transit and exit 0 after a sent solution are
+the same to systemd; the journal had the answer and needed sudo.
+``web._eigencal_detail`` reads both files plus the ``gain_*.h5`` list, and
+``services.FileArchive`` serves the newest archive to the shared plot panel
+(``/api/eigencal/gain-data``, the F-engine gains' protocol).
+
 ## EOP merge policy
 
 ``jobs/eop/eop_update.py::merge_tables`` is **append-only and no-overwrite**.

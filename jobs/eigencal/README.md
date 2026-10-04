@@ -58,7 +58,7 @@ and does real work only once per transit, at night.
                           ▼
    kotekan N² output (hdf5N2Write) — newest file(s) covering the transit
                           │  n2_io: labels, freq, time, vis products,
-                          │  frames_added, per-input `flags`  (kotekan's masks),
+                          │  frames_added, per-(freq, input, time) `flags`  (kotekan's masks),
                           │  per-element pol / DishType / position  (the layout)
                           ▼
    per (time, freq, pol): visibility matrix → eigh → response = √λ · v
@@ -113,8 +113,9 @@ N² file — the per-input `flags` dataset and `frames_added` validity — plus
 its own per-sample data-quality cuts (dynamic range, fit χ²). A
 kotekan-flagged input simply comes out with gain 0 / weight 0. The one
 solution-level decision is the final gate: if fewer than `min_good_frac` of
-the (freq, input) cells produced a valid gain, the run exits 2 and sends
-nothing — with no transition machinery downstream, a bad update must not
+the (freq, input) cells of the *calibrated* inputs (the layout's array
+dishes; RFI antennas, placeholders and excluded dishes do not count)
+produced a valid gain, the run exits 2 and sends nothing — with no transition machinery downstream, a bad update must not
 reach the beamformer.
 
 ### Config
@@ -151,12 +152,13 @@ row order.
 These encode conventions that cannot be checked without real CHORD data
 (all marked `VERIFY` in the code):
 
-- **fringestop sign** (`telescope.fringestop_sign`) — with the wrong sign the
-  fitted phase winds rapidly with hour angle instead of sitting flat.  Note
-  kotekan's `N2Accumulate` already applies `fill_fringestop_phases_1d`
-  towards a target EOP when accumulating; check what phase centre the
-  archived visibilities are referenced to before trusting eigencal's own
-  fringestop model on top of it;
+- ~~**fringestop sign**~~ — verified 2026-10-04 on a Cyg A transit in the
+  subset data: with `telescope.fringestop_sign: -1` (now the default) the
+  eigen-response phase is flat in hour angle (median 0.4-9 rad/rad across
+  the healthy dishes at 600-900 MHz), with +1 it winds at ~500 rad/rad and
+  without fringestopping at ~250 — so kotekan's N² visibilities are not
+  fringestopped (`n2_accumulate/do_fringestop: false` in the live config)
+  and the correlator's conjugation is opposite to ch_util's;
 - **position frame** — `feed_positions_m` is read as kotekan's grid frame
   and rotated to East/North with `grid_orientation` (v_grid = R · v_topo,
   so positions @ R); verified against the kotekan source, not yet against
@@ -166,10 +168,12 @@ These encode conventions that cannot be checked without real CHORD data
 - ~~the N² file's **time convention**~~ — verified 2026-09-13: CHORD files
   have no `index_map/time`; `n2_io` reads the root-level
   `time_center_t_inst_ns` (unix ns, already the integration centre);
-- the **shape of the `flags` dataset** — live files write
-  `flags[freq, element, time]` (0/1, varying with frequency), which the
-  reader currently treats as all-good; applying it needs a per-frequency
-  treatment in the fit;
+- ~~the **shape of the `flags` dataset**~~ — verified 2026-10-04: live
+  files write `flags[freq, element, time]` (0/1): an input on kotekan's
+  bad list is 0 at every frequency, and every input is 0 in a (freq, time)
+  cell that holds no data.  `n2_io.read_input_flags` reads them per
+  frequency block, like `frames_added`, and the fit masks cell by cell, so
+  a bffs flag that lands mid-transit takes effect from that sample on;
 - the **flux coefficients** (Perley & Butler 2017 values are pre-filled for
   Cyg A).
 
@@ -210,3 +214,16 @@ channels, and a validity gate before applying. Everything else — the broker
 process, dataset-manager (comet) bookkeeping, shared-memory readers, gain
 transitions, the flagging chain, layout-database queries, and the `wtl.*`
 framework — is replaced by this directory plus choco.
+
+## What each run leaves behind
+
+Every run writes `run.json` in the state directory — status (`ok` / `skipped` /
+`degraded` / `failed`), exit code, a one-line reason, the transit it considered
+with its completion and eligibility times and the sun's altitude, and the next
+transit — so the choco service page can say what the job did without the
+journal.  `state.json` changes only when a solution is produced and names the
+archive.  The archive (`gain_<tag>_<source>.h5`) carries `gain`, `weight`,
+`chisq_per_dof`, and the per-(freq, pol) eigenvalue diagnostics `lam_peak`
+(largest eigenvalue at the transit peak) and `dyn_rng` (its ratio to the
+off-source floor — the dynamic-range gate's number), with `index_map/freq`,
+`index_map/input` and `index_map/pol`.

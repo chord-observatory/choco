@@ -1,0 +1,10 @@
+{# The nav's who-is-here line: the operator's own name, how many others
+   were active in the last few minutes, and the list in the tooltip
+   (name, page, how long since they last did something). #}
+{% set others = users | rejectattr('name', 'equalto', me) | list %}
+{% set ns = namespace(tip='Active in the last ' ~ window_min ~ ' min:') %}
+{% for u in users %}
+{% set when = ('acting ' ~ (u.action_ago ~ 's' if u.action_ago < 60 else (u.action_ago // 60) ~ 'm') ~ ' ago') if u.action_ago is not none else 'page open' %}
+{% set ns.tip = ns.tip ~ '\n' ~ u.name ~ (' (you)' if u.name == me else '') ~ ' — ' ~ u.page ~ ', ' ~ when %}
+{% endfor %}
+<small class="presence" title="{{ ns.tip }}">{{ me }}{% if others %}<span class="muted"> · {{ others | length }} other{{ 's' if others | length != 1 }}</span>{% endif %}</small>

@@ -429,6 +429,67 @@ class GainArchive:
         }
 
 
+def newest_file(directory, pattern: str) -> Path | None:
+    """The most recently modified file matching *pattern* in *directory*,
+    or None (no directory, no match, or a mount that will not answer)."""
+    try:
+        files = sorted(Path(directory).glob(pattern),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    return files[0] if files else None
+
+
+class FileArchive(GainArchive):
+    """A local HDF5 archive -- eigencal's newest gain solution -- read the
+    way :class:`GainArchive` reads fpga_master's: through the h5read
+    subprocess, served in the buffer-plot protocol.  *path_fn* returns
+    the file to show (the newest ``gain_*.h5`` in the job's state
+    directory) or None; the cache is keyed on that path and its mtime,
+    so a new solution shows up on the next look and nothing is
+    re-parsed while the file stands still.  The file is the job's
+    record and is never copied or deleted here.
+    """
+
+    def __init__(self, path_fn):
+        super().__init__(base_url=None)
+        self._path_fn = path_fn
+        self._mtime: float | None = None
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    def refresh(self, force: bool = False) -> bool:
+        with self._lock:
+            try:
+                path = self._path_fn()
+                if path is None:
+                    self.error = "no gain solution archived yet"
+                    self._path, self._manifest, self._data = None, None, {}
+                    return False
+                path = Path(path)
+                mtime = path.stat().st_mtime
+                if (not force and self._manifest is not None
+                        and self._path == path and self._mtime == mtime):
+                    return True
+                manifest = json.loads(_h5read("manifest", str(path)).decode())
+            except Exception as exc:
+                self.error = f"{type(exc).__name__}: {exc}"
+                logger.warning(f"eigencal archive unreadable: {self.error}")
+                return self._manifest is not None
+            self._path, self._mtime = path, mtime
+            self._manifest, self._data = manifest, {}
+            self._fetched_at = time.time()
+            self.error = None
+            return True
+
+    def _discard_file(self) -> None:
+        # the archive belongs to the job; GainArchive's cache cleanup
+        # must never unlink it
+        self._path = None
+
+
 def _h5read(mode: str, path: str, *args: str) -> bytes:
     """Run choco.h5read in a subprocess and return its stdout."""
     cmd = [sys.executable, "-m", "choco.h5read", mode, path, *args]

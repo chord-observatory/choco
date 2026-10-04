@@ -38,6 +38,15 @@
 {% include "_service_status.html" %}
 </div>
 
+{% if name == 'eigencal' %}
+{# The newest archived solution in the live-plot panel, loaded after the
+   page paints (reading the file is a subprocess); see web.partial_eigencal_gains. #}
+<script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
+<div id="eigencal-gains" hx-get="/partials/eigencal-gains" hx-trigger="load" hx-swap="innerHTML">
+    <p class="note"><em>Loading the latest solution…</em></p>
+</div>
+{% endif %}
+
 {% if state_json %}
 <section>
     <details>

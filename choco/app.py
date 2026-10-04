@@ -17,7 +17,7 @@ from .auth import init_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
 from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
-from .services import FpgaMonitor, GainArchive, PdbMonitor
+from .services import FpgaMonitor, GainArchive, PdbMonitor, FileArchive, newest_file
 from .state import Registry
 from .sync import Orchestrator
 
@@ -271,6 +271,13 @@ def create_app(
     app.config["fpga_monitor"] = fpga_monitor
     app.config["fpga_cfg"] = fpga_cfg
     app.config["gain_archive"] = gain_archive
+    # eigencal's newest archived solution, read from the job's state
+    # directory on demand; the path is looked up at each refresh so a
+    # state_dir set later (tests) and a new solution both take effect.
+    app.config["eigencal_archive"] = FileArchive(
+        lambda: newest_file(
+            Path(app.config.get("state_dir") or config.get("state_dir")
+                 or "/var/lib/choco") / "eigencal", "gain_*.h5"))
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)

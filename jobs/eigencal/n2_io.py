@@ -267,28 +267,41 @@ def read_valid(meta: N2Meta, time_sel: np.ndarray, freq_slice: slice) -> np.ndar
     return np.ones((time_sel.size, nf), dtype=bool)
 
 
-def read_input_flags(meta: N2Meta, time_sel: np.ndarray) -> np.ndarray:
-    """(nt, nfeed) bool — kotekan's per-input flag state (True = good).
+def read_input_flags(meta: N2Meta, time_sel: np.ndarray,
+                     freq_slice: slice) -> np.ndarray:
+    """(nt, nf, nfeed) bool — kotekan's per-input flag state (True = good).
 
     The root-level ``flags`` dataset is kotekan's own per-input flag state
-    (what bffs & friends fed it).  Shape conventions vary — handle a static
-    (nfeed,) vector and a per-time (ntime, nfeed) table; anything else is
-    treated as all-good.  Live CHORD files (checked 2026-09-13) write
-    ``flags[freq, element, time]`` as 0/1 float32 that does vary with
-    frequency, so they take the all-good path here: applying them needs a
-    per-frequency treatment in the fit, not a reduction in this reader.
+    (what bffs & friends fed it).  Live CHORD files (checked 2026-10-04)
+    write ``flags[freq, element, time]`` as 0/1 float32: an element in
+    kotekan's bad-input list is 0 at every frequency from the moment the
+    list reached the node, and every element is 0 in a (freq, time) cell
+    that holds no data (the cells ``frames_added`` leaves at zero) — so
+    the flags are read per frequency, like ``read_valid``, and applied
+    cell by cell.  The older shape conventions — a static (nfeed,) vector
+    and a per-time (ntime, nfeed) table — are broadcast over frequency;
+    anything else is treated as all-good.  ``time_sel`` is sorted.
     """
     nfeed = meta.labels.size
-    ones = np.ones((time_sel.size, nfeed), dtype=bool)
+    nf = len(range(*freq_slice.indices(meta.freq_mhz.size)))
+    nt = time_sel.size
+    ones = np.ones((nt, nf, nfeed), dtype=bool)
     with h5py.File(meta.path, "r") as f:
         flags = f.get("flags")
         if not isinstance(flags, h5py.Dataset):
             return ones
+        if flags.ndim == 3 and flags.shape[0] == meta.freq_mhz.size \
+                and flags.shape[1] >= nfeed \
+                and flags.shape[2] >= int(time_sel.max()) + 1:
+            t0, t1 = int(time_sel[0]), int(time_sel[-1]) + 1
+            arr = flags[freq_slice, :nfeed, t0:t1][..., time_sel - t0]  # (nf, nfeed, nt)
+            return np.ascontiguousarray(np.moveaxis(arr, -1, 0) > 0)
         arr = flags[()]
     if arr.ndim == 1 and arr.shape[0] >= nfeed:
-        return np.broadcast_to(arr[:nfeed] > 0, (time_sel.size, nfeed)).copy()
+        return np.broadcast_to(arr[:nfeed] > 0, (nt, nf, nfeed)).copy()
     if arr.ndim == 2 and arr.shape[-1] >= nfeed and arr.shape[0] >= time_sel.max() + 1:
-        return arr[time_sel, :nfeed] > 0
+        return np.broadcast_to((arr[time_sel, :nfeed] > 0)[:, None, :],
+                               (nt, nf, nfeed)).copy()
     return ones
 
 

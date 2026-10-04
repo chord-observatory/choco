@@ -54,7 +54,7 @@ telescope:
   dish_diameter_m: 6.0
   beam_fwhm_factor: 1.2          # FWHM = factor * lambda / D
   beam_peak_ha_deg: 0.0          # beam-peak hour angle; 0 = pointing at meridian
-  fringestop_sign: 1.0           # VERIFY: wrong sign -> phase winds vs HA
+  fringestop_sign: -1.0          # CHORD convention, verified on a Cyg A transit 2026-10-04 (+1 winds the phase vs HA)
 
 analysis:
   nfreq_per_block: 32            # memory ~ ntime * block * nfeed_per_pol^2 * 8 B

@@ -253,9 +253,30 @@ def test_read_valid_and_flags(chord_file):
     assert valid.shape == (NTIME, NFREQ)
     assert not valid[2, 1] and valid.sum() == NTIME * NFREQ - 1
 
-    flags = n2_io.read_input_flags(m, time_sel)
-    assert flags.shape == (NTIME, NFEED)
-    assert not flags[:, 3].any() and flags[:, :3].all()
+    # A static (nfeed,) flag vector is broadcast over time and frequency.
+    flags = n2_io.read_input_flags(m, time_sel, slice(0, NFREQ))
+    assert flags.shape == (NTIME, NFREQ, NFEED)
+    assert not flags[:, :, 3].any() and flags[:, :, :3].all()
+
+
+def test_per_frequency_flags(chord_file):
+    """Live hdf5N2Write files flag per (freq, element, time): a bad input
+    is 0 at every frequency, an empty cell is 0 for every element."""
+    flags = np.ones((NFREQ, NFEED, NTIME), dtype=np.float32)
+    flags[:, 3, :] = 0.0                          # kotekan's bad-input list
+    flags[1, 1, :] = 0.0                          # feed 1 bad at one frequency
+    flags[0, :, 2] = 0.0                          # an empty (freq 0, time 2) cell
+    with h5py.File(chord_file, "r+") as f:
+        del f["flags"]
+        f.create_dataset("flags", data=flags)
+    m = n2_io.read_meta(chord_file)
+    time_sel = np.array([1, 2, 4])
+    out = n2_io.read_input_flags(m, time_sel, slice(0, 2))
+    assert out.shape == (3, 2, NFEED)
+    assert not out[:, :, 3].any()
+    assert not out[:, 1, 1].any() and out[[0, 2], 0, 1].all()
+    assert not out[1, 0, :].any() and out[0, 0, :3].all() and out[2, 0, :3].all()
+    assert out[:, 1, [0, 2]].all()
 
 
 def test_valid_and_flags_default_to_good(chord_file):
@@ -266,7 +287,7 @@ def test_valid_and_flags_default_to_good(chord_file):
     m = n2_io.read_meta(chord_file)
     time_sel = np.arange(3)
     assert n2_io.read_valid(m, time_sel, slice(0, NFREQ)).all()
-    assert n2_io.read_input_flags(m, time_sel).all()
+    assert n2_io.read_input_flags(m, time_sel, slice(0, NFREQ)).all()
 
 
 def test_pol_products(chord_file):

@@ -1241,3 +1241,73 @@ class TestManualFlags:
         with pytest.raises(ValueError):
             toggle_manual_flag(f, "B1X")
         assert f.read_text() == "bad_inputs: [A1X\n"
+
+
+
+class TestFileArchive:
+    """eigencal's newest archive read through the h5read subprocess and
+    cached on the file's identity and mtime."""
+
+    @staticmethod
+    def _archive(path, n=3):
+        import h5py
+        import numpy as np
+        with h5py.File(path, "w") as f:
+            f.attrs["source"] = "CYG_A"
+            f.attrs["good_frac"] = 0.5
+            g = f.create_dataset("gain", data=(np.arange(n * 2, dtype=np.float32)
+                                               .reshape(n, 2) * (1 + 1j)).astype(np.complex64))
+            g.attrs["axis"] = ["freq", "input"]
+            f.create_dataset("dyn_rng", data=np.ones((n, 1), dtype=np.float32))
+            f.create_dataset("index_map/freq", data=np.arange(n, dtype=np.float64))
+
+    def test_newest_file(self, tmp_path):
+        from choco.services import newest_file
+        assert newest_file(tmp_path / "nope", "gain_*.h5") is None
+        assert newest_file(tmp_path, "gain_*.h5") is None
+        a = tmp_path / "gain_a.h5"; a.write_bytes(b"a")
+        b = tmp_path / "gain_b.h5"; b.write_bytes(b"b")
+        import os
+        os.utime(a, (1, 1))
+        assert newest_file(tmp_path, "gain_*.h5") == b
+
+    def test_manifest_datasets_and_bytes(self, tmp_path):
+        from choco.services import FileArchive
+        path = tmp_path / "gain_x.h5"
+        self._archive(path)
+        archive = FileArchive(lambda: path)
+        assert archive.refresh() is True
+        names = {d["name"]: d for d in archive.to_dict()["datasets"]}
+        assert names["gain"]["value_type"] == "complex64"     # imaginary part present
+        assert names["gain"]["extents"] == [3, 2] and names["gain"]["dimnames"] == ["freq", "input"]
+        assert "dyn_rng" in names
+        raw = archive.dataset("gain")
+        assert raw is not None and len(raw) == 3 * 2 * 8
+        assert archive.dataset("nope") is None
+        assert archive.to_dict()["attrs"]["source"] in ("CYG_A", ["CYG_A"])
+        assert archive.file_bytes() == path.read_bytes()
+        assert path.exists()        # never unlinked by the reader
+
+    def test_refresh_follows_the_file(self, tmp_path, monkeypatch):
+        from choco import services
+        from choco.services import FileArchive
+        path = tmp_path / "gain_x.h5"
+        self._archive(path, n=3)
+        archive = FileArchive(lambda: path)
+        assert archive.refresh()
+        calls = []
+        real = services._h5read
+        monkeypatch.setattr(services, "_h5read", lambda *a: (calls.append(a), real(*a))[1])
+        assert archive.refresh() and calls == []           # same file, same mtime: cached
+        self._archive(path, n=5)
+        import os, time as _t
+        os.utime(path, None)
+        assert archive.refresh() and len(calls) == 1       # re-read on mtime change
+        assert {d["name"]: d for d in archive.to_dict()["datasets"]}["gain"]["extents"] == [5, 2]
+
+    def test_missing_archive_is_an_error_not_an_exception(self, tmp_path):
+        from choco.services import FileArchive
+        archive = FileArchive(lambda: None)
+        assert archive.refresh() is False
+        assert "no gain solution archived yet" in archive.error
+        assert archive.dataset("gain") is None and archive.to_dict()["datasets"] == []

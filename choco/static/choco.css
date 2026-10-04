@@ -176,7 +176,10 @@ nav li { display: inline-flex; align-items: center; }
    hover, no border or fill. */
 .logout-icon, .icon-btn { display: inline-flex; align-items: center; justify-content: center; margin: 0; padding: 0.25em 0.3em;
                           border: 0; background: none; box-shadow: none; color: var(--pico-muted-color); text-decoration: none; font-size: 1em; line-height: 1; }
-.logout-icon:hover, .icon-btn:hover { color: var(--pico-color); background: none; }
+/* Not var(--pico-color): Pico's button hover sets that variable to the
+   primary's inverse (white), which on a transparent button is white on
+   white.  The heading colour is the same ink and is never overridden. */
+.logout-icon:hover, .icon-btn:hover { color: var(--pico-h2-color); background: none; }
 .logout-icon:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
 .logout-icon svg, .icon-btn svg { width: 1.1em; height: 1.1em; }
 
@@ -191,6 +194,9 @@ body.wall nav, body.wall .note { display: none; }
 body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
 body.wall table.services { font-size: 1.15em; }
 body.wall td .tag { font-size: 1em; }
+
+/* The nav's who-is-here line (base.html polls /partials/presence). */
+.presence { cursor: default; }
 
 /* ---- text helpers ---------------------------------------------------- */
 .err, .t-bad { color: var(--bad-text); }

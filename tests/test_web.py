@@ -354,6 +354,183 @@ class TestPageChrome:
         assert "next Mon 2026-10-05 06:00:00 UTC" in body
 
 
+class TestPresence:
+    """Who is here: any authenticated request is presence, a page load or
+    POST is an action, a partial poll is "page open"; the nav line names
+    the operator and counts the others active in the last ten minutes."""
+
+    def _seen(self, app):
+        return app.config.get("presence", {})
+
+    def test_requests_are_recorded_with_their_page(self, client, app):
+        _login(client)
+        client.get("/nodes")
+        me = self._seen(app)["tester"]
+        assert me["page"] == "/nodes" and me["last_action"] is not None
+        # a poll keeps presence fresh and names the page it belongs to,
+        # but is not an action
+        action = me["last_action"]
+        client.get("/partials/services", headers={"HX-Current-URL": "https://x/service/pdb"})
+        me = self._seen(app)["tester"]
+        assert me["page"] == "/service/pdb" and me["last_action"] == action
+
+    def test_unauthenticated_and_static_requests_are_not_presence(self, client, app):
+        client.get("/login")
+        client.get("/static/choco.css")
+        assert "tester" not in self._seen(app)
+
+    def test_nav_line_counts_the_others(self, client, app):
+        from choco.web import PRESENCE_WINDOW_S
+        _login(client)
+        client.get("/")
+        now = time.time()
+        app.config["presence"]["alice"] = {"last_seen": now - 120, "last_action": now - 180, "page": "/service/pdb"}
+        app.config["presence"]["bob"] = {"last_seen": now - 30, "last_action": None, "page": "/nodes"}
+        app.config["presence"]["gone"] = {"last_seen": now - PRESENCE_WINDOW_S - 5, "last_action": None, "page": "/"}
+        body = client.get("/partials/presence").data.decode()
+        assert "tester" in body and "2 others" in body
+        assert "alice (you)" not in body and "tester (you)" in body
+        assert "alice — service pdb, acting 3m ago" in body
+        assert "bob — nodes, page open" in body
+        assert "gone" not in body and "gone" not in app.config["presence"]
+
+    def test_alone_shows_only_the_name(self, client, app):
+        _login(client)
+        body = client.get("/partials/presence").data.decode()
+        assert "tester" in body and "other" not in body
+
+    def test_nav_polls_the_line(self, client):
+        _login(client)
+        body = client.get("/").data.decode()
+        assert 'id="presence" hx-get="/partials/presence"' in body
+
+
+class TestEigencalPage:
+    """The EIGENCAL page explains itself from the job's run.json (every
+    run) and state.json (per solution), lists the archives, and shows the
+    newest solution in the plot panel through the same protocol as the
+    F-engine gains."""
+
+    RUN = {"time": 1791126511.0, "status": "skipped", "exit_code": 0,
+           "reason": "last transit too old", "source": "CYG_A",
+           "transit": 1791083172.0, "transit_tag": "20261004T030612Z",
+           "transit_complete": 1791085900.0, "eligible_until": 1791093100.0,
+           "next_transit": 1791169336.0, "sun_alt_deg": -16.1,
+           "archive_only": True, "dry_run": False}
+    STATE = {"updated": 1791090000.0, "transit_time": 1791083172.0, "source": "CYG_A",
+             "good_frac": 0.415, "n_calibrated": 128, "n_elements": 144,
+             "archive": "/var/lib/choco/eigencal/gain_20261004T030612Z_cyg_a.h5",
+             "sent": False}
+
+    def _page(self, client, app, run=None, state=None, archives=()):
+        from unittest.mock import patch
+        _login(client)
+        d = _job_dir(app, "eigencal")
+        if run is not None:
+            (d / "run.json").write_text(json.dumps(run))
+        if state is not None:
+            (d / "state.json").write_text(json.dumps(state))
+        for name in archives:
+            (d / name).write_bytes(b"\x89HDF\r\n\x1a\n" + b"x" * 100)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            return client.get("/service/eigencal").data.decode()
+
+    def test_run_record_explains_a_quiet_job(self, client, app):
+        body = self._page(client, app, run=self.RUN)
+        assert "Last run" in body and 'class="tag tag-off run-status"' in body
+        assert "last transit too old" in body
+        assert "Transit considered" in body and "2026-10-04 03:06" in body
+        assert "sun at -16" in body
+        assert "Next transit" in body and "2026-10-05 03:02" in body
+        assert "Solutions" not in body          # a run record is enough to explain
+
+    def test_solution_and_archives_listed(self, client, app):
+        body = self._page(client, app, run=dict(self.RUN, status="ok", reason="archived, not sent (no choco url)"),
+                          state=self.STATE, archives=["gain_20261004T030612Z_cyg_a.h5", "gain_20261003T031008Z_cyg_a.h5"])
+        assert 'class="tag tag-ok run-status"' in body
+        assert "archive-only: no choco url" in body
+        assert "Last solution" in body and "41.5% of 128 calibrated cells good" in body
+        assert "archived, not sent" in body
+        assert "Archives" in body and body.count("gain_2026100") >= 2
+
+    def test_degraded_run_shows_the_reason(self, client, app):
+        body = self._page(client, app, run=dict(self.RUN, status="degraded", exit_code=2,
+                                                reason="OSError: no N² data overlaps the transit window [1, 2]"))
+        assert 'class="tag tag-warn run-status"' in body
+        assert "no N² data overlaps" in body
+
+    def test_nothing_at_all_shows_only_common_facts(self, client, app):
+        body = self._page(client, app)
+        assert "Last run" not in body and "Archives" not in body
+        assert 'id="eigencal-gains"' in body     # the solution card still loads
+
+    def _prefill(self, app, name="gain_20261004T030612Z_cyg_a.h5"):
+        d = _job_dir(app, "eigencal")
+        f = d / name
+        f.write_bytes(b"\x89HDF\r\n\x1a\n" + b"x" * 100)
+        archive = app.config["eigencal_archive"]
+        archive._path, archive._mtime = f, f.stat().st_mtime
+        archive._manifest = {
+            "datasets": [
+                {"name": "gain", "value_type": "complex64", "extents": [4, 8],
+                 "dimnames": ["freq", "input"], "bytes": 4 * 8 * 8},
+                {"name": "dyn_rng", "value_type": "float32", "extents": [4, 2],
+                 "dimnames": ["freq", "pol"], "bytes": 4 * 2 * 4},
+            ],
+            "attrs": {"source": "CYG_A", "transit_time": 1791083172.0, "good_frac": 0.415},
+            "scalars": {}, "index_map": {"freq": {"n": 4}},
+        }
+        archive._data = {"gain": bytes(range(256)), "dyn_rng": b"\x00" * 32}
+        archive._fetched_at = time.time()
+        return archive
+
+    def test_solution_card_names_the_archive(self, client, app):
+        self._prefill(app)
+        _login(client)
+        body = client.get("/partials/eigencal-gains").data.decode()
+        assert "gain_20261004T030612Z_cyg_a.h5" in body and "CYG_A transit 2026-10-04 03:06" in body
+        assert "41.5% of calibrated cells good" in body
+        assert 'value="gain"' in body and 'value="dyn_rng"' in body
+        assert "/api/eigencal/gain-data?dataset=" in body
+
+    def test_solution_card_without_an_archive(self, client, app):
+        _login(client)
+        body = client.get("/partials/eigencal-gains").data.decode()
+        assert "no gain solution archived yet" in body.lower()
+
+    def test_gain_data_descriptor_and_bytes(self, client, app):
+        self._prefill(app)
+        _login(client)
+        desc = client.get("/api/eigencal/gain-data?dataset=gain&len=0").get_json()
+        assert desc["frame_desc"] == {"value_type": "complex64", "extents": [4, 8], "dimnames": ["freq", "input"]}
+        assert desc["frame_id"].startswith("gain_20261004T030612Z_cyg_a.h5@")
+        assert desc["metadata"]["attrs"]["source"] == "CYG_A"
+        resp = client.get("/api/eigencal/gain-data?dataset=gain&len=64")
+        assert resp.status_code == 200 and resp.data == bytes(range(64))
+        assert resp.headers["X-Frame-Size"] == "256"
+        # the manifest is the allowlist: an unknown name, path-like or not,
+        # is a 404; only characters outside the dataset-name alphabet are 400
+        assert client.get("/api/eigencal/gain-data?dataset=nope&len=0").status_code == 404
+        assert client.get("/api/eigencal/gain-data?dataset=../x&len=0").status_code == 404
+        assert client.get("/api/eigencal/gain-data?dataset=bad%20name&len=0").status_code == 400
+
+    def test_gain_data_without_an_archive_is_404(self, client, app):
+        _login(client)
+        resp = client.get("/api/eigencal/gain-data?dataset=gain&len=0")
+        assert resp.status_code == 404 and "archived" in resp.get_json()["error"]
+
+    def test_plot_page_and_download(self, client, app):
+        self._prefill(app)
+        _login(client)
+        body = client.get("/service/eigencal/plot?dataset=gain").data.decode()
+        assert 'data-source-url="/api/eigencal/gain-data?dataset=gain"' in body
+        assert 'data-source-id="eigencal-gain|gain"' in body
+        resp = client.get("/service/eigencal/gain.h5")
+        assert resp.status_code == 200 and resp.mimetype == "application/x-hdf5"
+        assert resp.headers["Content-Disposition"].endswith('gain_20261004T030612Z_cyg_a.h5"')
+
+
 class TestSkymap:
     def _configure(self, app, tmp_path, write=True, night=False):
         # The images live where the job writes them, <state_dir>/skymap/;

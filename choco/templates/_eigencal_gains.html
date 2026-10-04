@@ -1,0 +1,54 @@
+{# The eigencal page's solution card: the newest archived gain solution
+   in the shared live-plot panel (the same one the pipeline buffers and
+   the F-engine gains use), loaded on its own because reading the file
+   is a subprocess.  See web.partial_eigencal_gains. #}
+<section>
+    <h3>Latest solution</h3>
+    {% if not gains.available %}
+    <p class="note">{{ gains.error or 'No gain solution archived yet.' }}</p>
+    {% else %}
+    <p class="note">
+    <code>{{ gains.filename }}</code>{% if gains.transit_fmt %} — {{ gains.source }} transit {{ gains.transit_fmt }}{% endif %}{% if gains.good_frac is not none %}, {{ '%.1f' | format(gains.good_frac * 100) }}% of calibrated cells good{% endif %}.
+    <code>gain</code> is the multiply-convention complex gain per (frequency, input) — pick <code>abs</code> or <code>arg</code>;
+    <code>weight</code> its inverse variance (0 = not fitted); <code>lam_peak</code> and <code>dyn_rng</code> the largest
+    eigenvalue at the transit peak per (frequency, pol) and its ratio to the off-source floor, the dynamic-range gate's own number.</p>
+    <div class="action-row">
+        <label>
+            dataset
+            <select id="eigencal-dataset">
+                {% for d in gains.datasets %}
+                <option value="{{ d.name }}">{{ d.name }}
+                    ({{ d.dimnames|join("×") }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <a id="eigencal-fullscreen" role="button" class="secondary outline btn-inline"
+           href="/service/eigencal/plot?dataset={{ gains.datasets[0].name if gains.datasets }}">full screen ⤢</a>
+        <a role="button" class="secondary outline btn-inline"
+           href="/service/eigencal/gain.h5">download .h5</a>
+    </div>
+    <div id="buffer-plot"></div>
+    <script>
+        (function () {
+            var sel = document.getElementById("eigencal-dataset");
+            var link = document.getElementById("eigencal-fullscreen");
+            var box = document.getElementById("buffer-plot");
+            if (!sel || !box || !window.chocoPlot) return;
+            function show() {
+                var name = sel.value;
+                var q = encodeURIComponent(name);
+                link.setAttribute("href", "/service/eigencal/plot?dataset=" + q);
+                window.chocoPlot.open(
+                    window.chocoPlot.urlSource(
+                        "/api/eigencal/gain-data?dataset=" + q,
+                        "eigencal-gain|" + name, name,
+                        { page: "/service/eigencal/plot?dataset=" + q,
+                          pollMs: {{ poll_ms }}, defaultFetch: {{ fetch_bytes }} }),
+                    { container: box, noScroll: true });
+            }
+            sel.addEventListener("change", show);
+            show();
+        })();
+    </script>
+    {% endif %}
+</section>

@@ -88,7 +88,7 @@ DEFAULTS = {
         "dish_diameter_m": 6.0,
         "beam_fwhm_factor": 1.2,   # FWHM = factor * lambda / D
         "beam_peak_ha_deg": 0.0,   # beam peak hour angle (deg); 0 = on meridian
-        "fringestop_sign": 1.0,    # VERIFY against the correlator convention
+        "fringestop_sign": -1.0,   # CHORD's correlator convention (verified 2026-10-04)
     },
     "analysis": {
         "nfreq_per_block": 32,     # memory ~ ntime * nf_block * nfeed_pol^2 * 8 B
@@ -423,12 +423,17 @@ def process_transit(cfg, transit_unix, eph):
     flux = source_flux_jy(freq, cfg["source"])
     inv_bt = invert_no_zero(np.abs(meta0.freq_width_mhz) * 1e6 * tau)  # radiometer 1/(B*tau)
 
-    in_flag = np.concatenate([n2_io.read_input_flags(m, s) for m, s in segments])
     ha_on = ha[is_on]
 
     ninput = labels.size
     gain = np.zeros((nfreq, ninput), dtype=np.complex64)
     weight = np.zeros((nfreq, ninput), dtype=np.float32)
+    # Eigenvalue diagnostics per (freq, pol): the largest eigenvalue at
+    # the transit peak and its ratio to the off-source floor (the
+    # dynamic-range gate's own number) -- what the solution was made of.
+    npol = len(feed_idx)
+    lam_peak = np.full((nfreq, npol), np.nan, dtype=np.float32)
+    dyn_rng = np.full((nfreq, npol), np.nan, dtype=np.float32)
     chisq_per_dof = np.zeros((2, nfreq, ninput), dtype=np.float32)
 
     pol_prods = [n2_io.pol_products(meta0, feeds) for feeds in feed_idx]
@@ -440,6 +445,9 @@ def process_transit(cfg, transit_unix, eph):
                     min((bb + 1) * ana["nfreq_per_block"], nfreq))
         nf = fsl.stop - fsl.start
         valid = np.concatenate([n2_io.read_valid(m, s, fsl) for m, s in segments])
+        # kotekan's per-input flags, per (time, freq) cell like `valid`.
+        in_flag = np.concatenate(
+            [n2_io.read_input_flags(m, s, fsl) for m, s in segments])
 
         for pp, feeds in enumerate(feed_idx):
             prod_idx, ai, bi = pol_prods[pp]
@@ -452,7 +460,7 @@ def process_transit(cfg, transit_unix, eph):
             V = np.zeros((nt, nf, mp, mp), dtype=np.complex64)
             V[..., ai, bi] = vis
             V[..., bi, ai] = np.conj(vis)
-            pf = in_flag[:, feeds].astype(np.float32)[:, None, :]
+            pf = in_flag[:, :, feeds].astype(np.float32)
             V *= pf[..., :, None] * pf[..., None, :]
             del vis
 
@@ -465,12 +473,16 @@ def process_transit(cfg, transit_unix, eph):
             # Dynamic-range gate: on-source largest eigenvalue over the
             # median off-source largest eigenvalue (the noise floor).
             dyn_ok = np.ones((int(is_on.sum()), nf), dtype=bool)
+            lam_on = np.where(valid[is_on], lam[is_on], -np.inf)
+            peak = lam_on.max(axis=0)
+            lam_peak[fsl, pp] = np.where(np.isfinite(peak), peak, np.nan)
             if use_off:
                 lam_off = np.where(valid[~is_on], lam[~is_on], np.nan)
                 with np.errstate(invalid="ignore"):
                     floor = np.nanmedian(lam_off, axis=0)
                 dyn_ok = (lam[is_on] * invert_no_zero(floor)[None, :]
                           > ana["dyn_rng_threshold"])
+                dyn_rng[fsl, pp] = lam_peak[fsl, pp] * invert_no_zero(floor)
 
             # Response of each input: sqrt(lambda) * eigenvector, phase-
             # referenced to this pol's reference feed.
@@ -494,7 +506,7 @@ def process_transit(cfg, transit_unix, eph):
             err = err * inv_rt_flux
 
             flg = (valid[is_on] & dyn_ok & ref_ok[is_on])[..., None] \
-                & (in_flag[is_on][:, None, feeds])
+                & (in_flag[is_on][:, :, feeds])
 
             ns = nf * mp
             window = None
@@ -543,17 +555,19 @@ def process_transit(cfg, transit_unix, eph):
         gain, weight = interpolate_gaps(gain, weight,
                                         ana["interpolate"]["max_gap_channels"])
 
-    good_frac = float((weight > 0).mean())
-    log.info("fit complete in %.1f s; %.1f%% of (freq, input) cells good",
-             time.time() - t0, 100 * good_frac)
-    if good_frac < ana["min_good_frac"]:
-        log.error("good fraction %.2f below threshold %.2f — not sending",
-                  good_frac, ana["min_good_frac"])
-        return None
-
+    # The gate counts the elements the layout set out to calibrate: the
+    # RFI antennas and placeholders in the file's axis (and any dish the
+    # layout excludes) are never fitted and must not dilute the fraction.
+    calibrated = np.concatenate(feed_idx)
+    good_frac = float((weight[:, calibrated] > 0).mean())
+    log.info("fit complete in %.1f s; %.1f%% of (freq, input) cells good "
+             "over %d calibrated of %d elements",
+             time.time() - t0, 100 * good_frac, calibrated.size, ninput)
     return {"gain": gain, "weight": weight, "chisq_per_dof": chisq_per_dof,
             "freq_mhz": freq, "labels": labels, "transit_time": transit_unix,
-            "source": cfg["source"]["name"], "good_frac": good_frac}
+            "source": cfg["source"]["name"], "good_frac": good_frac,
+            "pols": list(pols), "lam_peak": lam_peak, "dyn_rng": dyn_rng,
+            "n_calibrated": int(calibrated.size), "n_elements": int(ninput)}
 
 
 # -- outputs ------------------------------------------------------------------
@@ -607,14 +621,35 @@ def write_archive(result, path, cfg):
         f.create_dataset("index_map/freq", data=result["freq_mhz"])
         f.create_dataset("index_map/input",
                          data=np.array(result["labels"], dtype="S64"))
+        # per (freq, pol) eigenvalue diagnostics, when the fit produced them
+        if result.get("lam_peak") is not None:
+            f.create_dataset("lam_peak", data=result["lam_peak"])
+            f.create_dataset("dyn_rng", data=result["dyn_rng"])
+            f.create_dataset("index_map/pol",
+                             data=np.array(result["pols"], dtype="S8"))
     log.info("wrote %s", path)
 
 
-def write_state(state_file, result, sent):
+def write_state(state_file, result, sent, archive=None):
     write_json_atomic(state_file, {
         "updated": time.time(), "transit_time": result["transit_time"],
         "source": result["source"], "good_frac": result["good_frac"],
-        "sent": bool(sent)})
+        "n_calibrated": result.get("n_calibrated"),
+        "n_elements": result.get("n_elements"),
+        "archive": archive, "sent": bool(sent)})
+
+
+def write_run(state_dir, status, exit_code, reason, **facts):
+    """``run.json``: what this run did and why, every run (the same
+    convention as bffs).  ``state.json`` changes only when a solution is
+    produced; this is how a run that did nothing explains itself to the
+    service page without anyone reading the journal."""
+    try:
+        write_json_atomic(Path(state_dir) / "run.json", {
+            "time": time.time(), "status": status, "exit_code": exit_code,
+            "reason": reason, **facts})
+    except OSError as e:
+        log.warning("could not write run.json: %s", e)
 
 
 # -- CLI ----------------------------------------------------------------------
@@ -648,10 +683,19 @@ def main(argv=None) -> int:
         log.error("bad config %s: %s", args.config, e)
         return 1
 
+    facts: dict = {"source": cfg["source"]["name"], "dry_run": bool(args.dry_run),
+                   "archive_only": not cfg["choco"].get("url")}
+
+    def done(code, status, reason):
+        write_run(state_dir, status, code, reason, **facts)
+        return code
+
     try:
         eph = Ephemeris(cfg["observer"], cfg["source"])
         now = time.time()
         transit = args.transit_time or eph.previous_transit(now)
+        # the one after it, so the page can say when to look again
+        facts["next_transit"] = eph.previous_transit(transit + 1.5 * 86164.0905)
 
         # Self-gating: act only when a transit recently completed, in
         # darkness, and was not already processed.  Size the "complete"
@@ -664,41 +708,54 @@ def main(argv=None) -> int:
             / np.radians(SIDEREAL_RATE_DEG_S)
         tag = datetime.fromtimestamp(transit, tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         outfile = str(state_dir / f"gain_{tag}_{cfg['source']['name'].lower()}.h5")
+        facts.update(transit=transit, transit_tag=tag, transit_complete=t_done,
+                     eligible_until=t_done + cfg["run"]["max_age_s"],
+                     sun_alt_deg=eph.sun_alt_deg(transit), archive=outfile)
 
         if not args.force:
             if now < t_done:
                 log.info("transit at %s not complete yet; nothing to do", tag)
-                return 0
+                return done(0, "skipped", "transit not complete yet")
             if now - t_done > cfg["run"]["max_age_s"]:
                 log.info("last transit (%s) is too old; nothing to do", tag)
-                return 0
+                return done(0, "skipped", "last transit too old")
             if os.path.exists(outfile):
                 log.info("transit %s already processed; nothing to do", tag)
-                return 0
+                return done(0, "skipped", "transit already processed")
             if cfg["daytime"]["skip"] and \
-                    eph.sun_alt_deg(transit) > cfg["daytime"]["sun_alt_max_deg"]:
+                    facts["sun_alt_deg"] > cfg["daytime"]["sun_alt_max_deg"]:
                 log.info("transit %s is in daytime; skipping", tag)
-                return 0
+                return done(0, "skipped", "transit in daytime")
 
         log.info("processing %s transit at %s", cfg["source"]["name"], tag)
         result = process_transit(cfg, transit, eph)
-        if result is None:
-            return 2
+        facts.update(good_frac=result["good_frac"],
+                     n_calibrated=result["n_calibrated"],
+                     n_elements=result["n_elements"])
 
+        # Archive first: the file is the already-processed record, and a
+        # solution that fails the gate is still worth inspecting.
         write_archive(result, outfile, cfg)
+        if result["good_frac"] < cfg["analysis"]["min_good_frac"]:
+            log.error("good fraction %.2f below threshold %.2f — archived, "
+                      "not sent", result["good_frac"],
+                      cfg["analysis"]["min_good_frac"])
+            write_state(state_dir / "state.json", result, sent=False, archive=outfile)
+            return done(2, "degraded", "good fraction %.2f below threshold %.2f; archived, not sent"
+                        % (result["good_frac"], cfg["analysis"]["min_good_frac"]))
         payload = build_payload(result, cfg["choco"], time.time())
         if args.dry_run or not cfg["choco"]["url"]:
+            why = "dry run" if args.dry_run else "no choco url"
             log.info("not sent (%s): update_id=%s, gain %s, %.1f%% good",
-                     "dry run" if args.dry_run else "no choco url",
-                     payload["update_id"], result["gain"].shape,
+                     why, payload["update_id"], result["gain"].shape,
                      100 * result["good_frac"])
-            write_state(state_dir / "state.json", result, sent=False)
-        else:
-            send_to_choco(cfg["choco"], payload)
-            log.info("sent %s to choco group %s", payload["update_id"],
-                     cfg["choco"]["group"])
-            write_state(state_dir / "state.json", result, sent=True)
-        return 0
+            write_state(state_dir / "state.json", result, sent=False, archive=outfile)
+            return done(0, "ok", f"archived, not sent ({why})")
+        send_to_choco(cfg["choco"], payload)
+        log.info("sent %s to choco group %s", payload["update_id"],
+                 cfg["choco"]["group"])
+        write_state(state_dir / "state.json", result, sent=True, archive=outfile)
+        return done(0, "ok", f"sent {payload['update_id']} to group {cfg['choco']['group']}")
 
     except OSError as e:
         # Environmental (no N² file yet, choco not up): exit 2 like the
@@ -707,12 +764,12 @@ def main(argv=None) -> int:
         # 0 ok, 2 degraded, 1 failed.)
         log.error("%s: %s", type(e).__name__, e)
         log.debug("traceback:", exc_info=True)
-        return 2
+        return done(2, "degraded", f"{type(e).__name__}: {e}")
     except ValueError as e:
         # Config or consistency errors — needs a human.
         log.error("%s: %s", type(e).__name__, e)
         log.debug("traceback:", exc_info=True)
-        return 1
+        return done(1, "failed", f"{type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":

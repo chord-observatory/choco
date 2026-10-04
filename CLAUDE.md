@@ -225,7 +225,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   flags it (`not in PDB table`) when the table is trusted — an operator CSV,
   or choco's table with no row kotekan does not know — and abstains
   otherwise.  Run facts go to `run.json` every run; `state.json` changes
-  only with the bad list.
+  only with the bad list.  eigencal follows the same split: `run.json`
+  every exit with the reason, `state.json` per solution, the archives
+  `gain_*.h5` beside them; its page reads all three.
 - bffs reads the receiver's `subset/` files (48 wired elements of 128) and
   joins them to the flag axis by label, never by position: a file label the
   config does not know sidelines the file like a stale one (file sources

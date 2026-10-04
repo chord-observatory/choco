@@ -185,6 +185,40 @@ def test_process_transit_recovers_gains(setup):
                 f"phase not recovered at freq {ff}: {np.angle(ref)}"
 
 
+def test_per_frequency_flags_mask_cells(setup):
+    """kotekan's live flags are per (freq, element, time).  A bad input is
+    0 everywhere and comes out uncalibrated; a feed flagged at one
+    frequency only loses that frequency and keeps the rest."""
+    cfg, eph, transit, tmp_path = setup
+    # Gap-filling over frequency would paper over the one flagged channel.
+    cfg = merge_config(cfg, {"analysis": {"interpolate": {"enabled": False}}})
+    rng = np.random.default_rng(3)
+    gain_in = _make_file(cfg, eph, transit, tmp_path, rng)
+    path = tmp_path / "n2_0000.h5"
+    with h5py.File(path, "r+") as f:
+        nt = f["vis"].shape[-1]
+        flags = np.ones((len(FREQ_MHZ), NFEED, nt), dtype=np.float32)
+        flags[:, FLAGGED_FEED, :] = 0.0
+        flags[2, 1, :] = 0.0                      # d0001X bad at FREQ_MHZ[2] only
+        del f["flags"]
+        f.create_dataset("flags", data=flags)
+
+    result = process_transit(cfg, transit, eph)
+    assert result is not None
+    g_out, w_out = result["gain"], result["weight"]
+    assert np.all(g_out[:, FLAGGED_FEED] == 0) and np.all(w_out[:, FLAGGED_FEED] == 0)
+    assert g_out[2, 1] == 0 and w_out[2, 1] == 0
+    assert np.all(w_out[[0, 1, 3], 1] > 0)
+    good = w_out > 0
+    ok_feeds = np.ones(NFEED, dtype=bool)
+    ok_feeds[[1, FLAGGED_FEED]] = False
+    assert good[:, ok_feeds].mean() > 0.95
+    prod = g_out * gain_in
+    for ff in (0, 1, 3):
+        vals = prod[ff, :NDISH][good[ff, :NDISH]]
+        assert np.all(np.abs(np.abs(vals) - 1.0) < 0.02)
+
+
 def test_quality_gate_rejects_noise_only_data(setup):
     """With no source in the data the dynamic-range gate starves the fit."""
     cfg, eph, transit, tmp_path = setup
@@ -198,7 +232,9 @@ def test_quality_gate_rejects_noise_only_data(setup):
         f["vis"][...] = (0.1 * (rng.standard_normal(shape)
                                 + 1j * rng.standard_normal(shape))).astype(np.complex64)
 
-    assert process_transit(cfg, transit, eph) is None
+    result = process_transit(cfg, transit, eph)
+    assert result["good_frac"] < cfg["analysis"]["min_good_frac"]
+    assert (result["weight"] > 0).mean() < 0.05
 
 
 def test_stale_files_raise_oserror_for_degraded_exit(setup):
@@ -216,3 +252,75 @@ def test_no_files_at_all_is_oserror(setup):
     cfg, eph, transit, tmp_path = setup
     with pytest.raises(OSError):
         eigencal.collect_segments(cfg, transit - 600, transit + 600)
+
+
+
+# -- main(): every run leaves run.json saying what it did and why ------------
+
+def _write_cfg(cfg, tmp_path):
+    path = tmp_path / "eigencal.yaml"
+    path.write_text(yaml.safe_dump(cfg))
+    return str(path)
+
+
+def _read_json(path):
+    import json
+    return json.loads(path.read_text())
+
+
+def test_main_records_a_skipped_run(setup, tmp_path):
+    """A completed transit older than run.max_age_s is nothing to do: exit
+    0, and run.json says so with the transit, the window and the next one."""
+    cfg, eph, transit, tmp_path = setup
+    state = tmp_path / "state"
+    rc = eigencal.main(["-c", _write_cfg(cfg, tmp_path), "--state-dir", str(state),
+                        "--transit-time", str(transit)])
+    assert rc == 0
+    run = _read_json(state / "run.json")
+    assert run["status"] == "skipped" and run["exit_code"] == 0
+    assert run["reason"] == "last transit too old"
+    assert run["transit"] == pytest.approx(transit)
+    assert run["transit_complete"] > transit and run["eligible_until"] > run["transit_complete"]
+    assert run["next_transit"] == pytest.approx(transit + 86164.0905, abs=120)
+    assert run["archive_only"] is True
+    assert not (state / "state.json").exists()
+
+
+def test_main_records_a_degraded_run(setup, tmp_path):
+    """No data over the transit: exit 2 and run.json carries the OSError."""
+    cfg, eph, transit, tmp_path = setup
+    rng = np.random.default_rng(5)
+    _make_file(cfg, eph, transit, tmp_path, rng)
+    state = tmp_path / "state"
+    rc = eigencal.main(["-c", _write_cfg(cfg, tmp_path), "--state-dir", str(state),
+                        "--force", "--transit-time", str(transit + 86400)])
+    assert rc == 2
+    run = _read_json(state / "run.json")
+    assert run["status"] == "degraded" and run["exit_code"] == 2
+    assert "no N² data overlaps the transit window" in run["reason"]
+
+
+def test_main_processes_and_archives_the_diagnostics(setup, tmp_path):
+    """A forced run over synthetic data: exit 0, archived not sent (no
+    choco url), state.json names the archive, and the archive carries
+    the per-(freq, pol) eigenvalue diagnostics beside the gains."""
+    cfg, eph, transit, tmp_path = setup
+    rng = np.random.default_rng(7)
+    _make_file(cfg, eph, transit, tmp_path, rng)
+    state = tmp_path / "state"
+    rc = eigencal.main(["-c", _write_cfg(cfg, tmp_path), "--state-dir", str(state),
+                        "--force", "--transit-time", str(transit)])
+    assert rc == 0
+    run = _read_json(state / "run.json")
+    assert run["status"] == "ok" and run["reason"] == "archived, not sent (no choco url)"
+    assert run["good_frac"] >= cfg["analysis"]["min_good_frac"]
+    assert run["n_calibrated"] == NFEED and run["n_elements"] == NFEED
+    st = _read_json(state / "state.json")
+    assert st["sent"] is False and st["archive"] == run["archive"]
+    with h5py.File(st["archive"], "r") as f:
+        assert f["gain"].shape == (FREQ_MHZ.size, NFEED)
+        assert f["lam_peak"].shape == (FREQ_MHZ.size, 2)
+        assert f["dyn_rng"].shape == (FREQ_MHZ.size, 2)
+        assert [p.decode() for p in f["index_map/pol"][:]] == ["X", "Y"]
+        assert np.isfinite(f["lam_peak"][:]).all()
+        assert (f["dyn_rng"][:] > 1).all()      # the source stood above the floor

@@ -163,19 +163,36 @@
 {% endif %}
 {% elif name == 'eigencal' and detail %}
 <dl class="service-facts">
-    {% if detail.source %}
-    <dt>Source</dt><dd>{{ detail.source }}</dd>
+    {% if detail.run %}{% set run = detail.run %}
+    <dt>Last run</dt>
+    <dd>
+        {{ tag(run.tone, run.status, extra='run-status') }}
+        {% if run.time_fmt %} {{ run.time_fmt }} ({{ since(run.time, now_ts) }}){% endif %}
+        {% if run.reason %} &middot; {{ run.reason }}{% endif %}
+        {% if run.archive_only and run.status == 'ok' %}<br><small class="muted">archive-only: no choco url is configured (kotekan has no gains consumer yet)</small>{% endif %}
+    </dd>
+    {% if run.transit_tag %}
+    <dt>Transit considered</dt>
+    <dd>{{ run.source or '' }} {{ run.transit_fmt }}{% if run.sun_alt_deg is not none %} &middot; sun at {{ '%+.0f' | format(run.sun_alt_deg) }}&deg;{% endif %}
+        {% if run.transit_complete_fmt %}<br><small class="muted">complete {{ run.transit_complete_fmt }}, eligible until {{ run.eligible_until_fmt }}</small>{% endif %}</dd>
     {% endif %}
-    {% if detail.transit_time %}
-    <dt>Last transit</dt><dd>{{ detail.transit_time }}</dd>
+    {% if run.next_transit_fmt %}
+    <dt>Next transit</dt>
+    <dd>{{ run.next_transit_fmt }}{% if run.next_transit %} ({% if run.next_transit > now_ts %}in {{ since(2 * now_ts - run.next_transit, now_ts) | replace(' ago', '') }}{% else %}{{ since(run.next_transit, now_ts) }}{% endif %}){% endif %}</dd>
     {% endif %}
-    {% if detail.good_frac is not none %}
-    <dt>Good fraction</dt><dd>{{ '%.1f' | format(detail.good_frac * 100) }}%</dd>
     {% endif %}
-    <dt>Gains sent</dt>
-    <dd>{% if detail.sent %}yes{% else %}no — archived only (failed the quality gate, or a dry run){% endif %}</dd>
-    {% if detail.updated %}
-    <dt>Processed</dt><dd>{{ detail.updated }}</dd>
+    {% if detail.has_state %}
+    <dt>Last solution</dt>
+    <dd>{{ detail.source or '' }} transit {{ detail.transit_time }}
+        {%- if detail.good_frac is not none %} &middot; {{ '%.1f' | format(detail.good_frac * 100) }}% of {% if detail.n_calibrated %}{{ detail.n_calibrated }} calibrated{% endif %} cells good{% endif %}
+        &middot; {% if detail.sent %}sent to kotekan{% else %}archived, not sent{% endif %}
+        {% if detail.archive %}<br><small class="muted"><code>{{ detail.archive }}</code>, processed {{ detail.updated }}</small>{% endif %}</dd>
+    {% elif not detail.run %}
+    <dt>Solutions</dt><dd class="muted">none yet</dd>
+    {% endif %}
+    {% if detail.archives %}
+    <dt>Archives</dt>
+    <dd>{% for a in detail.archives %}<code>{{ a.name }}</code> <small class="muted">{{ a.bytes | filesize }}, {{ a.mtime_fmt }}</small>{% if not loop.last %}<br>{% endif %}{% endfor %}</dd>
     {% endif %}
 </dl>
 {% elif name == 'waterfall' and detail %}

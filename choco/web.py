@@ -141,6 +141,92 @@ def _next_target() -> str:
     return next_page
 
 
+# --- who is here -----------------------------------------------------------
+#
+# Per-user last-seen, in process (ephemeral like every other runtime fact):
+# any authenticated request is presence, a page load or a POST is an
+# action, and a partial poll (htmx) is neither more nor less than "has a
+# page open".  The nav shows the operator's own name and how many others
+# were active in the last PRESENCE_WINDOW_S, with the list in a tooltip.
+
+PRESENCE_WINDOW_S = 600
+_POLL_PREFIXES = ("/partials/", "/nodes/partials/")
+
+
+def _presence() -> dict:
+    return current_app.config.setdefault("presence", {})
+
+
+@bp.before_app_request
+def _note_presence():
+    if not getattr(current_user, "is_authenticated", False):
+        return
+    path = request.path
+    if path.startswith("/static/"):
+        return
+    poll = path.startswith(_POLL_PREFIXES)
+    if poll:
+        # the page the poll belongs to, from htmx's own header
+        page = request.headers.get("HX-Current-URL", "")
+        page = re.sub(r"^https?://[^/]+", "", page) or None
+    else:
+        page = path
+    now = time.time()
+    entry = _presence().setdefault(current_user.username,
+                                   {"last_seen": now, "last_action": None, "page": None})
+    entry["last_seen"] = now
+    if page:
+        entry["page"] = page
+    if not poll:
+        entry["last_action"] = now
+
+
+_PAGE_NAMES = (("/nodes/edit/", "node"), ("/nodes/edit", "edit nodes"),
+               ("/nodes", "nodes"), ("/configs", "configs"), ("/files", "files"),
+               ("/waterfall", "waterfall"), ("/pipeline/", "pipeline"), ("/plot/", "plot"),
+               ("/service/", "service"), ("/", "services"))
+
+
+def _page_name(path: str | None) -> str:
+    """A short name for where someone is, from the path prefix."""
+    if not path:
+        return "?"
+    for prefix, name in _PAGE_NAMES:
+        if path.startswith(prefix):
+            if name in ("node", "pipeline", "plot", "service"):
+                rest = path[len(prefix):].split("?")[0].strip("/")
+                return f"{name} {rest}" if rest else name
+            return name
+    return path
+
+
+def _active_users(now: float | None = None) -> list[dict]:
+    """Everyone seen within the window, most recent first; stale entries
+    are dropped on the way so the table never grows past the roster."""
+    now = time.time() if now is None else now
+    table = _presence()
+    for name in [n for n, e in table.items()
+                 if now - e["last_seen"] > PRESENCE_WINDOW_S]:
+        del table[name]
+    out = []
+    for name, e in table.items():
+        out.append({"name": name, "page": _page_name(e.get("page")),
+                    "seen_ago": int(now - e["last_seen"]),
+                    "action_ago": (int(now - e["last_action"])
+                                   if e.get("last_action") else None)})
+    out.sort(key=lambda u: u["seen_ago"])
+    return out
+
+
+@bp.route("/partials/presence")
+@login_required
+def partial_presence():
+    """The nav's who-is-here line (60 s htmx poll)."""
+    return render_template("_presence.html", users=_active_users(),
+                           me=current_user.username,
+                           window_min=PRESENCE_WINDOW_S // 60)
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
@@ -1042,12 +1128,19 @@ def api_fpga_gain_data():
         return {"error": "'len' must be a non-negative integer"}, 400
     length = min(length, _BUFFER_DATA_MAX_LEN)
 
+    info = archive.to_dict()
+    update_id = _first_scalar(info["scalars"].get("update_id"))
+    return _archive_data_response(archive, dataset, length, update_id)
+
+
+def _archive_data_response(archive, dataset: str, length: int, frame_id):
+    """One HDF5 dataset in the buffer-plot wire format (see
+    api_fpga_gain_data); *frame_id* is what the plotter's staleness note
+    compares, the archive's update id or its file identity."""
     desc = archive.describe(dataset)
     if desc is None:
         return {"error": archive.error or f"no dataset '{dataset}'"}, 404
     info = archive.to_dict()
-    update_id = _first_scalar(info["scalars"].get("update_id"))
-
     if length == 0:
         return {
             "frame_desc": {
@@ -1055,7 +1148,7 @@ def api_fpga_gain_data():
                 "extents": desc["extents"],
                 "dimnames": desc["dimnames"],
             },
-            "frame_id": update_id,
+            "frame_id": frame_id,
             "frame_size": desc["bytes"],
             "metadata": {
                 "dataset": dataset,
@@ -1068,12 +1161,107 @@ def api_fpga_gain_data():
 
     raw = archive.dataset(dataset)
     if raw is None:
-        return {"error": archive.error or "gain archive unreadable"}, 502
+        return {"error": archive.error or "archive unreadable"}, 502
     resp = Response(raw[:length], mimetype="application/octet-stream")
-    resp.headers["X-Frame-Id"] = str(update_id or "")
+    resp.headers["X-Frame-Id"] = str(frame_id or "")
     resp.headers["X-Frame-Size"] = str(len(raw))
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+# --- eigencal's archived solution, the same way ------------------------------
+
+def _eigencal_archive():
+    return current_app.config.get("eigencal_archive")
+
+
+def _eigencal_gain_context() -> dict:
+    """What the EIGENCAL page's solution card shows: the newest archive's
+    datasets and headline attributes, or why there is nothing to show."""
+    archive = _eigencal_archive()
+    if archive is None:
+        return {"available": False, "error": "no archive reader", "datasets": []}
+    if not archive.refresh():
+        return {"available": False, "error": archive.error, "datasets": []}
+    info = archive.to_dict()
+    attrs = info.get("attrs") or {}
+    transit = _first_scalar(attrs.get("transit_time"))
+    return {
+        "available": True, "error": None,
+        "datasets": info["datasets"],
+        "filename": archive._path.name if archive._path else None,
+        "source": _first_scalar(attrs.get("source")),
+        "transit_fmt": _fmt_utc(transit) if isinstance(transit, (int, float)) else None,
+        "good_frac": _float_or_none(_first_scalar(attrs.get("good_frac"))),
+    }
+
+
+@bp.route("/partials/eigencal-gains")
+@login_required
+def partial_eigencal_gains():
+    """The solution card, loaded after the page paints: reading the
+    archive is a subprocess and must not delay the facts above it."""
+    return render_template("_eigencal_gains.html", gains=_eigencal_gain_context(),
+                           poll_ms=GAIN_POLL_MS, fetch_bytes=GAIN_FETCH_BYTES)
+
+
+@bp.route("/api/eigencal/gain-data")
+@localhost_or_login_required
+def api_eigencal_gain_data():
+    """The newest eigencal solution's datasets, in the buffer-plot protocol
+    (see api_fpga_gain_data).  The frame id is the file and its mtime, so
+    the plotter's staleness note means "no new solution"."""
+    archive = _eigencal_archive()
+    if archive is None:
+        return {"error": "no archive reader"}, 404
+    dataset = request.args.get("dataset", "")
+    if not _GAIN_DATASET_RE.fullmatch(dataset):
+        return {"error": "bad dataset name"}, 400
+    try:
+        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
+    except ValueError:
+        return {"error": "'len' must be a non-negative integer"}, 400
+    if length < 0:
+        return {"error": "'len' must be a non-negative integer"}, 400
+    length = min(length, _BUFFER_DATA_MAX_LEN)
+    if not archive.refresh():
+        return {"error": archive.error or "no gain solution archived yet"}, 404
+    frame_id = f"{archive._path.name}@{archive._mtime:.0f}" if archive._path else None
+    return _archive_data_response(archive, dataset, length, frame_id)
+
+
+@bp.route("/service/eigencal/gain.h5")
+@login_required
+def eigencal_gain_file():
+    """The newest archived solution itself."""
+    archive = _eigencal_archive()
+    raw = archive.file_bytes() if archive is not None else None
+    if raw is None:
+        flash(f"Gain solution unavailable: {archive.error if archive else 'no archive reader'}",
+              "error")
+        return redirect(url_for("web.service_page", name="eigencal"))
+    resp = Response(raw, mimetype="application/x-hdf5")
+    resp.headers["Content-Disposition"] = \
+        f'attachment; filename="{archive._path.name}"'
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@bp.route("/service/eigencal/plot")
+@login_required
+def eigencal_gain_plot_page():
+    """Full-viewport plot of one dataset of the newest solution."""
+    dataset = request.args.get("dataset", "")
+    if not _GAIN_DATASET_RE.fullmatch(dataset):
+        flash("Invalid dataset name", "error")
+        return redirect(url_for("web.service_page", name="eigencal"))
+    return render_template("plot.html", title=dataset, subtitle="eigencal solution",
+                           source_url="/api/eigencal/gain-data?dataset="
+                                      + quote(dataset, safe=""),
+                           source_id="eigencal-gain|" + dataset,
+                           back_url="/service/eigencal", back_label="eigencal",
+                           node_key=None, poll_ms=GAIN_POLL_MS,
+                           fetch_bytes=GAIN_FETCH_BYTES)
 
 
 @bp.route("/partials/fpga-gains")
@@ -1410,7 +1598,8 @@ def _service_registry() -> dict[str, dict]:
                         eigencal_cfg.get("service_unit")
                         or "choco-eigencal.service",
                         root / "eigencal" / "state.json",
-                        None, "last calibration"),
+                        None, "last calibration",
+                        run_file=root / "eigencal" / "run.json"),
         # waterfall rewrites its state file on every run, but a run with
         # nothing to render is the normal case between acquisitions, so
         # the mtime is "last run" and never a health downgrade.
@@ -1662,6 +1851,81 @@ def _same_path(a, b) -> bool:
         return str(a) == str(b)
 
 
+def _float_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _eigencal_detail(state: dict | None, run: dict | None,
+                     state_dir: Path) -> dict | None:
+    """The EIGENCAL page's summary from the job's two files and its
+    archive directory.
+
+    ``run.json`` is written every run and says what the run did and why
+    (skipped: transit not complete / too old / daytime / already done;
+    degraded: no data or the quality gate; ok: archived or sent) with the
+    transit it considered and the next one -- the question "why has it
+    not produced anything?" answered without the journal.  ``state.json``
+    changes only when a solution is produced.  The archives are the
+    ``gain_*.h5`` files in the state directory, newest first.
+    """
+    archives = []
+    try:
+        files = sorted(state_dir.glob("gain_*.h5"),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        files = []
+    for f in files[:10]:
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        archives.append({"name": f.name, "bytes": st.st_size,
+                         "mtime": st.st_mtime, "mtime_fmt": _fmt_utc(st.st_mtime)})
+    if state is None and run is None and not archives:
+        return None
+    out: dict = {"has_state": state is not None, "has_run": run is not None,
+                 "archives": archives}
+    if state is not None:
+        out.update({
+            "updated": _fmt_utc(state.get("updated")),
+            "transit_time": _fmt_utc(state.get("transit_time")),
+            "source": state.get("source"),
+            "good_frac": _float_or_none(state.get("good_frac")),
+            "n_calibrated": state.get("n_calibrated"),
+            "n_elements": state.get("n_elements"),
+            "sent": state.get("sent"),
+            "archive": (Path(str(state["archive"])).name
+                        if state.get("archive") else None),
+        })
+    if run is not None:
+        status = str(run.get("status") or "unknown")
+        out["run"] = {
+            "status": status,
+            "tone": {"ok": "ok", "skipped": "off", "degraded": "warn",
+                     "failed": "bad"}.get(status, "off"),
+            "time": _float_or_none(run.get("time")),
+            "time_fmt": _fmt_utc(run.get("time")),
+            "reason": run.get("reason"),
+            "exit_code": run.get("exit_code"),
+            "source": run.get("source"),
+            "transit_tag": run.get("transit_tag"),
+            "transit_fmt": _fmt_utc(run.get("transit")),
+            "transit_complete_fmt": _fmt_utc(run.get("transit_complete")),
+            "eligible_until": _float_or_none(run.get("eligible_until")),
+            "eligible_until_fmt": _fmt_utc(run.get("eligible_until")),
+            "next_transit": _float_or_none(run.get("next_transit")),
+            "next_transit_fmt": _fmt_utc(run.get("next_transit")),
+            "sun_alt_deg": _float_or_none(run.get("sun_alt_deg")),
+            "archive_only": run.get("archive_only"),
+            "dry_run": run.get("dry_run"),
+            "good_frac": _float_or_none(run.get("good_frac")),
+        }
+    return out
+
+
 def _bffs_detail(state: dict | None, run: dict | None,
                  manual_file=None) -> dict | None:
     """The BFFS page's summary from the job's two files.
@@ -1887,6 +2151,9 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
     if name == "bffs":
         return _bffs_detail(state, read_state_json(svc.get("run_file")),
                             svc.get("manual_file"))
+    if name == "eigencal":
+        return _eigencal_detail(state, read_state_json(svc.get("run_file")),
+                                _state_root() / "eigencal")
     if state is None:
         return None
 
@@ -1902,19 +2169,6 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
             "entries": len(table),
             "first": _fmt_utc(stamps[0] / 1e9),
             "last": _fmt_utc(stamps[-1] / 1e9),
-        }
-
-    if name == "eigencal":
-        try:
-            good_frac = float(state.get("good_frac"))
-        except (TypeError, ValueError):
-            good_frac = None
-        return {
-            "updated": _fmt_utc(state.get("updated")),
-            "transit_time": _fmt_utc(state.get("transit_time")),
-            "source": state.get("source"),
-            "good_frac": good_frac,
-            "sent": state.get("sent"),
         }
 
     if name == "waterfall":
