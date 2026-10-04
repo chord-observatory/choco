@@ -37,20 +37,19 @@
     zero); <code>gain_exp</code> is the per-input exponent and is
     <em>not</em> folded into them here. Pick <code>log</code> &mdash; the
     coefficients span five orders of magnitude.</p>
-    <div style="display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap;
-                margin-bottom: 0.5em; font-size: 0.9em;">
-        <label style="display: flex; align-items: center; gap: 0.4em; margin: 0;">
+    <div class="action-row">
+        <label>
             dataset
-            <select id="gain-dataset" style="width: auto; margin: 0; padding: 0.1em 1.6em 0.1em 0.4em;">
+            <select id="gain-dataset">
                 {% for d in gains.datasets %}
                 <option value="{{ d.name }}">{{ d.name }}
                     ({{ d.dimnames|join("×") }})</option>
                 {% endfor %}
             </select>
         </label>
-        <a id="gain-fullscreen" role="button" class="secondary outline btn-sm"
+        <a id="gain-fullscreen" role="button" class="secondary outline btn-inline"
            href="/service/fpga/plot?dataset={{ gains.datasets[0].name if gains.datasets }}">full screen ⤢</a>
-        <a role="button" class="secondary outline btn-sm"
+        <a role="button" class="secondary outline btn-inline"
            href="/service/fpga/gain.h5">download .h5</a>
     </div>
     {# The same panel the pipeline page opens; only the source differs. #}

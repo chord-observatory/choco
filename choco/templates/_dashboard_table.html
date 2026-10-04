@@ -2,21 +2,6 @@
 {% if not nodes %}
 <p>No nodes configured yet. <a href="/nodes/edit">Edit nodes</a> to add kotekan instances.</p>
 {% else %}
-{# Maintenance stops every push, and every choco restart puts the whole
-   cluster there, so a dashboard that said nothing about it left the
-   operator wondering why a change did nothing.  Inside the polled table
-   so the count tracks the switches. #}
-{% set n_maint = nodes.values() | selectattr('maintenance') | list | length %}
-{% if n_maint %}
-<div class="notice notice-warn" style="display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
-    <span><strong>{{ n_maint }} of {{ nodes | length }} node{{ 's' if nodes | length != 1 }} in maintenance</strong>
-        — choco does not push to a node in maintenance{% if n_maint == nodes | length %}; every node starts this way after a choco restart{% endif %}.</span>
-    <button class="secondary outline btn-sm" style="margin-left: auto;" hx-ext="morph"
-            title="Take every node out of maintenance (choco will push)"
-            hx-post="/nodes/set-maintenance-all/off" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
-            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>Lift maintenance on all</button>
-</div>
-{% endif %}
 {% for group, group_nodes in nodes.values() | groupby('group') %}
 {# A group that renders one file says so once, in its bar; the Config
    column appears only where the nodes of a group differ. #}

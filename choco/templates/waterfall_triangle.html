@@ -7,9 +7,8 @@
 .tri-head h2 { margin: 0; font-size: 1.2em; }
 .tri-head code { font-size: 0.9em; }
 .tri-note { margin: 0 0 1em; }
-.tri-filter { display: flex; align-items: center; gap: 0.4em; margin: 0; }
-.tri-filter input { width: 12em; margin: 0; padding: 0.2em 0.4em; font-size: 0.85em; }
-.tri-filter button { margin: 0; padding: 0.2em 0.7em; font-size: 0.85em; }
+.tri-filter { margin: 0; }
+.tri-filter input { flex: 0 0 12em; }
 
 table.tri { width: 100%; border-collapse: collapse; table-layout: fixed; }
 table.tri td { padding: 0; border: 1px solid var(--pico-muted-border-color, #ddd);
@@ -33,11 +32,11 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
 {% block content %}
 <div class="tri-head page-head">
     <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><code>{{ acq }}</code></h2>
-    <form class="tri-filter" method="get" action="">
+    <form class="tri-filter action-row" method="get" action="">
         <label for="elements" style="font-size: 0.85em; margin: 0;">Elements</label>
         <input type="text" id="elements" name="elements" value="{{ elements_arg }}"
                placeholder="all" aria-label="Comma-separated element indices">
-        <button type="submit" class="secondary outline btn-sm">Show</button>
+        <button type="submit" class="secondary outline btn-inline">Show</button>
     </form>
 </div>
 

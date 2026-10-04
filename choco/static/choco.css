@@ -40,12 +40,12 @@
     --maint: #b4621e;   --maint-ink: #fff;
     --off: #7a8088;     --off-ink: #fff;
     /* soft: a tint with a dark ink of the same hue, for tags and good cells */
-    --ok-soft: #e3f1e8;     --ok-text: #1e5a37;
-    --bad-soft: #f8e5e3;    --bad-text: #8a2820;
-    --warn-soft: #fbf0d2;   --warn-text: #7a5a07;
-    --info-soft: #e2ecf6;   --info-text: #27507c;
-    --maint-soft: #f7e7d8;  --maint-text: #7f4310;
-    --off-soft: #eceef0;    --off-text: #4b5058;
+    --ok-soft: #cfe8d9;     --ok-text: #1e5a37;
+    --bad-soft: #f5dcd9;    --bad-text: #8a2820;
+    --warn-soft: #f8e9c2;   --warn-text: #7a5a07;
+    --info-soft: #d8e6f3;   --info-text: #27507c;
+    --maint-soft: #f3dcc8;  --maint-text: #7f4310;
+    --off-soft: #e3e6ea;    --off-text: #4b5058;
     /* neutral surfaces: the quiet tag, group bars, popovers' inner panels */
     --surface: #f1f2f4;
     --surface-border: #d5d9de;
@@ -73,12 +73,14 @@
 /* ---- scale and density -----------------------------------------------
    Pico grows the base font with the viewport (16 px on a phone, 21 px on
    a wide monitor), which suits a marketing page and makes a control panel
-   enormous.  One size at every width -- 100% of the browser's default, so
-   the operator's font preference, zoom and display scaling all still
-   apply -- and tighter headings and cells, so a dashboard of forty rows
-   and a sixteen-board grid both fit a screen.  Everything else is in rem
-   or em for the same reason. */
-:root { --pico-font-size: 100%; }
+   enormous.  One size at every width -- 125% of the browser's default
+   (20 px unless the operator has set otherwise, so font preference, zoom
+   and display scaling all still apply; this is what Pico gave at 1280 px,
+   and 15, 16 and 18 px all read small on the operators' monitors) -- and
+   tighter headings and cells, so a dashboard of forty rows and a
+   sixteen-board grid both fit a screen.  Everything else is in rem or em
+   for the same reason. */
+:root { --pico-font-size: 125%; }
 /* Pico stretches submit buttons to the full width of their form
    (button[type=submit] { width: 100% }); here a button is as wide as its
    label.  The same selector, so it wins by order. */
@@ -214,8 +216,7 @@ table { margin-top: 1em; }
 /* The group-wide controls: a caption ("maint", "start") and a pair of
    glyph buttons whose *text* takes the tone of the switch state it sets
    (amber into maintenance, blue out; green started, grey idle), matching
-   the switches in the column below.  Outlined, never filled: these are
-   actions, not status.  `all: unset` keeps them out of Pico's button
+   the switches in the column below, on the tone's soft tint like a tag.  `all: unset` keeps them out of Pico's button
    cascade, whose hover rules would otherwise override the tone. */
 .group-ctl { display: inline-flex; align-items: center; gap: 0.3em; }
 .group-ctl-label { margin-right: 0.1em; font-size: 0.72em; letter-spacing: 0.05em; text-transform: uppercase; color: var(--pico-muted-color); }
@@ -234,16 +235,16 @@ button.group-btn {
     color: var(--pico-muted-color);
     cursor: pointer;
 }
-button.group-btn:hover { background: var(--hover); }
+button.group-btn:hover { filter: brightness(0.94); }
 button.group-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.group-btn.tone-ok { color: var(--ok-text); }
-.group-btn.tone-off { color: var(--off-text); }
-.group-btn.tone-maint { color: var(--maint-text); }
-.group-btn.tone-info { color: var(--info-text); }
-.htmx-request .group-btn { opacity: 0.45; }
+.group-btn.tone-ok { color: var(--ok-text); background: var(--ok-soft); }
+.group-btn.tone-off { color: var(--off-text); background: var(--off-soft); }
+.group-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
+.group-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
+button.group-btn.htmx-request { opacity: 0.45; }
 /* The same for every power control on the PDB page: the form issuing the
    request gets htmx-request, so its button dims until the reply lands. */
-.htmx-request .chan, .htmx-request .bulk { opacity: 0.45; }
+form.htmx-request .chan, form.htmx-request .bulk { opacity: 0.45; }
 
 /* ---- switches (started / maintenance) -------------------------------- */
 label.toggle-switch {
@@ -285,7 +286,11 @@ label.toggle-switch {
 .toggle-slider.normal { background: var(--info); }
 .toggle-slider.normal::before { transform: translateX(0.875rem); }
 .toggle-slider.maintenance { background: var(--maint); }
-.htmx-request .toggle-slider { opacity: 0.45; }
+/* In-flight dimming is scoped to the control that issued the request: htmx
+   also puts htmx-request on a polling container (#dashboard-table every 2 s,
+   #pdb-status every 5 s with a round trip to the controller), and an unscoped
+   `.htmx-request .x` dimmed every control on the page for each poll. */
+label.toggle-switch.htmx-request .toggle-slider { opacity: 0.45; }
 
 /* ---- bffs element grid ----------------------------------------------
    One cell per element, kotekan's order down each column.  Good cells
@@ -425,14 +430,27 @@ main h3 { font-size: 1.15rem; margin: 1.75rem 0 0.6rem; padding-bottom: 0.3rem; 
 .note { color: var(--pico-muted-color); font-size: 0.9em; }
 p.note { margin-bottom: 0.75em; }
 .btn-sm { width: auto; margin: 0; padding: 0.15em 0.55em; font-size: 0.8em; line-height: 1.5; white-space: nowrap; }
-.btn-inline { width: auto; margin: 0; padding: 0.25rem 0.75rem; }
+.btn-inline { width: auto; margin: 0; }
 .table-sm { margin: 0; font-size: 0.85em; }
 .scroll-x { margin: 0 0 1.5em 0; overflow-x: auto; }
 .scroll-x figcaption { margin-top: 0.4em; font-size: 0.8em; color: var(--pico-muted-color); }
-/* A labelled row of controls (the node page's config and one-off forms). */
+/* A row of mixed controls: a select beside its button, a filter beside
+   its Show, the standalone pages' header.  Pico sizes a button by its
+   padding and a select by a fixed height formula, so side by side they
+   never line up; here both take one compact spacing and no fixed height,
+   so every control in the row is padding + line-height tall. */
+.action-row, .pg-header {
+    --pico-form-element-spacing-vertical: 0.3rem;
+    --pico-form-element-spacing-horizontal: 0.7rem;
+}
+:is(.action-row, .pg-header) :is(select, input:not([type="checkbox"], [type="radio"]), button, [role="button"]) {
+    height: auto; width: auto; margin: 0; font-size: 0.95em; line-height: 1.5;
+}
+.pg-header :is(select, input:not([type="checkbox"], [type="radio"]), button, [role="button"]) { font-size: 0.85em; }
 .action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em; margin: 0 0 0.5em; }
 .action-row .action-label { min-width: 7em; margin: 0; white-space: nowrap; }
-.action-row select, .action-row input[type="text"] { flex: 1 1 14em; margin: 0; }
+.action-row select, .action-row input[type="text"] { flex: 1 1 14em; }
+.action-row label { display: inline-flex; align-items: center; gap: 0.4em; margin: 0; }
 /* Static notices: content that stays, unlike a flash.  A left rule in the
    tone, the soft tint behind. */
 .notice {
@@ -491,17 +509,5 @@ button.build-toggle {
     flex-wrap: wrap;
     gap: 0.6em;
     margin-bottom: 0.5em;
-}
-.pg-header a[role="button"], .pg-header button {
-    width: auto;
-    margin: 0;
-    padding: 0.1em 0.7em;
-    font-size: 0.85em;
-}
-.pg-header select {
-    width: auto;
-    margin: 0;
-    padding: 0.1em 1.8em 0.1em 0.5em;
-    font-size: 0.85em;
 }
 .pg-spacer { flex: 1; }

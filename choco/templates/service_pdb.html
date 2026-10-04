@@ -8,23 +8,23 @@
    two chip columns, channels down (web._pdb_layout gives each row its
    reading order).  Compact cells so sixteen boards fit the page. */
 table.pdb-grid { margin: 0; font-size: 0.8em; }
-table.pdb-grid th, table.pdb-grid td { padding: 0.2em 0.25em; border: 0; text-align: center; }
+table.pdb-grid th, table.pdb-grid td { padding: 0.12em 0.12em; border: 0; text-align: center; }
 table.pdb-grid th.boardhead { padding-left: 0.6em; border-bottom: 2px solid var(--surface-border);
                               font-family: var(--pico-font-family-monospace); font-weight: 600; white-space: nowrap; }
 table.pdb-grid th.chiphead { font-family: var(--pico-font-family-monospace); font-weight: 500; color: var(--pico-muted-color); }
 table.pdb-grid th.chanhead { font-family: var(--pico-font-family-monospace); font-weight: 500; color: var(--pico-muted-color);
                              text-align: right; white-space: nowrap; }
 /* a board's two chips sit together: a wider gap before each board's first chip */
-table.pdb-grid tr:not(.pdb-boards) > :nth-child(even) { padding-left: 0.6em; }
+table.pdb-grid tr:not(.pdb-boards) > :nth-child(even) { padding-left: 0.5em; }
 table.pdb-grid .absent { color: var(--pico-muted-color); opacity: 0.5; }
 table.pdb-grid tr.pdb-gap td { padding: 0.7em 0; }
 table.pdb-grid form { margin: 0; display: inline; }
-table.pdb-grid .bulk-group { flex-direction: column; align-items: stretch; gap: 0.2em; }
-table.pdb-grid .bulk { padding: 0 0.3em; font-size: 0.85em; }
+table.pdb-grid .bulk-group { flex-direction: column; align-items: stretch; gap: 0.15em; margin-top: 0.3em; }
+table.pdb-grid .bulk { padding: 0.15em 0.4em; font-size: 0.85em; }
 .chan {
     display: inline-block;
     min-width: 3.6em;
-    padding: 0.15em 0.3em;
+    padding: 0.3em 0.5em;
     border-radius: 4px;
     border: none;
     font-family: monospace;
@@ -43,7 +43,7 @@ button.chan { cursor: pointer; }
 .bulk {
     width: auto;
     margin: 0;
-    padding: 0.1em 0.5em;
+    padding: 0.2em 0.6em;
     border: 1px solid currentColor;
     border-radius: 4px;
     background: none;
@@ -61,7 +61,7 @@ button.chan { cursor: pointer; }
 /* The dish grid: rows A..H of eight dishes, X and Y per dish, the RFI
    antennas a row of their own (pdbmap.dish_layout). */
 table.dish-grid { margin: 0; font-size: 0.8em; }
-table.dish-grid th, table.dish-grid td { padding: 0.3em 0.3em; border: 0; text-align: center; vertical-align: top; }
+table.dish-grid th, table.dish-grid td { padding: 0.2em 0.15em; border: 0; text-align: center; vertical-align: top; }
 table.dish-grid th.colhead, table.dish-grid th.rowhead { font-family: var(--pico-font-family-monospace); font-weight: 600; color: var(--pico-muted-color); }
 table.dish-grid th.rowhead { text-align: right; vertical-align: middle; }
 table.dish-grid tr.sep > * { border-top: 2px solid var(--surface-border); padding-top: 0.6em; }
@@ -72,7 +72,7 @@ table.dish-grid form { margin: 0; display: inline; }
 .dish { display: inline-flex; flex-direction: column; align-items: center; gap: 0.15em; }
 .dish-name { font-family: var(--pico-font-family-monospace); font-size: 0.9em; color: var(--pico-muted-color); }
 .dish .pols { display: inline-flex; gap: 0.15em; }
-.dish .chan { min-width: 2.6em; }
+.dish .chan { min-width: 2.8em; }
 .chan.absent { background: transparent; color: var(--pico-muted-color); opacity: 0.5; border: 1px dashed var(--surface-border); }
 .map-section table { font-size: 0.85em; }
 .map-note { font-size: 0.9em; margin: 0.25em 0; }

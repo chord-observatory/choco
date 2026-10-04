@@ -296,8 +296,8 @@ class TestVendoredFonts:
 
 class TestPageChrome:
     """The review round of 2026-10: one title format, the dashboard's
-    maintenance notice and desired-vs-actual note, one config line per
-    uniform group, and the wall-display mode."""
+    desired-vs-actual note, one config line per uniform group, and the
+    wall-display mode."""
 
     def test_titles_name_the_page_then_the_site(self, client, app):
         _login(client)
@@ -309,23 +309,6 @@ class TestPageChrome:
             assert f"<title>{title}</title>" in body, url
         # a logged-in client is bounced off /login; a fresh one sees the form
         assert "<title>Sign in — CHOCO</title>" in app.test_client().get("/login").data.decode()
-
-    def test_maintenance_notice_with_a_way_out(self, client, app):
-        _login(client)
-        registry = app.config["registry"]
-        # every registry build puts the whole cluster in maintenance
-        body = client.get("/partials/dashboard-table").data.decode()
-        assert "3 of 3 nodes in maintenance" in body
-        assert "after a choco restart" in body
-        assert 'hx-post="/nodes/set-maintenance-all/off"' in body and "Lift maintenance on all" in body
-        for node in registry.nodes.values():
-            node.maintenance = False
-        list(registry.nodes.values())[0].maintenance = True
-        body = client.get("/partials/dashboard-table").data.decode()
-        assert "1 of 3 nodes in maintenance" in body and "after a choco restart" not in body
-        for node in registry.nodes.values():
-            node.maintenance = False
-        assert "in maintenance</strong>" not in client.get("/partials/dashboard-table").data.decode()
 
     def test_wants_note_when_desired_differs_from_actual(self, client, app):
         from choco.state import NodeStatus

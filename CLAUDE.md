@@ -181,7 +181,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
   `static/fonts/*` in pyproject's package-data); no page loads anything from
   an outside host.  600 is the site's bold, never 700.  The base size is
-  pinned to the browser default at every width: Pico's fluid scale stays off, the grids
+  pinned to 125% of the browser default (20 px) at every width: Pico's fluid scale stays off, the grids
   are sized to it.  Titles are "Page — CHOCO"; deep pages carry a crumb.
 
 **Process hygiene**

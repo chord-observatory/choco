@@ -280,15 +280,21 @@ and the server never knows it.
 the viewport — 16 px on a phone, 20 px at 1280 and 21 px on a wide monitor
 — which suits a marketing page and made the control panel enormous: a
 dashboard heading was about 36 px.  ``choco.css`` pins ``--pico-font-size``
-to 100% at every width — the browser's default, 16 px unless the operator
-has set otherwise, so font preference, zoom and display scaling still apply
-(15 px was tried and read a shade small; a fixed px size was never used) —
-h2 to 1.4 rem, h3 to 1.15 rem, table cells to
+to 125% at every width — 20 px unless the operator has set a different
+browser default, so font preference, zoom and display scaling still apply;
+this is what Pico gave at 1280 px, and 15, 16 and 18 px were each tried
+and read small on the operators' monitors (a fixed px size was never
+used) — h2 to 1.4 rem, h3 to 1.15 rem, table cells to
 0.4 × 0.6 rem (Pico's 0.5 × 1 rem), code in table cells, fact lists and
 the group bar to plain monospace (Pico's tint made the configs table a
 wall of chips), and the switches to 2 × 1.125 rem.  Pico's buttons are full-width blocks;
 ``choco.css`` makes every button as wide as its label, since a Save or a
-Log in stretched across the page read as a banner.  Do not re-enable the
+Log in stretched across the page read as a banner.  A row that mixes a
+select or input with a button (``.action-row``, the standalone pages'
+``.pg-header``) sets Pico's form-element spacing variables once and drops
+Pico's fixed select height, so every control in the row is padding plus
+line-height tall and they line up; Pico alone sizes a button by its padding
+and a select by a height formula, and they never matched.  Do not re-enable the
 fluid scale: the sixteen-board PDB grid and a forty-row dashboard are
 sized to this.
 
@@ -303,12 +309,11 @@ BFFS, Files / acq / A01X × B02Y.  ``<title>`` is "Page — CHOCO" everywhere
 mode the night sky map hinted at: ``body.wall`` hides the nav and the
 notes, widens the container and enlarges the table and its tags.
 
-**The dashboard says what is wrong.**  Every choco restart puts the whole
-cluster in maintenance, which silently blocks every push, so the table now
-opens with a ``.notice-warn`` whenever any node is in maintenance — the
-count, why it matters, "every node starts this way after a choco restart"
-when it is all of them, and a "Lift maintenance on all" button — rendered
-inside the polled table so it tracks the switches.  The Start switch says
+**The dashboard says what is wrong.**  A banner announcing cluster-wide
+maintenance with a "Lift maintenance on all" button was added in the
+review round and removed the same day as unnecessary: the maintenance
+switches and the group ▲ buttons already show and fix it, and the strip's
+NODES tooltip carries the count.  The Start switch says
 what the operator asked for and the tag what is true; when they differ a
 muted "wants started" / "wants idle" (``node_wants`` in
 ``_service_macros.html``) sits beside the tag on the dashboard and the node
@@ -352,13 +357,20 @@ and the coloured left rule carries the tone.
 tone of what they enable when on (``--ok``, ``--info``) and are neutral
 when off, except maintenance, the one off-state that silently stops pushes,
 which stays ``--maint``; an in-flight htmx request dims the switch rather
-than greying it, so idle and "request pending" look different.  The
+than greying it, so idle and "request pending" look different — scoped to
+the control that issued the request (``label.toggle-switch.htmx-request``,
+``form.htmx-request``, ``button.group-btn.htmx-request``), because htmx
+also marks a polling container in flight and an unscoped rule dimmed every
+control on the PDB page for the length of each 5 s poll.  The
 group-wide ▲▼ buttons (``.group-ctl``) are a muted caption ("maint",
 "start") plus a pair of outlined glyph buttons whose *text* takes the tone
 of the switch state it sets — amber ▼ into maintenance and blue ▲ out,
-green ▲ started and grey ▼ idle — so the association with the switch
-columns below is learnable; two uncaptioned neutral pairs were
-indistinguishable.  They are styled with ``all: unset`` rather than Pico's
+green ▲ started and grey ▼ idle — on the tone's soft tint, so the
+association with the switch columns below is learnable; two uncaptioned
+neutral pairs were indistinguishable, and text colour alone read as
+plain outlines.  The soft tints themselves were deepened one notch across
+the family in the same round (the green read too pale), every pairing
+still at AA.  They are styled with ``all: unset`` rather than Pico's
 button classes because Pico's hover rules outrank any tone colour.  The
 PDB page's bulk buttons follow the same text-colour rule.  The bffs element grid paints good cells in the ``ok`` tint and
 bad cells in solid ``--bad`` so the flagged feeds are the figure and the
