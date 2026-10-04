@@ -1,31 +1,22 @@
 {% extends "base.html" %}
-{% from "_service_macros.html" import monitor_color, monitor_label, pill_style %}
+{% from "_service_macros.html" import monitor_tone, monitor_label, tag %}
 
 {% block title %}FPGA — CHOCO{% endblock %}
 
 {% block styles %}
-dl.service-facts {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.15em 1.25em;
-    margin: 0.5em 0 1.5em 0;
-    font-size: 0.95em;
-}
-dl.service-facts dt { font-weight: 600; }
-dl.service-facts dd { margin: 0; }
 .fpga-controls form { margin: 0; }
 .fpga-controls button { width: auto; margin: 0; }
 {% endblock %}
 
 {% block content %}
-<hgroup style="margin-bottom: 0.75em;">
-    <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
-        FPGA
-        <span style="{{ pill_style() }} background: {{ monitor_color(fpga.health) }}; font-size: 0.55em;">{{ monitor_label(fpga.health) }}</span>
+<div class="page-head">
+    <h2>
+        <a href="/" class="crumb">Services</a><span class="crumb-sep">/</span>FPGA
+        {{ tag(monitor_tone(fpga.health), monitor_label(fpga.health)) }}
     </h2>
-    <p>The fpga_master daemon — runs the F-engine (ICEBoards) and stamps frame0, the timing origin
-    kotekan and the EOP table are anchored to.</p>
-</hgroup>
+</div>
+<p class="note">The fpga_master daemon — runs the F-engine (ICEBoards) and stamps frame0, the timing origin
+kotekan and the EOP table are anchored to.</p>
 
 <div id="fpga-status"
      hx-get="/partials/service-fpga"
@@ -40,15 +31,15 @@ dl.service-facts dd { margin: 0; }
 <script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
 <div id="fpga-gains" hx-get="/partials/fpga-gains" hx-trigger="load"
      hx-swap="innerHTML">
-    <p style="font-size: 0.9em; opacity: 0.7;"><em>Loading digital gains…</em></p>
+    <p class="note"><em>Loading digital gains…</em></p>
 </div>
 
 {% if control and fpga.configured %}
 <section>
-    <h4 style="margin-bottom: 0.25em;">Controls</h4>
-    <p style="font-size: 0.9em;">&#9888; A restart assigns a <strong>new frame0</strong> — kotekan's
+    <h3>Controls</h3>
+    <div class="notice notice-warn">&#9888; A restart assigns a <strong>new frame0</strong> — kotekan's
     timing and the EOP table are anchored to it, so downstream consumers must resynchronize
-    after the F-engine comes back up.</p>
+    after the F-engine comes back up.</div>
     <div class="fpga-controls" style="display: flex; gap: 1em;">
         <form method="post" action="/service/fpga/start"
               onsubmit="return confirm('Start the FPGA master?\n\nIt initializes in the background with the config it was launched with; the state above follows the progress.')">
@@ -58,7 +49,7 @@ dl.service-facts dd { margin: 0; }
         <form method="post" action="/service/fpga/stop"
               onsubmit="return confirm('Stop the FPGA master?\n\nThe F-engine shuts down (this can take a while), and the next start assigns a new frame0.')">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="secondary">Stop</button>
+            <button type="submit" class="secondary outline">Stop</button>
         </form>
     </div>
 </section>

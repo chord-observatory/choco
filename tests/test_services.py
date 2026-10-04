@@ -460,6 +460,92 @@ class TestPdbSetChannel:
         assert "not configured" in message
 
 
+class TestPdbSetChannels:
+    """Arbitrary channel sets (a dish row in one pol) folded into one
+    OUT-byte read-modify-write per chip, set_group's rules throughout.
+
+    Two boards = 4 chips = 8 raw bytes; chip k's OUT byte is raw[2N-1-2k],
+    so [128, x3, 128, x2, 128, x1, 128, x0] holds chips 0..3 in x0..x3.
+    """
+
+    @staticmethod
+    def _payloads(write):
+        import json as _json
+        return [_json.loads(c.request.body) for c in write.calls]
+
+    @responses.activate
+    def test_masks_fold_per_chip_and_keep_other_bits(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00, 128, 0x00, 128, 0x01]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x80, 128, 0x00, 128, 0x00, 128, 0x07]))
+        ok, message = pdb.set_channels(
+            [(0, 0, "A", 1), (0, 0, "A", 2), (0, 1, "B", 7)], True, "row A pol X")
+        assert ok is True, message
+        # chip 0 keeps its bit 0 and gains 1 and 2; chip 3 gains bit 7;
+        # chips 1 and 2 are not touched
+        assert self._payloads(write) == [
+            {"spi_bus": 0, "board_idx": 0, "chip_letter": "A",
+             "operation": "OUT", "states": "00000111"},
+            {"spi_bus": 0, "board_idx": 1, "chip_letter": "B",
+             "operation": "OUT", "states": "10000000"}]
+        assert message == "row A pol X: 3 channels on"
+        assert pdb.n_on == 4
+
+    @responses.activate
+    def test_already_right_writes_nothing(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00, 128, 0x00, 128, 0x03]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        ok, message = pdb.set_channels([(0, 0, "A", 0), (0, 0, "A", 1)], True, "row A pol X")
+        assert ok is True
+        assert write.call_count == 0
+        assert "already on" in message
+
+    @responses.activate
+    def test_off_clears_only_the_masked_bits(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00, 128, 0x00, 128, 0xFF]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00, 128, 0x00, 128, 0xFE]))
+        ok, message = pdb.set_channels([(0, 0, "A", 0)], False, "row A pol Y")
+        assert ok is True, message
+        assert self._payloads(write)[0]["states"] == "11111110"
+        assert message == "row A pol Y: 1 channels off"
+
+    @responses.activate
+    def test_verify_mismatch_is_reported(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00, 128, 0x00, 128, 0x00]))
+        responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00, 128, 0x00, 128, 0x00]))
+        ok, message = pdb.set_channels([(0, 0, "A", 0)], True, "row A pol X")
+        assert ok is False
+        assert "did not take" in message and "board 0 chip A" in message
+
+    @responses.activate
+    def test_missing_chip_is_reported_before_any_write(self, pdb):
+        responses.get(f"{PDB_BASE}/channel_states",
+                      json=_states([128, 0x00, 128, 0x00]))
+        write = responses.post(f"{PDB_BASE}/write_command", json={"message": "ok"})
+        ok, message = pdb.set_channels([(0, 0, "A", 0), (0, 5, "A", 0)], True, "row A pol X")
+        assert ok is False
+        assert "not present on the controller" in message and "board 5 chip A" in message
+        assert write.call_count == 0
+
+    def test_bad_address_and_empty_set_rejected(self, pdb):
+        assert pdb.set_channels([(0, 0, "C", 0)], True, "x")[0] is False
+        assert pdb.set_channels([(0, 0, "A", 8)], True, "x")[0] is False
+        assert pdb.set_channels([], True, "x")[0] is False
+
+    def test_unconfigured(self):
+        ok, message = PdbMonitor(host=None, port=None).set_channels([(0, 0, "A", 0)], True, "x")
+        assert ok is False and "not configured" in message
+
+
 class TestPdbSetGroup:
     """Bulk power: whole chips written as all-ones / all-zeros OUT bytes.
 

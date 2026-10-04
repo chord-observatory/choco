@@ -557,7 +557,7 @@
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.fillStyle = THEME.bg;
         ctx.fillRect(0, 0, W, H);
-        ctx.font = "11px monospace";
+        ctx.font = "11px 'IBM Plex Mono', monospace";
         return {
             ctx: ctx, dpr: dpr, W: W, H: H,
             rect: { l: PAD.l, t: PAD.t,
@@ -1332,14 +1332,14 @@
         // ::after chevron still floats right, which reads as a dropdown.
         var sum = el("summary", {
             style: "cursor: pointer; list-style: none; padding: 0.1em 0.5em; " +
-                   "border: 1px solid rgba(128,128,128,0.4); border-radius: 4px; " +
+                   "border: 1px solid var(--surface-border); border-radius: 4px; " +
                    "white-space: nowrap; text-align: left;",
         }, name + ": —");
         var body = el("div", {
             style: "position: absolute; z-index: 60; top: 1.9em; left: 0; " +
                    "min-width: 11em; max-height: 14em; overflow: auto; " +
-                   "padding: 0.4em 0.6em; border-radius: 6px; " +
-                   "border: 1px solid rgba(128,128,128,0.4); " +
+                   "padding: 0.4em 0.6em; border-radius: 4px; " +
+                   "border: 1px solid var(--surface-border); " +
                    "background: var(--pico-card-background-color, " +
                    "var(--card-background-color, #fff));",
         });
@@ -1721,11 +1721,11 @@
         var v = view.values.length ? view.values[0] : NaN;
         var ctx = f.ctx;
         ctx.fillStyle = THEME.ink;
-        ctx.font = "28px monospace";
+        ctx.font = "28px 'IBM Plex Mono', monospace";
         ctx.textAlign = "center";
         ctx.fillText(fmtVal(v), f.W / 2, f.H / 2 + 10);
         ctx.textAlign = "left";
-        ctx.font = "11px monospace";
+        ctx.font = "11px 'IBM Plex Mono', monospace";
         setMapping(f, null, false, null);
         return "every dimension folded — one value";
     }

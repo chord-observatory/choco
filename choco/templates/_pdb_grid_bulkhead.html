@@ -1,0 +1,78 @@
+{# The bulkhead grid: the channels as they come through the bulkhead into
+   the computing chamber.  Per bus, the frame as mounted (web._pdb_layout):
+   a row of board slots per physical row, two chip columns per board,
+   channels down in that row's reading order.  A slot whose board did not
+   report is drawn empty so the columns stay where the hardware is. #}
+{% from "_pdb_macros.html" import chan, bulk with context %}
+{% from "_service_macros.html" import since %}
+{% for bus in buses %}
+<div class="section-head">
+    <h3>SPI bus {{ bus.bus }} — {{ bus.n_boards }} boards</h3>
+    <small>{{ bus.n_on }} / {{ bus.n_channels }} channels on</small>
+    {% if control %}
+    <span class="bulk-group">
+        {{ bulk(bus.bus, none, none, true, 'bus all on', bus.n_channels) }}
+        {{ bulk(bus.bus, none, none, false, 'bus all off', bus.n_channels) }}
+    </span>
+    {% endif %}
+</div>
+<figure class="scroll-x">
+<table class="pdb-grid">
+    {% for frame in bus.layout %}
+    {% set ncols = 1 + 2 * (frame.boards | length) %}
+    <tbody class="pdb-frame">
+        {% if not loop.first %}<tr class="pdb-gap"><td colspan="{{ ncols }}"></td></tr>{% endif %}
+        <tr class="pdb-boards">
+            <th></th>
+            {% for b in frame.boards %}
+            {% set have = bus.by_board.get(b) %}
+            <th colspan="2" class="boardhead{% if not have %} absent{% endif %}"
+                title="board {{ b }}{% if not have %}: not reported by the controller{% endif %}">board {{ b }}</th>
+            {% endfor %}
+        </tr>
+        <tr class="pdb-chips">
+            <th></th>
+            {% for b in frame.boards %}{% for letter in frame.chips %}
+            <th class="chiphead{% if not (bus.by_board.get(b) or {}).get(letter) %} absent{% endif %}">{{ letter }}</th>
+            {% endfor %}{% endfor %}
+        </tr>
+        {% for ci in frame.channels %}
+        <tr>
+            <th class="chanhead">ch{{ ci }}</th>
+            {% for b in frame.boards %}{% for letter in frame.chips %}
+            {% set chip = (bus.by_board.get(b) or {}).get(letter) %}
+            {% if chip %}
+            {% set on = chip.channels[ci] %}
+            {% set label = pdb_map.label(bus.bus, b, letter, ci) %}
+            {% set addr = 'bus %s board %s chip %s ch%s' % (bus.bus, b, letter, ci) %}
+            {# The dish input is the useful name; the leading glyph keeps
+               on/off readable without relying on the colour alone. #}
+            <td>{{ chan(bus.bus, b, letter, ci, on, label,
+                        (('● ' if on else '○ ') ~ label) if label else ('on' if on else 'off'),
+                        addr ~ '\n' ~ (label or 'not in the channel map') ~ '\ncurrently ' ~ ('on' if on else 'off'),
+                        control) }}</td>
+            {% else %}
+            <td class="absent"></td>
+            {% endif %}
+            {% endfor %}{% endfor %}
+        </tr>
+        {% endfor %}
+        {% if control %}
+        <tr class="pdb-bulk">
+            <th></th>
+            {% for b in frame.boards %}{% for letter in frame.chips %}
+            {% set chip = (bus.by_board.get(b) or {}).get(letter) %}
+            <td>{% if chip %}<span class="bulk-group">
+                {{ bulk(bus.bus, b, letter, true, 'all on', chip.channels | length) }}
+                {{ bulk(bus.bus, b, letter, false, 'all off', chip.channels | length) }}
+            </span>{% endif %}</td>
+            {% endfor %}{% endfor %}
+        </tr>
+        {% endif %}
+    </tbody>
+    {% endfor %}
+</table>
+</figure>
+{% else %}
+<p><em>No channel states read yet{% if pdb.configured %} — waiting for the first poll{% endif %}.</em></p>
+{% endfor %}

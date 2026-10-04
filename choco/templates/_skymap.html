@@ -3,18 +3,23 @@
    ?v= mtime makes a swap fetch the new render exactly when one landed. #}
 {% from "_service_macros.html" import since %}
 {% if mtime %}
-<p class="svc-note" style="margin: 0 0 0.2em; text-align: center;">
+<p class="note" style="margin: 0 0 0.2em;">
     Current sky over DRAO — beam, Sun and Moon positions as of the render,
     {{ since(mtime, now_ts) }}.
 </p>
+{# The night render is the dark-theme image: base.html's theme script
+   swaps src from data-night-src whenever the theme is dark, on load, on
+   toggle and after this partial is re-swapped. #}
 <img src="/skymap.png?v={{ mtime }}" alt="Current-sky strip plot"
-     style="width: 100%; border-radius: 6px;">
+     data-day-src="/skymap.png?v={{ mtime }}"
+     {% if night_mtime %}data-night-src="/skymap-night.png?v={{ night_mtime }}"{% endif %}
+     style="width: 100%; border-radius: 4px;">
 {% if night_mtime %}
-<p class="svc-note" style="margin: 0.3em 0 0; text-align: center;">
+<p class="note" style="margin: 0.3em 0 0;">
     Also rendered in a dark palette for wall displays:
     <a href="/skymap-night.png?v={{ night_mtime }}">night-mode version</a>.
 </p>
 {% endif %}
 {% else %}
-<p class="svc-note">No sky map rendered yet — choco-skymap runs every 5 minutes.</p>
+<p class="note">No sky map rendered yet — choco-skymap runs every 5 minutes.</p>
 {% endif %}

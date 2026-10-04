@@ -6,7 +6,7 @@
             margin-bottom: 0.3em; }
 .wfv-head h2 { margin: 0; font-size: 1.2em; }
 .wfv-head code { font-size: 0.9em; }
-.wfv-note { color: #666; font-size: 0.85em; margin: 0 0 0.8em; }
+.wfv-note { margin: 0 0 0.8em; }
 
 .wfv { --railw: 5.4em; --cbarw: 6.6em; }
 
@@ -59,12 +59,11 @@
 {% endblock %}
 
 {% block content %}
-<div class="wfv-head">
-    <h2>{{ label_a }} × {{ label_b }}</h2>
-    <code>{{ acq }}</code>
+<div class="wfv-head page-head">
+    <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>{{ label_a }} × {{ label_b }}</h2>
 </div>
 
-<p class="wfv-note">
+<p class="note wfv-note">
     elements {{ a }}, {{ b }} ·
     {{ rows }} scanline{{ '' if rows == 1 else 's' }} ×
     {{ n_freq }} channel{{ '' if n_freq == 1 else 's' }} ·

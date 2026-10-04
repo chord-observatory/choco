@@ -1,0 +1,74 @@
+{# Pieces shared by the PDB page's two grids (bulkhead and dish).  Import
+   `with context`: the forms need csrf_token(), a context processor. #}
+
+{# One channel: a toggle button when control is on, else a plain span.
+   `text` is what the cell says, `state_title` the tooltip body; an
+   unmapped channel (no label) keeps the italic "unmapped" styling. #}
+{% macro chan(bus, board, chip, ci, on, label, text, state_title, control) -%}
+{%- set unmapped = '' if label else ' unmapped' -%}
+{% if control %}
+<form id="pdb-c-{{ bus }}-{{ board }}-{{ chip }}-{{ ci }}"
+      method="post" action="/service/pdb/set"
+      hx-post="/service/pdb/set"
+      hx-target="#pdb-status" hx-swap="morph:innerHTML"
+      data-confirm="Power {{ 'OFF' if on else 'ON' }}: bus {{ bus }} board {{ board }} chip {{ chip }} ch{{ ci }}{% if label %} ({{ label }}){% endif %}?">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="bus" value="{{ bus }}">
+    <input type="hidden" name="board" value="{{ board }}">
+    <input type="hidden" name="chip" value="{{ chip }}">
+    <input type="hidden" name="channel" value="{{ ci }}">
+    <input type="hidden" name="state" value="{{ 'off' if on else 'on' }}">
+    <button type="submit" class="chan {{ 'on' if on else 'off' }}{{ unmapped }}"
+            aria-label="{{ state_title }} — click to turn {{ 'off' if on else 'on' }}"
+            title="{{ state_title }} — click to turn {{ 'off' if on else 'on' }}">{{ text }}</button>
+</form>
+{% else %}
+<span class="chan {{ 'on' if on else 'off' }}{{ unmapped }}" title="{{ state_title }}">{{ text }}</span>
+{% endif %}
+{%- endmacro %}
+
+{# One bulk power write by hardware scope: a whole bus (board and chip
+   both none) or one chip (both given).  The route also takes a board
+   alone; the page does not offer it.  Every bulk write carries
+   data-confirm-always, so the page's confirm gate asks each time rather
+   than honouring the per-session acknowledgement a single toggle sets. #}
+{% macro bulk(bus, board, chip, on, text, count) %}
+{%- set scope = 'bus ' ~ bus
+    ~ (', board ' ~ board if board is not none else '')
+    ~ (', chip ' ~ chip if chip else '') -%}
+{%- set confirm = 'Power ' ~ ('ON' if on else 'OFF') ~ ' all ' ~ count
+    ~ ' channels of ' ~ scope ~ '?'
+    ~ ('\n\nThat is every amplifier on the bus — expect a large inrush on power-up.'
+       if board is none else '') -%}
+<form method="post" action="/service/pdb/set-group"
+      hx-post="/service/pdb/set-group"
+      hx-target="#pdb-status" hx-swap="morph:innerHTML"
+      data-confirm-always="{{ confirm }}">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="bus" value="{{ bus }}">
+    {% if board is not none %}<input type="hidden" name="board" value="{{ board }}">{% endif %}
+    {% if chip %}<input type="hidden" name="chip" value="{{ chip }}">{% endif %}
+    <input type="hidden" name="state" value="{{ 'on' if on else 'off' }}">
+    <button type="submit" class="bulk {{ 'on' if on else 'off' }}"
+            title="Power {{ 'on' if on else 'off' }} all {{ count }} channels of {{ scope }}">{{ text }}</button>
+</form>
+{% endmacro %}
+
+{# One bulk power write by field scope: one polarization of a whole row
+   of dishes.  The route turns row and pol into channel addresses only
+   through the channel map. #}
+{% macro rowbulk(row, pol, on, count) %}
+{%- set confirm = 'Power ' ~ ('ON' if on else 'OFF') ~ ' all ' ~ count ~ ' '
+    ~ pol ~ ' channels of row ' ~ row ~ '?' -%}
+<form method="post" action="/service/pdb/set-row"
+      hx-post="/service/pdb/set-row"
+      hx-target="#pdb-status" hx-swap="morph:innerHTML"
+      data-confirm-always="{{ confirm }}">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="row" value="{{ row }}">
+    <input type="hidden" name="pol" value="{{ pol }}">
+    <input type="hidden" name="state" value="{{ 'on' if on else 'off' }}">
+    <button type="submit" class="bulk {{ 'on' if on else 'off' }}"
+            title="Power {{ 'on' if on else 'off' }} every {{ pol }} channel of row {{ row }} ({{ count }} channels)">{{ pol }} {{ 'on' if on else 'off' }}</button>
+</form>
+{% endmacro %}

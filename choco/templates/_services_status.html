@@ -1,6 +1,9 @@
-{% from "_service_macros.html" import monitor_color, monitor_label, job_color, job_label, since, pill_style %}
+{% from "_service_macros.html" import monitor_tone, monitor_label, job_tone, job_label, since, tag %}
 {% set now = now_ts %}
-{% macro job_pill(label, name, job, mtime_label) -%}
+{# Every badge is quiet while ok: label and dot only, the state in the
+   tooltip and aria-label.  The word and the tint appear only when the
+   state is not ok, so the eye lands on what needs attention. #}
+{% macro job_tag(label, name, job, mtime_label) -%}
 {% set tip = label ~ ' job (' ~ job.unit ~ ')'
              ~ '\nhealth: ' ~ job.health
              ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
@@ -9,9 +12,8 @@
              ~ ('\na run is in progress; showing the last completed one' if job.running else '')
              ~ ('' if job.systemd else '\nsystemd not reachable')
              ~ '\n\nclick for details' %}
-<a href="/service/{{ name }}" title="{{ tip }}" style="{{ pill_style() }} background: {{ job_color(job.health) }};">
-    <strong>{{ label }}</strong> <span>{{ job_label(job.health, job.running) }}</span>
-</a>
+{{ tag(job_tone(job.health, job.running), job_label(job.health, job.running),
+       label=label, href='/service/' ~ name, title=tip, quiet=true) }}
 {%- endmacro %}
 {% if nodes %}
 {% set tip = 'kotekan nodes (' ~ nodes.total ~ ')'
@@ -20,9 +22,7 @@
              ~ ('\nunknown: ' ~ nodes.unknown if nodes.unknown else '')
              ~ '\nin maintenance: ' ~ nodes.maintenance
              ~ '\n\nclick for the dashboard' %}
-<a href="/nodes" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(nodes.health) }};">
-    <strong>NODES</strong> <span>{{ nodes.label }}</span>
-</a>
+{{ tag(monitor_tone(nodes.health), nodes.label, label='NODES', href='/nodes', title=tip, quiet=true) }}
 {% endif %}
 {% if fpga %}
 {% set tip = 'fpga_master at ' ~ (fpga.host or '?') ~ ':' ~ (fpga.port or '?')
@@ -31,9 +31,7 @@
              ~ ('\nlast seen: ' ~ since(fpga.last_seen, now) if fpga.last_seen else '')
              ~ ('\nerror: ' ~ fpga.error if fpga.error else '')
              ~ '\n\nclick for details' %}
-<a href="/service/fpga" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(fpga.health) }};">
-    <strong>FPGA</strong> <span>{{ monitor_label(fpga.health) }}</span>
-</a>
+{{ tag(monitor_tone(fpga.health), monitor_label(fpga.health), label='FPGA', href='/service/fpga', title=tip, quiet=true) }}
 {% endif %}
 {% if pdb %}
 {% set tip = 'power_db at ' ~ (pdb.host or '?') ~ ':' ~ (pdb.port or '?')
@@ -42,9 +40,7 @@
              ~ ('\nlast seen: ' ~ since(pdb.last_seen, now) if pdb.last_seen else '')
              ~ ('\nerror: ' ~ pdb.error if pdb.error else '')
              ~ '\n\nclick for details' %}
-<a href="/service/pdb" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(pdb.health) }};">
-    <strong>PDB</strong> <span>{{ monitor_label(pdb.health) }}</span>
-</a>
+{{ tag(monitor_tone(pdb.health), monitor_label(pdb.health), label='PDB', href='/service/pdb', title=tip, quiet=true) }}
 {% endif %}
 {% if data %}
 {% set tip = 'Data-file roots (' ~ data.n_roots ~ ')'
@@ -53,10 +49,8 @@
              ~ ('\nlast seen: ' ~ since(data.last_seen, now) if data.last_seen else '')
              ~ ('\nerror: ' ~ data.error if data.error else '')
              ~ '\n\nclick for details' %}
-<a href="/files" title="{{ tip }}" style="{{ pill_style() }} background: {{ monitor_color(data.health) }};">
-    <strong>DATA</strong> <span>{{ monitor_label(data.health) }}</span>
-</a>
+{{ tag(monitor_tone(data.health), monitor_label(data.health), label='DATA', href='/files', title=tip, quiet=true) }}
 {% endif %}
 {% for name, s in svc.items() if s.kind == 'job' %}
-{{ job_pill(s.label, name, services[name], s.mtime_label) }}
+{{ job_tag(s.label, name, services[name], s.mtime_label) }}
 {% endfor %}

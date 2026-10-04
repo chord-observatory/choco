@@ -1,0 +1,507 @@
+/* choco.css -- the shared stylesheet: palette tokens and the components
+   every page uses (status tags, the brand mark, switches, grids, flashes).
+   Loaded by base.html and by the standalone pipeline/plot pages, so all
+   three agree.  Neutrals come from Pico's own variables and follow its
+   light/dark themes; the status hues are choco's and are defined for both
+   themes here.  Templates never carry a hex literal for a state: they name
+   a tone (ok, bad, warn, info, maint, off) and the tag() macro in
+   _service_macros.html turns it into a class painted below.  Every pairing
+   meets WCAG AA at the sizes used. */
+
+/* ---- type ------------------------------------------------------------
+   IBM Plex Sans for the UI and Plex Mono for labels and code, vendored
+   (static/fonts, SIL OFL) so the site never reaches an outside font host
+   and looks the same on every operator's machine: system-ui is Segoe,
+   SF, Ubuntu or DejaVu depending on the desk, with very different weights
+   and widths.  Plex has even kerning, true tabular figures and a mono
+   sibling, so dish labels line up in both faces.  Pico reads the two
+   family variables for everything. */
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap;
+             src: url("fonts/ibm-plex-sans-latin-400.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap;
+             src: url("fonts/ibm-plex-sans-latin-500.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap;
+             src: url("fonts/ibm-plex-sans-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap;
+             src: url("fonts/ibm-plex-mono-latin-400.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 600; font-display: swap;
+             src: url("fonts/ibm-plex-mono-latin-600.woff2") format("woff2"); }
+
+:root {
+    --pico-font-family-sans-serif: "IBM Plex Sans", system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, var(--pico-font-family-emoji);
+    --pico-font-family-monospace: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace, var(--pico-font-family-emoji);
+    --pico-font-family: var(--pico-font-family-sans-serif);
+
+    /* solid: a fill with its ink, for switches, dots and bad grid cells */
+    --ok: #2e7d4f;      --ok-ink: #fff;
+    --bad: #b3362e;     --bad-ink: #fff;
+    --warn: #e3b23c;    --warn-ink: #2a2104;
+    --info: #3a6ea5;    --info-ink: #fff;
+    --maint: #b4621e;   --maint-ink: #fff;
+    --off: #7a8088;     --off-ink: #fff;
+    /* soft: a tint with a dark ink of the same hue, for tags and good cells */
+    --ok-soft: #e3f1e8;     --ok-text: #1e5a37;
+    --bad-soft: #f8e5e3;    --bad-text: #8a2820;
+    --warn-soft: #fbf0d2;   --warn-text: #7a5a07;
+    --info-soft: #e2ecf6;   --info-text: #27507c;
+    --maint-soft: #f7e7d8;  --maint-text: #7f4310;
+    --off-soft: #eceef0;    --off-text: #4b5058;
+    /* neutral surfaces: the quiet tag, group bars, popovers' inner panels */
+    --surface: #f1f2f4;
+    --surface-border: #d5d9de;
+    --hover: rgba(0, 0, 0, 0.05);
+    /* the CHOCO mark: a grey, not a health colour */
+    --brand-bg: #5f6670;
+    --brand-ink: #fff;
+}
+/* Every choco page sets data-theme explicitly (base.html pins light; the
+   pipeline and plot pages toggle it), so this is the only dark block. */
+[data-theme="dark"] {
+    --ok-soft: #1f3b2b;     --ok-text: #8fd3a8;
+    --bad-soft: #43231f;    --bad-text: #f0a09a;
+    --warn-soft: #3f3414;   --warn-text: #ecc96a;
+    --info-soft: #1f3247;   --info-text: #9dc1ea;
+    --maint-soft: #42291a;  --maint-text: #eab07a;
+    --off-soft: #2f3236;    --off-text: #b6bbc2;
+    --surface: #1a1e28;
+    --surface-border: #343a46;
+    --hover: rgba(255, 255, 255, 0.06);
+    --brand-bg: #8b949e;
+    --brand-ink: #14181c;
+}
+
+/* ---- scale and density -----------------------------------------------
+   Pico grows the base font with the viewport (16 px on a phone, 21 px on
+   a wide monitor), which suits a marketing page and makes a control panel
+   enormous.  One size at every width -- 100% of the browser's default, so
+   the operator's font preference, zoom and display scaling all still
+   apply -- and tighter headings and cells, so a dashboard of forty rows
+   and a sixteen-board grid both fit a screen.  Everything else is in rem
+   or em for the same reason. */
+:root { --pico-font-size: 100%; }
+/* Pico stretches submit buttons to the full width of their form
+   (button[type=submit] { width: 100% }); here a button is as wide as its
+   label.  The same selector, so it wins by order. */
+button[type="submit"], [role="button"], button { width: auto; }
+h1 { --pico-font-size: 1.6rem; }
+h2 { --pico-font-size: 1.4rem; --pico-typography-spacing-top: 2rem; }
+h3 { --pico-font-size: 1.15rem; }
+h4 { --pico-font-size: 1rem; }
+td, th { padding: 0.4rem 0.6rem; }
+/* Plex at 700 reads heavy; 600 is the site's bold.  Headings and strong
+   text alike, so a tag label, a table header and a page title agree. */
+h1, h2, h3, h4, h5, h6 { --pico-font-weight: 600; }
+b, strong { font-weight: 600; }
+th { font-weight: 600; }
+/* Digits line up in tables; Plex Sans has true tabular figures. */
+table { font-variant-numeric: tabular-nums; }
+/* Pico tints every code span; in a table of file names or a fact list
+   of labels that is a wall of chips.  Plain monospace there, the tint
+   stays in prose. */
+td code, th code, dd code, .group-bar code { padding: 0; background: none; color: inherit; }
+
+/* ---- status tag -------------------------------------------------------
+   Rectangular, a dot, the tone as tint + ink.  The font size is inherited
+   (the strip sets 0.85em, headings halve it, tables shrink it a little).
+   margin: 0 matters in the nav: Pico gives every `nav li a` a negative
+   margin equal to its padding, which would eat the strip's gap. */
+.tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
+    margin: 0;
+    padding: 0.3em 0.6em;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    text-decoration: none;
+    color: inherit;
+}
+.tag .dot { flex: none; width: 0.55em; height: 0.55em; border-radius: 50%; background: currentColor; }
+.tag strong { font-weight: 600; }
+.tag .word { font-weight: 400; }
+.tag-ok    { background: var(--ok-soft);    color: var(--ok-text);    border-color: color-mix(in srgb, var(--ok-text) 25%, transparent); }
+.tag-bad   { background: var(--bad-soft);   color: var(--bad-text);   border-color: color-mix(in srgb, var(--bad-text) 25%, transparent); }
+.tag-warn  { background: var(--warn-soft);  color: var(--warn-text);  border-color: color-mix(in srgb, var(--warn-text) 25%, transparent); }
+.tag-info  { background: var(--info-soft);  color: var(--info-text);  border-color: color-mix(in srgb, var(--info-text) 25%, transparent); }
+.tag-maint { background: var(--maint-soft); color: var(--maint-text); border-color: color-mix(in srgb, var(--maint-text) 25%, transparent); }
+.tag-off   { background: var(--off-soft);   color: var(--off-text);   border-color: color-mix(in srgb, var(--off-text) 25%, transparent); }
+/* A quiet tag (the strip, for ok / info / off): label and dot only on
+   neutral ground.  The dot keeps its tone, so a running job or an
+   unpolled node still reads at a glance; only warn and bad carry a word. */
+.tag.quiet { background: var(--surface); color: var(--pico-color); border-color: var(--surface-border); }
+.tag-ok.quiet .dot { color: var(--ok); }
+.tag-info.quiet .dot { color: var(--info); }
+.tag-off.quiet .dot { color: var(--off); }
+a.tag:hover { filter: brightness(0.96); }
+h2 .tag { font-size: 0.5em; }
+td .tag, dd .tag { font-size: 0.85em; }
+/* The strip is nine services wide: compact metrics so it fits one nav
+   line when quiet. */
+.services-strip .tag { padding: 0.25em 0.5em; }
+
+/* ---- brand mark ------------------------------------------------------ */
+.brand {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    padding: 0.3em 0.6em;
+    border: 1px solid var(--brand-bg);
+    border-radius: 3px;
+    background: var(--brand-bg);
+    color: var(--brand-ink);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    text-decoration: none;
+}
+/* The plain nav link beside it on the standalone pages ("Nodes"). */
+.brand.secondary { background: transparent; color: var(--pico-color); font-weight: 500; letter-spacing: 0.02em; }
+.brand:hover { filter: brightness(1.08); }
+
+/* ---- nav and the service strip --------------------------------------- */
+nav { margin-bottom: 1em; }
+/* Every nav item centres on one line regardless of its own font metrics:
+   text and SVGs have different line-height/baseline behaviour than a
+   padded tag, so without this each `li` can sit a few px off the others. */
+nav li { display: inline-flex; align-items: center; }
+.services-strip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.75em; font-size: 0.85em; }
+/* The two icon controls in the nav (theme, logout) and the standalone
+   headers' theme toggle: bare glyphs in the muted grey, body colour on
+   hover, no border or fill. */
+.logout-icon, .icon-btn { display: inline-flex; align-items: center; justify-content: center; margin: 0; padding: 0.25em 0.3em;
+                          border: 0; background: none; box-shadow: none; color: var(--pico-muted-color); text-decoration: none; font-size: 1em; line-height: 1; }
+.logout-icon:hover, .icon-btn:hover { color: var(--pico-color); background: none; }
+.logout-icon:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 3px; }
+.logout-icon svg, .icon-btn svg { width: 1.1em; height: 1.1em; }
+
+/* Breadcrumb inside a page title: the parent as a muted link, then the
+   page.  One pattern for node, config, service and waterfall pages. */
+.page-head h2 .crumb { color: var(--pico-muted-color); text-decoration: none; font-weight: 500; }
+.page-head h2 .crumb:hover { color: var(--pico-color); }
+.page-head h2 .crumb-sep { color: var(--pico-muted-color); font-weight: 400; margin: 0 0.1em; }
+/* ?wall=1 on the landing page: a wall display.  No chrome, a wider
+   container, larger status tags and table text. */
+body.wall nav, body.wall .note { display: none; }
+body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
+body.wall table.services { font-size: 1.15em; }
+body.wall td .tag { font-size: 1em; }
+
+/* ---- text helpers ---------------------------------------------------- */
+.err, .t-bad { color: var(--bad-text); }
+.t-warn { color: var(--warn-text); }
+.t-ok { color: var(--ok-text); }
+.muted { color: var(--pico-muted-color); }
+
+/* ---- tables and the dashboard ---------------------------------------- */
+table { margin-top: 1em; }
+/* A group's heading row on the dashboard, with its group-wide controls. */
+.group-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+    margin-top: 1.25em;
+    padding: 0.5em 0.75em;
+    border-radius: 4px;
+    background: var(--surface);
+}
+.group-bar h3 { margin: 0; }
+.group-bar .group-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em 1.5em; }
+/* The group-wide controls: a caption ("maint", "start") and a pair of
+   glyph buttons whose *text* takes the tone of the switch state it sets
+   (amber into maintenance, blue out; green started, grey idle), matching
+   the switches in the column below.  Outlined, never filled: these are
+   actions, not status.  `all: unset` keeps them out of Pico's button
+   cascade, whose hover rules would otherwise override the tone. */
+.group-ctl { display: inline-flex; align-items: center; gap: 0.3em; }
+.group-ctl-label { margin-right: 0.1em; font-size: 0.72em; letter-spacing: 0.05em; text-transform: uppercase; color: var(--pico-muted-color); }
+button.group-btn {
+    all: unset;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.9em;
+    padding: 0.1em 0.45em;
+    border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
+    border-radius: 3px;
+    font-size: 0.8em;
+    line-height: 1.5;
+    color: var(--pico-muted-color);
+    cursor: pointer;
+}
+button.group-btn:hover { background: var(--hover); }
+button.group-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.group-btn.tone-ok { color: var(--ok-text); }
+.group-btn.tone-off { color: var(--off-text); }
+.group-btn.tone-maint { color: var(--maint-text); }
+.group-btn.tone-info { color: var(--info-text); }
+.htmx-request .group-btn { opacity: 0.45; }
+/* The same for every power control on the PDB page: the form issuing the
+   request gets htmx-request, so its button dims until the reply lands. */
+.htmx-request .chan, .htmx-request .bulk { opacity: 0.45; }
+
+/* ---- switches (started / maintenance) -------------------------------- */
+label.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 2rem;
+    height: 1.125rem;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+}
+.toggle-switch input[type="checkbox"] { display: none !important; }
+.toggle-switch .toggle-slider {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 2rem;
+    height: 1.125rem;
+    border-radius: 1.125rem;
+    transition: background 0.2s, opacity 0.2s;
+}
+.toggle-switch .toggle-slider::before {
+    content: "";
+    position: absolute;
+    left: 0.1875rem;
+    top: 0.1875rem;
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s;
+}
+/* On-states take the tone of what they enable; off is neutral, except
+   maintenance, the one off-state that silently stops pushes. */
+.toggle-slider.started { background: var(--ok); }
+.toggle-slider.started::before { transform: translateX(0.875rem); }
+.toggle-slider.idle { background: var(--off); }
+.toggle-slider.normal { background: var(--info); }
+.toggle-slider.normal::before { transform: translateX(0.875rem); }
+.toggle-slider.maintenance { background: var(--maint); }
+.htmx-request .toggle-slider { opacity: 0.45; }
+
+/* ---- bffs element grid ----------------------------------------------
+   One cell per element, kotekan's order down each column.  Good cells
+   are the ground (tint), bad cells the figure (solid). */
+.feed-grid { margin: 0; width: 100%; table-layout: fixed; font-size: 0.75em;
+             border-collapse: separate; border-spacing: 2px; }
+.feed-grid td { padding: 0.15em 0.2em; border: 0; border-radius: 2px; text-align: center;
+                font-family: monospace; white-space: nowrap;
+                overflow: hidden; text-overflow: ellipsis; }
+.feed-good { background: var(--ok-soft); color: var(--ok-text); }
+.feed-bad { background: var(--bad); color: var(--bad-ink); }
+.feed-none { background: transparent; }
+/* in the manual override file now (the job applies it next run) */
+.feed-manual { box-shadow: inset 0 0 0 2px var(--warn); }
+.feed-key { padding: 0 0.4em; border-radius: 3px; font-family: monospace; }
+/* clickable grid: each cell is a one-button form posting a toggle; the
+   button fills the cell and looks like the plain cell text */
+.feed-grid form { margin: 0; }
+.feed-grid button.feed-cell { all: unset; display: block; width: 100%;
+                              box-sizing: border-box; cursor: pointer;
+                              text-align: center; overflow: hidden;
+                              text-overflow: ellipsis; }
+.feed-grid-clickable td:hover { filter: brightness(0.92); }
+
+/* ---- flash messages ---------------------------------------------------
+   One-shot notices (action results), dismissable so they read as
+   transient, not page content. */
+.flash {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75em;
+    margin: 0 0 1em 0;
+    padding: 0.5em 0.9em;
+    border: 1px solid var(--off);
+    border-radius: 4px;
+    background: var(--off-soft);
+    font-size: 0.95em;
+}
+.flash-success { border-color: var(--ok); background: var(--ok-soft); }
+.flash-error { border-color: var(--bad); background: var(--bad-soft); }
+.flash .flash-dismiss {
+    width: auto;
+    margin: 0 0 0 auto;
+    padding: 0 0.35em;
+    border: none;
+    background: none;
+    color: inherit;
+    font-size: 1.1em;
+    line-height: 1;
+    cursor: pointer;
+}
+
+/* ---- version popover --------------------------------------------------- */
+/* The version string is itself the popover trigger: a dotted underline
+   says "more here" without adding a control to the row. */
+button.version-trigger {
+    all: unset;
+    cursor: pointer;
+    color: inherit;
+    text-decoration: underline dotted;
+    text-decoration-color: var(--pico-muted-color);
+    text-underline-offset: 0.2em;
+}
+button.version-trigger:hover { text-decoration-style: solid; }
+button.version-trigger:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+.version-popover {
+    max-width: 30em;
+    max-height: 70vh;
+    overflow: auto;
+    padding: 0.75em 1em;
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    background: var(--pico-background-color);
+    color: var(--pico-color);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-size: 0.85em;
+}
+.version-popover .popover-section { margin: 0.75em 0 0.25em 0; }
+dl.version-meta, dl.build-settings {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.1em 0.75em;
+    margin: 0;
+}
+dl.version-meta dt, dl.build-settings dt { font-weight: 600; }
+dl.version-meta dd, dl.build-settings dd { margin: 0; }
+dl.build-settings { font-size: 0.9em; }
+.stage-list {
+    max-height: 8em;
+    overflow: auto;
+    padding: 0.4em 0.6em;
+    background: var(--surface);
+    border-radius: 4px;
+    font-size: 0.85em;
+    line-height: 1.4;
+}
+
+/* ---- service pages ----------------------------------------------------- */
+dl.service-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.15em 1.25em;
+    margin: 0.5em 0 1.5em 0;
+    font-size: 0.95em;
+}
+dl.service-facts dt { font-weight: 600; }
+dl.service-facts dd { margin: 0; }
+/* The node page's facts are three lists (desired flags, the polled
+   runtime facts, the file) with one fixed label column so they read as
+   one; .facts-block carries the margin for the set. */
+.facts-block { margin: 0.5em 0 1.5em; }
+.node-facts { margin: 0; grid-template-columns: 9em 1fr; }
+.mono { font-family: var(--pico-font-family-monospace); }
+
+/* ---- page chrome shared by every page ---------------------------------
+   One header pattern: the title (with its status tag, if any) left and
+   the page's actions right; one note style for explanatory prose; one
+   compact button for row-level actions, with Pico's filled primary kept
+   for each page's single main action. */
+.page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5em 1em;
+    margin-bottom: 1em;
+}
+.page-head h2 { display: flex; align-items: center; gap: 0.6em; margin: 0; }
+.page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em 1.25em; }
+/* Sections: a hairline rule under each heading separates the blocks of a
+   page without boxing them.  Headings that share a row with controls
+   (.section-head, the bus and journal heads) put the rule on the row. */
+main h3 { font-size: 1.15rem; margin: 1.75rem 0 0.6rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--surface-border); }
+.section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.75em; margin: 1.75rem 0 0.6rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--surface-border); }
+.section-head h3, .group-bar h3 { margin: 0; padding: 0; border: 0; }
+.page-head + h3, .page-head + .note + h3, .section-head:first-child { margin-top: 1rem; }
+.note { color: var(--pico-muted-color); font-size: 0.9em; }
+p.note { margin-bottom: 0.75em; }
+.btn-sm { width: auto; margin: 0; padding: 0.15em 0.55em; font-size: 0.8em; line-height: 1.5; white-space: nowrap; }
+.btn-inline { width: auto; margin: 0; padding: 0.25rem 0.75rem; }
+.table-sm { margin: 0; font-size: 0.85em; }
+.scroll-x { margin: 0 0 1.5em 0; overflow-x: auto; }
+.scroll-x figcaption { margin-top: 0.4em; font-size: 0.8em; color: var(--pico-muted-color); }
+/* A labelled row of controls (the node page's config and one-off forms). */
+.action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em; margin: 0 0 0.5em; }
+.action-row .action-label { min-width: 7em; margin: 0; white-space: nowrap; }
+.action-row select, .action-row input[type="text"] { flex: 1 1 14em; margin: 0; }
+/* Static notices: content that stays, unlike a flash.  A left rule in the
+   tone, the soft tint behind. */
+.notice {
+    margin: 0 0 1em;
+    padding: 0.6em 0.9em;
+    border: 1px solid var(--surface-border);
+    border-left-width: 4px;
+    border-radius: 4px;
+    background: var(--surface);
+    font-size: 0.95em;
+}
+.notice-warn { border-color: var(--warn); background: var(--warn-soft); }
+.notice-warn strong { color: var(--warn-text); }
+.notice-bad { border-color: var(--bad); background: var(--bad-soft); }
+.notice-bad strong { color: var(--bad-text); }
+.notice ul { margin: 0.4em 0 0; }
+/* In the dark the soft tints are right on a tag but a notice or a flash
+   is a large block, and at tag strength it glows against the near-black
+   page.  Large surfaces take a faint wash of the tint over the page
+   colour; the coloured rule carries the tone. */
+[data-theme="dark"] .notice { background: color-mix(in srgb, var(--surface) 60%, var(--pico-background-color)); }
+[data-theme="dark"] .notice-warn { background: color-mix(in srgb, var(--warn-soft) 40%, var(--pico-background-color)); }
+[data-theme="dark"] .notice-bad { background: color-mix(in srgb, var(--bad-soft) 40%, var(--pico-background-color)); }
+[data-theme="dark"] .flash { background: color-mix(in srgb, var(--off-soft) 50%, var(--pico-background-color)); }
+[data-theme="dark"] .flash-success { background: color-mix(in srgb, var(--ok-soft) 40%, var(--pico-background-color)); }
+[data-theme="dark"] .flash-error { background: color-mix(in srgb, var(--bad-soft) 40%, var(--pico-background-color)); }
+/* The journal viewer on the service pages: the section head carries the
+   lines picker, the command line sits under it with the refresh button. */
+.journal-head { display: flex; align-items: center; gap: 0.75em; margin: 0 0 0.4em; }
+.journal-head small { font-family: var(--pico-font-family-monospace); }
+.journal pre { max-height: 32em; overflow: auto; margin: 0; padding: 0.5em 0.75em; font-size: 0.8em; line-height: 1.35; }
+
+/* ---- misc chrome ------------------------------------------------------- */
+/* Dev mode has no authentication at all, so it says so on every page: the
+   one thing worse than a dev instance is a dev instance mistaken for the
+   production one. */
+.dev-banner {
+    padding: 0.4em 1em;
+    background: var(--warn);
+    color: var(--warn-ink);
+    font-size: 0.85em;
+    font-weight: 600;
+    text-align: center;
+}
+button.build-toggle {
+    width: auto;
+    margin: 0;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+/* The standalone pipeline/plot pages' slim header. */
+.pg-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.6em;
+    margin-bottom: 0.5em;
+}
+.pg-header a[role="button"], .pg-header button {
+    width: auto;
+    margin: 0;
+    padding: 0.1em 0.7em;
+    font-size: 0.85em;
+}
+.pg-header select {
+    width: auto;
+    margin: 0;
+    padding: 0.1em 1.8em 0.1em 0.5em;
+    font-size: 0.85em;
+}
+.pg-spacer { flex: 1; }

@@ -18,12 +18,12 @@
         return el;
     }
 
-    // --- theme toggle (persisted; default dark, set in <head>) ---
+    // --- theme toggle (one choice shared with every choco page; default dark, set in <head>) ---
     on("pg-theme", "click", function () {
         var root = document.documentElement;
         var next = root.dataset.theme === "dark" ? "light" : "dark";
         root.dataset.theme = next;
-        try { localStorage.setItem("chocoPipelineTheme", next); } catch (e) {}
+        try { localStorage.setItem("chocoTheme", next); } catch (e) {}
     });
 
     // --- zoom: Fit / 1:1 buttons + scroll wheel ---

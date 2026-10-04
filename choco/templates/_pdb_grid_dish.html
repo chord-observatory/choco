@@ -1,0 +1,68 @@
+{# The dish grid: the channels as the dishes stand in the field
+   (pdbmap.dish_layout joined with the live states in web._pdb_dish_grid).
+   Rows A..H of eight dishes, each dish its X and Y amplifier channels,
+   the RFI antennas a row of their own; a slot the map does not name is
+   drawn empty.  Row power switches one polarization of a whole row. #}
+{% from "_pdb_macros.html" import chan, rowbulk with context %}
+{% set g = dish_grid %}
+<div class="section-head">
+    <h3>Dishes as in the field</h3>
+    <small>{{ g.n_on }} / {{ g.n_channels }} mapped channels on</small>
+</div>
+{% if not g.n_channels %}
+<p><em>The channel map names no dish inputs{% if not pdb_map.n_entries %} (it is empty){% endif %} — nothing to lay out.</em></p>
+{% endif %}
+<figure class="scroll-x">
+<table class="dish-grid">
+    <thead>
+        <tr>
+            <th></th>
+            {% for c in g.cols %}<th class="colhead">{{ c }}</th>{% endfor %}
+            {% if control %}<th class="colhead">Row power</th>{% endif %}
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in g.rows %}
+        <tr{% if row.name in ('RFI', 'other') %} class="sep"{% endif %}>
+            <th class="rowhead">{{ row.name }}</th>
+            {% for cell in row.cells %}
+            {% if cell %}
+            <td>
+                <div class="dish">
+                    <span class="dish-name">{{ cell.name }}</span>
+                    <span class="pols">
+                    {%- for p in cell.pols %}
+                        {% if p.on is none %}
+                        <span class="chan absent" title="{{ cell.name }} {{ p.pol }}: {% if p.label %}not reported by the controller{% else %}not in the channel map{% endif %}">{{ p.pol or '?' }}</span>
+                        {% else %}
+                        {% set addr = 'bus %s board %s chip %s ch%s' % (p.bus, p.board, p.chip, p.channel) %}
+                        {{ chan(p.bus, p.board, p.chip, p.channel, p.on, p.label,
+                                ('● ' if p.on else '○ ') ~ (p.pol or p.label),
+                                p.label ~ '\n' ~ addr ~ '\ncurrently ' ~ ('on' if p.on else 'off'),
+                                control) }}
+                        {% endif %}
+                    {%- endfor %}
+                    </span>
+                </div>
+            </td>
+            {% else %}
+            <td class="absent"></td>
+            {% endif %}
+            {% endfor %}
+            {% for _ in range((g.cols | length) - (row.cells | length)) %}<td></td>{% endfor %}
+            {% if control %}
+            <td class="rowctl">
+                {% for pol in ('X', 'Y') if row.counts.get(pol) %}
+                <span class="bulk-group">
+                    {{ rowbulk(row.name, pol, true, row.counts[pol].n) }}
+                    {{ rowbulk(row.name, pol, false, row.counts[pol].n) }}
+                </span>
+                {% endfor %}
+            </td>
+            {% endif %}
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<figcaption>Rows and columns as the dishes stand in the field; each dish its X and Y amplifier channels, named from the channel map. The RFI antennas are a row of their own. Row power switches every channel of one polarization in that row.</figcaption>
+</figure>

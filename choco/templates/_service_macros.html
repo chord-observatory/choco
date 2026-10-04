@@ -1,12 +1,19 @@
-{# Shared macros for the services strip and the /service/<name> pages. #}
-{# monitor_* cover the hardware monitors (FPGA, PDB): ok/down/unconfigured/
-   unknown plus per-monitor degraded states (no_timing, no_states) that all
-   render yellow. #}
-{% macro monitor_color(h) -%}
-{%- if h == 'ok' -%}#008000
-{%- elif h == 'down' -%}#ff4136
-{%- elif h in ('unconfigured', 'unknown') -%}#aaa
-{%- else -%}#ffdc00
+{# Shared macros for the services strip, the landing table and the
+   /service/<name> pages.
+
+   Colour is a *tone*, never a hex value: ok / bad / warn / info / maint /
+   off.  The *_tone macros map each subsystem's health strings onto those
+   six, tag() turns a tone into a `tag-<tone>` class, and static/choco.css
+   paints it for both themes. #}
+
+{# monitor_* cover the hardware monitors (FPGA, PDB) and the DATA scan:
+   ok/down/unconfigured/unknown plus per-monitor degraded states
+   (no_timing, no_states) that all render as warn. #}
+{% macro monitor_tone(h) -%}
+{%- if h == 'ok' -%}ok
+{%- elif h == 'down' -%}bad
+{%- elif h in ('unconfigured', 'unknown') -%}off
+{%- else -%}warn
 {%- endif -%}
 {%- endmacro %}
 {% macro monitor_label(h) -%}
@@ -15,24 +22,47 @@
 {%- else -%}{{ h | replace('_', ' ') }}
 {%- endif -%}
 {%- endmacro %}
-{# job states: ok green; degraded (dependency/input trouble, exit 2) and
-   stale yellow; failed (config/bug) red; never_run/unknown grey. Jobs say
-   "ok"/"failed", not "up"/"down" — up/down is for the daemon monitors. #}
-{% macro job_color(h) -%}
-{%- if h == 'ok' -%}#008000
-{%- elif h in ('degraded', 'stale') -%}#ffdc00
-{%- elif h in ('never_run', 'unknown') -%}#aaa
-{%- else -%}#ff4136
+{# job states: ok; degraded (dependency/input trouble, exit 2) and stale
+   warn; failed (config/bug) bad; never_run/unknown off -- unless a run is
+   in flight with no verdict yet, which is info ("running", see job_label).
+   Jobs say "ok"/"failed", not "up"/"down" -- up/down is for the daemon
+   monitors. #}
+{% macro job_tone(h, running=false) -%}
+{%- if running and h in ('unknown', 'never_run') -%}info
+{%- elif h == 'ok' -%}ok
+{%- elif h in ('degraded', 'stale') -%}warn
+{%- elif h in ('never_run', 'unknown') -%}off
+{%- else -%}bad
 {%- endif -%}
 {%- endmacro %}
-{# bffs source statuses (from the job's run file): ok green; degraded
-   (ran, abstained or lost coverage) and skipped (not run: no N² file)
-   yellow; unknown grey; anything else red. #}
-{% macro source_color(h) -%}
-{%- if h == 'ok' -%}#008000
-{%- elif h in ('degraded', 'skipped') -%}#ffdc00
-{%- elif h == 'unknown' -%}#aaa
-{%- else -%}#ff4136
+{# bffs source statuses (from the job's run file): ok; degraded (ran,
+   abstained or lost coverage) and skipped (not run: no N² file) warn;
+   unknown off; anything else bad. #}
+{% macro source_tone(h) -%}
+{%- if h == 'ok' -%}ok
+{%- elif h in ('degraded', 'skipped') -%}warn
+{%- elif h == 'unknown' -%}off
+{%- else -%}bad
+{%- endif -%}
+{%- endmacro %}
+{# node status (state.NodeStatus values).  Idle is a chosen state, not a
+   warning, so it is neutral like unknown; the strip's NODES roll-up
+   (web._nodes_health) still reports an all-idle cluster as warn. #}
+{% macro node_tone(status) -%}
+{%- if status == 'started' -%}ok
+{%- elif status == 'down' -%}bad
+{%- elif status == 'syncing' -%}info
+{%- else -%}off
+{%- endif -%}
+{%- endmacro %}
+{# What the operator asked for when it differs from what is true: the
+   Start switch says the wish, the status tag the fact, and when they
+   disagree nothing else points at the gap.  Empty while syncing (the gap
+   is being closed) and while unknown (nothing has been polled). #}
+{% macro node_wants(node) -%}
+{%- set st = node.status.value -%}
+{%- if node.started and st in ('idle', 'down') -%}wants started
+{%- elif not node.started and st == 'started' -%}wants idle
 {%- endif -%}
 {%- endmacro %}
 {# running: a run is in flight; the health shown is the last completed
@@ -55,11 +85,15 @@
 {%- else -%}never
 {%- endif -%}
 {%- endmacro %}
-{# margin: 0 overrides Pico's nav-link rule, which gives every `nav li a`
-   a negative margin equal to its own padding (a trick to keep plain-text
-   links from shifting layout on hover). That negative margin cancels out
-   almost all of the strip's `gap` between pills, so without this reset
-   the badges render crowded together rather than evenly spaced. #}
-{% macro pill_style() -%}
-display: inline-flex; align-items: center; gap: 0.4em; margin: 0; padding: 0.25em 0.7em; border-radius: 999px; color: white; line-height: 1; text-decoration: none;
+{# The status tag.  `word` is the state ("all up", "degraded", "started");
+   `label` names the service in the strip ("NODES").  An <a> with href,
+   else a <span>.  quiet: an ok / info / off tag drops the word and its
+   tint and keeps the label and a dot in its tone -- the word stays in the
+   tooltip and in aria-label -- so the strip is quiet unless something is
+   warn or bad, and nine services fit one nav line.  extra: further
+   classes (the node badges carry a `status-<value>` hook). #}
+{% macro tag(tone, word, label=none, href=none, title=none, quiet=false, extra='') -%}
+{%- set hush = quiet and tone in ('ok', 'info', 'off') -%}
+{%- set el = 'a' if href else 'span' -%}
+<{{ el }}{% if href %} href="{{ href }}"{% endif %} class="tag tag-{{ tone }}{% if hush %} quiet{% endif %}{% if extra %} {{ extra }}{% endif %}"{% if label %} aria-label="{{ label }}: {{ word }}"{% endif %}{% if title %} title="{{ title }}"{% endif %}><span class="dot"></span>{% if label %}<strong>{{ label }}</strong>{% endif %}{% if not hush %}<span class="word">{{ word }}</span>{% endif %}</{{ el }}>
 {%- endmacro %}

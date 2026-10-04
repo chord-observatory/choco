@@ -662,6 +662,95 @@ class PdbMonitor:
             timeout=self.timeout)
         resp.raise_for_status()
 
+    def set_channels(self, targets: list[tuple[int, int, str, int]],
+                     on: bool, scope: str) -> tuple[bool, str]:
+        """Power an arbitrary set of channels, one OUT-byte write per chip.
+
+        For scopes the hardware does not have — a row of dishes in one
+        polarization, whose channels are scattered over the boards — the
+        caller resolves addresses through the channel map (its allowlist)
+        and this folds them into a mask per chip, then applies the same
+        rules as :meth:`set_group`: a chip already in the wanted state is
+        not written, every chip that needs it is written even if another
+        fails, one fresh read confirms, and a partial result is reported,
+        never retried silently.  *scope* names the set for the messages
+        and the audit line.
+        """
+        if not self.configured:
+            return False, "pdb is not configured"
+        masks: dict[tuple[int, int], int] = {}   # (bus, chip_num) -> bits
+        for bus, board, chip, channel in targets:
+            if chip not in ("A", "B") or not 0 <= channel < 8 or board < 0:
+                return False, (f"{scope}: invalid channel address: board "
+                               f"{board} chip {chip} ch{channel}")
+            key = (bus, self._chip_num(board, chip))
+            masks[key] = masks.get(key, 0) | (1 << channel)
+        if not masks:
+            return False, f"{scope}: no channels to write"
+        n = sum(bin(m).count("1") for m in masks.values())
+        state_word = "on" if on else "off"
+
+        try:
+            states = self._fetch_states()
+        except (requests.RequestException, ValueError, KeyError,
+                TypeError) as e:
+            return False, f"{scope}: {type(e).__name__}: {e}"
+
+        plan = []       # (bus, chip_num, board, chip, wanted, current)
+        missing = []
+        for (bus, chip_num), mask in sorted(masks.items()):
+            b, c = self._board_chip(chip_num)
+            outs = states.get(bus)
+            if outs is None or chip_num >= len(outs):
+                missing.append(f"bus {bus} board {b} chip {c}")
+                continue
+            current = outs[chip_num]
+            wanted = current | mask if on else current & ~mask
+            plan.append((bus, chip_num, b, c, wanted, current))
+        if missing:
+            return False, (f"{scope}: not present on the controller: "
+                           + _summarize(missing))
+
+        todo = [t for t in plan if t[4] != t[5]]
+        if not todo:
+            return True, f"{scope}: all {n} channels were already {state_word}"
+
+        logger.warning(
+            f"pdb: {scope} -> {n} channels {state_word} "
+            f"({len(todo)} of {len(plan)} chips need writing)")
+        failures = []
+        for bus, _chip_num, b, c, wanted, _current in todo:
+            try:
+                self._write_out_byte(bus, b, c, wanted)
+            except (requests.RequestException, ValueError) as e:
+                failures.append(f"bus {bus} board {b} chip {c} "
+                                f"({type(e).__name__})")
+
+        try:
+            readback = self._fetch_states()
+            self.channels = {b: self._rows(o) for b, o in readback.items()}
+            self.last_seen = time.time()
+        except (requests.RequestException, ValueError, KeyError,
+                TypeError) as e:
+            return False, (
+                f"{scope}: wrote {len(todo) - len(failures)} of "
+                f"{len(todo)} chips but the verify read failed "
+                f"({type(e).__name__}: {e}) — check the grid")
+        stale = [f"bus {bus} board {b} chip {c}"
+                 for bus, chip_num, b, c, wanted, _ in plan
+                 if chip_num >= len(readback.get(bus, []))
+                 or readback[bus][chip_num] != wanted]
+        if failures or stale:
+            parts = []
+            if failures:
+                parts.append(f"{len(failures)} write(s) failed: "
+                             + _summarize(failures))
+            if stale:
+                parts.append(f"{len(stale)} chip(s) did not take: "
+                             + _summarize(stale))
+            return False, f"{scope}: " + "; ".join(parts) + " — check the grid"
+        return True, f"{scope}: {n} channels {state_word}"
+
     def set_group(self, bus: int, on: bool, board: int | None = None,
                   chip: str | None = None) -> tuple[bool, str]:
         """Power every channel of a chip, a board, or a whole bus.

@@ -5,201 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}CHOCO{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='pico.min.css') }}">
+    {# Palette tokens and the shared components; see static/choco.css. #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='choco.css') }}">
+    {# One theme preference for every page, applied before first paint.
+       Light is the default here; the standalone pipeline and plot pages
+       default to dark.  Once the operator toggles anywhere, all pages
+       follow the stored choice (chocoPipelineTheme is the pre-2026-10
+       key, read so an existing choice survives). #}
+    <script>
+        try {
+            var t = localStorage.getItem("chocoTheme") || localStorage.getItem("chocoPipelineTheme");
+            if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+        } catch (e) {}
+    </script>
     {% if current_user.is_authenticated %}
     <script src="{{ url_for('static', filename='htmx.min.js') }}"></script>
     {% endif %}
     <style>
-        .status-badge {
-            display: inline-block;
-            padding: 0.2em 0.6em;
-            border-radius: 4px;
-            font-size: 0.85em;
-            font-weight: 600;
-        }
-        .status-started { background: #008000; color: white; }
-        .status-down { background: #ff4136; color: white; }
-        .status-idle { background: #ffdc00; color: #333; }
-        .status-syncing { background: #0074d9; color: white; }
-        .status-unknown { background: #aaa; color: white; }
-        table { margin-top: 1em; }
-        /* bffs element grid: one cell per element, kotekan's order down
-           each column, coloured like the node status badges. */
-        .feed-grid { margin: 0; width: 100%; table-layout: fixed; font-size: 0.75em;
-                     border-collapse: separate; border-spacing: 2px; }
-        .feed-grid td { padding: 0.15em 0.2em; border: 0; text-align: center;
-                        font-family: monospace; white-space: nowrap;
-                        overflow: hidden; text-overflow: ellipsis; }
-        .feed-good { background: #008000; color: white; }
-        .feed-bad { background: #ff4136; color: white; }
-        .feed-none { background: transparent; }
-        /* in the manual override file now (the job applies it next run) */
-        .feed-manual { box-shadow: inset 0 0 0 2px #ffdc00; }
-        .feed-key { padding: 0 0.4em; border-radius: 3px; font-family: monospace; }
-        /* clickable grid: each cell is a one-button form posting a toggle;
-           the button fills the cell and looks like the plain cell text */
-        .feed-grid form { margin: 0; }
-        .feed-grid button.feed-cell { all: unset; display: block; width: 100%;
-                                      box-sizing: border-box; cursor: pointer;
-                                      text-align: center; overflow: hidden;
-                                      text-overflow: ellipsis; }
-        .feed-grid-clickable td:hover { filter: brightness(1.2); }
-        /* Flash messages: one-shot notices (action results). Rendered as
-           dismissable banners so they read as transient, not page content. */
-        .flash {
-            display: flex;
-            align-items: baseline;
-            gap: 0.75em;
-            margin: 0 0 1em 0;
-            padding: 0.5em 0.9em;
-            border: 1px solid #aaa;
-            border-radius: 6px;
-            background: #aaaaaa1a;
-            font-size: 0.95em;
-        }
-        .flash-success { border-color: #008000; background: #00800017; }
-        .flash-error { border-color: #ff4136; background: #ff413617; }
-        .flash .flash-dismiss {
-            width: auto;
-            margin: 0 0 0 auto;
-            padding: 0 0.35em;
-            border: none;
-            background: none;
-            color: inherit;
-            font-size: 1.1em;
-            line-height: 1;
-            cursor: pointer;
-        }
-        nav { margin-bottom: 1em; }
-        /* Every nav item — pills, plain text, the logout icon — centers on
-           the same line regardless of its own font metrics: text and SVGs
-           have different line-height/baseline behaviour than a padded
-           pill, so without this each `li`'s content can sit a few px off
-           the others even though the containing `ul` is itself centered. */
-        nav li { display: inline-flex; align-items: center; }
-        /* Same pill shape as the service badges, but a fixed brand colour
-           rather than a health colour — it's a logo, not a status. */
-        .brand-pill {
-            display: inline-flex;
-            align-items: center;
-            margin: 0;
-            padding: 0.25em 0.7em;
-            border-radius: 999px;
-            background: #5c3a21;
-            color: white;
-            font-weight: 600;
-            line-height: 1;
-            text-decoration: none;
-        }
-        .logout-icon { display: inline-flex; align-items: center; text-decoration: none; }
-        label.toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 40px;
-            height: 22px;
-            min-height: 0;
-            margin: 0;
-            padding: 0;
-            cursor: pointer;
-        }
-        .toggle-switch input[type="checkbox"] { display: none !important; }
-        .toggle-switch .toggle-slider {
-            position: absolute;
-            inset: 0;
-            display: block;
-            width: 40px;
-            height: 22px;
-            border-radius: 22px;
-            transition: background 0.2s;
-        }
-        .toggle-switch .toggle-slider::before {
-            content: "";
-            position: absolute;
-            left: 3px;
-            top: 3px;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: white;
-            transition: transform 0.2s;
-        }
-        .toggle-slider.started { background: #008000; }
-        .toggle-slider.started::before { transform: translateX(18px); }
-        .toggle-slider.idle { background: #ffdc00; }
-        .toggle-slider.maintenance { background: #ff851b; }
-        .toggle-slider.normal { background: #0074d9; }
-        .toggle-slider.normal::before { transform: translateX(18px); }
-        .htmx-request .toggle-slider { background: #aaa !important; }
-        .info-btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 1.4em;
-            height: 1.4em;
-            margin: 0 0 0 0.35em;
-            padding: 0;
-            border: 1px solid #aaa;
-            border-radius: 50%;
-            background: white;
-            color: #555;
-            font-size: 0.75em;
-            font-style: italic;
-            font-weight: 700;
-            line-height: 1;
-            cursor: pointer;
-            vertical-align: middle;
-        }
-        .info-btn:hover { background: #f1f3f5; color: #222; }
-        .version-popover {
-            max-width: 30em;
-            max-height: 70vh;
-            overflow: auto;
-            padding: 0.75em 1em;
-            border: 1px solid #ccc;
-            border-radius: 6px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            font-size: 0.85em;
-        }
-        .version-popover .popover-section { margin: 0.75em 0 0.25em 0; }
-        dl.version-meta, dl.build-settings {
-            display: grid;
-            grid-template-columns: max-content 1fr;
-            gap: 0.1em 0.75em;
-            margin: 0;
-        }
-        dl.version-meta dt, dl.build-settings dt { font-weight: 600; }
-        dl.version-meta dd, dl.build-settings dd { margin: 0; }
-        dl.build-settings { font-size: 0.9em; }
-        .stage-list {
-            max-height: 8em;
-            overflow: auto;
-            padding: 0.4em 0.6em;
-            background: #f6f8fa;
-            border-radius: 4px;
-            font-size: 0.85em;
-            line-height: 1.4;
-        }
-        /* Dev mode has no authentication at all, so it says so on every
-           page — the one thing worse than a dev instance is a dev
-           instance mistaken for the production one. */
-        .dev-banner {
-            padding: 0.4em 1em;
-            background: #ff851b;
-            color: #1a1a1a;
-            font-size: 0.85em;
-            font-weight: 600;
-            text-align: center;
-        }
-        button.build-toggle {
-            width: auto;
-            margin: 0;
-            padding: 0.25rem 0.75rem;
-            font-size: 0.9em;
-            white-space: nowrap;
-        }
         {% block styles %}{% endblock %}
     </style>
 </head>
-<body>
+<body{% if wall %} class="wall"{% endif %}>
     {% if config.DEV_AUTH %}
     <div class="dev-banner">
         DEV MODE — no login, no CSRF (server.dev_auth={{ config.DEV_AUTH }})
@@ -207,13 +33,12 @@
     {% endif %}
     <nav class="container">
         <ul>
-            <li><a href="/" class="brand-pill">CHOCO</a></li>
+            <li><a href="/" class="brand">CHOCO</a></li>
             {% if current_user.is_authenticated %}
-            <li id="services-status"
+            <li id="services-status" class="services-strip"
                 hx-get="/partials/services"
                 hx-trigger="load, every 30s"
-                hx-swap="innerHTML"
-                style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 1.25em; font-size: 0.85em;"></li>
+                hx-swap="innerHTML"></li>
             {% endif %}
         </ul>
         <ul style="font-size: 0.85em;">
@@ -223,6 +48,7 @@
             <li><a href="/logout" title="Logout" class="logout-icon"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3v12h3"/><path d="M10 5l3 3-3 3"/><path d="M13 8H6"/></svg></a></li>
             {% endif %}
             {% endif %}
+            <li><button type="button" id="theme-toggle" class="icon-btn" title="Toggle dark/light" aria-label="Toggle dark/light"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg></button></li>
         </ul>
     </nav>
 
@@ -240,6 +66,33 @@
         {% block content %}{% endblock %}
     </main>
 
+    <script>
+        (function () {
+            var root = document.documentElement;
+            // Images with a night render (the sky map) follow the theme:
+            // data-night-src in the dark, data-day-src otherwise.  Run on
+            // load, on toggle, and after every htmx swap, since the sky
+            // map card is replaced every five minutes.
+            function themeImages() {
+                var dark = root.dataset.theme === "dark";
+                var imgs = document.querySelectorAll("img[data-night-src]");
+                for (var i = 0; i < imgs.length; i++) {
+                    var want = dark ? imgs[i].dataset.nightSrc : imgs[i].dataset.daySrc;
+                    if (want && imgs[i].getAttribute("src") !== want) imgs[i].setAttribute("src", want);
+                }
+            }
+            themeImages();
+            document.body.addEventListener("htmx:afterSwap", themeImages);
+            var btn = document.getElementById("theme-toggle");
+            if (!btn) return;
+            btn.addEventListener("click", function () {
+                var next = root.dataset.theme === "dark" ? "light" : "dark";
+                root.dataset.theme = next;
+                try { localStorage.setItem("chocoTheme", next); } catch (e) {}
+                themeImages();
+            });
+        })();
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

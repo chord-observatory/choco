@@ -4,16 +4,14 @@
    from fpga_master, which must not delay the page. #}
 {% if gains.configured %}
 <section>
-    <hgroup style="margin-bottom: 0.4em;">
-        <h4 style="margin-bottom: 0.2em;">Digital gains</h4>
-        <p style="font-size: 0.85em; margin: 0;">
-        The F-engine's current gain archive, read from
-        <code>/get-current-gain-file</code>. Read-only.</p>
-    </hgroup>
+    <h3>Digital gains</h3>
+    <p class="note">
+    The F-engine's current gain archive, read from
+    <code>/get-current-gain-file</code>. Read-only.</p>
     {% if gains.error and not gains.datasets %}
-    <p class="pill-bad" style="font-size: 0.9em;">Gain file unavailable: {{ gains.error }}</p>
+    <p class="err" style="font-size: 0.9em;">Gain file unavailable: {{ gains.error }}</p>
     {% else %}
-    <table style="font-size: 0.85em;">
+    <table class="table-sm" style="margin-bottom: 1em;">
         <tbody>
         <tr><th scope="row">update id</th>
             <td><code>{{ gains.update_id or "—" }}</code></td></tr>
@@ -33,7 +31,7 @@
         {% endif %}
         </tbody>
     </table>
-    <p style="font-size: 0.82em; opacity: 0.8;">
+    <p class="note">
     <code>gain_coeff</code> holds the raw coefficients (stored complex,
     served as their real part &mdash; the imaginary part is identically
     zero); <code>gain_exp</code> is the per-input exponent and is
@@ -50,11 +48,9 @@
                 {% endfor %}
             </select>
         </label>
-        <a id="gain-fullscreen" role="button" class="outline"
-           style="width: auto; margin: 0; padding: 0.1em 0.7em;"
+        <a id="gain-fullscreen" role="button" class="secondary outline btn-sm"
            href="/service/fpga/plot?dataset={{ gains.datasets[0].name if gains.datasets }}">full screen ⤢</a>
-        <a role="button" class="outline"
-           style="width: auto; margin: 0; padding: 0.1em 0.7em;"
+        <a role="button" class="secondary outline btn-sm"
            href="/service/fpga/gain.h5">download .h5</a>
     </div>
     {# The same panel the pipeline page opens; only the source differs. #}

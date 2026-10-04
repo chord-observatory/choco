@@ -1,10 +1,30 @@
+{% from "_service_macros.html" import node_tone, node_wants, tag %}
 {% if not nodes %}
-<p>No nodes configured. Edit <code>configs/nodes.yaml</code> to add kotekan instances.</p>
+<p>No nodes configured yet. <a href="/nodes/edit">Edit nodes</a> to add kotekan instances.</p>
 {% else %}
+{# Maintenance stops every push, and every choco restart puts the whole
+   cluster there, so a dashboard that said nothing about it left the
+   operator wondering why a change did nothing.  Inside the polled table
+   so the count tracks the switches. #}
+{% set n_maint = nodes.values() | selectattr('maintenance') | list | length %}
+{% if n_maint %}
+<div class="notice notice-warn" style="display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
+    <span><strong>{{ n_maint }} of {{ nodes | length }} node{{ 's' if nodes | length != 1 }} in maintenance</strong>
+        — choco does not push to a node in maintenance{% if n_maint == nodes | length %}; every node starts this way after a choco restart{% endif %}.</span>
+    <button class="secondary outline btn-sm" style="margin-left: auto;" hx-ext="morph"
+            title="Take every node out of maintenance (choco will push)"
+            hx-post="/nodes/set-maintenance-all/off" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>Lift maintenance on all</button>
+</div>
+{% endif %}
 {% for group, group_nodes in nodes.values() | groupby('group') %}
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5em; margin-top: 1.25em; background: #f1f3f5; padding: 0.5em 0.75em; border-radius: 4px;">
-    <h3 style="margin: 0;">group <code>{{ group }}</code></h3>
-    <div style="display: flex; gap: 1.5em; align-items: center;">
+{# A group that renders one file says so once, in its bar; the Config
+   column appears only where the nodes of a group differ. #}
+{% set files = group_nodes | map(attribute='config_filename') | unique | list %}
+{% set one_file = files | length == 1 %}
+<div class="group-bar">
+    <h3>group <code>{{ group }}</code>{% if one_file %} <small class="muted">renders <code>{{ files[0] }}</code></small>{% endif %}</h3>
+    <div class="group-controls">
         {% with group=group %}{% include "_toggle_maintenance_all.html" %}{% endwith %}
         {% with group=group %}{% include "_toggle_started_all.html" %}{% endwith %}
     </div>
@@ -12,13 +32,12 @@
 <table style="margin-top: 0.25em;">
     <thead>
         <tr>
-            <th>Maint</th>
             <th>Node</th>
+            <th>Maint</th>
             <th>Start</th>
             <th>Status</th>
             <th>Version</th>
-            <th>Config</th>
-            <th>Synced</th>
+            {% if not one_file %}<th>Config</th>{% endif %}
             <th></th>
         </tr>
     </thead>
@@ -26,43 +45,35 @@
         {% for node in group_nodes %}
         {% set key = node.key %}
         <tr>
-            <td>{% include "_toggle_maintenance.html" %}</td>
             <td>{{ node.name }}</td>
+            <td>{% include "_toggle_maintenance.html" %}</td>
             <td>{% include "_toggle_started.html" %}</td>
             <td>
-                <span class="status-badge status-{{ node.status.value }}">
-                    {{ node.status.value }}
-                </span>
-                {% if node.error %}<br><small>{{ node.error }}</small>{% endif %}
+                {{ tag(node_tone(node.status.value), node.status.value, extra='status-' ~ node.status.value) }}
+                {% set wants = node_wants(node) %}{% if wants %} <small class="muted wants">{{ wants }}</small>{% endif %}
+                {% if node.error %}<br><small class="muted">{{ node.error }}</small>{% endif %}
                 {% if node.load_error and node.load_error != node.error %}
-                <br><small>{{ node.load_error }}</small>
+                <br><small class="muted">{{ node.load_error }}</small>
                 {% endif %}
             </td>
             <td>
-                {{ node.version or "—" }}
                 {% if node.version_info %}
+                {# The version string is the build-details trigger; see .version-trigger. #}
                 {% set pop_id = "ver-pop-" ~ node.group ~ "-" ~ node.name %}
-                <button type="button" class="info-btn" popovertarget="{{ pop_id }}"
-                        aria-label="Show build details" title="Show build details">i</button>
+                <button type="button" class="version-trigger" popovertarget="{{ pop_id }}"
+                        title="Show build details">{{ node.version or "—" }}</button>
                 <div id="{{ pop_id }}" popover class="version-popover" hx-preserve="true">
                     {% with v=node.version_info %}{% include "_version_popover.html" %}{% endwith %}
                 </div>
-                {% endif %}
-            </td>
-            <td><code>{{ node.config_filename }}</code></td>
-            <td>
-                {% if node.status.value == "started" %}
-                    Yes
-                {% elif node.status.value == "syncing" %}
-                    No
                 {% else %}
-                    —
+                {{ node.version or "—" }}
                 {% endif %}
             </td>
+            {% if not one_file %}<td><code>{{ node.config_filename }}</code></td>{% endif %}
             <td style="white-space: nowrap;">
-                <a href="/pipeline/{{ key }}" role="button" class="outline"
+                <a href="/pipeline/{{ key }}" role="button" class="secondary outline btn-sm"
                    title="The live pipeline graph on {{ key }}">Pipeline</a>
-                <a href="/nodes/edit/{{ key }}" role="button" class="outline"
+                <a href="/nodes/edit/{{ key }}" role="button" class="secondary outline btn-sm"
                    title="Node page: state, maintenance, which config file {{ key }} renders, one-offs and updatable values">Node</a>
             </td>
         </tr>

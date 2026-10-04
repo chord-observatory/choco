@@ -6,7 +6,7 @@
             gap: 1em; flex-wrap: wrap; margin-bottom: 0.4em; }
 .tri-head h2 { margin: 0; font-size: 1.2em; }
 .tri-head code { font-size: 0.9em; }
-.tri-note { color: #666; font-size: 0.85em; margin: 0 0 1em; }
+.tri-note { margin: 0 0 1em; }
 .tri-filter { display: flex; align-items: center; gap: 0.4em; margin: 0; }
 .tri-filter input { width: 12em; margin: 0; padding: 0.2em 0.4em; font-size: 0.85em; }
 .tri-filter button { margin: 0; padding: 0.2em 0.7em; font-size: 0.85em; }
@@ -31,17 +31,17 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
 {% endblock %}
 
 {% block content %}
-<div class="tri-head">
-    <h2>Waterfalls <code>{{ acq }}</code></h2>
+<div class="tri-head page-head">
+    <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><code>{{ acq }}</code></h2>
     <form class="tri-filter" method="get" action="">
         <label for="elements" style="font-size: 0.85em; margin: 0;">Elements</label>
         <input type="text" id="elements" name="elements" value="{{ elements_arg }}"
                placeholder="all" aria-label="Comma-separated element indices">
-        <button type="submit" class="outline">Show</button>
+        <button type="submit" class="secondary outline btn-sm">Show</button>
     </form>
 </div>
 
-<p class="tri-note">
+<p class="note tri-note">
     {{ grid.elements | length }} element{{ '' if grid.elements | length == 1 else 's' }} ·
     {{ grid.cells | length }} product{{ '' if grid.cells | length == 1 else 's' }} rendered ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }} folded in

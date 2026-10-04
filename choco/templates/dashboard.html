@@ -1,15 +1,15 @@
 {% extends "base.html" %}
-{% block title %}CHOCO - Dashboard{% endblock %}
+{% block title %}Nodes — CHOCO{% endblock %}
 
 {% block content %}
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5em; margin-bottom: 1.5em;">
-    <h2 style="margin: 0;">Nodes</h2>
-    <div style="display: flex; gap: 1.25em; align-items: center;">
+<div class="page-head">
+    <h2>Nodes</h2>
+    <div class="page-actions">
         {% include "_toggle_maintenance_all.html" %}
         {% include "_toggle_started_all.html" %}
-        <a href="/nodes/edit" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;"
+        <a href="/nodes/edit" role="button" class="secondary outline btn-sm"
            title="Edit nodes.yaml: groups, hosts, ports and which config file each node renders">Edit nodes</a>
-        <a href="/configs" role="button" class="outline" style="padding: 0.1em 0.4em; margin: 0; font-size: 0.8em;"
+        <a href="/configs" role="button" class="secondary outline btn-sm"
            title="The config library: every config file, which nodes render or include it, and its editor">Edit configs</a>
     </div>
 </div>

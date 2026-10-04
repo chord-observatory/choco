@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,6 +110,102 @@ class PdbMap:
     def to_list(self) -> list[dict]:
         return [e.to_dict() for e in sorted(self.entries.values(),
                                             key=lambda e: e.address)]
+
+
+#: A pathfinder dish input: row letter, two-digit column, polarization
+#: (``A01X``).  The field is rows A..H of eight dishes.
+DISH_INPUT_RE = re.compile(r"^(?P<row>[A-Z])(?P<col>\d{2})(?P<pol>[XY])$")
+#: An RFI antenna input: ``RFI``, the antenna's name, polarization
+#: (``RFIA1Y``).  The antennas form a row of their own in the field.
+RFI_INPUT_RE = re.compile(r"^RFI(?P<ant>[A-Z]\d+)(?P<pol>[XY])$")
+
+RFI_ROW = "RFI"
+OTHER_ROW = "other"
+FIELD_ROWS = "ABCDEFGH"
+FIELD_COLS = 8
+
+
+def parse_dish_input(label: str) -> tuple[str, str, str] | None:
+    """``(row, dish, pol)`` for a dish-input label, else None.
+
+    ``A01X`` is row ``A``, dish ``A01``, pol ``X``; ``RFIA1Y`` is row
+    ``RFI``, dish ``RFIA1``, pol ``Y``.  Anything else (a placeholder
+    label, a typo) is None and lands in the layout's "other" row rather
+    than being guessed at.
+    """
+    m = DISH_INPUT_RE.match(label)
+    if m:
+        return m["row"], m["row"] + m["col"], m["pol"]
+    m = RFI_INPUT_RE.match(label)
+    if m:
+        return RFI_ROW, "RFI" + m["ant"], m["pol"]
+    return None
+
+
+def _natural_key(name: str) -> tuple:
+    return tuple(int(t) if t.isdigit() else t
+                 for t in re.findall(r"\d+|\D+", name))
+
+
+def dish_layout(pdb_map: PdbMap, rows: str = FIELD_ROWS,
+                n_cols: int = FIELD_COLS) -> dict:
+    """The channel map laid out as the dishes stand in the field.
+
+    Rows ``A``..``H`` of ``n_cols`` dishes (columns ``01``..), each cell
+    the dish's ``X`` and ``Y`` entries; a slot the map does not name is
+    None, a dish with one pol missing has None for it.  Dishes the map
+    names outside the frame (``A09``, a row letter past H) are appended
+    to their row, or get a row of their own, rather than being dropped.
+    Then one ``RFI`` row of the antennas in natural order, then an
+    ``other`` row for labels that parse as neither.  Pure: the live
+    on/off state is joined in by the web layer.
+
+    Returns ``{"cols": ["01", ...], "rows": [{"name", "cells": [cell|None]}]}``
+    with ``cell = {"name", "pols": {"X": entry|None, "Y": entry|None}}``
+    (an "other" cell has the one key ``""``).
+    """
+    by_dish: dict[str, dict] = {}
+    row_of: dict[str, str] = {}
+    for e in pdb_map.entries.values():
+        parsed = parse_dish_input(e.dish_input)
+        if parsed is None:
+            row, dish, pol = OTHER_ROW, e.dish_input, ""
+            cell = by_dish.setdefault(dish, {"name": dish, "pols": {}})
+        else:
+            row, dish, pol = parsed
+            cell = by_dish.setdefault(
+                dish, {"name": dish, "pols": {"X": None, "Y": None}})
+        row_of[dish] = row
+        cell["pols"][pol] = e
+
+    def named(row: str) -> list[str]:
+        return sorted((d for d, r in row_of.items() if r == row),
+                      key=_natural_key)
+
+    out = []
+    for r in rows:
+        frame = [f"{r}{c:02d}" for c in range(1, n_cols + 1)]
+        cells = [by_dish.get(d) for d in frame]
+        cells += [by_dish[d] for d in named(r) if d not in frame]
+        out.append({"name": r, "cells": cells})
+    for r in sorted(set(row_of.values()) - set(rows) - {RFI_ROW, OTHER_ROW}):
+        out.append({"name": r, "cells": [by_dish[d] for d in named(r)]})
+    for r in (RFI_ROW, OTHER_ROW):
+        if any(v == r for v in row_of.values()):
+            out.append({"name": r, "cells": [by_dish[d] for d in named(r)]})
+    return {"cols": [f"{c:02d}" for c in range(1, n_cols + 1)], "rows": out}
+
+
+def row_entries(layout: dict, row: str, pol: str) -> list[PdbMapEntry] | None:
+    """Every map entry of one layout row in one polarization, or None
+    when the layout has no such row.  The web layer's allowlist for the
+    row power controls: a row and pol name the form sent become channel
+    addresses only through here."""
+    for r in layout["rows"]:
+        if r["name"] == row:
+            return [c["pols"][pol] for c in r["cells"]
+                    if c and c["pols"].get(pol) is not None]
+    return None
 
 
 def load_pdb_map(path) -> PdbMap:

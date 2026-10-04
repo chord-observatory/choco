@@ -82,11 +82,45 @@ newest-first, capped) rendered as the page's **Recent actions** table — an
 async stop appears first as in-flight, then as its completion — while the
 durable audit trail is the ``logger.warning`` line in choco's own journal.  A
 restart assigns a new frame0 — the page warns about it.  The PDB page
-(``service_pdb.html``) renders the per-bus board/chip/channel grid whose cells
-are **toggle buttons** (``POST /service/pdb/set`` →
-``PdbMonitor.set_channel``), alongside **bulk power buttons** (``POST
-/service/pdb/set-group`` → ``PdbMonitor.set_group``): per chip at the end of
-each row, and per SPI bus in the bus heading — a per-board button was dropped
+(``service_pdb.html``) renders a per-bus channel grid **drawn as the frame is
+mounted** (2026-10; before that it was one row per chip with channels across,
+which read nothing like the rack): sixteen boards in two rows of eight, each
+board two chip columns, channels down.  The top row holds boards 15 down to 8
+and is mounted the other way up, so it reads chip B then A left to right with
+channel 0 at the top; the bottom row holds boards 0 to 7, chip A then B,
+channel 7 at the top.  ``web._pdb_layout`` states that orientation once as
+rows of board slots; a row is drawn only if one of its boards reported in, a
+slot whose board did not is drawn empty so the columns stay where the hardware
+is, and boards above 15 (no such frame today) get extra rows rather than being
+dropped.  ``_pdb_buses`` indexes the monitor's flat chip rows as
+``by_board[board][chip]`` for it.  That is the **bulkhead** layout, the
+page's default; a switch between the summary facts and the grid
+(``?layout=dish``, carried on
+the 5 s poll and on every control post by ``hx-vals`` on ``#pdb-status``, and
+validated against ``web.PDB_LAYOUTS`` — the name only picks a template
+branch) shows the same channels as the **dishes stand in the field**:
+rows A..H of eight dishes (columns 01..08), each dish its X and Y amplifier
+channels named from the channel map, the RFI antennas a row of their own
+(``pdbmap.dish_layout``, pure; ``web._pdb_dish_grid`` joins in the live
+states, with a channel the controller did not report drawn as an empty
+dashed slot and a frame slot the map does not name drawn empty).  Labels
+that parse as neither a dish nor an RFI antenna land in an ``other`` row,
+and a dish the map names outside the frame is appended rather than dropped,
+so a typo in the CSV shows up on the page instead of vanishing.  In that
+layout each row carries **row power** buttons per polarization (``POST
+/service/pdb/set-row`` with ``row``, ``pol``, ``state``): the row and pol
+become channel addresses only through ``pdbmap.row_entries`` (a row the
+layout lacks is a 400, a row with nothing mapped writes nothing), and
+``PdbMonitor.set_channels`` folds the scattered channels into one OUT-byte
+read-modify-write per chip touched with ``set_group``'s rules — chips already
+right are not written, one fresh read confirms, a partial result is reported.
+The two grid templates (``_pdb_grid_bulkhead.html``, ``_pdb_grid_dish.html``)
+share the cell and bulk-button macros in ``_pdb_macros.html``.  The cells are
+**toggle buttons** (``POST
+/service/pdb/set`` → ``PdbMonitor.set_channel``), alongside **bulk power
+buttons** (``POST /service/pdb/set-group`` → ``PdbMonitor.set_group``): per
+chip at the foot of each chip column, and per SPI bus in the bus heading — a
+per-board button was dropped
 as redundant with the chip-level column (two clicks vs one), though
 ``set_group`` and its route still take a board-only scope, reachable directly
 if a caller wants it.  All are gated by ``pdb.control`` and audit-logged.

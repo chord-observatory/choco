@@ -24,7 +24,7 @@ from .auth import save_user, localhost_or_login_required
 from .jobclient import MANUAL_OVERRIDES_NAME
 from .datafiles import human_bytes
 from . import dishlabels
-from .pdbmap import PdbMap, cross_check, kotekan_dish_labels
+from .pdbmap import PdbMap, cross_check, kotekan_dish_labels, dish_layout, row_entries
 from .waterfalls import (
     IMAGE_RE as WF_IMAGE_RE, freq_ticks as wf_freq_ticks, open_stream,
     palette_gradient as wf_palette_gradient, parse_elements,
@@ -218,7 +218,9 @@ def landing():
 
     Node management lives under /nodes/*; this page is the front door.
     """
-    return render_template("landing.html", **_landing_context())
+    # ?wall=1: a wall display -- no chrome, larger tags (base.html / css).
+    return render_template("landing.html", wall=request.args.get("wall") == "1",
+                           **_landing_context())
 
 
 @bp.route("/partials/landing-services")
@@ -2001,25 +2003,57 @@ def partial_service_fpga():
     )
 
 
+def _pdb_layout(present: set[int]) -> list[dict]:
+    """The physical frame, as rows of board slots for the grid.
+
+    Sixteen boards sit in two rows of eight.  The top row holds boards
+    15 down to 8 and is mounted the other way up, so it reads chip B
+    then A left to right with channel 0 at the top; the bottom row holds
+    boards 0 to 7, chip A then B, channel 7 at the top.  A row is drawn
+    only if one of its boards reported in, and a slot whose board did
+    not is drawn empty so the columns stay where the hardware is.
+    Boards above 15 (no such frame today) go in extra rows of eight in
+    the bottom row's orientation rather than being dropped.
+    """
+    rows = []
+    top = list(range(15, 7, -1))
+    bottom = list(range(0, 8))
+    if any(b in present for b in top):
+        rows.append({"boards": top, "chips": ["B", "A"],
+                     "channels": list(range(8))})
+    if any(b in present for b in bottom):
+        rows.append({"boards": bottom, "chips": ["A", "B"],
+                     "channels": list(range(7, -1, -1))})
+    extra = sorted(b for b in present if b > 15)
+    for i in range(0, len(extra), 8):
+        rows.append({"boards": extra[i:i + 8], "chips": ["A", "B"],
+                     "channels": list(range(7, -1, -1))})
+    return rows
+
+
 def _pdb_buses(monitor) -> list[dict]:
-    """Per-bus grid data: boards, their chips, and channel counts.
+    """Per-bus grid data: boards, their chips, the frame layout and counts.
 
     The monitor stores one flat row per chip in daisy-chain order; the
-    grid wants them grouped by board (a board is two chips, and the
-    board-level power buttons span both rows), and the bus header wants
-    the counts.  Shaped here rather than in Jinja so the template stays
-    a table and not arithmetic.
+    grid wants them by board and chip (``by_board[board][chip]``) laid
+    out as the frame is mounted (``layout``, see ``_pdb_layout``), and
+    the bus header wants the counts.  Shaped here rather than in Jinja
+    so the template stays a table and not arithmetic.
     """
     buses = []
     for bus, rows in sorted(monitor.channels.items()):
         boards: list[dict] = []
+        by_board: dict[int, dict[str, dict]] = {}
         for row in rows:
             if not boards or boards[-1]["board"] != row["board"]:
                 boards.append({"board": row["board"], "chips": []})
             boards[-1]["chips"].append(row)
+            by_board.setdefault(row["board"], {})[row["chip"]] = row
         buses.append({
             "bus": bus,
             "boards": boards,
+            "by_board": by_board,
+            "layout": _pdb_layout(set(by_board)),
             # /status knows the configured board count; fall back to
             # what actually came back on the wire.
             "n_boards": monitor.boards.get(bus, len(boards)),
@@ -2027,6 +2061,69 @@ def _pdb_buses(monitor) -> list[dict]:
             "n_on": sum(1 for r in rows for c in r["channels"] if c),
         })
     return buses
+
+
+#: The PDB page's two grids: the channels as they come through the
+#: bulkhead into the computing chamber (boards, chips, channels; see
+#: _pdb_layout) and as the dishes stand in the field (rows A..H of eight
+#: dishes, X and Y per dish, the RFI antennas a row of their own; see
+#: pdbmap.dish_layout).  Chosen with ?layout=, carried on the poll and
+#: on every control post by hx-vals on #pdb-status.
+PDB_LAYOUTS = ("bulkhead", "dish")
+
+
+def _pdb_layout_name() -> str:
+    """The requested grid layout, defaulting to bulkhead for anything
+    not in PDB_LAYOUTS -- the name only picks a template branch."""
+    name = request.values.get("layout", "")
+    return name if name in PDB_LAYOUTS else PDB_LAYOUTS[0]
+
+
+def _pdb_dish_grid(pdb_map, buses: list[dict]) -> dict:
+    """The field layout (pdbmap.dish_layout) joined with the live states.
+
+    Each pol becomes ``{"pol", "label", "bus", "board", "chip",
+    "channel", "on"}`` with ``on`` None when the controller did not
+    report that board; each row gets per-pol counts for its power
+    buttons.
+    """
+    by_bus = {b["bus"]: b["by_board"] for b in buses}
+
+    def state(entry):
+        chips = by_bus.get(entry.bus, {}).get(entry.board)
+        row = chips.get(entry.chip) if chips else None
+        return row["channels"][entry.channel] if row else None
+
+    layout = dish_layout(pdb_map)
+    rows = []
+    n_total = n_on = 0
+    for r in layout["rows"]:
+        counts = {}
+        cells = []
+        for cell in r["cells"]:
+            if cell is None:
+                cells.append(None)
+                continue
+            pols = []
+            for pol, entry in cell["pols"].items():
+                if entry is None:
+                    pols.append({"pol": pol, "label": None, "on": None})
+                    continue
+                on = state(entry)
+                pols.append({"pol": pol, "label": entry.dish_input,
+                             "bus": entry.bus, "board": entry.board,
+                             "chip": entry.chip, "channel": entry.channel,
+                             "on": on})
+                c = counts.setdefault(pol, {"n": 0, "n_on": 0})
+                c["n"] += 1
+                n_total += 1
+                if on:
+                    c["n_on"] += 1
+                    n_on += 1
+            cells.append({"name": cell["name"], "pols": pols})
+        rows.append({"name": r["name"], "cells": cells, "counts": counts})
+    return {"cols": layout["cols"], "rows": rows,
+            "n_channels": n_total, "n_on": n_on}
 
 
 def _pdb_context() -> dict:
@@ -2037,12 +2134,17 @@ def _pdb_context() -> dict:
     """
     monitor = current_app.config["pdb_monitor"]
     pdb_cfg = current_app.config.get("pdb_cfg") or {}
+    # .get() re-reads the CSV if its mtime changed, so edits show up on
+    # the next render without a restart.
+    pdb_map = current_app.config["pdb_map"].get()
+    buses = _pdb_buses(monitor)
+    layout = _pdb_layout_name()
     return {
         "pdb": monitor.to_dict(),
-        "buses": _pdb_buses(monitor),
-        # .get() re-reads the CSV if its mtime changed, so edits show up
-        # on the next render without a restart.
-        "pdb_map": current_app.config["pdb_map"].get(),
+        "buses": buses,
+        "pdb_map": pdb_map,
+        "layout": layout,
+        "dish_grid": _pdb_dish_grid(pdb_map, buses) if layout == "dish" else None,
         "control": bool(pdb_cfg.get("control", True)),
         "now_ts": time.time(),
     }
@@ -2322,6 +2424,42 @@ def pdb_control_group():
         f"pdb: {scope} -> all {'on' if on else 'off'} requested by "
         f"{getattr(current_user, 'username', '?')}")
     ok, message = monitor.set_group(bus, on, board=board, chip=chip)
+    return _pdb_result(ok, message)
+
+
+@bp.route("/service/pdb/set-row", methods=["POST"])
+@login_required
+def pdb_control_row():
+    """Power one polarization of a whole row of dishes on or off.
+
+    The form names a row of the field layout ("A".."H", "RFI") and a
+    pol; both become channel addresses only through the channel map
+    (``pdbmap.row_entries``), so nothing the browser sent reaches the
+    controller.  Same audit line as the other bulk writes.
+    """
+    _check_csrf()
+    monitor = _pdb_control_monitor()
+    form = request.form
+    row = form.get("row", "")
+    pol = form.get("pol", "")
+    try:
+        on = form["state"] == "on"
+    except KeyError:
+        abort(400)
+    if pol not in ("X", "Y"):
+        abort(400)
+    pdb_map = current_app.config["pdb_map"].get()
+    entries = row_entries(dish_layout(pdb_map), row, pol)
+    if entries is None:
+        abort(400)
+    scope = f"row {row} pol {pol}"
+    if not entries:
+        return _pdb_result(False, f"{scope}: no channels in the map")
+    logger.warning(
+        f"pdb: {scope} -> all {'on' if on else 'off'} "
+        f"({len(entries)} channels) requested by "
+        f"{getattr(current_user, 'username', '?')}")
+    ok, message = monitor.set_channels([e.address for e in entries], on, scope)
     return _pdb_result(ok, message)
 
 

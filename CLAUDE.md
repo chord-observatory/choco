@@ -132,8 +132,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   suffix, inside the configs directory); buffer names must match `_BUFFER_NAME_RE`;
   gain dataset names are checked against the manifest; waterfall path parts
   against `NAME_RE` / `SHARD_RE` / `IMAGE_RE`; a manual bffs flag's label
-  against the element axis in the job's state file.  Extend the allowlist,
-  never bypass it.
+  against the element axis in the job's state file; a PDB row-power
+  request's row and polarization become channel addresses only through
+  `pdbmap.row_entries`.  Extend the allowlist, never bypass it.
 - kotekan-supplied markup reaches the DOM only through
   `services.sanitize_pipeline_svg` (whitelist reconstruction; unknown
   elements are unwrapped, never copied).  Plot panel DOM is built with
@@ -161,6 +162,27 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `_next_target` rejects `//`, backslashes and control characters.
 - Dev mode turns login **and** CSRF off together (the token lives in the
   session cookie) and re-establishes the synthetic login per request.
+
+**UI palette** ([ui.md](docs/design/ui.md))
+- Status colour is a tone, never a hex value: templates call the `*_tone`
+  macros and `tag()` in `_service_macros.html`, which emit
+  `tag-ok|bad|warn|info|maint|off` painted by the tokens in
+  `static/choco.css` (loaded by `base.html` and the standalone pipeline and
+  plot pages).  No hex literal for a state in a template, no brown, and the
+  CHOCO mark (`.brand`) stays grey.  The strip's tags are `quiet`: ok, info
+  and off show label and dot only (the word lives in the tooltip and
+  `aria-label`); only warn and bad carry a word, or the strip wraps.
+- One page chrome: `.page-head` (title left, actions right), `.note` for
+  prose, `h3` for sections, `.btn-sm secondary outline` for row-level
+  actions with Pico's filled primary kept for the page's one main action,
+  `.notice` for static warnings (`.flash` is transient only).  Controls are
+  not status: switches are tinted only when on, group buttons colour their
+  glyph text, never a fill.
+- Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
+  `static/fonts/*` in pyproject's package-data); no page loads anything from
+  an outside host.  600 is the site's bold, never 700.  The base size is
+  pinned to the browser default at every width: Pico's fluid scale stays off, the grids
+  are sized to it.  Titles are "Page — CHOCO"; deep pages carry a crumb.
 
 **Process hygiene**
 - The web process never imports numpy, h5py, astropy or matplotlib.  HDF5 is

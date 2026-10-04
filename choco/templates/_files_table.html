@@ -2,7 +2,7 @@
 {% if not scan.get('configured') %}
 <p>No data roots configured.</p>
 {% else %}
-<p class="scan-note">
+<p class="note">
     {{ scan.dirs }} director{{ 'y' if scan.dirs == 1 else 'ies' }},
     {{ scan.files }} file{{ '' if scan.files == 1 else 's' }},
     {{ scan.bytes | filesize }} total ·
@@ -11,8 +11,8 @@
 
 {% for root in scan.roots %}
 {% set rname = root.path.rstrip('/').split('/')[-1] %}
-<div class="root-header">
-    <h4>{{ root.path }}</h4>
+<div class="root-header section-head">
+    <h3>{{ root.path }}</h3>
     {% if not root.error %}
     <small>{{ root.dirs | length }} director{{ 'y' if root.dirs | length == 1 else 'ies' }} ·
            {{ root.files }} file{{ '' if root.files == 1 else 's' }} ·
@@ -21,9 +21,9 @@
 </div>
 
 {% if root.error %}
-<div class="flash flash-error" role="alert"><span>{{ root.error }}</span></div>
+<div class="notice notice-bad">{{ root.error }}</div>
 {% elif not root.dirs %}
-<p><small>No subdirectories.</small></p>
+<p class="note">No subdirectories.</p>
 {% else %}
 <table class="files">
     <thead>
@@ -39,7 +39,7 @@
     {% for d in root.dirs %}
         <tr>
             <td class="name">{{ d.name }}{% if d.error %}
-                <br><small style="color: #ff4136;">{{ d.error }}</small>{% endif %}</td>
+                <br><small class="err">{{ d.error }}</small>{% endif %}</td>
             <td class="num">{{ d.files }}</td>
             <td class="num">{{ d.bytes | filesize }}</td>
             <td class="num"><small>{{ since(d.newest, now_ts) }}</small></td>
@@ -47,12 +47,12 @@
             or rendered.get(rname ~ '/' ~ d.name) %}
             <td class="num wf">
             {%- if wf and wf.broken %}
-                <small style="color: #ff851b;" title="the acquisition's index could not be read">index unreadable</small>
+                <small class="t-warn" title="the acquisition's index could not be read">index unreadable</small>
             {%- elif wf %}
                 <a href="/files/{{ wf.root or rname }}/{{ d.name }}/triangle"
                    title="{{ wf.products }} products, {{ wf.rows }} scanlines">{{ wf.rendered }}{% if d.files %}/{{ d.files }}{% endif %}</a>
             {%- else %}
-                <small style="color: #999;">&mdash;</small>
+                <small class="muted">&mdash;</small>
             {%- endif %}
             </td>
         </tr>

@@ -5,7 +5,7 @@
    the grid's 5s poll, and wiring does not change while you watch. Reload
    the page after editing the CSV (choco re-reads it on mtime change). #}
 <section class="map-section" style="margin-top: 1em;">
-<h4 style="margin-bottom: 0.35em;">Channel map</h4>
+<h3>Channel map</h3>
 
 <p class="map-note">
     Master table: <code>{{ pdb_map.path }}</code> — {{ pdb_map.n_entries }}
@@ -15,10 +15,10 @@
 </p>
 
 {% if pdb_map.errors %}
-<div class="flash flash-error" role="alert" style="display: block;">
+<div class="notice notice-bad">
     <strong>{{ pdb_map.errors | length }} bad row{{ '' if (pdb_map.errors | length) == 1 else 's' }} in the channel map</strong>
     — those rows are skipped, the rest still load:
-    <ul style="margin: 0.4em 0 0 0;">
+    <ul>
         {% for err in pdb_map.errors[:10] %}<li><code>{{ err }}</code></li>{% endfor %}
         {% if pdb_map.errors | length > 10 %}
         <li><em>… and {{ pdb_map.errors | length - 10 }} more</em></li>
@@ -35,11 +35,11 @@
     <strong>{{ check.group }}</strong> kotekan config — the same table
     kotekan indexes its bad-input mask with.
     {% if check.ok %}
-    <span style="color: #008000;"><strong>&#10003; agreed</strong></span> —
+    <span class="t-ok"><strong>&#10003; agreed</strong></span> —
     all {{ check.n_matched }} connected dish inputs are mapped to exactly
     one channel.
     {% else %}
-    <span style="color: #b8860b;"><strong>&#9888; disagreements</strong></span>
+    <span class="t-warn"><strong>&#9888; disagreements</strong></span>
     — {{ check.n_matched }} of {{ check.n_kotekan }} connected kotekan
     dish inputs matched.
     {% endif %}
@@ -57,7 +57,7 @@
 {% endmacro %}
 
 {% if not check.ok %}
-<ul class="map-tags" style="font-size: 0.9em;">
+<ul class="map-tags">
     {{ mismatch(check.missing_in_map, 'in kotekan but not in the map',
                 'no channel is known to power these feeds') }}
     {{ mismatch(check.unknown_to_kotekan, 'in the map but not in kotekan',

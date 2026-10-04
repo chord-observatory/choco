@@ -6,12 +6,15 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CHOCO - {{ node_key }} pipeline</title>
+    <title>{{ node_key }} pipeline — CHOCO</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='pico.min.css') }}">
-    {# Apply the saved theme before first paint (default dark). #}
+    <link rel="stylesheet" href="{{ url_for('static', filename='choco.css') }}">
+    {# Apply the shared theme choice before first paint (default dark
+       here; base.html defaults light; one stored choice rules both). #}
     <script>
         try {
             document.documentElement.dataset.theme =
+                localStorage.getItem("chocoTheme") ||
                 localStorage.getItem("chocoPipelineTheme") || "dark";
         } catch (e) {}
     </script>
@@ -25,38 +28,7 @@
             padding: 0.5em 0.75em 0.75em 0.75em;
             box-sizing: border-box;
         }
-        .pg-header {
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.6em;
-            margin-bottom: 0.5em;
-        }
-        .pg-header .brand-pill {
-            display: inline-flex;
-            align-items: center;
-            padding: 0.25em 0.7em;
-            border-radius: 999px;
-            background: #5c3a21;
-            color: white;
-            font-weight: 600;
-            line-height: 1;
-            text-decoration: none;
-        }
-        .pg-header .brand-pill.secondary { background: #8a6746; font-weight: 500; }
-        .pg-header a[role="button"], .pg-header button {
-            width: auto;
-            margin: 0;
-            padding: 0.1em 0.7em;
-            font-size: 0.85em;
-        }
-        .pg-header select {
-            width: auto;
-            margin: 0;
-            padding: 0.1em 1.8em 0.1em 0.5em;
-            font-size: 0.85em;
-        }
-        .pg-spacer { flex: 1; }
+        /* .pg-header, .brand: static/choco.css */
         #pipeline-graph {
             flex: 1;
             min-height: 0;
@@ -214,15 +186,15 @@
 </head>
 <body>
     <div class="pg-header">
-        <a href="/" class="brand-pill">CHOCO</a>
-        <a href="/nodes" class="brand-pill secondary">Nodes</a>
+        <a href="/" class="brand">CHOCO</a>
+        <a href="/nodes" class="brand secondary">Nodes</a>
         <strong>{{ node.key }} pipeline</strong>
         <small style="opacity: 0.7;">scroll to zoom · drag to pan · amber buffers are plottable — click one</small>
-        <a href="/nodes/edit/{{ node_key }}" role="button" class="outline">edit</a>
+        <a href="/nodes/edit/{{ node_key }}" role="button" class="secondary outline">edit</a>
         <span class="pg-spacer"></span>
-        <button type="button" id="pg-theme" class="outline" title="Toggle dark/light">◐</button>
-        <button type="button" id="pg-fit" class="outline">Fit</button>
-        <button type="button" id="pg-full" class="outline">1:1</button>
+        <button type="button" id="pg-theme" class="icon-btn" title="Toggle dark/light" aria-label="Toggle dark/light"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg></button>
+        <button type="button" id="pg-fit" class="secondary outline">Fit</button>
+        <button type="button" id="pg-full" class="secondary outline">1:1</button>
         {# Options come from the PIPELINE_LAYOUTS allowlist itself, so the
            selector and the server-side presets can't drift apart. #}
         <select id="pg-layout" name="layout"
@@ -234,7 +206,7 @@
             <option value="{{ name }}"{% if name == layout %} selected{% endif %}>{{ name }}</option>
             {% endfor %}
         </select>
-        <button type="button" class="outline"
+        <button type="button" class="secondary outline"
                 hx-get="/partials/node-pipeline-svg/{{ node_key }}"
                 hx-include="#pg-layout"
                 hx-target="#pipeline-graph" hx-swap="innerHTML">Refresh</button>

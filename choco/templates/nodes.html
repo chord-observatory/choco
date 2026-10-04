@@ -1,23 +1,14 @@
 {% extends "base.html" %}
-{% block title %}CHOCO - Edit Nodes{% endblock %}
+{% block title %}Edit nodes — CHOCO{% endblock %}
 
 {% block styles %}
-    .warning-banner {
-        background: #fff5e1;
-        border: 1px solid #ffb74d;
-        border-left: 4px solid #ff9800;
-        padding: 0.75em 1em;
-        border-radius: 4px;
-        margin-bottom: 1em;
-    }
-    .warning-banner strong { color: #b26a00; }
     #groups-container { margin-bottom: 1em; }
     .group {
-        border: 1px solid #ccc;
-        border-radius: 6px;
+        border: 1px solid var(--surface-border);
+        border-radius: 4px;
         padding: 0.6em 0.75em;
         margin-bottom: 0.6em;
-        background: #fafafa;
+        background: var(--pico-background-color);
     }
     .group-header {
         display: flex;
@@ -37,7 +28,7 @@
         padding: 0.25em;
         margin: 0;
         min-height: 2.25em;
-        background: #f0f0f0;
+        background: var(--surface);
         border-radius: 4px;
     }
     .node {
@@ -45,14 +36,16 @@
         align-items: center;
         gap: 0.5em;
         padding: 0.3em 0.4em;
-        background: white;
-        border: 1px solid #e0e0e0;
+        background: var(--pico-background-color);
+        border: 1px solid var(--surface-border);
         border-radius: 4px;
         margin-bottom: 0.25em;
         cursor: move;
     }
     .node:last-child { margin-bottom: 0; }
-    .node input { margin: 0; }
+    /* Compact fields: Pico's full field height makes a five-node group a
+       screen tall. */
+    .node input, .group-header .group-name { margin: 0; padding: 0.2em 0.5em; height: auto; font-size: 0.9em; }
     .node .node-name { flex: 1 1 10em; }
     .node .node-host { flex: 2 1 18em; }
     .node .node-port { width: 6.5em; flex: 0 0 auto; }
@@ -60,18 +53,12 @@
     .remove-btn {
         background: transparent;
         border: none;
-        color: #b00020;
+        color: var(--bad-text);
         cursor: pointer;
         font-size: 1.2em;
         line-height: 1;
         margin: 0;
         padding: 0 0.3em;
-        width: auto;
-    }
-    .add-node-btn {
-        margin: 0;
-        padding: 0.2em 0.6em;
-        font-size: 0.85em;
         width: auto;
     }
     .sortable-ghost { opacity: 0.3; }
@@ -88,32 +75,28 @@
 {% endblock %}
 
 {% block content %}
-<h2>Edit Nodes</h2>
-
-<div class="warning-banner">
-    <strong>Warning:</strong> Saving this page rewrites
-    <code>configs/nodes.yaml</code> and rebuilds the node registry from
-    scratch. Any in-flight queued changes will be dropped, and config
-    files on disk are <em>not</em> moved when nodes change groups.
-    After the save every node is placed in
-    <em>maintenance mode</em> (choco will not push), and choco re-probes
-    each node to set its started / idle state from the live kotekan
-    runtime. Take nodes back out of maintenance once you're ready for
-    choco to resume reconciling drift. Use this page for deliberate
-    setup changes, not for routine edits.
+<div class="page-head">
+    <h2>Edit nodes</h2>
 </div>
 
-<p><small>Drag the group header to reorder groups. Drag a node to
+<div class="notice notice-warn">
+    <strong>Saving rewrites <code>nodes.yaml</code> and rebuilds the node registry:</strong>
+    queued changes are dropped, config files are not moved when a node changes group,
+    and <strong>every node is placed in maintenance</strong> until you lift it.
+    For setup changes, not routine edits.
+</div>
+
+<p class="note">Drag the group header to reorder groups. Drag a node to
 reorder within a group or move it between groups. The config field names
 the library file a node renders (see <a href="/configs">Configs</a>);
-leave it blank for the node's own <code>group/name</code> file.</small></p>
+leave it blank for the node's own <code>group/name</code> file.</p>
 
 <div id="groups-container">
     {% for group_name, nodes in groups.items() %}
     <div class="group">
         <div class="group-header">
             <input type="text" class="group-name" value="{{ group_name }}" placeholder="group name">
-            <button type="button" class="add-node-btn">Add node</button>
+            <button type="button" class="add-node-btn secondary outline btn-sm">Add node</button>
             <button type="button" class="remove-btn remove-group-btn" title="Remove group">&times;</button>
         </div>
         <ul class="node-list">
@@ -132,9 +115,9 @@ leave it blank for the node's own <code>group/name</code> file.</small></p>
 </div>
 
 <div class="editor-actions">
-    <button type="button" id="add-group-btn" class="outline">Add group</button>
+    <button type="button" id="add-group-btn" class="secondary outline">Add group</button>
     <button type="button" id="save-btn">Save &amp; Reload</button>
-    <a href="/nodes" role="button" class="outline">Cancel</a>
+    <a href="/nodes" role="button" class="secondary outline">Cancel</a>
     <span id="save-status"></span>
 </div>
 
@@ -142,7 +125,7 @@ leave it blank for the node's own <code>group/name</code> file.</small></p>
     <div class="group">
         <div class="group-header">
             <input type="text" class="group-name" value="" placeholder="group name">
-            <button type="button" class="add-node-btn">Add node</button>
+            <button type="button" class="add-node-btn secondary outline btn-sm">Add node</button>
             <button type="button" class="remove-btn remove-group-btn" title="Remove group">&times;</button>
         </div>
         <ul class="node-list"></ul>

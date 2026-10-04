@@ -327,7 +327,7 @@ class TestDataBadge:
         body = client.get("/partials/services").get_data(as_text=True)
         assert "DATA" in body
         assert 'href="/files"' in body
-        assert "#008000" in body        # monitor_color('ok')
+        assert 'class="tag tag-ok quiet"' in body    # monitor_tone('ok'), quiet while nominal
 
     def test_pill_red_when_roots_gone(self, configs_dir, tmp_path):
         app = _app(configs_dir, [tmp_path / "gone"])
@@ -335,7 +335,7 @@ class TestDataBadge:
         _login(client)
         app.config["datafile_scan"].check_once()
         body = client.get("/partials/services").get_data(as_text=True)
-        assert "DATA" in body and "#ff4136" in body    # monitor_color('down')
+        assert "DATA" in body and 'class="tag tag-bad"' in body    # monitor_tone('down')
         assert "down" in body
 
     def test_unconfigured_pill_is_grey(self, configs_dir):

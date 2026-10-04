@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -270,6 +271,106 @@ class TestLandingPage:
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
+class TestVendoredFonts:
+    """The site's typefaces ship with the package (static/fonts, OFL); no
+    page may reach an outside font host.  Guards the package-data glob."""
+
+    def test_font_files_served(self, client):
+        for name in ("ibm-plex-sans-latin-400", "ibm-plex-sans-latin-500",
+                     "ibm-plex-sans-latin-600", "ibm-plex-mono-latin-400",
+                     "ibm-plex-mono-latin-600"):
+            resp = client.get(f"/static/fonts/{name}.woff2")
+            assert resp.status_code == 200, name
+            assert resp.data[:4] == b"wOF2", name
+        assert client.get("/static/fonts/OFL.txt").status_code == 200
+
+    def test_stylesheet_declares_them_and_nothing_external(self, client):
+        css = client.get("/static/choco.css").data.decode()
+        assert css.count("@font-face") == 5
+        assert 'url("fonts/ibm-plex-sans-latin-400.woff2")' in css
+        assert "fonts.googleapis.com" not in css and "https://" not in css
+        import re, pathlib
+        pyproject = pathlib.Path(__file__).parent.parent / "pyproject.toml"
+        assert '"static/fonts/*"' in pyproject.read_text()
+
+
+class TestPageChrome:
+    """The review round of 2026-10: one title format, the dashboard's
+    maintenance notice and desired-vs-actual note, one config line per
+    uniform group, and the wall-display mode."""
+
+    def test_titles_name_the_page_then_the_site(self, client, app):
+        _login(client)
+        for url, title in [("/", "Services — CHOCO"), ("/nodes", "Nodes — CHOCO"),
+                           ("/nodes/edit", "Edit nodes — CHOCO"), ("/nodes/edit/cx/cx1", "cx/cx1 — CHOCO"),
+                           ("/configs", "Configs — CHOCO"), ("/files", "Data files — CHOCO"),
+                           ("/service/eop", "EOP — CHOCO"), ("/pipeline/cx/cx1", "cx/cx1 pipeline — CHOCO")]:
+            body = client.get(url).data.decode()
+            assert f"<title>{title}</title>" in body, url
+        # a logged-in client is bounced off /login; a fresh one sees the form
+        assert "<title>Sign in — CHOCO</title>" in app.test_client().get("/login").data.decode()
+
+    def test_maintenance_notice_with_a_way_out(self, client, app):
+        _login(client)
+        registry = app.config["registry"]
+        # every registry build puts the whole cluster in maintenance
+        body = client.get("/partials/dashboard-table").data.decode()
+        assert "3 of 3 nodes in maintenance" in body
+        assert "after a choco restart" in body
+        assert 'hx-post="/nodes/set-maintenance-all/off"' in body and "Lift maintenance on all" in body
+        for node in registry.nodes.values():
+            node.maintenance = False
+        list(registry.nodes.values())[0].maintenance = True
+        body = client.get("/partials/dashboard-table").data.decode()
+        assert "1 of 3 nodes in maintenance" in body and "after a choco restart" not in body
+        for node in registry.nodes.values():
+            node.maintenance = False
+        assert "in maintenance</strong>" not in client.get("/partials/dashboard-table").data.decode()
+
+    def test_wants_note_when_desired_differs_from_actual(self, client, app):
+        from choco.state import NodeStatus
+        _login(client)
+        nodes = list(app.config["registry"].nodes.values())
+        nodes[0].started, nodes[0].status = True, NodeStatus.DOWN
+        nodes[1].started, nodes[1].status = False, NodeStatus.STARTED
+        nodes[2].started, nodes[2].status = True, NodeStatus.STARTED
+        body = client.get("/partials/dashboard-table").data.decode()
+        assert body.count('class="muted wants">wants started<') == 1
+        assert body.count('class="muted wants">wants idle<') == 1
+        node_page = client.get("/nodes/partials/node-status/cx/cx1").data.decode()
+        assert "wants started" in node_page
+
+    def test_uniform_group_names_its_file_once(self, client, app):
+        _login(client)
+        body = client.get("/partials/dashboard-table").data.decode()
+        # cx: cx1.yaml and cx2.yaml differ -> a Config column; recv: one
+        # node, one file -> named in the group bar, no column
+        cx = body[body.index("group <code>cx</code>"):body.index("group <code>recv</code>")]
+        recv = body[body.index("group <code>recv</code>"):]
+        assert "<th>Config</th>" in cx and "<code>cx/cx1.yaml</code>" in cx and "<code>cx/cx2.yaml</code>" in cx
+        assert "<th>Config</th>" not in recv
+        assert 'renders <code>recv/recv1.yaml</code>' in recv
+
+    def test_wall_mode_drops_the_chrome(self, client):
+        _login(client)
+        plain = client.get("/").data.decode()
+        wall = client.get("/?wall=1").data.decode()
+        assert '<body class="wall">' in wall and '<body class="wall">' not in plain
+        assert "landing-services" in wall and 'id="skymap"' in wall
+
+    def test_landing_table_has_one_timing_column_and_no_unit_names(self, client):
+        from unittest.mock import patch
+        _login(client)
+        stub = dict(_JOB_STUB, unit="choco-eop-broadcast.service", state_mtime=time.time() - 120)
+        with patch("choco.web.job_status", return_value=stub), \
+             patch("choco.web.timer_status", return_value={"unit": "x.timer", "next_elapse": "Mon 2026-10-05 06:00:00 UTC"}):
+            body = client.get("/partials/landing-services").data.decode()
+        heads = re.findall(r"<th>([^<]*)</th>", body)
+        assert heads == ["Service", "Status", "Detail", "Timing"]
+        assert "choco-eop-broadcast.service" not in body
+        assert "next Mon 2026-10-05 06:00:00 UTC" in body
+
+
 class TestSkymap:
     def _configure(self, app, tmp_path, write=True, night=False):
         # The images live where the job writes them, <state_dir>/skymap/;
@@ -326,6 +427,19 @@ class TestSkymap:
         self._configure(app, tmp_path)
         resp = client.get("/partials/skymap", follow_redirects=False)
         assert resp.status_code == 302
+
+    def test_partial_names_the_night_render_for_dark_mode(self, client, app, tmp_path):
+        # base.html swaps the card's src to data-night-src when the theme is
+        # dark; the attribute is there only once a night render exists.
+        self._configure(app, tmp_path, night=True)
+        _login(client)
+        body = client.get("/partials/skymap").data.decode()
+        assert 'data-day-src="/skymap.png?v=' in body
+        assert 'data-night-src="/skymap-night.png?v=' in body
+        self._configure(app, tmp_path, night=False)
+        (_job_dir(app, "skymap") / "skymap-night.png").unlink()
+        body = client.get("/partials/skymap").data.decode()
+        assert "data-night-src" not in body
 
     def test_partial_carries_mtime_busted_url(self, client, app, tmp_path):
         path = self._configure(app, tmp_path)
@@ -465,7 +579,7 @@ class TestPipelinePage:
         # Standalone full-viewport page with slim nav, not base.html.
         assert 'id="pipeline-graph"' in body
         assert "/partials/node-pipeline-svg/cx/cx1" in body
-        assert 'class="brand-pill"' in body and 'href="/"' in body
+        assert 'class="brand"' in body and 'href="/"' in body
         assert "/nodes/edit/cx/cx1" in body
         # The status page is gone; nothing may still link to it.
         assert "/status/cx/cx1" not in body
@@ -605,7 +719,7 @@ class TestPlotPage:
         assert 'data-fullscreen="1"' in body
         assert "bufferplot.js" in body
         # Slim nav, no base.html chrome, dark by default.
-        assert 'class="brand-pill"' in body
+        assert 'class="brand"' in body
         assert "/pipeline/cx/cx1" in body and "/nodes/edit/cx/cx1" in body
         assert 'data-theme="dark"' in body
         # The view lives in the fragment, so the server renders nothing
@@ -840,15 +954,20 @@ class TestServicesPartial:
                  "unit": "test.service"}
 
     def _nodes_badge(self, client):
-        """(background colour, label) of the strip's NODES badge."""
+        """(tone, label) of the strip's NODES badge.
+
+        The tone is the ``tag-<tone>`` class the tag macro emits (painted
+        by static/choco.css); the label is what the badge says, read from
+        aria-label because a quiet (ok) badge shows no word at all.
+        """
         from unittest.mock import patch
         with patch("choco.web.job_status", return_value=dict(self._JOB_STUB)):
             body = client.get("/partials/services").data.decode()
-        color = re.search(
-            r'<a href="/nodes"[^>]*background: (#[0-9a-f]{3,6})', body)
-        label = re.search(r'<strong>NODES</strong> <span>([^<]*)</span>', body)
-        assert color and label
-        return color.group(1), label.group(1)
+        m = re.search(
+            r'<a href="/nodes" class="tag tag-([a-z]+)( quiet)?[^"]*"'
+            r' aria-label="NODES: ([^"]*)"', body)
+        assert m, body
+        return m.group(1), m.group(3)
 
     def _set_statuses(self, app, statuses):
         from choco.state import NodeStatus
@@ -860,27 +979,65 @@ class TestServicesPartial:
     def test_nodes_badge_all_up_is_green(self, client, app):
         _login(client)
         self._set_statuses(app, ["STARTED", "STARTED", "STARTED"])
-        assert self._nodes_badge(client) == ("#008000", "all up")
+        assert self._nodes_badge(client) == ("ok", "all up")
 
     def test_nodes_badge_all_down_is_red(self, client, app):
         _login(client)
         self._set_statuses(app, ["DOWN", "DOWN", "DOWN"])
-        assert self._nodes_badge(client) == ("#ff4136", "all down")
+        assert self._nodes_badge(client) == ("bad", "all down")
+
+    def test_nodes_badge_quiet_when_all_up(self, client, app):
+        # A nominal badge shows label and dot only: the word lives in the
+        # tooltip and aria-label, and the tint goes neutral.
+        from unittest.mock import patch
+        _login(client)
+        self._set_statuses(app, ["STARTED", "STARTED", "STARTED"])
+        with patch("choco.web.job_status", return_value=dict(self._JOB_STUB)):
+            body = client.get("/partials/services").data.decode()
+        nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
+        assert nodes and 'class="tag tag-ok quiet"' in nodes.group(0)
+        assert "<strong>NODES</strong>" in nodes.group(1)
+        assert 'class="word"' not in nodes.group(1)
+
+    def test_running_job_is_a_quiet_blue_dot(self, client, app):
+        # A run in flight with no verdict yet is info, and info is quiet in
+        # the strip like ok: dot only, "running" in the tooltip/aria-label.
+        # Otherwise the word pushed the nine-service strip onto two lines.
+        from unittest.mock import patch
+        _login(client)
+        running = dict(self._JOB_STUB, health="never_run", running=True,
+                       unit="choco-eop.service")
+        with patch("choco.web.job_status", return_value=running):
+            body = client.get("/partials/services").data.decode()
+        eop = re.search(r'<a href="/service/eop"[^>]*>(.*?)</a>', body, re.S)
+        assert eop and 'class="tag tag-info quiet"' in eop.group(0)
+        assert 'aria-label="EOP: running"' in eop.group(0)
+        assert 'class="word"' not in eop.group(1)
+
+    def test_nodes_badge_worded_when_not_ok(self, client, app):
+        from unittest.mock import patch
+        _login(client)
+        self._set_statuses(app, ["DOWN", "DOWN", "DOWN"])
+        with patch("choco.web.job_status", return_value=dict(self._JOB_STUB)):
+            body = client.get("/partials/services").data.decode()
+        nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
+        assert nodes and "quiet" not in nodes.group(0)
+        assert '<span class="word">all down</span>' in nodes.group(1)
 
     def test_nodes_badge_partial_up_is_yellow(self, client, app):
         _login(client)
         self._set_statuses(app, ["STARTED", "DOWN", "IDLE"])
-        assert self._nodes_badge(client) == ("#ffdc00", "1/3 up")
+        assert self._nodes_badge(client) == ("warn", "1/3 up")
 
     def test_nodes_badge_all_idle_is_yellow(self, client, app):
         _login(client)
         self._set_statuses(app, ["IDLE", "IDLE", "IDLE"])
-        assert self._nodes_badge(client) == ("#ffdc00", "idle")
+        assert self._nodes_badge(client) == ("warn", "idle")
 
     def test_nodes_badge_unpolled_is_grey(self, client, app):
         # Fresh registry: every node still UNKNOWN until the first poll.
         _login(client)
-        assert self._nodes_badge(client) == ("#aaa", "unknown")
+        assert self._nodes_badge(client) == ("off", "unknown")
 
 
 class TestMaintenanceToggles:
@@ -1626,7 +1783,7 @@ class TestServicePage:
         ]}
         resp = client.get("/service/pdb")
         body = resp.data.decode()
-        assert "isn't currently readable" in body
+        assert "Controller not readable" in body
         # grid still rendered from the last read
         assert "SPI bus 0" in body
 
@@ -2044,6 +2201,179 @@ class TestPdbControl:
         body = resp.data.decode()
         assert "flash-error" in body
         assert "verify failed" in body
+
+
+class TestPdbGridLayout:
+    """The grid is drawn as the frame is mounted (web._pdb_layout): boards
+    15..8 across the top reading chip B then A with channel 0 at the top,
+    boards 0..7 below reading A then B with channel 7 at the top."""
+
+    def test_layout_rows(self):
+        from choco.web import _pdb_layout
+        rows = _pdb_layout(set(range(16)))
+        assert [r["boards"] for r in rows] == [list(range(15, 7, -1)), list(range(8))]
+        assert [r["chips"] for r in rows] == [["B", "A"], ["A", "B"]]
+        assert [r["channels"] for r in rows] == [list(range(8)), list(range(7, -1, -1))]
+
+    def test_top_row_only_when_an_upper_board_reports(self):
+        from choco.web import _pdb_layout
+        rows = _pdb_layout({0, 1})
+        assert len(rows) == 1 and rows[0]["boards"] == list(range(8))
+        rows = _pdb_layout({0, 8})
+        assert [r["boards"][0] for r in rows] == [15, 0]
+
+    def test_boards_beyond_the_frame_get_their_own_rows(self):
+        from choco.web import _pdb_layout
+        rows = _pdb_layout({3, 16, 17})
+        assert [r["boards"] for r in rows] == [list(range(8)), [16, 17]]
+
+    def test_rendered_order_matches_the_frame(self, client, app):
+        _login(client)
+        monitor = app.config["pdb_monitor"]
+        monitor.boards = {0: 16}
+        monitor.channels = {0: [{"board": b, "chip": c, "channels": [False] * 8}
+                                for b in range(16) for c in "AB"]}
+        body = client.get("/service/pdb").data.decode()
+        heads = re.findall(r'class="boardhead[^"]*"[^>]*>board (\d+)<', body)
+        assert heads == [str(b) for b in range(15, 7, -1)] + [str(b) for b in range(8)]
+        chips = re.findall(r'class="chiphead[^"]*">([AB])<', body)
+        assert chips[:4] == ["B", "A", "B", "A"] and chips[16:20] == ["A", "B", "A", "B"]
+        chans = re.findall(r'class="chanhead">ch(\d)<', body)
+        assert chans == [str(c) for c in range(8)] + [str(c) for c in range(7, -1, -1)]
+        # Every cell is addressed by its own slot: the top-left cell is
+        # board 15 chip B channel 0, the bottom block opens with board 0
+        # chip A channel 7.
+        cells = re.findall(r'title="bus 0 board (\d+) chip ([AB]) ch(\d)', body)
+        assert len(cells) == 256
+        assert cells[0] == ("15", "B", "0") and cells[1] == ("15", "A", "0")
+        assert cells[16] == ("15", "B", "1")
+        assert cells[128] == ("0", "A", "7") and cells[129] == ("0", "B", "7")
+        assert 'class="absent"' not in body and ' absent"' not in body
+
+    def test_missing_board_leaves_its_slot_empty(self, client, app):
+        _login(client)
+        monitor = app.config["pdb_monitor"]
+        monitor.boards = {0: 2}
+        monitor.channels = {0: [{"board": b, "chip": c, "channels": [False] * 8}
+                                for b in (0, 1) for c in "AB"]}
+        body = client.get("/service/pdb").data.decode()
+        heads = re.findall(r'class="boardhead( absent)?"[^>]*>board (\d+)<', body)
+        assert [h[1] for h in heads] == [str(b) for b in range(8)]
+        assert [bool(h[0]) for h in heads] == [False, False] + [True] * 6
+        assert body.count('<td class="absent"></td>') == 6 * 2 * 8
+
+
+class TestPdbDishLayout:
+    """The PDB page's second grid: dishes as they stand in the field, with
+    per-row, per-pol power buttons whose channels come from the map."""
+
+    MAP = (
+        "spi_bus,board,chip,channel,dish_input,amplifier,notes\n"
+        "0,0,A,0,A01X,,\n0,0,A,1,A01Y,,\n0,0,A,2,A02X,,\n0,0,A,3,A02Y,,\n"
+        "0,0,B,0,RFIA1X,,\n0,0,B,1,RFIA1Y,,\n")
+
+    def _configure(self, app, configs_dir, control=True):
+        monitor = app.config["pdb_monitor"]
+        monitor.host, monitor.port = "pdb.example", 5000
+        monitor.channels = {0: [
+            {"board": 0, "chip": "A", "channels": [True, False, True, False] + [False] * 4},
+            {"board": 0, "chip": "B", "channels": [True] + [False] * 7},
+        ]}
+        app.config["pdb_cfg"] = {"host": monitor.host, "port": monitor.port,
+                                 "control": control}
+        (configs_dir / "pdb_map.csv").write_text(self.MAP)
+        return monitor
+
+    def test_dish_layout_renders_the_field(self, client, app, configs_dir):
+        self._configure(app, configs_dir)
+        _login(client)
+        body = client.get("/service/pdb?layout=dish").data.decode()
+        assert 'class="dish-grid"' in body and 'class="pdb-grid"' not in body
+        assert re.findall(r'class="rowhead">([^<]*)<', body) == list("ABCDEFGH") + ["RFI"]
+        assert re.findall(r'class="dish-name">([^<]*)<', body) == ["A01", "A02", "RFIA1"]
+        # A01X and A02X are on, their Y pols off; RFIA1X on
+        assert body.count(">● X<") == 3 and body.count(">○ Y<") == 3
+        # every frame slot the map does not name is drawn empty
+        assert body.count('<td class="absent"></td>') == 64 - 2
+        # the poll and every control post carry the layout
+        assert "hx-vals='{\"layout\": \"dish\"}'" in body
+        assert 'aria-current="page"' in body
+
+    def test_bulkhead_is_the_default_and_the_fallback(self, client, app, configs_dir):
+        self._configure(app, configs_dir)
+        _login(client)
+        for url in ("/service/pdb", "/service/pdb?layout=nope"):
+            body = client.get(url).data.decode()
+            assert 'class="pdb-grid"' in body and 'class="dish-grid"' not in body
+            assert "hx-vals='{\"layout\": \"bulkhead\"}'" in body
+
+    def test_partial_follows_the_layout(self, client, app, configs_dir):
+        self._configure(app, configs_dir)
+        _login(client)
+        body = client.get("/partials/service-pdb?layout=dish").data.decode()
+        assert 'class="dish-grid"' in body
+
+    def test_row_power_buttons_per_pol(self, client, app, configs_dir):
+        self._configure(app, configs_dir)
+        _login(client)
+        body = client.get("/service/pdb?layout=dish").data.decode()
+        assert "/service/pdb/set-row" in body
+        # rows A and RFI have both pols mapped; empty rows get no buttons
+        assert body.count(">X on<") == 2 and body.count(">X off<") == 2
+        assert body.count(">Y on<") == 2 and body.count(">Y off<") == 2
+        assert "all 2 X channels of row A?" in body
+
+    def test_set_row_resolves_channels_through_the_map(self, client, app, configs_dir):
+        from unittest.mock import patch
+        monitor = self._configure(app, configs_dir)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channels",
+                          return_value=(True, "row A pol X: 2 channels off")) as sc:
+            resp = client.post("/service/pdb/set-row",
+                               data={"_csrf_token": token, "row": "A", "pol": "X",
+                                     "state": "off", "layout": "dish"},
+                               headers={"HX-Request": "true"})
+        sc.assert_called_once_with([(0, 0, "A", 0), (0, 0, "A", 2)], False, "row A pol X")
+        body = resp.data.decode()
+        assert 'class="dish-grid"' in body
+        assert "PDB: row A pol X: 2 channels off" in body
+
+    def test_set_row_with_nothing_mapped_writes_nothing(self, client, app, configs_dir):
+        from unittest.mock import patch
+        monitor = self._configure(app, configs_dir)
+        _login(client)
+        token = _csrf(client)
+        with patch.object(monitor, "set_channels") as sc:
+            resp = client.post("/service/pdb/set-row",
+                               data={"_csrf_token": token, "row": "B", "pol": "X",
+                                     "state": "on"}, headers={"HX-Request": "true"})
+        sc.assert_not_called()
+        assert "no channels in the map" in resp.data.decode()
+
+    @pytest.mark.parametrize("form", [
+        {"row": "Z", "pol": "X", "state": "on"},      # not a row of the layout
+        {"row": "A", "pol": "Q", "state": "on"},      # not a polarization
+        {"row": "A", "pol": "X"},                     # no state
+        {"row": "../etc", "pol": "X", "state": "on"},
+    ])
+    def test_set_row_bad_params_400(self, client, app, configs_dir, form):
+        self._configure(app, configs_dir)
+        _login(client)
+        token = _csrf(client)
+        resp = client.post("/service/pdb/set-row", data={"_csrf_token": token, **form})
+        assert resp.status_code == 400
+
+    def test_set_row_requires_csrf_and_control(self, client, app, configs_dir):
+        self._configure(app, configs_dir)
+        _login(client)
+        resp = client.post("/service/pdb/set-row", data={"row": "A", "pol": "X", "state": "on"})
+        assert resp.status_code == 403
+        self._configure(app, configs_dir, control=False)
+        token = _csrf(client)
+        resp = client.post("/service/pdb/set-row",
+                           data={"_csrf_token": token, "row": "A", "pol": "X", "state": "on"})
+        assert resp.status_code == 403
 
 
 class TestPdbGroupControl:

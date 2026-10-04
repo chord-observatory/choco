@@ -6,21 +6,21 @@ table.files td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.files td.wf a { text-decoration: none; }
 table.files td.name { font-family: var(--pico-font-family, monospace); font-size: 0.9em; }
 table.files td, table.files th { padding: 0.3em 0.6em; }
-.root-header { display: flex; align-items: baseline; gap: 0.75em; flex-wrap: wrap; margin-top: 1.5em; }
-.root-header h4 { margin: 0; font-family: monospace; font-size: 1em; }
-.root-header small { color: #666; }
-.scan-note { color: #666; font-size: 0.85em; }
+.root-header h3 { font-family: var(--pico-font-family-monospace); font-size: 1em; }
+.root-header small { color: var(--pico-muted-color); }
 {% endblock %}
 
 {% block content %}
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5em; margin-bottom: 0.5em;">
-    <h2 style="margin: 0;">Data files</h2>
+<div class="page-head">
+    <h2>Data files</h2>
     {% if configured %}
-    <button class="outline build-toggle"
-            hx-get="/partials/files?refresh=1"
-            hx-target="#files-table"
-            hx-swap="innerHTML"
-            hx-indicator="#files-table">Rescan</button>
+    <div class="page-actions">
+        <button class="secondary outline btn-sm"
+                hx-get="/partials/files?refresh=1"
+                hx-target="#files-table"
+                hx-swap="innerHTML"
+                hx-indicator="#files-table">Rescan</button>
+    </div>
     {% endif %}
 </div>
 
@@ -28,7 +28,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 <p>No data roots configured. Set <code>vis_files.roots</code> in
    <code>config.yaml</code> to a list of directories to scan.</p>
 {% else %}
-<p class="scan-note">
+<p class="note">
     HDF5 files directly inside each subdirectory of the configured roots.
     Files still being written under <code>.partial</code> are not counted.
     <strong>Waterfalls</strong> counts the files folded into each acquisition's

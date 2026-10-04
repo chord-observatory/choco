@@ -43,7 +43,7 @@ choco-server = "choco.app:main"   # the daemon
 include = ["choco*"]
 
 [tool.setuptools.package-data]
-choco = ["templates/*.html", "static/*"]
+choco = ["templates/*.html", "static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

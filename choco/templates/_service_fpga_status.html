@@ -1,9 +1,9 @@
-{% from "_service_macros.html" import monitor_color, monitor_label, since, pill_style %}
+{% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
 <dl class="service-facts">
     <dt>Endpoint</dt>
     <dd>{% if fpga.configured %}<code>http://{{ fpga.host }}:{{ fpga.port }}</code>{% else %}<em>not configured (fpga_master.host / port)</em>{% endif %}</dd>
     <dt>Health</dt>
-    <dd><span style="{{ pill_style() }} background: {{ monitor_color(fpga.health) }}; font-size: 0.85em;">{{ monitor_label(fpga.health) }}</span></dd>
+    <dd>{{ tag(monitor_tone(fpga.health), monitor_label(fpga.health)) }}</dd>
     {% if fpga.state %}
     <dt>State</dt>
     <dd><code>{{ fpga.state }}</code></dd>
@@ -26,9 +26,9 @@
     {% endif %}
 </dl>
 {% if actions %}
-<h4 style="margin-bottom: 0.25em;">Recent actions</h4>
-<figure style="margin: 0 0 1.5em 0; overflow-x: auto;">
-<table style="margin: 0; font-size: 0.85em;">
+<h3>Recent actions</h3>
+<figure class="scroll-x">
+<table class="table-sm">
     <thead>
         <tr><th>When</th><th>Action</th><th>By</th><th>Outcome</th></tr>
     </thead>

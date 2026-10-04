@@ -1,28 +1,20 @@
 {% extends "base.html" %}
-{% from "_service_macros.html" import job_color, job_label, since, pill_style %}
+{% from "_service_macros.html" import job_tone, job_label, since, tag %}
 
 {% block title %}{{ name | upper }} — CHOCO{% endblock %}
 
 {% block styles %}
-dl.service-facts {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.15em 1.25em;
-    margin: 0.5em 0 1.5em 0;
-    font-size: 0.95em;
-}
-dl.service-facts dt { font-weight: 600; }
-dl.service-facts dd { margin: 0; }
-.journal-header { display: flex; align-items: baseline; gap: 0.75em; }
-.journal-header .lines-picker { margin-left: auto; font-size: 0.85em; }
+.lines-picker { margin-left: auto; font-size: 0.85em; }
 {% endblock %}
 
 {% block content %}
-<hgroup style="margin-bottom: 0.75em;">
-    <h2 style="display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.2em;">
-        {{ name | upper }}
-        <span style="{{ pill_style() }} background: {{ job_color(job.health) }}; font-size: 0.55em;">{{ job_label(job.health, job.running) }}</span>
+<div class="page-head">
+    <h2>
+        <a href="/" class="crumb">Services</a><span class="crumb-sep">/</span>{{ name | upper }}
+        {{ tag(job_tone(job.health, job.running), job_label(job.health, job.running)) }}
     </h2>
+</div>
+<div class="note" style="margin-bottom: 1em;">
     {% if name == 'choco' %}
     <p>The config orchestrator itself.</p>
     {% elif name == 'eop' %}
@@ -36,7 +28,7 @@ dl.service-facts dd { margin: 0; }
     {% elif name == 'skymap' %}
     <p>Current-sky strip plot — renders the beam's drift-scan strip with the Sun, Moon and pointing every 5 minutes, in a day and a night palette. <a href="/">Shown on the landing page</a>.</p>
     {% endif %}
-</hgroup>
+</div>
 
 <div id="service-flash"></div>
 <div id="service-status"
@@ -55,9 +47,9 @@ dl.service-facts dd { margin: 0; }
 </section>
 {% endif %}
 
-<section>
-    <div class="journal-header">
-        <h4 style="margin-bottom: 0.25em;">Journal</h4>
+<section class="journal">
+    <div class="section-head">
+        <h3>Journal</h3>
         <span class="lines-picker">
             {% for n in (50, 100, 500, 1000) %}
             {% if n == nlines %}<strong>{{ n }}</strong>{% else %}<a href="/service/{{ name }}?lines={{ n }}">{{ n }}</a>{% endif %}

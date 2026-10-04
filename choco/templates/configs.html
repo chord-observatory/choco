@@ -1,15 +1,14 @@
 {% extends "base.html" %}
-{% block title %}CHOCO - Configs{% endblock %}
+{% block title %}Configs — CHOCO{% endblock %}
 
 {% block content %}
-<h2>Config library</h2>
-<p><small>Every config file under the configs directory. A node renders the file
-<code>nodes.yaml</code> names for it, or its own <code>&lt;group&gt;/&lt;node&gt;</code>
-file when it names none. A file may <code>{% raw %}{% include %}{% endraw %}</code>
-others, which resolve from its own directory first and the configs root second,
-exactly as kotekan's own loader resolves them. Saving a file re-renders every node
-that uses it, and a change that would not render on one of them is refused.
-Outside maintenance each re-rendered node then restarts onto the new config.</small></p>
+<div class="page-head">
+    <h2>Config library</h2>
+</div>
+<p class="note">Every config file under the configs directory, with the nodes that render or
+include it. <strong>Saving a file re-renders every node that uses it</strong> (a change that
+would not render on one of them is refused) and, <strong>outside maintenance, restarts
+them</strong> onto the new config.</p>
 
 <table>
     <thead>
@@ -26,14 +25,13 @@ Outside maintenance each re-rendered node then restarts onto the new config.</sm
         {% for f in files %}
         <tr>
             <td><code>{{ f.path }}</code></td>
-            <td>{{ f.size if f.size is not none else "—" }}</td>
+            <td>{{ f.size | filesize if f.size is not none else "—" }}</td>
             <td>{{ f.modified or "—" }}</td>
-            <td>{% if f.is_vars %}<em>every node (template variables)</em>{% else %}{{ f.used_by | join(", ") or "—" }}{% endif %}</td>
-            <td>{{ f.included_by | join(", ") or "—" }}</td>
+            <td>{% if f.is_vars %}<em>every node (template variables)</em>{% elif f.used_by %}{{ f.used_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td>{% if f.included_by %}{{ f.included_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
             <td style="white-space: nowrap;">
-                <a href="/configs/edit/{{ f.path }}" role="button" class="outline"
-                   title="Edit {{ f.path }}{% if f.is_vars %} (template variables, read by every node){% elif f.used_by or f.included_by %}; saving re-renders {{ (f.used_by + f.included_by) | join(', ') }}{% else %}; no node uses it yet{% endif %}"
-                   style="padding: 0.1em 0.5em; margin: 0; font-size: 0.8em;">Edit</a>
+                <a href="/configs/edit/{{ f.path }}" role="button" class="secondary outline btn-sm"
+                   title="Edit {{ f.path }}{% if f.is_vars %} (template variables, read by every node){% elif f.used_by or f.included_by %}; saving re-renders {{ (f.used_by + f.included_by) | join(', ') }}{% else %}; no node uses it yet{% endif %}">Edit</a>
             </td>
         </tr>
         {% else %}
@@ -43,12 +41,11 @@ Outside maintenance each re-rendered node then restarts onto the new config.</sm
 </table>
 
 <h3>New file</h3>
-<form method="post" action="/configs/new" style="display: flex; gap: 0.5em; align-items: center;">
+<form method="post" action="/configs/new" class="action-row">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <input type="text" name="name" placeholder="chord/pathfinder.j2" required
-           style="margin: 0; flex: 1; font-family: monospace;">
-    <button type="submit" style="margin: 0; width: auto;">Create</button>
+    <input type="text" name="name" placeholder="chord/pathfinder.j2" required class="mono">
+    <button type="submit" class="btn-inline">Create</button>
 </form>
-<p><small>A path under the configs directory ending in <code>.yaml</code>, <code>.yml</code>
-or <code>.j2</code>; directories are created as needed.</small></p>
+<p class="note">A path under the configs directory ending in <code>.yaml</code>, <code>.yml</code>
+or <code>.j2</code>; directories are created as needed.</p>
 {% endblock %}

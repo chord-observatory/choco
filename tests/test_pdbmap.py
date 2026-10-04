@@ -224,3 +224,78 @@ class TestCrossCheck:
         result = cross_check(PdbMap(), _sets(live=["A1X"]))
         assert result["n_mapped"] == 0
         assert result["missing_in_map"] == ["A1X"]
+
+
+class TestDishLayout:
+    """The map laid out as the dishes stand in the field (dish_layout),
+    and the row lookup the PDB page's row power controls resolve through."""
+
+    @staticmethod
+    def _map(labels):
+        from choco.pdbmap import PdbMap, PdbMapEntry
+        entries = [PdbMapEntry(0, i // 16, "AB"[(i // 8) % 2], i % 8, lab)
+                   for i, lab in enumerate(labels)]
+        return PdbMap(entries=entries)
+
+    def test_parse_dish_input(self):
+        from choco.pdbmap import parse_dish_input
+        assert parse_dish_input("A01X") == ("A", "A01", "X")
+        assert parse_dish_input("H08Y") == ("H", "H08", "Y")
+        assert parse_dish_input("RFIA1Y") == ("RFI", "RFIA1", "Y")
+        assert parse_dish_input("RFIB12X") == ("RFI", "RFIB12", "X")
+        for bad in ("A1X", "A01Z", "a01x", "placeholder-7", "", "RFIX"):
+            assert parse_dish_input(bad) is None, bad
+
+    def test_full_field_and_rfi_row(self):
+        from choco.pdbmap import dish_layout
+        labels = [f"{r}{c:02d}{p}" for r in "ABCDEFGH" for c in range(1, 9) for p in "XY"]
+        labels += [f"RFI{a}{p}" for a in ("A1", "A2", "B1") for p in "XY"]
+        layout = dish_layout(self._map(labels))
+        assert layout["cols"] == [f"{c:02d}" for c in range(1, 9)]
+        assert [r["name"] for r in layout["rows"]] == list("ABCDEFGH") + ["RFI"]
+        a = layout["rows"][0]
+        assert [c["name"] for c in a["cells"]] == [f"A{c:02d}" for c in range(1, 9)]
+        assert a["cells"][0]["pols"]["X"].dish_input == "A01X"
+        assert a["cells"][0]["pols"]["Y"].dish_input == "A01Y"
+        rfi = layout["rows"][-1]
+        assert [c["name"] for c in rfi["cells"]] == ["RFIA1", "RFIA2", "RFIB1"]
+
+    def test_missing_slot_and_missing_pol(self):
+        from choco.pdbmap import dish_layout
+        layout = dish_layout(self._map(["A01X", "A03X", "A03Y"]))
+        a = layout["rows"][0]["cells"]
+        assert a[0]["name"] == "A01" and a[0]["pols"]["Y"] is None
+        assert a[1] is None
+        assert a[2]["pols"]["X"].dish_input == "A03X"
+        assert a[3:] == [None] * 5
+        assert [r["name"] for r in layout["rows"]] == list("ABCDEFGH")   # no RFI row
+
+    def test_unparsable_labels_land_in_an_other_row(self):
+        from choco.pdbmap import dish_layout
+        layout = dish_layout(self._map(["A01X", "placeholder-7"]))
+        other = layout["rows"][-1]
+        assert other["name"] == "other"
+        assert other["cells"][0]["name"] == "placeholder-7"
+        assert list(other["cells"][0]["pols"]) == [""]
+
+    def test_dishes_outside_the_frame_are_kept(self):
+        from choco.pdbmap import dish_layout
+        layout = dish_layout(self._map(["A09X", "J01Y"]))
+        a = layout["rows"][0]["cells"]
+        assert len(a) == 9 and a[-1]["name"] == "A09"
+        assert [r["name"] for r in layout["rows"]] == list("ABCDEFGH") + ["J"]
+
+    def test_rfi_antennas_in_natural_order(self):
+        from choco.pdbmap import dish_layout
+        layout = dish_layout(self._map(["RFIA10X", "RFIA2X", "RFIA1X"]))
+        assert [c["name"] for c in layout["rows"][-1]["cells"]] == ["RFIA1", "RFIA2", "RFIA10"]
+
+    def test_row_entries(self):
+        from choco.pdbmap import dish_layout, row_entries
+        labels = [f"A{c:02d}X" for c in range(1, 9)] + ["A01Y", "RFIA1X", "RFIA1Y"]
+        layout = dish_layout(self._map(labels))
+        assert [e.dish_input for e in row_entries(layout, "A", "X")] == [f"A{c:02d}X" for c in range(1, 9)]
+        assert [e.dish_input for e in row_entries(layout, "A", "Y")] == ["A01Y"]
+        assert [e.dish_input for e in row_entries(layout, "RFI", "Y")] == ["RFIA1Y"]
+        assert row_entries(layout, "B", "X") == []          # a frame row with nothing mapped
+        assert row_entries(layout, "Z", "X") is None        # not a row at all

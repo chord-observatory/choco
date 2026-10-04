@@ -1,9 +1,11 @@
 {% extends "base.html" %}
-{% block title %}CHOCO - {{ entry.path }}{% endblock %}
+{% block title %}{{ entry.path }} — CHOCO{% endblock %}
 
 {% block content %}
-<h2><a href="/configs">Configs</a> / <code>{{ entry.path }}</code></h2>
-<p><small>
+<div class="page-head">
+    <h2><a href="/configs" class="crumb">Configs</a><span class="crumb-sep">/</span><code>{{ entry.path }}</code></h2>
+</div>
+<p class="note">
 {% if entry.is_vars %}
 Template variables, read by every node.
 {% else %}
@@ -12,15 +14,15 @@ Included by: {{ entry.included_by | join(", ") or "no node" }}.
 {% endif %}
 Saving re-renders those nodes; outside maintenance each one then restarts onto the new config.
 A change that would not render on one of them is refused.
-</small></p>
+</p>
 
 <form method="post">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <textarea name="content" rows="30"
-              style="font-family: monospace; font-size: 0.9em; tab-size: 2;">{{ content }}</textarea>
+    <textarea name="content" rows="30" class="mono"
+              style="font-size: 0.9em; tab-size: 2;">{{ content }}</textarea>
     <div style="display: flex; gap: 0.5em; margin-top: 0.5em;">
         <button type="submit">Save</button>
-        <a href="/configs" role="button" class="outline" title="Back to the config library without saving">Back</a>
+        <a href="/configs" role="button" class="secondary outline" title="Back to the config library without saving">Back</a>
     </div>
 </form>
 {% endblock %}
