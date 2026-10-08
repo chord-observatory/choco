@@ -1,0 +1,10 @@
+[Unit]
+Description=fold new visibility files into the sky maps (every 2 min; self-gating)
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=2min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target

@@ -1,8 +1,9 @@
-{% from "_service_macros.html" import monitor_tone, monitor_label, job_tone, job_label, since, tag %}
+{% from "_service_macros.html" import monitor_tone, monitor_label, job_tone, job_label, data_tone, data_word, since, tag %}
 {% set now = now_ts %}
-{# Every badge is quiet while ok: label and dot only, the state in the
-   tooltip and aria-label.  The word and the tint appear only when the
-   state is not ok, so the eye lands on what needs attention. #}
+{# Every badge is quiet: label and dot only, the state in the tooltip
+   and aria-label, so the strip's layout never shifts with the state.
+   Only the tint appears when the state is not ok, so the eye lands on
+   what needs attention. #}
 {% macro job_tag(label, name, job, mtime_label) -%}
 {% set tip = label ~ ' job (' ~ job.unit ~ ')'
              ~ '\nhealth: ' ~ job.health
@@ -42,15 +43,25 @@
              ~ '\n\nclick for details' %}
 {{ tag(monitor_tone(pdb.health), monitor_label(pdb.health), label='PDB', href='/service/pdb', title=tip, quiet=true) }}
 {% endif %}
-{% if data %}
-{% set tip = 'Data-file roots (' ~ data.n_roots ~ ')'
-             ~ '\nhealth: ' ~ data.health
-             ~ ('\nreachable: ' ~ data.n_ok ~ ' / ' ~ data.n_roots if data.n_roots else '')
-             ~ ('\nlast seen: ' ~ since(data.last_seen, now) if data.last_seen else '')
-             ~ ('\nerror: ' ~ data.error if data.error else '')
+{# DATA is the mounts and the waterfall renderer that reads them, one
+   tag (data_tone / data_word pick the worse half); the renderer has no
+   badge of its own (its registry entry names this page). #}
+{% set wf = services.waterfall %}
+{% if data or wf %}
+{% set tip = 'Data-file roots' ~ (' (' ~ data.n_roots ~ ')' if data else '') ~ ' and the waterfall renderer'
+             ~ (('\nmounts: ' ~ data.health
+                 ~ (' · reachable ' ~ data.n_ok ~ ' / ' ~ data.n_roots if data.n_roots else '')
+                 ~ (' · last seen ' ~ since(data.last_seen, now) if data.last_seen else '')
+                 ~ ('\nerror: ' ~ data.error if data.error else '')) if data else '')
+             ~ (('\nwaterfall (' ~ wf.unit ~ '): ' ~ job_label(wf.health, wf.running)
+                 ~ (' · ' ~ svc.waterfall.mtime_label ~ ' ' ~ since(wf.state_mtime, now) if wf.state_mtime else '')
+                 ~ ('\nresult: ' ~ wf.result if wf.result else '')
+                 ~ ('\nwhy: ' ~ (wf.reasons | join('\nwhy: ')) if wf.reasons else '')
+                 ~ ('\na run is in progress; showing the last completed one' if wf.running else '')
+                 ~ ('' if wf.systemd else '\nsystemd not reachable')) if wf else '')
              ~ '\n\nclick for details' %}
-{{ tag(monitor_tone(data.health), monitor_label(data.health), label='DATA', href='/files', title=tip, quiet=true) }}
+{{ tag(data_tone(data, wf), data_word(data, wf), label='DATA', href='/files', title=tip, quiet=true) }}
 {% endif %}
-{% for name, s in svc.items() if s.kind == 'job' %}
+{% for name, s in svc.items() if s.kind == 'job' and not s.page %}
 {{ job_tag(s.label, name, services[name], s.mtime_label) }}
 {% endfor %}

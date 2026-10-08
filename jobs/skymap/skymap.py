@@ -2,7 +2,7 @@
 """Current-sky strip plot for CHORD at DRAO Penticton (choco job).
 
 Renders the drift-scan strip on a Mollweide projection in galactic
-coordinates — RA/Dec grid, ecliptic, faded radio-sky background, the
+coordinates — RA/Dec grid, ecliptic, a faded 408 MHz sky backdrop, the
 CHORD beam centre and HPBW bands, bright sources near the beam — with
 the **current** positions of the Sun, the Moon and the beam itself (a
 "beam now" marker where the meridian crosses the strip, plus local-time
@@ -22,7 +22,8 @@ never serve a half-written image.  There is no state file: the
 image is the record (its title carries the render time) and the SKYMAP
 badge reads the unit's result from systemd.  Exit codes follow the jobs
 convention: 0 ok, 2 degraded (choco unreachable, no pointing found —
-the previous image simply stays up), 1 config error / bug.
+the previous image simply stays up; or the sky map is missing, and the
+images render on a plain page), 1 config error / bug.
 
 Derived from a standalone visualizer written iteratively via
 conversation with Claude (Anthropic) with input from a user running
@@ -44,12 +45,12 @@ import numpy as np
 import yaml
 
 from choco.dishlabels import find_key
+from choco.healpix import default_sky_map, load_healpix, log_stretch, sample_galactic
 from choco.jobclient import get_json, job_state_dir
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
 from matplotlib.colors import to_rgb, to_rgba
 from matplotlib.font_manager import FontProperties
 from matplotlib.lines import Line2D
@@ -83,8 +84,10 @@ DEFAULTS = {
     # --state-dir overrides) as skymap.png and skymap-night.png, where
     # choco serves them from; night: false skips the dark-palette render.
     "night": True,
-    "background_image": str(SCRIPT_DIR / "sky_background.png"),
-    "background_fade": 0.42,   # 0 = flat page colour; 1 = full sky image
+    # HEALPix FITS behind the projection ("" = none); choco.sh install
+    # fetches it next to this script.
+    "background_map": default_sky_map(SCRIPT_DIR.parent),
+    "background_fade": 0.55,   # 0 = flat page colour; 1 = full sky image
     "dpi": 130,
     "timezone": "America/Vancouver",
 }
@@ -178,6 +181,43 @@ def split_wrap(l, b):
         l = np.insert(l, idx + 1, np.nan)
         b = np.insert(b, idx + 1, np.nan)
     return l, b
+
+
+# ============================================================================
+# Radio-sky backdrop: the 408 MHz all-sky map (choco.healpix), projected
+# onto the same Mollweide frame the overlay draws in.
+# ============================================================================
+def mollweide_raster(m, nside, width):
+    """Sample a Galactic HEALPix map onto a *width* x *width*/2 raster of
+    the Mollweide frame the overlay uses: x = -l (longitude increasing to
+    the left, the Galactic centre in the middle), y = b, row 0 at the top.
+    Pixels outside the ellipse are NaN."""
+    h = width // 2
+    X = (np.arange(width) + 0.5) / width * 2 - 1           # [-1, 1]
+    Y = 1 - (np.arange(h) + 0.5) / h * 2                   # +1 at the top
+    X, Y = np.meshgrid(X, Y)
+    inside = X ** 2 + Y ** 2 < 1
+    aux = np.arcsin(np.clip(Y, -1, 1))                     # Mollweide's auxiliary angle
+    lat = np.arcsin(np.clip((2 * aux + np.sin(2 * aux)) / np.pi, -1, 1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lon = np.pi * X / np.cos(aux)                      # plotted longitude = -l
+    inside &= np.abs(lon) <= np.pi
+    out = np.full(X.shape, np.nan)
+    out[inside] = sample_galactic(m, nside, -lon[inside], lat[inside])
+    return out
+
+
+def sky_backdrop(path, width=1800, cmap="inferno"):
+    """The backdrop as RGBA in [0, 1] (alpha 0 outside the sky ellipse):
+    log brightness temperature, linear between the 1st and 99.7th sky
+    percentiles, through *cmap*."""
+    m, nside = load_healpix(path)
+    raster = mollweide_raster(m, nside, width)
+    sky = np.isfinite(raster)
+    x = log_stretch(m, raster[sky])
+    rgba = np.zeros(raster.shape + (4,))
+    rgba[sky] = plt.get_cmap(cmap)(np.nan_to_num(x))
+    return rgba
 
 
 # ============================================================================
@@ -452,13 +492,15 @@ class LabelPlacer:
                                 **annotate_kw)
 
 
-def plot_skymap(cfg, beams, now=None, theme="day", output=None):
+def plot_skymap(cfg, beams, now=None, theme="day", output=None, sky=None):
     """Render the strip plot for *beams* = [(dec_deg, origin), ...] to
     the PNG path *output*.
 
     *theme* names an entry of THEMES.  The day and night images of one
     run are drawn from the same *now*, so pass it explicitly when
-    rendering both.
+    rendering both.  *sky* is the backdrop from :func:`sky_backdrop`
+    (projected once per run, shared by both themes), or None for a
+    plain page.
     """
     if theme not in THEMES:
         raise ValueError(f"unknown theme {theme!r}; one of {list(THEMES)}")
@@ -466,10 +508,10 @@ def plot_skymap(cfg, beams, now=None, theme="day", output=None):
         raise ValueError("plot_skymap needs an output path")
     T = THEMES[theme]
     with plt.rc_context(T["rc"]):
-        return _plot_skymap(cfg, beams, now, T, output)
+        return _plot_skymap(cfg, beams, now, T, output, sky)
 
 
-def _plot_skymap(cfg, beams, now, T, output):
+def _plot_skymap(cfg, beams, now, T, output, sky):
     drao = EarthLocation(lat=DRAO_LAT * u.deg, lon=DRAO_LON * u.deg,
                          height=DRAO_ALT * u.m)
     now = now or Time.now()
@@ -487,10 +529,8 @@ def _plot_skymap(cfg, beams, now, T, output):
     ax_pos = [0.06, 0.18, 0.88, 0.72]
 
     # Background image axes (matched to Mollweide's 2:1 aspect)
-    bg = cfg["background_image"]
-    if bg and os.path.exists(bg):
-        sky_img = mpimg.imread(bg)
-        rgb = sky_img[..., :3]
+    if sky is not None:
+        rgb = sky[..., :3]
         fade = float(cfg["background_fade"])
         page = np.array(to_rgb(T["face"]))
         faded = np.clip(rgb * fade + (1 - fade) * page, 0, 1)
@@ -834,6 +874,11 @@ def load_config(path):
             loaded = yaml.safe_load(f) or {}
         if not isinstance(loaded, dict):
             raise ValueError(f"{path}: top level must be a mapping")
+        if "background_image" in loaded:
+            raise ValueError(
+                f"{path}: background_image retired: the backdrop is now a HEALPix "
+                f"map, set by background_map (default: the 408 MHz map that "
+                f"choco.sh install fetches next to skymap.py; \"\" for none)")
         retired = [k for k in _RETIRED_KEYS if k in loaded]
         if retired:
             raise ValueError(
@@ -889,20 +934,36 @@ def main(argv=None):
     # before either render.  Each write is atomic on its own; a failure
     # partway leaves whichever images did land, both from this run or
     # both from the last.
+    # The backdrop, projected once for both themes.  A configured map
+    # that is missing (not yet fetched, unreadable) still renders, on a
+    # plain page, and reports degraded; one in the wrong layout is a
+    # config error.
+    sky, degraded = None, None
+    if cfg["background_map"]:
+        try:
+            sky = sky_backdrop(cfg["background_map"])
+        except OSError as e:
+            degraded = f"no sky backdrop ({cfg['background_map']}: {e})"
+            print(f"Warning: {degraded}; rendering without it "
+                  f"(choco.sh install fetches it)", file=sys.stderr)
+        except ValueError as e:
+            print(f"Config error: background_map: {e}", file=sys.stderr)
+            return 1
+
     renders = [("day", str(state_dir / "skymap.png"))]
     if cfg["night"]:
         renders.append(("night", str(state_dir / "skymap-night.png")))
     now = Time.now()
     try:
         for theme, output in renders:
-            plot_skymap(cfg, beams, now=now, theme=theme, output=output)
+            plot_skymap(cfg, beams, now=now, theme=theme, output=output, sky=sky)
     except OSError as e:
         print(f"Render failed: {e}", file=sys.stderr)
         return 2
 
     print(f"Saved {', '.join(o for _, o in renders)} "
           f"({'; '.join(beam_title(d, o) for d, o in beams)})")
-    return 0
+    return 2 if degraded else 0
 
 
 if __name__ == '__main__':

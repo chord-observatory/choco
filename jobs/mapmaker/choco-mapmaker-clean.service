@@ -1,0 +1,26 @@
+[Unit]
+Description=choco job: deconvolve the drift-scan sky map (CLEAN)
+Requires=choco.service
+After=choco.service choco-mapmaker.service
+
+[Service]
+Type=oneshot
+# The mapmaker's own state directory: the deconvolution reads maps.npz
+# there and writes clean.png / clean-strip.png / clean.json beside it.
+StateDirectory=choco/mapmaker
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/mapmaker/clean.sh /etc/choco/mapmaker.yaml
+# No Restart: the script self-gates (nothing to do until the fold-in has
+# added data) and a failed run is simply retried by the next timer tick.
+# Exit 2 = degraded (no accumulators or geometry yet); 1 = config error / bug.
+Nice=10
+IOSchedulingClass=idle
+# A deconvolution is a few minutes of numpy; keep it off the fold-in's
+# and choco's CPU.
+CPUQuota=200%
+CPUWeight=20
+# The accumulators (~130 MB summed), the kernels (~300 MB) and the dirty
+# beam rows it visits (~3.4 MB each, at most one per Dec row).
+MemoryHigh=2G
+MemoryMax=3G

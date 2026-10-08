@@ -166,6 +166,9 @@ class TestFilesRoutes:
         # The page itself does not scan; it defers to the partial.
         assert "/partials/files" in body
         assert "acq_a" not in body
+        # The waterfall renderer's status lives below the scan.
+        assert "Waterfall renderer" in body
+        assert "/partials/service-status/waterfall" in body
 
     def test_partial_lists_dirs_and_counts(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
@@ -181,6 +184,8 @@ class TestFilesRoutes:
         body = client.get("/files").get_data(as_text=True)
         assert "No data roots configured" in body
         assert "/partials/files" not in body
+        # the renderer's half of the page is still there
+        assert "Waterfall renderer" in body
 
     def test_api_returns_raw_numbers(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
@@ -320,11 +325,26 @@ class TestHealth:
         assert scan.last_checked == first
 
 
+# The DATA badge also carries the waterfall renderer (the job that reads
+# these mounts; tests/test_web.py covers that half), so the renderer's
+# job_status is stubbed ok here and the badge is the mounts' alone.
+_RENDERER_OK = {"health": "ok", "running": False, "state_mtime": None,
+                "result": "success", "systemd": True, "active_state": None,
+                "sub_state": None, "exit_status": "0", "state_file": None,
+                "unit": "choco-waterfall.service"}
+
+
+def _strip(client) -> str:
+    from unittest.mock import patch
+    with patch("choco.web.job_status", return_value=dict(_RENDERER_OK)):
+        return client.get("/partials/services").get_data(as_text=True)
+
+
 class TestDataBadge:
     def test_pill_rendered_green_when_up(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
         _login(client)
-        body = client.get("/partials/services").get_data(as_text=True)
+        body = _strip(client)
         assert "DATA" in body
         assert 'href="/files"' in body
         assert 'class="tag tag-ok quiet"' in body    # monitor_tone('ok'), quiet while nominal
@@ -334,14 +354,14 @@ class TestDataBadge:
         client = app.test_client()
         _login(client)
         app.config["datafile_scan"].check_once()
-        body = client.get("/partials/services").get_data(as_text=True)
+        body = _strip(client)
         assert "DATA" in body and 'class="tag tag-bad"' in body    # monitor_tone('down')
         assert "down" in body
 
     def test_unconfigured_pill_is_grey(self, configs_dir):
         client = _app(configs_dir, []).test_client()
         _login(client)
-        body = client.get("/partials/services").get_data(as_text=True)
+        body = _strip(client)
         assert "DATA" in body and "not configured" in body
 
     def test_dashboard_has_no_data_button(self, configs_dir, roots):

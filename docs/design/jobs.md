@@ -39,7 +39,9 @@ route grew a path cross-check purely to catch it.  Now ``choco.jobclient.job_sta
 resolves a job's directory (``--state-dir`` > ``$STATE_DIRECTORY`` >
 ``/var/lib/choco/<name>``), the files inside have fixed names (``state.json``,
 ``run.json``, ``manual_overrides.yaml``, ``waterfall.lock``,
-``gain_<tag>_<source>.h5``, ``skymap.png`` / ``skymap-night.png``), and choco
+``gain_<tag>_<source>.h5``, ``skymap.png`` / ``skymap-night.png``, the mapmaker's
+``maps.npz`` / ``gains.npz`` / ``sky.png`` / ``daily.png`` / ``clean.png`` /
+``clean.json``), and choco
 reads them from its one ``state_dir`` root (``web._state_root``; the test
 app and ``./choco.sh develop`` point it at a scratch directory).  The old
 keys are refused on both sides with the fix named — choco's

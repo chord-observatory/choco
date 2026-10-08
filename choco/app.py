@@ -20,6 +20,7 @@ from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .services import FpgaMonitor, GainArchive, PdbMonitor, FileArchive, newest_file
 from .state import Registry
 from .sync import Orchestrator
+from .upstream import DEFAULTS as _UPSTREAM_DEFAULTS, Upstream
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ _DEFAULT_CONFIG = {
         "max_concurrent_pushes": 4,
         "max_retry_interval": 60,
     },
+    # The config library's upstream: the kotekan directory the /configs
+    # pull mirrors into <configs_dir>/<into>/ (choco/upstream.py).
+    "upstream": dict(_UPSTREAM_DEFAULTS),
     "fpga_master": {},
     "pdb": {},
     "eop": {},
@@ -50,6 +54,7 @@ _DEFAULT_CONFIG = {
     "eigencal": {},
     "waterfall": {},
     "skymap": {},
+    "mapmaker": {},
     "vis_files": {},
     "ldap": {},
     # Where the jobs keep their state (systemd's StateDirectory=choco/<job>).
@@ -89,6 +94,9 @@ _RETIRED_KEYS = (
     (("waterfall", "state_file"), _STATE_FIX),
     (("skymap", "image_file"), _STATE_FIX + "; the job writes skymap/skymap.png"),
     (("skymap", "night_image_file"), _STATE_FIX + "; the job writes skymap/skymap-night.png"),
+    (("mapmaker", "state_file"), _STATE_FIX),
+    (("mapmaker", "image_file"), _STATE_FIX + "; the job writes mapmaker/sky.png and daily.png"),
+    (("mapmaker", "maps_dir"), _STATE_FIX),
 )
 
 
@@ -170,6 +178,12 @@ def load_config(path: str | Path) -> dict:
     config["state_dir"] = state_dir
     config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
     config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
+    upstream_raw = raw.get("upstream")
+    if upstream_raw is not None and not isinstance(upstream_raw, dict):
+        raise ValueError(
+            "upstream must be a mapping (enabled: false turns the pull off)")
+    config["upstream"] = {**_DEFAULT_CONFIG["upstream"], **(upstream_raw or {})}
+    Upstream.from_config(config["upstream"])  # a bad block is a startup error
     config["fpga_master"] = raw.get("fpga_master") or {}
     config["eop"] = raw.get("eop") or {}
     config["pdb"] = raw.get("pdb") or {}
@@ -177,6 +191,7 @@ def load_config(path: str | Path) -> dict:
     config["eigencal"] = raw.get("eigencal") or {}
     config["waterfall"] = raw.get("waterfall") or {}
     config["skymap"] = raw.get("skymap") or {}
+    config["mapmaker"] = raw.get("mapmaker") or {}
     config["vis_files"] = raw.get("vis_files") or {}
     config["ldap"] = raw.get("ldap") or {}
     return config
@@ -286,6 +301,7 @@ def create_app(
     app.config["bffs_cfg"] = config.get("bffs") or {}
     app.config["eigencal_cfg"] = config.get("eigencal") or {}
     app.config["skymap_cfg"] = config.get("skymap") or {}
+    app.config["mapmaker_cfg"] = config.get("mapmaker") or {}
     waterfall_cfg = config.get("waterfall") or {}
     app.config["waterfall_cfg"] = waterfall_cfg
     # Read-only view of the tree jobs/waterfall writes.  No greenlet: the
@@ -296,6 +312,8 @@ def create_app(
     )
     app.config["datafile_scan"] = datafile_scan
     app.config["configs_dir"] = configs_dir
+    # None when upstream.enabled is false: the pull button and routes are off.
+    app.config["upstream"] = Upstream.from_config(config.get("upstream"))
     # Initialize authentication
     init_auth(app, config)
 

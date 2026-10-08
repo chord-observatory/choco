@@ -53,6 +53,44 @@ the ``.updatable/`` store is out of reach), a config suffix, not nodes.yaml,
 inside the configs directory; a bad ``config:`` value is the node's load
 error, which the push guard already respects.
 
+**Upstream pull** (2026-10).  The chord files are kotekan's
+``config/chord/*.j2`` and the library's copy fell behind by hand (three
+config-only commits on the day this was built, among them the
+``num_local_freq`` move out of common.j2 and the drop of keys nothing read).
+"Pull chord from GitHub" on ``/configs`` and ``choco config pull [-n]``
+(``POST /api/configs/pull``) mirror the directory config.yaml's ``upstream:``
+block names (``kotekan/kotekan`` at ``chord``, ``config/chord`` into
+``chord/``, every key defaulted; ``enabled: false`` hides it) through
+``choco/upstream.py``: the ref is resolved to one commit, the directory is
+listed at that commit through the contents API, and each file whose git blob
+sha differs from the local file's (``git_blob_sha``, so an unchanged file
+costs no download and no write) is fetched from raw.githubusercontent.com by
+its *validated* name at that commit and checked against the listing's sha —
+the listing's ``download_url`` is never followed, and a name that is not a
+plain config file under the mirror directory (a directory, a symlink, a
+README) is skipped, reported, and never causes a removal.  The fetched texts
+are validated as one set (``web._check_library_saves``: every node that
+renders or includes any of them is rendered with all of them overlaid, an
+includer's own new text included) because the files are only consistent
+together — the ``num_local_freq`` move was exactly a common.j2 that renders
+only beside the new pathfinder.j2 — and a refusal writes nothing.  Local
+files the listing no longer has are removed unless a node still renders or
+includes them; those are kept and reported, so an upstream rename lands as
+an addition the operator can ``config use``, and the next pull removes the
+old file (refusing the whole pull would deadlock: ``use`` wants the new file
+to exist).  Every write is on disk before the sync loop hears of any of
+them, so no node re-renders a half-pulled set.  Unlike a save, the pull puts
+the nodes it re-renders in maintenance first (``_set_flag``, the toggles'
+path; nodes already paused stay so, and the reply names the ones it paused),
+so a pull never restarts anything: the new set is desired state the sync
+loop pushes when the operator lifts maintenance, one restart at a time of
+their choosing — the three-commit pathfinder update that motivated the pull
+would otherwise have restarted all eight cx nodes the moment the button was
+pressed.
+Stateless (no clone, nothing cached) and anonymous (the repository is
+public; a pull costs two requests plus one per changed file against the
+60/hour limit).
+
 ## Jinja2 rendering
 
 all config files (both `.yaml` and `.j2`) are rendered through Jinja2 using

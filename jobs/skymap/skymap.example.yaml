@@ -30,10 +30,14 @@ beams: [pointing]
 # wall displays in a dim control room; night: false skips it.
 night: true
 
-# Faded radio-sky background behind the projection.  The default is the
-# image shipped with the job; set to an empty string for plain white.
-#background_image: /opt/choco/jobs/skymap/sky_background.png
-background_fade: 0.42     # 0 = flat page colour (white by day, near-black at night); 1 = full sky image
+# Faded radio-sky backdrop behind the projection: a full-sky HEALPix FITS
+# map in Galactic coordinates (RING order), drawn as log brightness in
+# matplotlib's inferno.  The default is the destriped 408 MHz Haslam map
+# (Remazeilles et al. 2015) that choco.sh install fetches next to
+# skymap.py; set "" for a plain page.
+# A missing file renders without it and reports degraded.
+#background_map: /opt/choco/jobs/skymap/haslam408_ds_Remazeilles2014.fits
+background_fade: 0.55     # 0 = flat page colour (white by day, near-black at night); 1 = full sky image
 
 dpi: 130                  # ~1900 px wide; the page shows it at width 100%
 timezone: America/Vancouver   # IANA zone for the strip's clock labels

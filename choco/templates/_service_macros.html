@@ -22,6 +22,33 @@
 {%- else -%}{{ h | replace('_', ' ') }}
 {%- endif -%}
 {%- endmacro %}
+{# The DATA badge covers two things that fail together: the data mounts
+   (datafiles.DataFileScan, a monitor) and the waterfall renderer that
+   reads them (a job).  One tag shows the worse half -- bad over warn over
+   off over ok, the mounts on a tie, since a dead mount is what explains a
+   degraded renderer.  The renderer's word is prefixed so a red DATA
+   whose tooltip says "waterfall failed" cannot be read as a dead mount.  A missing
+   half (no scan object, no job snapshot) simply does not count. #}
+{% macro _data_pick(data, wf) -%}
+{%- set rank = {'bad': 3, 'warn': 2, 'off': 1, 'info': 0, 'ok': 0} -%}
+{%- set mt = monitor_tone(data.health) | trim if data else none -%}
+{%- set jt = job_tone(wf.health, wf.running) | trim if wf else none -%}
+{%- if mt is none -%}renderer
+{%- elif jt is none -%}mounts
+{%- elif rank[jt] > rank[mt] -%}renderer
+{%- else -%}mounts
+{%- endif -%}
+{%- endmacro %}
+{% macro data_tone(data, wf) -%}
+{%- if _data_pick(data, wf) | trim == 'renderer' -%}{{ job_tone(wf.health, wf.running) }}
+{%- else -%}{{ monitor_tone(data.health) }}
+{%- endif -%}
+{%- endmacro %}
+{% macro data_word(data, wf) -%}
+{%- if _data_pick(data, wf) | trim == 'renderer' -%}waterfall {{ job_label(wf.health, wf.running) }}
+{%- else -%}{{ monitor_label(data.health) }}
+{%- endif -%}
+{%- endmacro %}
 {# job states: ok; degraded (dependency/input trouble, exit 2) and stale
    warn; failed (config/bug) bad; never_run/unknown off -- unless a run is
    in flight with no verdict yet, which is info ("running", see job_label).
@@ -87,13 +114,14 @@
 {%- endmacro %}
 {# The status tag.  `word` is the state ("all up", "degraded", "started");
    `label` names the service in the strip ("NODES").  An <a> with href,
-   else a <span>.  quiet: an ok / info / off tag drops the word and its
-   tint and keeps the label and a dot in its tone -- the word stays in the
-   tooltip and in aria-label -- so the strip is quiet unless something is
-   warn or bad, and nine services fit one nav line.  extra: further
-   classes (the node badges carry a `status-<value>` hook). #}
+   else a <span>.  quiet: the strip's mode -- no tag carries a word, so
+   the strip's width never changes with the state; the word stays in the
+   tooltip and in aria-label.  An ok / info / off tag also drops its tint
+   (class `quiet`: label and a dot in its tone on neutral ground); warn
+   and bad keep the tint, so colour alone says where to look.  extra:
+   further classes (the node badges carry a `status-<value>` hook). #}
 {% macro tag(tone, word, label=none, href=none, title=none, quiet=false, extra='') -%}
 {%- set hush = quiet and tone in ('ok', 'info', 'off') -%}
 {%- set el = 'a' if href else 'span' -%}
-<{{ el }}{% if href %} href="{{ href }}"{% endif %} class="tag tag-{{ tone }}{% if hush %} quiet{% endif %}{% if extra %} {{ extra }}{% endif %}"{% if label %} aria-label="{{ label }}: {{ word }}"{% endif %}{% if title %} title="{{ title }}"{% endif %}><span class="dot"></span>{% if label %}<strong>{{ label }}</strong>{% endif %}{% if not hush %}<span class="word">{{ word }}</span>{% endif %}</{{ el }}>
+<{{ el }}{% if href %} href="{{ href }}"{% endif %} class="tag tag-{{ tone }}{% if hush %} quiet{% endif %}{% if extra %} {{ extra }}{% endif %}"{% if label %} aria-label="{{ label }}: {{ word }}"{% endif %}{% if title %} title="{{ title }}"{% endif %}><span class="dot"></span>{% if label %}<strong>{{ label }}</strong>{% endif %}{% if not quiet %}<span class="word">{{ word }}</span>{% endif %}</{{ el }}>
 {%- endmacro %}

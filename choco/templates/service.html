@@ -23,10 +23,10 @@
     <p>Feed flagging — combines per-feed health sources and pushes the bad-input list to kotekan on change.</p>
     {% elif name == 'eigencal' %}
     <p>Point-source gain calibration — fits per-input complex gains once per calibrator transit, at night.</p>
-    {% elif name == 'waterfall' %}
-    <p>Visibility waterfalls — appends each new N&sup2; file to its acquisition's triangle of images. <a href="/files">Browse the data</a>.</p>
     {% elif name == 'skymap' %}
     <p>Current-sky strip plot — renders the beam's drift-scan strip with the Sun, Moon and pointing every 5 minutes, in a day and a night palette. <a href="/">Shown on the landing page</a>.</p>
+    {% elif name == 'mapmaker' %}
+    <p>Drift-scan sky maps — folds each new N&sup2; file into a sky map of every pass and a map of the last sidereal day, frequency as hue from red to violet, calibrated on the brightest source transiting the beam. <a href="/files">The data it reads</a>.</p>
     {% endif %}
 </div>
 
@@ -47,31 +47,7 @@
 </div>
 {% endif %}
 
-{% if state_json %}
-<section>
-    <details>
-        <summary><strong>State file</strong>{% if job.state_file %} <small><code>{{ job.state_file }}</code></small>{% endif %}</summary>
-        <pre style="max-height: 28em; overflow: auto; font-size: 0.8em; margin-top: 0.5em;">{{ state_json }}</pre>
-    </details>
-</section>
-{% endif %}
-
-<section class="journal">
-    <div class="section-head">
-        <h3>Journal</h3>
-        <span class="lines-picker">
-            {% for n in (50, 100, 500, 1000) %}
-            {% if n == nlines %}<strong>{{ n }}</strong>{% else %}<a href="/service/{{ name }}?lines={{ n }}">{{ n }}</a>{% endif %}
-            {%- if not loop.last %} · {% endif %}
-            {% endfor %}
-            lines
-        </span>
-    </div>
-    <div id="journal"
-         hx-get="/partials/service-logs/{{ name }}?lines={{ nlines }}"
-         hx-trigger="load, every 30s"
-         hx-swap="innerHTML"></div>
-</section>
+{% include "_service_tail.html" %}
 {% if name == 'bffs' %}
 <script>
     // Confirmation gate for manual-flag toggles, hooked into htmx's own

@@ -195,6 +195,80 @@
     <dd>{% for a in detail.archives %}<code>{{ a.name }}</code> <small class="muted">{{ a.bytes | filesize }}, {{ a.mtime_fmt }}</small>{% if not loop.last %}<br>{% endif %}{% endfor %}</dd>
     {% endif %}
 </dl>
+{% elif name == 'mapmaker' and detail %}
+{% set img = detail.images %}
+{% if img.clean %}
+<figure class="mapmaker-map">
+    <img src="/service/mapmaker/clean.png?v={{ img.clean }}" alt="Sky map, deconvolved" style="width: 100%;">
+    <figcaption>Sky map, deconvolved: the two-row array's Dec ridge (half the baselines carry no Dec information) is removed by CLEAN against the dirty beam the map was made with, and the components are restored with one beam for every colour bin. Hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white. <a href="/service/mapmaker/clean-strip.png?v={{ img['clean-strip'] }}">Pixels only</a>.</figcaption>
+</figure>
+{% endif %}
+{% if img.context %}
+<figure class="mapmaker-map">
+    <img src="/service/mapmaker/context.png?v={{ img.context }}" alt="Sky map in context on the 408 MHz sky" style="width: 100%;">
+    <figcaption>The deconvolved strip in context: the 408 MHz all-sky map (Haslam et al. 1982, destriped by Remazeilles et al. 2015; log scale) over every declination that rises, with the strip pasted into its band where it has data.</figcaption>
+</figure>
+{% endif %}
+{% if img.sky %}
+<figure class="mapmaker-map">
+    <img src="/service/mapmaker/sky.png?v={{ img.sky }}" alt="Sky map, all passes" style="width: 100%;">
+    <figcaption>{% if img.clean %}The same map before deconvolution: every pass{% else %}Sky map, every pass{% endif %} with the Sun away from the beam{% if not img.clean %}; hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white{% endif %}. <a href="/service/mapmaker/sky-strip.png?v={{ img['sky-strip'] }}">Pixels only</a>.</figcaption>
+</figure>
+{% endif %}
+{% if img.daily %}
+<figure class="mapmaker-map">
+    <img src="/service/mapmaker/daily.png?v={{ img.daily }}" alt="Last sidereal day" style="width: 100%;">
+    <figcaption>The last sidereal day, Sun included. <a href="/service/mapmaker/daily-strip.png?v={{ img['daily-strip'] }}">Pixels only</a>.</figcaption>
+</figure>
+{% endif %}
+{% if not img.sky and not img.daily %}
+<p class="note">No map rendered yet.</p>
+{% endif %}
+<dl class="service-facts">
+    <dt>Calibration</dt>
+    <dd>
+        {% if detail.gains %}
+        {{ detail.gains.calibrator }} transit {{ detail.gains.transit or '?' }}: {{ detail.gains.n_samples }} samples,
+        {{ detail.gains.n_dead_products }} of {{ detail.gains.n_products }} products dead
+        {% else %}
+        <span class="err">none yet{% if detail.calibrator %} — waiting for a {{ detail.calibrator }} transit{% endif %}</span>
+        {% endif %}
+        {% if detail.cal_samples_pending %}<br><small class="muted">{{ detail.cal_samples_pending }} samples of the next transit accumulated</small>{% endif %}
+    </dd>
+    <dt>Last run</dt>
+    <dd>{{ detail.files_processed or 0 }} file{{ '' if detail.files_processed == 1 else 's' }} folded in
+        ({{ detail.files_imaged or 0 }} imaged{% if detail.files_uncalibrated %}, {{ detail.files_uncalibrated }} uncalibrated{% endif %}){% if detail.run_seconds is not none %} in {{ detail.run_seconds }}s{% endif %}
+        {%- if detail.backlog %} &middot; backlog {{ detail.backlog }}{% endif %}</dd>
+    {% if detail.last_sample %}
+    <dt>Data to</dt><dd>{{ detail.last_sample }}{% if detail.last_file_idx is not none %} &middot; file {{ detail.last_file_idx }}{% endif %}</dd>
+    {% endif %}
+    <dt>Samples mapped</dt><dd>{{ detail.n_samples_total or 0 }}</dd>
+    <dt>Pointing</dt><dd>dec {{ detail.pointing_dec_deg }}&deg;{% if detail.colour_bins %} &middot; {{ detail.colour_bins }} colour bins{% if detail.colour_range_mhz %}, {{ detail.colour_range_mhz[0] | int }}–{{ detail.colour_range_mhz[1] | int }} MHz red to violet{% endif %}{% endif %}{% if detail.stretch %} &middot; {{ detail.stretch }} stretch{% endif %}</dd>
+    {% if detail.coverage %}
+    <dt>Coverage</dt>
+    <dd>{% for k, c in detail.coverage.items() %}{{ k }}: {{ c.bins_covered }} bins{{ ' &middot; ' | safe if not loop.last }}{% endfor %}</dd>
+    {% endif %}
+    {% if detail.clean %}
+    <dt>Deconvolution</dt>
+    <dd>
+        {% if detail.clean.iterations is not none %}
+        {{ detail.clean.iterations }} CLEAN iterations, {{ detail.clean.n_components }} component pixels{% if detail.clean.run_seconds is not none %} in {{ detail.clean.run_seconds | round | int }}s{% endif %}{% if detail.clean.data_to %}, data to {{ detail.clean.data_to }}{% endif %}
+        {%- if detail.clean.sigma_before and detail.clean.sigma_after is not none %}; residual {{ '%.1e' | format(detail.clean.sigma_after) }} of the calibrator (was {{ '%.1e' | format(detail.clean.sigma_before) }}){% endif %}
+        {%- if detail.clean.beam_deg %}; restoring beam {{ detail.clean.beam_deg[0] }}&deg; &times; {{ detail.clean.beam_deg[1] }}&deg;{% endif %}
+        {% if detail.clean.components %}<br><small class="muted">brightest: {% for c in detail.clean.components %}{{ '%.2f' | format(c.ra_deg) }}&deg; {{ '%+.2f' | format(c.dec_deg) }}&deg; ({{ '%.3f' | format(c.flux) }}){{ ' &middot; ' | safe if not loop.last }}{% endfor %}</small>{% endif %}
+        {% else %}
+        <span class="muted">not run yet</span>
+        {% endif %}
+        {% for d in detail.clean.degraded %}<br><span class="err">{{ d }}</span>{% endfor %}
+    </dd>
+    {% endif %}
+</dl>
+{% for d in detail.degraded %}<p class="note err">{{ d }}</p>{% endfor %}
+{% if detail.skipped %}
+<p class="note"><strong>Skipped:</strong></p>
+<ul class="note">{% for e in detail.skipped %}<li><code>{{ e }}</code></li>{% endfor %}</ul>
+{% if detail.skipped_total > detail.skipped | length %}<p class="note"><em>{{ detail.skipped_total }} in total; showing the first {{ detail.skipped | length }}.</em></p>{% endif %}
+{% endif %}
 {% elif name == 'waterfall' and detail %}
 <dl class="service-facts">
     <dt>Backlog</dt>

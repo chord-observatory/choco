@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_service_macros.html" import data_tone, data_word, job_tone, job_label, tag %}
 {% block title %}Data files — CHOCO{% endblock %}
 
 {% block styles %}
@@ -8,11 +9,15 @@ table.files td.name { font-family: var(--pico-font-family, monospace); font-size
 table.files td, table.files th { padding: 0.3em 0.6em; }
 .root-header h3 { font-family: var(--pico-font-family-monospace); font-size: 1em; }
 .root-header small { color: var(--pico-muted-color); }
+.lines-picker { margin-left: auto; font-size: 0.85em; }
 {% endblock %}
 
 {% block content %}
+{# The DATA badge's page: the mounts' scan, then the waterfall renderer
+   that reads them.  The title tag is the strip's joint DATA tag; the
+   renderer's own tag heads its section. #}
 <div class="page-head">
-    <h2>Data files</h2>
+    <h2>Data files {{ tag(data_tone(data, job), data_word(data, job)) }}</h2>
     {% if configured %}
     <div class="page-actions">
         <button class="secondary outline btn-sm"
@@ -41,4 +46,23 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
     <p aria-busy="true">Scanning…</p>
 </div>
 {% endif %}
+
+<section id="waterfall">
+<div class="section-head">
+    <h3>Waterfall renderer</h3>
+    {{ tag(job_tone(job.health, job.running), job_label(job.health, job.running)) }}
+</div>
+<p class="note">Appends each new N&sup2; file to its acquisition's triangle of
+   images, every two minutes.  A degraded run means an input was unavailable
+   (usually a mount above); a failed one is the renderer itself.</p>
+<div id="service-flash"></div>
+<div id="service-status"
+     hx-get="/partials/service-status/{{ name }}"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+{% include "_service_status.html" %}
+</div>
+{% set lines_href = '/files' %}{% set lines_anchor = '#waterfall' %}
+{% include "_service_tail.html" %}
+</section>
 {% endblock %}

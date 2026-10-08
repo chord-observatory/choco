@@ -34,7 +34,7 @@ install steps, dependencies or run commands.
 ./choco.sh install   # venv, hash-locked deps, config seeding, systemd units (root)
 ./choco.sh run       # run against ./config.yaml (root, for the iptables redirects)
 ./choco.sh develop   # loopback-only dev instance: no auth, no TLS, dev/ configs
-./choco.sh test      # main suite + the four job suites (args forwarded to pytest)
+./choco.sh test      # main suite + the five job suites (args forwarded to pytest)
 ./choco.sh lock      # regenerate requirements.lock after editing pyproject.toml
 ./choco.sh audit     # check pins against PyPI and OSV (read-only)
 ```
@@ -52,12 +52,14 @@ choco/
 ├── web.py          # Flask blueprint: all routes and partials
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
+├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
 ├── services.py     # FpgaMonitor, GainArchive, PdbMonitor, job/systemd helpers, dot + SVG sanitizer
 ├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
 ├── dishlabels.py   # dish_inputs table + per-element label layout (stdlib; shared with the jobs)
+├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client + atomic state write (stdlib; shared with the jobs and CLI)
 ├── auth.py         # Flask-Login + direct ldap3 bind, localhost bypass decorator
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
@@ -68,7 +70,8 @@ jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
 ├── bffs/           # Bad-feed flagging (30 s timer); sources/ = one module per signal
 ├── eigencal/       # Point-source gain calibration (10 min timer, self-gating)
 ├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
-└── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
+├── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
+└── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
 configs/            # nodes.yaml, vars.yaml, pdb_map.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
 tests/              # pytest; test_<module>.py per module, test_web.py for routes
 docs/design/        # Design rationale, one file per subsystem (see the end of this file)
@@ -91,6 +94,13 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   it is written; selecting a node's file is a nodes.yaml edit and pauses the
   cluster like any registry rebuild.  Only the nodes whose file or include
   changed re-render, never the fleet.
+- `chord/` is a mirror of kotekan's `config/chord/` (`upstream:` in
+  config.yaml; the `/configs` Pull button, `choco config pull`).  A pull is
+  one validated set, never a file at a time: the texts are rendered together
+  through every node that uses any of them, every write lands before the
+  sync loop hears of any, and a file removed upstream that a node still uses
+  is kept and reported, never deleted.  The nodes a pull re-renders are put
+  in maintenance first: a pull never restarts a node.
 - Local edits are picked up by an mtime scan each tick; browser freshness is
   htmx polling.  Do not add inotify or WebSockets.
 - A node whose config failed to load is never pushed to: `desired_config`
@@ -134,7 +144,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   against `NAME_RE` / `SHARD_RE` / `IMAGE_RE`; a manual bffs flag's label
   against the element axis in the job's state file; a PDB row-power
   request's row and polarization become channel addresses only through
-  `pdbmap.row_entries`.  Extend the allowlist, never bypass it.
+  `pdbmap.row_entries`; a GitHub listing's file names go through
+  `resolve_config_path` too, and the raw URL is built from the validated
+  name at the resolved commit, never from the listing's `download_url`.
+  Extend the allowlist, never bypass it.
 - kotekan-supplied markup reaches the DOM only through
   `services.sanitize_pipeline_svg` (whitelist reconstruction; unknown
   elements are unwrapped, never copied).  Plot panel DOM is built with
@@ -169,9 +182,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `tag-ok|bad|warn|info|maint|off` painted by the tokens in
   `static/choco.css` (loaded by `base.html` and the standalone pipeline and
   plot pages).  No hex literal for a state in a template, no brown, and the
-  CHOCO mark (`.brand`) stays grey.  The strip's tags are `quiet`: ok, info
-  and off show label and dot only (the word lives in the tooltip and
-  `aria-label`); only warn and bad carry a word, or the strip wraps.
+  CHOCO mark (`.brand`) stays grey.  The strip's tags are `quiet`: no tag
+  carries a word (it lives in the tooltip and `aria-label`), so the strip
+  never shifts with the state; ok, info and off show label and dot on
+  neutral ground, warn and bad keep their tint.
 - One page chrome: `.page-head` (title left, actions right), `.note` for
   prose, `h3` for sections, `.btn-sm secondary outline` for row-level
   actions with Pico's filled primary kept for the page's one main action,
@@ -214,7 +228,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   (config error or bug; badge red).  Inside `main`: `OSError` → 2,
   `ValueError`/`yaml.YAMLError` → 1.
 - A new badge costs one entry in `web._service_registry()` plus, optionally,
-  a summary branch in `web._service_detail`.
+  a summary branch in `web._service_detail`.  A job shown on another page
+  sets the entry's `page` instead (the waterfall on `/files`, folded into
+  the DATA tag): no badge or landing row of its own and `/service/<name>`
+  redirects, but `/api/status` and `/metrics` still report it by name.
 - Jobs reach choco through `choco.jobclient` and derive feed labels through
   `choco.dishlabels`; both are stdlib-only so the jobs' venv is the only
   requirement.  Do not copy either into a job.
@@ -264,6 +281,21 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   (`dishlabels.connected_elements`), count-checked, never guessed.
 - Peeks speak only `GET /buffer_frame?name=&len=`; 402/404/500 from kotekan
   are meaningful replies, not outages.
+- Imaging conventions, fixed on a Cyg A transit ([mapmaker.md](docs/design/mapmaker.md)):
+  hour angle is the file's `bin_ERA_deg` + `itrs_lon_deg` − CIRS RA; a
+  baseline is `feed_positions_m[input_b] − feed_positions_m[input_a]`
+  (x east, y north); a source at ENU `u` phases as `−k (b_x u_E + b_y u_N)`.
+  N2Accumulate's fringestop (to the pointing at the bin's ERA) is already
+  the frozen-sky-per-dump model; never undo it.  Gains are applied per
+  channel before any frequency or redundancy average; colour bins average
+  maps, never visibilities, and one stretch curve serves every bin.  The
+  exposure is `Σ W B⁴` along the pointing row (not `Σ W B²`, which
+  flattens the two-row Dec grating lobes, nor the pixel's own `Σ W B⁴`,
+  which amplifies them), and the pointing declination is a config value
+  (kotekan's `dish_coelev_deg` has been wrong).  The deconvolution's dirty
+  beam is computed from the same kernels and the per-baseline weights the
+  scatter accumulated (`sky_blw`), never fitted, so the beam keys are part
+  of the grid signature and the daily map is not deconvolved.
 
 **Retired config keys are refused, not read.** `load_config` raises on
 `sync.num_workers`, a `psu:` block, `eop.fpga_master_*` and every per-job
@@ -282,5 +314,6 @@ a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
 - [datafiles.md](docs/design/datafiles.md) — `/files` and the DATA badge
 - [waterfall.md](docs/design/waterfall.md) — the append-only PNG renderer and its read side
 - [skymap.md](docs/design/skymap.md) — the sky-map job
+- [mapmaker.md](docs/design/mapmaker.md) — the drift-scan map job: incremental scatter-add, Cyg A self-calibration, the two-row Dec grating lobes
 - [jobs.md](docs/design/jobs.md) — the jobs pattern and the EOP merge policy
 - [dependencies.md](docs/design/dependencies.md) — the 2026-09 dependency audit

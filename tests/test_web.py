@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import pytest
+import responses
 import yaml
 
 from choco.app import create_app
@@ -241,8 +242,13 @@ class TestLandingPage:
         _login(client)
         body = client.get("/").data.decode()
         # One row per badge: choco itself, the cluster, and the jobs.
-        for label in ("CHOCO", "NODES", "EOP", "BFFS", "EIGENCAL", "WF"):
+        for label in ("CHOCO", "NODES", "DATA", "EOP", "BFFS", "EIGENCAL", "SKYMAP", "MAP"):
             assert label in body
+        assert "/service/mapmaker" in body
+        # The waterfall renderer rides in the DATA row (one badge, one
+        # page), never a row of its own.
+        assert "waterfalls:" in body
+        assert ">WF<" not in body and "/service/waterfall" not in body
         # The nodes row summarizes the registry (3 seeded nodes).
         assert "3 nodes" in body
         # The door to node management, now that the dashboard left /.
@@ -1118,7 +1124,7 @@ class TestServicesPartial:
 
         The tone is the ``tag-<tone>`` class the tag macro emits (painted
         by static/choco.css); the label is what the badge says, read from
-        aria-label because a quiet (ok) badge shows no word at all.
+        aria-label because a strip badge shows no word at all.
         """
         from unittest.mock import patch
         with patch("choco.web.job_status", return_value=dict(self._JOB_STUB)):
@@ -1174,15 +1180,84 @@ class TestServicesPartial:
         assert 'aria-label="EOP: running"' in eop.group(0)
         assert 'class="word"' not in eop.group(1)
 
-    def test_nodes_badge_worded_when_not_ok(self, client, app):
+    # --- The DATA badge: the mounts and the waterfall renderer, one tag ---
+
+    def _data_badge(self, client, wf):
+        """(tone, word) of the strip's DATA badge with the renderer's
+        job_status stubbed to *wf*; the test app's mounts are
+        unconfigured (off), so the renderer wins whenever it is worse."""
+        from unittest.mock import patch
+        with patch("choco.web.job_status", return_value=dict(self._JOB_STUB, **wf)):
+            body = client.get("/partials/services").data.decode()
+        m = re.search(
+            r'<a href="/files" class="tag tag-([a-z]+)( quiet)?[^"]*"'
+            r' aria-label="DATA: ([^"]*)"', body)
+        assert m, body
+        assert ">WF<" not in body          # no badge of its own
+        return m.group(1), m.group(3)
+
+    def test_data_badge_shows_a_failed_renderer(self, client):
+        _login(client)
+        assert self._data_badge(client, {"health": "failed"}) == ("bad", "waterfall failed")
+
+    def test_data_badge_shows_a_degraded_renderer(self, client):
+        _login(client)
+        assert self._data_badge(client, {"health": "degraded"}) == ("warn", "waterfall degraded")
+
+    def test_data_badge_prefers_the_mounts_when_worse(self, client, app):
+        # A dead mount is what explains a degraded renderer: the mounts'
+        # word wins over the renderer's at equal or worse severity.
+        _login(client)
+        scan = app.config["datafile_scan"]
+        scan.roots = [Path("/nowhere/a")]
+        scan.health = "down"
+        assert self._data_badge(client, {"health": "degraded"}) == ("bad", "down")
+        scan.health = "ok"
+        assert self._data_badge(client, {"health": "ok"}) == ("ok", "up")
+        assert self._data_badge(client, {"health": "failed"}) == ("bad", "waterfall failed")
+
+    def test_data_badge_tooltip_names_both_halves(self, client, app):
+        from unittest.mock import patch
+        _login(client)
+        scan = app.config["datafile_scan"]
+        scan.roots = [Path("/nowhere/a")]
+        scan.health = "ok"
+        stub = dict(self._JOB_STUB, health="degraded", unit="choco-waterfall.service",
+                    reasons=["subset/ unreadable"])
+        with patch("choco.web.job_status", return_value=stub):
+            body = client.get("/partials/services").data.decode()
+        tag = re.search(r'<a href="/files"[^>]*title="([^"]*)"', body)
+        assert tag, body
+        tip = tag.group(1)
+        assert "mounts: ok" in tip
+        assert "waterfall (choco-waterfall.service): degraded" in tip
+        assert "why: subset/ unreadable" in tip
+
+    def test_nodes_badge_tinted_but_wordless_when_not_ok(self, client, app):
+        # A bad badge keeps its tint (no `quiet` class) but still shows no
+        # word: the strip's layout must not shift with the state, so the
+        # word lives only in the tooltip and aria-label.
         from unittest.mock import patch
         _login(client)
         self._set_statuses(app, ["DOWN", "DOWN", "DOWN"])
         with patch("choco.web.job_status", return_value=dict(self._JOB_STUB)):
             body = client.get("/partials/services").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
-        assert nodes and "quiet" not in nodes.group(0)
-        assert '<span class="word">all down</span>' in nodes.group(1)
+        assert nodes and 'class="tag tag-bad"' in nodes.group(0)
+        assert 'aria-label="NODES: all down"' in nodes.group(0)
+        assert "<strong>NODES</strong>" in nodes.group(1)
+        assert 'class="word"' not in nodes.group(1)
+
+    def test_degraded_job_badge_is_tinted_and_wordless(self, client, app):
+        from unittest.mock import patch
+        _login(client)
+        degraded = dict(self._JOB_STUB, health="degraded", unit="choco-bffs.service")
+        with patch("choco.web.job_status", return_value=degraded):
+            body = client.get("/partials/services").data.decode()
+        bffs = re.search(r'<a href="/service/bffs"[^>]*>(.*?)</a>', body, re.S)
+        assert bffs and 'class="tag tag-warn"' in bffs.group(0)
+        assert 'aria-label="BFFS: degraded"' in bffs.group(0)
+        assert 'class="word"' not in bffs.group(1)
 
     def test_nodes_badge_partial_up_is_yellow(self, client, app):
         _login(client)
@@ -1619,7 +1694,7 @@ class TestServicePage:
         assert resp.status_code == 404
 
     @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
-                                  "waterfall", "skymap"])
+                                  "skymap", "mapmaker"])
     def test_job_pages_render(self, client, name):
         from unittest.mock import patch
         _login(client)
@@ -1629,8 +1704,34 @@ class TestServicePage:
         assert resp.status_code == 200
         assert name.upper() in resp.data.decode()
 
+    def test_waterfall_page_is_the_files_page(self, client):
+        # The renderer is folded into DATA: its old page redirects to
+        # /files, keeping the journal picker's ``?lines=``.
+        _login(client)
+        resp = client.get("/service/waterfall", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/files")
+        resp = client.get("/service/waterfall?lines=500", follow_redirects=False)
+        assert resp.headers["Location"].endswith("/files?lines=500")
+
+    def test_files_page_carries_the_renderer(self, client):
+        from unittest.mock import patch
+        _login(client)
+        stub = dict(_JOB_STUB, unit="choco-waterfall.service")
+        with patch("choco.web.job_status", return_value=stub), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/files?lines=500").data.decode()
+        assert "Waterfall renderer" in body
+        assert "choco-waterfall.service" in body
+        # the status block and the journal poll the renderer's partials,
+        # and the lines picker reloads this page, not /service/waterfall
+        assert "/partials/service-status/waterfall" in body
+        assert "/partials/service-logs/waterfall?lines=500" in body
+        assert 'href="/files?lines=100#waterfall"' in body
+        assert "/service/waterfall" not in body
+
     @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
-                                  "waterfall", "skymap"])
+                                  "waterfall", "skymap", "mapmaker"])
     def test_status_partial_renders(self, client, name):
         from unittest.mock import patch
         _login(client)
@@ -1826,7 +1927,7 @@ class TestServicePage:
         _install_state(app, "waterfall", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
-            resp = client.get("/service/waterfall")
+            resp = client.get("/files")
         body = resp.data.decode()
         assert "17 files waiting" in body
         assert "acq_20260723_232332_046022478" in body
@@ -1841,7 +1942,7 @@ class TestServicePage:
         _install_state(app, "waterfall", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
-            resp = client.get("/service/waterfall")
+            resp = client.get("/files")
         assert "up to date" in resp.data.decode()
 
     def test_waterfall_detail_lists_skipped_files(self, client, app, tmp_path):
@@ -1854,11 +1955,102 @@ class TestServicePage:
         _install_state(app, "waterfall", state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
-            resp = client.get("/service/waterfall")
+            resp = client.get("/files")
         body = resp.data.decode()
         assert "Skipped" in body
         assert "cannot be widened" in body
         assert "14 in total" in body          # capped at 10, rest counted
+
+    def test_mapmaker_detail_and_images(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state = {"updated": 1700000200.0, "pointing_dec_deg": 40.8,
+                 "colour_bins": 16, "colour_range_mhz": [300, 1500], "stretch": "equalize",
+                 "last_file_idx": 4233700, "last_sample_time": 1791090000.0,
+                 "files_processed": 3, "files_imaged": 3, "files_uncalibrated": 0,
+                 "backlog": 12, "run_seconds": 41.2, "n_samples_total": 2400,
+                 "calibrator": "Cyg A", "cal_samples_pending": 40,
+                 "gains": {"calibrator": "Cyg A", "solved_at": 1791086000.0,
+                           "transit_time": 1791083400.0, "n_samples": 190,
+                           "n_dead_products": 36, "n_products": 240},
+                 "coverage": {"sky": {"coverage": 0.3, "bins_covered": 1234},
+                              "daily": {"coverage": 0.2, "bins_covered": 900}},
+                 "degraded": [], "skipped": ["vis_1_x.h5: no bin_ERA_deg"], "errors": []}
+        state_file = tmp_path / "mapmaker-state.json"
+        state_file.write_text(json.dumps(state))
+        _install_state(app, "mapmaker", state_file)
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+        (_job_dir(app, "mapmaker") / "sky.png").write_bytes(png)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/service/mapmaker").data.decode()
+        assert "Cyg A transit" in body and "36 of 240 products dead" in body
+        assert "backlog 12" in body and "file 4233700" in body
+        assert "sky: 1234 bins" in body
+        assert "16 colour bins, 300–1500 MHz" in body and "equalize stretch" in body
+        assert "/service/mapmaker/sky.png?v=" in body       # rendered image, with its mtime
+        assert "/service/mapmaker/daily.png" not in body    # not rendered yet
+        assert "/service/mapmaker/clean.png" not in body    # the deconvolution has not run
+        assert "Deconvolution" not in body
+        assert "no bin_ERA_deg" in body
+        # the image routes: allowlisted names, login, 404 until rendered
+        assert client.get("/service/mapmaker/sky.png").status_code == 200
+        assert client.get("/service/mapmaker/sky.png").mimetype == "image/png"
+        assert client.get("/service/mapmaker/daily.png").status_code == 404
+        assert client.get("/service/mapmaker/clean.png").status_code == 404
+        assert client.get("/service/mapmaker/etc-passwd.png").status_code == 404
+        assert client.get("/service/mapmaker/../../x.png").status_code == 404
+        # the deconvolution step's facts and image, once it has run
+        clean = {"updated": 1700000900.0, "map_data_time": 1791090000.0, "iterations": 10604,
+                 "n_components": 2683, "threshold": 7.1e-4, "sigma_before": 1.43e-4,
+                 "sigma_after": 8.7e-5, "run_seconds": 43.5, "beam_deg": [0.6, 1.5],
+                 "components": [{"ra_deg": 299.751, "dec_deg": 40.8, "flux": 0.91},
+                                {"ra_deg": 305.376, "dec_deg": 40.55, "flux": 0.033}],
+                 "degraded": [], "errors": []}
+        (_job_dir(app, "mapmaker") / "clean.json").write_text(json.dumps(clean))
+        (_job_dir(app, "mapmaker") / "clean.png").write_bytes(png)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/service/mapmaker").data.decode()
+        assert "/service/mapmaker/clean.png?v=" in body and "deconvolved" in body
+        assert "10604 CLEAN iterations, 2683 component pixels in 44s" in body
+        assert "residual 8.7e-05 of the calibrator (was 1.4e-04)" in body
+        assert "299.75&deg; +40.80&deg; (0.910)" in body and "305.38&deg;" in body
+        assert "restoring beam 0.6&deg; &times; 1.5&deg;" in body
+        assert client.get("/service/mapmaker/clean.png").status_code == 200
+        # its context image on the 408 MHz sky, once that has rendered too
+        assert "/service/mapmaker/context.png" not in body
+        assert client.get("/service/mapmaker/context.png").status_code == 404
+        (_job_dir(app, "mapmaker") / "context.png").write_bytes(png)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/service/mapmaker").data.decode()
+        assert "/service/mapmaker/context.png?v=" in body and "408 MHz" in body
+        assert client.get("/service/mapmaker/context.png").status_code == 200
+        # a degraded deconvolution says why, keeping the last numbers
+        clean["degraded"] = ["the accumulators carry no geometry or baseline weights yet; the next fold-in records them"]
+        (_job_dir(app, "mapmaker") / "clean.json").write_text(json.dumps(clean))
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/service/mapmaker").data.decode()
+        assert "no geometry or baseline weights yet" in body and "10604 CLEAN iterations" in body
+
+    def test_mapmaker_images_require_login(self, client):
+        resp = client.get("/service/mapmaker/sky.png", follow_redirects=False)
+        assert resp.status_code == 302
+
+    def test_mapmaker_page_without_gains_says_so(self, client, app, tmp_path):
+        from unittest.mock import patch
+        _login(client)
+        state_file = tmp_path / "s.json"
+        state_file.write_text(json.dumps({"calibrator": "Cyg A", "gains": None,
+                                          "degraded": ["no gains yet: waiting for a Cyg A transit (0 calibration samples so far)"],
+                                          "files_processed": 2, "files_imaged": 0, "files_uncalibrated": 2}))
+        _install_state(app, "mapmaker", state_file)
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/service/mapmaker").data.decode()
+        assert "waiting for a Cyg A transit" in body and "No map rendered yet" in body
 
     def test_raw_state_file_shown(self, client, app, tmp_path):
         from unittest.mock import patch
@@ -1920,6 +2112,9 @@ class TestServicePage:
         ("waterfall", {"updated": "just now", "roots": 7, "errors": "none",
                        "backlog": "lots"}),
         ("waterfall", {"errors": [None, {"a": 1}], "roots": [None]}),
+        ("mapmaker", {"gains": "none", "coverage": 7, "colour_range_mhz": "wide", "degraded": None}),
+        ("mapmaker", {"gains": {"solved_at": "yesterday"}, "colour_bins": "many",
+                      "colour_range_mhz": [1], "skipped": [None, 3]}),
     ])
     def test_garbage_state_files_never_break_the_page(
             self, client, app, tmp_path, name, state):
@@ -1930,7 +2125,7 @@ class TestServicePage:
         _install_state(app, name, state_file)
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB)), \
              patch("choco.web.timer_status", return_value=None):
-            resp = client.get(f"/service/{name}")
+            resp = client.get(f"/service/{name}", follow_redirects=True)
         assert resp.status_code == 200
 
     def test_pdb_stale_grid_warning(self, client, app):
@@ -3635,3 +3830,238 @@ class TestConfigLibraryApi:
             "cx1": "chord/pathfinder.j2", "cx2": "cx/cx2.yaml"}
         status = client.get("/api/nodes/status").get_json()["nodes"]
         assert any(n["config"] == "chord/pathfinder.j2" for n in status)
+
+
+# --- the config library's upstream pull ----------------------------------
+
+class TestConfigPull:
+    """``Pull chord from GitHub`` on /configs and ``POST /api/configs/pull``:
+    GitHub is answered by ``responses`` (no network)."""
+
+    API = "https://api.github.com"
+    RAW = "https://raw.githubusercontent.com"
+    COMMIT = "b29e72d4e" + "f" * 31
+
+    @pytest.fixture
+    def library(self, configs_dir, app):
+        """cx1 renders chord/pathfinder.j2 (includes telescope.j2), cx2
+        renders chord/inuse.j2; chord/old.j2 is used by nobody."""
+        chord = configs_dir / "chord"
+        chord.mkdir()
+        (chord / "pathfinder.j2").write_text(
+            'num_elements: 128\n{% include "telescope.j2" %}\n')
+        (chord / "telescope.j2").write_text("telescope: {name: a}\n")
+        (chord / "inuse.j2").write_text("inuse: 1\n")
+        (chord / "old.j2").write_text("old: 1\n")
+        data = yaml.safe_load((configs_dir / "nodes.yaml").read_text())
+        data["groups"]["cx"]["cx1"]["config"] = "chord/pathfinder.j2"
+        data["groups"]["cx"]["cx2"]["config"] = "chord/inuse.j2"
+        (configs_dir / "nodes.yaml").write_text(yaml.safe_dump(data))
+        app.config["registry"].reload()
+        for node in app.config["registry"].nodes.values():
+            node.maintenance = False     # running fleet: the pull must pause
+        orch = app.config["orchestrator"]
+        orch._file_mtimes = orch._config_file_mtimes()  # scan baseline
+        return configs_dir
+
+    def _github(self, files: dict, status=200, message=None):
+        """Register GitHub's replies for a listing of *files* (name ->
+        bytes) at COMMIT, every file fetchable at the raw URL."""
+        from choco.upstream import git_blob_sha
+        if status != 200:
+            responses.get(f"{self.API}/repos/kotekan/kotekan/commits/chord",
+                          status=status, json={"message": message})
+            return
+        responses.get(f"{self.API}/repos/kotekan/kotekan/commits/chord",
+                      json={"sha": self.COMMIT})
+        listing = [{"name": n, "type": "file", "sha": git_blob_sha(d),
+                    "size": len(d), "download_url": f"https://never.example/{n}"}
+                   for n, d in files.items()]
+        responses.get(f"{self.API}/repos/kotekan/kotekan/contents/config/chord"
+                      f"?ref={self.COMMIT}", json=listing)
+        for n, d in files.items():
+            responses.get(f"{self.RAW}/kotekan/kotekan/{self.COMMIT}"
+                          f"/config/chord/{n}", body=d)
+
+    UPSTREAM = {
+        # Changed: pathfinder.j2 now includes common.j2, which is new --
+        # a set that only renders as a whole.
+        "pathfinder.j2": b'num_elements: 128\n{% include "telescope.j2" %}\n'
+                         b'{% include "common.j2" %}\n',
+        "telescope.j2": b"telescope: {name: a}\n",         # unchanged
+        "common.j2": b"num_dishes: 16\n",                   # added
+        "README.md": b"# chord\n",                          # skipped
+        # old.j2 and inuse.j2 are gone upstream.
+    }
+
+    def test_button_follows_the_upstream_block(self, client, app, library):
+        _login(client)
+        body = client.get("/configs").get_data(as_text=True)
+        assert 'action="/configs/pull"' in body
+        assert ">Pull chord from GitHub</button>" in body
+        assert "kotekan/kotekan" in body and "config/chord" in body
+        app.config["upstream"] = None
+        body = client.get("/configs").get_data(as_text=True)
+        assert "/configs/pull" not in body and "Pull" not in body
+
+    def test_requires_login_and_csrf(self, client, library):
+        resp = client.post("/configs/pull", follow_redirects=False)
+        assert resp.status_code == 302 and "/login" in resp.headers["Location"]
+        _login(client)
+        assert client.post("/configs/pull", data={}).status_code == 403
+
+    @responses.activate
+    def test_pull_applies_the_set_and_reports_it(self, client, app, library, caplog):
+        self._github(self.UPSTREAM)
+        _login(client)
+        token = _csrf(client)
+        orch = app.config["orchestrator"]
+        polled = []
+        orch.submit_node = lambda key, item: polled.append((key, item.type))
+        with caplog.at_level(logging.WARNING, logger="choco.web"):
+            resp = client.post("/configs/pull", data={"_csrf_token": token},
+                               follow_redirects=True)
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Pulled kotekan/kotekan@chord:config/chord @ b29e72d4ef into chord/" in body
+        assert "added common.j2; changed pathfinder.j2; removed old.j2" in body
+        assert ("re-rendered and paused cx/cx1; lift maintenance to restart "
+                "them onto it") in body
+        assert "kept chord/inuse.j2 (removed upstream, used by cx/cx2)" in body
+        assert "skipped README.md (not a config file)" in body
+        chord = library / "chord"
+        assert (chord / "common.j2").read_bytes() == b"num_dishes: 16\n"
+        assert (chord / "pathfinder.j2").read_bytes() == self.UPSTREAM["pathfinder.j2"]
+        assert not (chord / "old.j2").exists()
+        assert (chord / "inuse.j2").read_text() == "inuse: 1\n"
+        assert not list(chord.glob("*.tmp"))
+        # The sync loop heard of it: cx1 re-rendered onto the new set and
+        # was woken; cx2's file did not change.
+        cx1 = app.config["registry"].get_node("cx/cx1")
+        assert cx1.rendered_config == {"num_elements": 128,
+                                       "telescope": {"name": "a"}, "num_dishes": 16}
+        assert ("cx/cx1", ChangeType.POLL) in polled
+        assert all(key == "cx/cx1" for key, _ in polled)
+        # Paused, so the sync loop pushes the new set only when the
+        # operator lifts maintenance; cx2's file did not change.
+        assert cx1.maintenance is True
+        assert app.config["registry"].get_node("cx/cx2").maintenance is False
+        assert app.config["registry"].get_node("recv/recv1").maintenance is False
+        # Re-baselined, so the scan does not report the pull as an edit.
+        assert orch._file_mtimes == orch._config_file_mtimes()
+        audit = [r.getMessage() for r in caplog.records if "pulled" in r.getMessage()]
+        assert len(audit) == 1 and "by tester" in audit[0]
+        assert "chord/common.j2" in audit[0] and "chord/old.j2" in audit[0]
+        assert "paused ['cx/cx1']" in audit[0]
+        # The listing's download_url was never followed.
+        assert not any("never.example" in c.request.url for c in responses.calls)
+
+    @responses.activate
+    def test_up_to_date_writes_nothing(self, client, app, library):
+        chord = library / "chord"
+        self._github({"pathfinder.j2": (chord / "pathfinder.j2").read_bytes(),
+                      "telescope.j2": (chord / "telescope.j2").read_bytes(),
+                      "inuse.j2": b"inuse: 1\n", "old.j2": b"old: 1\n"})
+        _login(client)
+        before = {p: p.stat().st_mtime_ns for p in chord.iterdir()}
+        resp = client.post("/configs/pull", data={"_csrf_token": _csrf(client)},
+                           follow_redirects=True)
+        body = resp.get_data(as_text=True)
+        assert "chord/ is up to date with kotekan/kotekan@chord:config/chord @ b29e72d4ef (4 files)" in body
+        assert {p: p.stat().st_mtime_ns for p in chord.iterdir()} == before
+        # Only the listing was needed: no file was downloaded.
+        assert len(responses.calls) == 2
+
+    @responses.activate
+    def test_refused_when_a_node_would_not_render_and_nothing_is_written(
+            self, client, app, library):
+        files = dict(self.UPSTREAM)
+        files["pathfinder.j2"] = b'num_elements: 128\n{% include "absent.j2" %}\n'
+        self._github(files)
+        _login(client)
+        chord = library / "chord"
+        before = {p.name: p.read_bytes() for p in chord.iterdir()}
+        resp = client.post("/configs/pull", data={"_csrf_token": _csrf(client)},
+                           follow_redirects=True)
+        body = resp.get_data(as_text=True)
+        assert "Not pulled: cx/cx1 would not render" in body
+        assert "absent.j2" in body
+        assert {p.name: p.read_bytes() for p in chord.iterdir()} == before
+
+    @responses.activate
+    def test_github_error_is_reported_not_raised(self, client, library):
+        self._github({}, status=403, message="API rate limit exceeded for 1.2.3.4.")
+        _login(client)
+        resp = client.post("/configs/pull", data={"_csrf_token": _csrf(client)},
+                           follow_redirects=True)
+        body = resp.get_data(as_text=True)
+        assert "Not pulled: GitHub: HTTP 403" in body
+        assert "API rate limit exceeded" in body
+
+    @responses.activate
+    def test_api_dry_run_then_pull(self, client, app, library):
+        self._github(self.UPSTREAM)
+        chord = library / "chord"
+        resp = client.post("/api/configs/pull", json={"dry_run": True})
+        assert resp.status_code == 200
+        plan = resp.get_json()
+        assert plan["status"] == "planned" and plan["dry_run"] is True
+        assert plan["commit"] == self.COMMIT
+        assert plan["added"] == ["chord/common.j2"]
+        assert plan["changed"] == ["chord/pathfinder.j2"]
+        assert plan["removed"] == ["chord/old.j2"]
+        assert plan["kept"] == [{"path": "chord/inuse.j2", "used_by": ["cx/cx2"]}]
+        assert plan["skipped"] == [{"name": "README.md", "reason": "not a config file"}]
+        assert plan["unchanged"] == 1 and plan["reloaded"] == ["cx/cx1"]
+        assert plan["paused"] == ["cx/cx1"]
+        assert plan["summary"].startswith("Would pull ")
+        assert "would re-render and pause cx/cx1" in plan["summary"]
+        assert "lift maintenance" not in plan["summary"]
+        assert not (chord / "common.j2").exists() and (chord / "old.j2").exists()
+        cx1 = app.config["registry"].get_node("cx/cx1")
+        assert cx1.maintenance is False      # a dry run pauses nothing
+
+        resp = client.post("/api/configs/pull")
+        assert resp.status_code == 200
+        done = resp.get_json()
+        assert done["status"] == "pulled" and done["dry_run"] is False
+        assert (chord / "common.j2").exists() and not (chord / "old.j2").exists()
+        assert done["summary"].startswith("Pulled ")
+        assert done["paused"] == ["cx/cx1"] and cx1.maintenance is True
+
+    @responses.activate
+    def test_nodes_already_paused_stay_so_and_are_said_to_be(self, client, app, library):
+        self._github(self.UPSTREAM)
+        cx1 = app.config["registry"].get_node("cx/cx1")
+        cx1.maintenance = True
+        done = client.post("/api/configs/pull").get_json()
+        assert done["status"] == "pulled"
+        assert done["reloaded"] == ["cx/cx1"] and done["paused"] == []
+        assert ("re-rendered cx/cx1 (already in maintenance); lift maintenance "
+                "to restart them onto it") in done["summary"]
+        assert cx1.maintenance is True
+
+    @responses.activate
+    def test_api_refusal_is_409_with_the_nodes_error(self, client, library):
+        files = dict(self.UPSTREAM)
+        files["common.j2"] = b"{% if %}\n"
+        self._github(files)
+        resp = client.post("/api/configs/pull")
+        assert resp.status_code == 409
+        # The new include is parsed on its own before cx1 renders the set.
+        error = resp.get_json()["error"]
+        assert error.startswith("chord/common.j2: Template syntax:")
+        assert not (library / "chord" / "common.j2").exists()
+
+    def test_api_without_an_upstream_is_404(self, client, app, library):
+        app.config["upstream"] = None
+        resp = client.post("/api/configs/pull")
+        assert resp.status_code == 404
+        assert "upstream" in resp.get_json()["error"]
+
+    @responses.activate
+    def test_api_github_error_is_502(self, client, library):
+        self._github({}, status=500, message="boom")
+        resp = client.post("/api/configs/pull")
+        assert resp.status_code == 502
+        assert resp.get_json()["error"].startswith("GitHub: HTTP 500")

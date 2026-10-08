@@ -12,6 +12,7 @@ import urllib.error
 from unittest.mock import patch
 
 import pytest
+import responses
 import yaml
 
 from choco import cli
@@ -434,3 +435,42 @@ def test_config_errors_are_the_servers(run, tmp_path):
     assert code == 1 and "HTTP 404" in err
     code, out, err = run("config", "put", "chord/x.j2", str(tmp_path / "missing"))
     assert code == 1 and "missing" in err
+
+
+# --- the upstream pull ---------------------------------------------------
+
+@responses.activate
+def test_config_pull_dry_run_then_pull(run, configs_dir):
+    from choco.upstream import git_blob_sha
+
+    commit = "b29e72d4e" + "f" * 31
+    data = b"telescope: {name: upstream}\n"
+    responses.get("https://api.github.com/repos/kotekan/kotekan/commits/chord",
+                  json={"sha": commit})
+    responses.get("https://api.github.com/repos/kotekan/kotekan/contents/"
+                  f"config/chord?ref={commit}",
+                  json=[{"name": "telescope.j2", "type": "file",
+                         "sha": git_blob_sha(data), "size": len(data)}])
+    responses.get(f"https://raw.githubusercontent.com/kotekan/kotekan/{commit}"
+                  "/config/chord/telescope.j2", body=data)
+
+    code, out, err = run("config", "pull", "-n")
+    assert code == 0 and err == ""
+    body = json.loads(out)
+    assert body["status"] == "planned" and body["added"] == ["chord/telescope.j2"]
+    assert not (configs_dir / "chord" / "telescope.j2").exists()
+
+    code, out, err = run("config", "pull")
+    assert code == 0
+    body = json.loads(out)
+    assert body["status"] == "pulled" and body["commit"] == commit
+    assert (configs_dir / "chord" / "telescope.j2").read_bytes() == data
+    assert "Pulled kotekan/kotekan@chord:config/chord" in body["summary"]
+
+
+@responses.activate
+def test_config_pull_failure_is_the_servers(run):
+    responses.get("https://api.github.com/repos/kotekan/kotekan/commits/chord",
+                  status=404, json={"message": "Not Found"})
+    code, out, err = run("config", "pull")
+    assert code == 1 and "HTTP 502" in err and "GitHub" in err

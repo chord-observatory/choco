@@ -8,6 +8,36 @@ CONFIG_DIR=/etc/choco
 
 # --- Helpers ---
 
+# The destriped 408 MHz all-sky map (Haslam et al. 1982; Remazeilles et
+# al. 2015), a 12.6 MB HEALPix FITS from NASA LAMBDA: the skymap's backdrop
+# and the mapmaker's context image (both read jobs/skymap/'s copy, through
+# choco/healpix.py).  Fetched at install rather than committed; the hash
+# pins the exact file the jobs were checked against.
+SKY_MAP_URL=https://lambda.gsfc.nasa.gov/data/foregrounds/haslam_2014/haslam408_ds_Remazeilles2014.fits
+SKY_MAP_SHA256=7e59071e2dad44c011703abc35ddcf16c4c50dac784c3d9d09829b84b7d8f2d1
+
+# fetch_sky_map DIR: put the map in DIR unless a verified copy is there.
+# A failed download warns and leaves the job rendering without a
+# backdrop (it reports degraded) -- never fails the install.
+fetch_sky_map() {
+    local dir="$1" name="${SKY_MAP_URL##*/}"
+    local dest="$dir/$name" tmp
+    if [ -f "$dest" ] && echo "$SKY_MAP_SHA256  $dest" | sha256sum -c --status; then
+        return 0
+    fi
+    tmp="$(mktemp "$dir/.$name.XXXXXX")"
+    if curl -fsSL --retry 2 -o "$tmp" "$SKY_MAP_URL" \
+            && echo "$SKY_MAP_SHA256  $tmp" | sha256sum -c --status; then
+        chmod 644 "$tmp"
+        mv -f "$tmp" "$dest"
+        echo "Fetched the skymap backdrop ($name)"
+    else
+        rm -f "$tmp"
+        echo "Warning: could not fetch a verified $name from $SKY_MAP_URL;"
+        echo "  the skymap renders without its backdrop until it is in $dir."
+    fi
+}
+
 ensure_local_venv() {
     local venv="$SCRIPT_DIR/.venv"
     # Run as invoking user when under sudo so venv stays user-owned
@@ -154,6 +184,7 @@ cmd_install() {
     rsync -a --exclude='__pycache__' --exclude='.pytest_cache' \
         "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
     find "$INSTALL_DIR/jobs" -name '*.sh' -exec chmod +x {} +
+    fetch_sky_map "$INSTALL_DIR/jobs/skymap"
 
     # Config
     mkdir -p "$CONFIG_DIR/configs"
@@ -214,11 +245,17 @@ cmd_install() {
         echo "Seeded $CONFIG_DIR/skymap.yaml from jobs/skymap/skymap.example.yaml -- edit before use"
     fi
 
-    # The waterfall and skymap units run as User=choco (waterfall so the
-    # images it writes to NFS are not owned by the squashed root account);
-    # warn rather than create one.
+    # Seed the mapmaker config on first install; never overwrite an edited one
+    if [ ! -f "$CONFIG_DIR/mapmaker.yaml" ]; then
+        cp "$SCRIPT_DIR/jobs/mapmaker/mapmaker.example.yaml" "$CONFIG_DIR/mapmaker.yaml"
+        echo "Seeded $CONFIG_DIR/mapmaker.yaml from jobs/mapmaker/mapmaker.example.yaml -- edit before use"
+    fi
+
+    # The waterfall, skymap and mapmaker units run as User=choco (waterfall
+    # so the images it writes to NFS are not owned by the squashed root
+    # account); warn rather than create one.
     if ! id choco >/dev/null 2>&1; then
-        echo "Note: choco-waterfall.service and choco-skymap.service run as User=choco, which does not exist."
+        echo "Note: choco-waterfall.service, choco-skymap.service, choco-mapmaker.service and choco-mapmaker-clean.service run as User=choco, which does not exist."
         echo "      Create it (useradd -r -s /usr/sbin/nologin choco) or edit the units."
     fi
 
@@ -472,6 +509,7 @@ cmd_test() {
     (cd "$SCRIPT_DIR/jobs/eigencal" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
     (cd "$SCRIPT_DIR/jobs/waterfall" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
     (cd "$SCRIPT_DIR/jobs/skymap" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    (cd "$SCRIPT_DIR/jobs/mapmaker" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
 }
 
 cmd_lock() {

@@ -1,0 +1,32 @@
+[Unit]
+Description=choco job: drift-scan sky maps, frequency as colour
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+# systemd owns /var/lib/choco/mapmaker (creates it with the right ownership)
+# and exports it as $STATE_DIRECTORY; the map accumulators, gains, state.json
+# and the run lock live there.
+StateDirectory=choco/mapmaker
+# The same account as the waterfall renderer: it reads the same NFS tree
+# and nothing it writes needs root.
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/mapmaker/mapmaker.sh /etc/choco/mapmaker.yaml
+# No Restart: the script self-gates and caps its own work (max_files_per_run),
+# so a run that fails -- mount unavailable, a file unreadable -- is simply
+# retried by the next timer tick.  Exit 2 = degraded (a dependency missing,
+# or no calibrator transit seen yet); 1 = config error / bug.
+Nice=10
+IOSchedulingClass=idle
+# Hold the job to half the box and yield to anything else that wants the CPU
+# (see choco-waterfall.service for why CPUWeight is the setting that bites).
+CPUQuota=200%
+CPUWeight=20
+# Page cache from the source files is read-once (MemoryHigh reclaims it from
+# this cgroup rather than the box); the job's own footprint is the kernels
+# (~300 MB) plus the accumulators (~260 MB at 16 colour bins).  MemoryMax is the backstop that
+# turns a runaway into a red badge instead of a system-wide OOM.
+MemoryHigh=2G
+MemoryMax=3G

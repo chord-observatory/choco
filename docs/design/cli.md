@@ -15,11 +15,14 @@ JSON, which is why ``/api/config/<group>``, ``/api/pdb/map``, ``/api/files``
 and ``/metrics`` need no subcommand of their own), ``start`` / ``stop`` /
 ``maint on|off`` over one or more targets, ``push <target> <file|->`` (base
 config), ``set <target> <endpoint> <json|@file|->`` (updatable values, curl's
-convention), ``oneshot <target> <file|->``, ``config ls|get|put|use`` (the
+convention), ``oneshot <target> <file|->``, ``config ls|get|put|pull|use`` (the
 config library: ``put <path> <file|->`` writes a file through
 ``PUT /api/configs/<path>`` with the same every-user-must-render check the
 web editor makes, which is how kotekan's ``config/chord/*.j2`` reach
-``/etc/choco/configs`` without a root shell; ``use <target> <path|none>`` is
+``/etc/choco/configs`` without a root shell; ``pull [-n]`` is ``POST
+/api/configs/pull``, the GitHub mirror of kotekan's ``config/chord/``
+described in [sync.md](sync.md), ``-n`` reporting the plan and writing
+nothing; ``use <target> <path|none>`` is
 ``/update``'s ``set_config`` action, a nodes.yaml edit that rebuilds the
 registry and so pauses the cluster), and ``help [<command>]`` (bare
 ``choco`` prints the same).  A target is a group or a ``<group>/<node>`` key

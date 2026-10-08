@@ -1,0 +1,10 @@
+[Unit]
+Description=deconvolve the sky map (every 15 min; self-gating)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

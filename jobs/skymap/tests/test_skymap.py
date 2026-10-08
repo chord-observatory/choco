@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch, Mock
 
+import numpy as np
 import pytest
 
 import skymap
@@ -148,6 +149,12 @@ class TestLoadConfig:
         p.write_text("night: false\n")
         assert skymap.load_config(str(p))["night"] is False
 
+    def test_background_image_is_retired(self, tmp_path):
+        p = tmp_path / "skymap.yaml"
+        p.write_text("background_image: /x/sky.png\n")
+        with pytest.raises(ValueError, match="background_image retired.*background_map"):
+            skymap.load_config(str(p))
+
     @pytest.mark.parametrize("text", ['output: /x/d.png\n', 'output_night: ""\n',
                                       'state_file: /x/state.json\n'])
     def test_output_paths_are_retired(self, tmp_path, text):
@@ -164,7 +171,7 @@ class TestLoadConfig:
         cfg = skymap.load_config(str(p))
         assert cfg["beams"] == [30.0, "Cyg A"]
         assert cfg["dpi"] == 80
-        assert cfg["background_fade"] == 0.42  # default survives
+        assert cfg["background_fade"] == 0.55  # default survives
 
     def test_non_mapping_raises(self, tmp_path):
         p = tmp_path / "skymap.yaml"
@@ -223,8 +230,14 @@ class TestMain:
     """main() wires the config to the renders; the render itself is
     covered above, so it is replaced here."""
 
-    def _run(self, tmp_path, yaml_text):
+    @pytest.fixture(autouse=True)
+    def _sky(self, tiny_sky):
+        self.sky_path = tiny_sky
+
+    def _run(self, tmp_path, yaml_text, sky=True):
         cfg = tmp_path / "skymap.yaml"
+        if sky:
+            yaml_text += f"background_map: {self.sky_path}\n"
         cfg.write_text(yaml_text)
         with patch("skymap.plot_skymap") as render:
             rc = skymap.main(["--config", str(cfg)])
@@ -244,7 +257,7 @@ class TestMain:
 
     def test_state_dir_flag_overrides(self, tmp_path):
         cfg = tmp_path / "skymap.yaml"
-        cfg.write_text("beams: [Cyg A]\n")
+        cfg.write_text(f"beams: [Cyg A]\nbackground_map: {self.sky_path}\n")
         with patch("skymap.plot_skymap") as render:
             rc = skymap.main(["--config", str(cfg), "--state-dir", str(tmp_path / "out")])
         assert rc == 0
@@ -258,6 +271,76 @@ class TestMain:
 
     def test_render_oserror_is_degraded(self, tmp_path):
         cfg = tmp_path / "skymap.yaml"
-        cfg.write_text("beams: [Cyg A]\n")
+        cfg.write_text(f"beams: [Cyg A]\nbackground_map: {self.sky_path}\n")
         with patch("skymap.plot_skymap", side_effect=OSError("disk full")):
             assert skymap.main(["--config", str(cfg)]) == 2
+
+    def test_backdrop_is_projected_once_for_both_themes(self, tmp_path):
+        rc, render = self._run(tmp_path, "beams: [Cyg A]\n")
+        assert rc == 0
+        day, night = (c.kwargs["sky"] for c in render.call_args_list)
+        assert day is night and day.shape[-1] == 4
+
+    def test_missing_map_renders_plain_and_is_degraded(self, tmp_path):
+        rc, render = self._run(tmp_path, f"beams: [Cyg A]\nbackground_map: {tmp_path}/absent.fits\n",
+                               sky=False)
+        assert rc == 2
+        assert render.call_count == 2
+        assert all(c.kwargs["sky"] is None for c in render.call_args_list)
+
+    def test_empty_map_path_means_no_backdrop(self, tmp_path):
+        rc, render = self._run(tmp_path, 'beams: [Cyg A]\nbackground_map: ""\n', sky=False)
+        assert rc == 0
+        assert render.call_args.kwargs["sky"] is None
+
+    def test_map_in_the_wrong_layout_is_a_config_error(self, tmp_path):
+        from conftest import write_healpix
+        nested = write_healpix(tmp_path / "nested.fits", np.ones(12 * 16), 4, ordering="NESTED")
+        rc, render = self._run(tmp_path, f"beams: [Cyg A]\nbackground_map: {nested}\n", sky=False)
+        assert rc == 1
+        render.assert_not_called()
+
+
+class TestBackdrop:
+    def test_raster_matches_the_overlay_orientation(self):
+        """Galactic centre in the middle, longitude increasing to the
+        left (the overlay plots x = -l), north at the top.  The maps hold
+        each pixel's own l and b, filled by dense random sampling."""
+        from choco.healpix import ang2pix_ring
+        nside = 32
+        rng = np.random.default_rng(0)
+        theta = np.arccos(rng.uniform(-1, 1, 400_000))
+        phi = rng.uniform(0, 2 * np.pi, theta.size)
+        pix = ang2pix_ring(nside, theta, phi)
+        L = np.full(12 * nside * nside, np.nan); B = L.copy()
+        L[pix] = np.degrees(phi); B[pix] = 90 - np.degrees(theta)
+        assert np.isfinite(L).all()
+        Lr = skymap.mollweide_raster(L, nside, 400)
+        Br = skymap.mollweide_raster(B, nside, 400)
+        h, w = Lr.shape
+        assert (h, w) == (200, 400)
+        dl = lambda a, b: abs((a - b + 180) % 360 - 180)
+        assert dl(Lr[h // 2, w // 2], 0) < 4                  # l = 0 at the centre
+        assert dl(Lr[h // 2, w // 4], 90) < 4                 # l = 90 to the left
+        assert dl(Lr[h // 2, 3 * w // 4], 270) < 4            # l = 270 to the right
+        assert Br[2, w // 2] > 80 and Br[-3, w // 2] < -80    # north up
+        assert np.isnan(Lr[0, 0]) and np.isnan(Lr[-1, -1])    # outside the ellipse
+
+    def test_backdrop_is_transparent_outside_the_sky(self, tiny_sky):
+        rgba = skymap.sky_backdrop(str(tiny_sky), width=40)
+        assert rgba.shape == (20, 40, 4)
+        assert rgba[0, 0, 3] == 0 and rgba[10, 20, 3] == 1
+
+    def test_flat_map_still_paints(self, tmp_path):
+        from conftest import write_healpix
+        path = write_healpix(tmp_path / "flat.fits", np.full(12 * 16, 30.0), 4)
+        rgba = skymap.sky_backdrop(str(path), width=40)
+        assert rgba[10, 20, 3] == 1 and np.isfinite(rgba).all()
+
+    def test_render_with_a_backdrop(self, tmp_path, tiny_sky):
+        from astropy.time import Time
+        cfg = dict(skymap.DEFAULTS, dpi=40)
+        out = tmp_path / "skymap.png"
+        skymap.plot_skymap(cfg, [(22.0, "test")], now=Time("2026-08-26T18:00:00"),
+                           output=str(out), sky=skymap.sky_backdrop(str(tiny_sky), width=200))
+        assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

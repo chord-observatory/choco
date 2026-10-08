@@ -11,8 +11,10 @@ management lives under ``/nodes/*`` — the dashboard at ``/nodes``, the
 ``/nodes/edit/<key>``, the started/maintenance toggles, and the node-status
 partial — and the config library under ``/configs`` (the files under the
 configs directory with the nodes that render or include each, a New-file
-form) and ``/configs/edit/<path>`` (one file; a save is checked against every
-node that uses it first, see [sync.md](sync.md)).  Config *text* is edited
+form, and in the page head the "Pull chord from GitHub" button that mirrors
+kotekan's ``config/chord/`` into the library as one validated set, see
+[sync.md](sync.md)) and ``/configs/edit/<path>`` (one file; a save is checked
+against every node that uses it first, see [sync.md](sync.md)).  Config *text* is edited
 only in the library: the node page has no textarea (2026-10; the textarea's
 prominent Save button next to the file selector's small Use button invited
 saving the old text instead of applying the selection).  The node page names
@@ -29,7 +31,8 @@ name.  The dashboard table itself only names each node's file: a per-row
 editor button made the page too busy, and the header button is one click
 away.  The landing table's NODES row links the library beside the dashboard.
 ``landing.html`` renders one table row per header badge (CHOCO itself plus
-NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / WF) with the detail the
+NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / SKYMAP / MAP, the waterfall
+renderer riding in the DATA row) with the detail the
 strip only carries in a tooltip: monitor host:port and error, job unit and
 failure result, a one-line state-file summary (``web._service_detail`` — the
 same tolerant summariser the service pages use, so corrupt state degrades to
@@ -103,12 +106,33 @@ jobs' files are read from ``<state_dir>/<job>/`` by name (``state_dir`` in
 config.yaml, default ``/var/lib/choco``; see jobs.md); the per-job blocks
 carry only ``service_unit`` (and ``bffs.control``).
 
+**One DATA badge for the mounts and the renderer (2026-10-05).**  The
+waterfall job first had a WF badge of its own, on the argument that DATA
+answers "can I see the mounts" and WF "is the renderer keeping up"
+(waterfall.md).  In use the two were read together anyway — a dead mount
+shows in both, and the renderer's page was a detour from the files page it
+linked back to — so the job's registry entry now names the page it is shown
+on (``page: /files``) and has no badge or landing row of its own;
+``/service/waterfall`` redirects there.  The joint tag (``data_tone`` /
+``data_word`` in ``_service_macros.html``) shows the worse half — bad over
+warn over off over ok, the mounts on a tie, since a dead mount is what
+explains a degraded renderer — and prefixes the renderer's word, so the old
+two-badge reading survives in one tag: ``down`` is the mounts, ``waterfall
+degraded`` is the renderer behind healthy mounts, ``waterfall failed`` a
+renderer bug; the tooltip and the landing row carry both halves.
+``/api/status`` and ``/metrics`` keep ``data`` and ``waterfall`` apart: they
+have different state vocabularies and alert rules key on the names.
+
 ## Service pages
 
 each badge links to a ``/service/<name>`` detail page, all keyed off the
 ``web._service_registry()`` allowlist (``choco`` / ``eop`` / ``bffs`` /
-``eigencal``, plus the monitor pages ``fpga`` / ``pdb``) — page slugs are
-looked up there, never passed to journalctl raw.  A job page
+``eigencal`` / ``skymap`` / ``mapmaker``, plus the monitor pages ``fpga`` / ``pdb``) — page
+slugs are looked up there, never passed to journalctl raw.  An entry with a
+``page`` is shown on that page instead (the waterfall on ``/files``, below
+the scan: its status block, then the state file and journal from
+``_service_tail.html``, the partial ``service.html`` ends with too) and
+``/service/<name>`` redirects there, ``?lines=`` and all.  A job page
 (``service.html``) shows common unit facts (``job_status`` detail plus the
 timer's next/last run via ``services.timer_status`` — systemd's own timestamp
 strings, displayed never parsed), a per-service summary read from the job's
@@ -357,16 +381,18 @@ shrink it a little).  ``tag(tone, word, label=, href=, title=, quiet=,
 extra=)`` renders an ``<a>`` with ``href`` else a ``<span>``; ``label`` is
 the service name in the strip and also puts ``aria-label="LABEL: word"``
 on the element so the state stays available to assistive tech.  The strip
-passes ``quiet=true``: an **ok**, **info** or **off** tag drops the word and
-its tint and keeps the label and a dot in its tone on the neutral surface,
-so a healthy cluster is a quiet row and the word plus the tint appear only
-for **warn** and **bad** (the tooltip carries the full health line either
-way).  Info and off are quiet too because a worded ``running`` or ``not
-run`` pushed the nine-service strip onto a second nav line (Pico's nav list
-does not wrap, the strip item does); the strip also uses tighter tag
-padding than the rest of the page for the same reason.  The landing table,
-the dashboard status column and the service pages keep the word, since
-there the row has no other status text; the node badges add a
+passes ``quiet=true``: no strip tag carries a word, so the strip's width
+and line breaks never change with the state (a worded ``degraded`` or
+``running`` used to push the nine-service strip onto a second nav line,
+since Pico's nav list does not wrap while the strip item does, and the
+layout jumped whenever a job's health changed).  An **ok**, **info** or
+**off** tag also drops its tint and keeps the label and a dot in its tone
+on the neutral surface, so a healthy cluster is a quiet row; **warn** and
+**bad** keep the tint, and colour alone says where to look.  The word is
+still in ``aria-label`` and the tooltip carries the full health line.  The
+strip also uses tighter tag padding than the rest of the page.  The landing
+table, the dashboard status column and the service pages keep the word,
+since there the row has no other status text; the node badges add a
 ``status-<value>`` class as a stable hook.  The CHOCO mark is ``.brand``,
 a grey rectangle (``--brand-bg``), not a health colour; ``.brand.secondary``
 is the outlined Nodes link on the standalone pages.

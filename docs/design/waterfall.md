@@ -164,11 +164,14 @@ because a live acquisition's image can be an append ahead of the index's
 committed rows and ``times.bin`` one behind the image — a row past the end of
 times gets no tick, transiently, rather than a fabricated label; and the time
 tick count scales with rows/width, since the image renders at page width and
-its on-screen height is set by its aspect.  The **WF badge** is a job badge of
-its own rather than folded into DATA: DATA answers "can I see the mounts" and
-WF answers "is the renderer keeping up", and because the job reads the same
-mounts a failure there exits 2, so the pair reads unambiguously (DATA red + WF
-yellow = mount problem; DATA green + WF red = renderer bug).  Four things
+its on-screen height is set by its aspect.  The renderer's health is **half
+of the DATA badge** (since 2026-10-05; at first a WF badge of its own, on the
+argument that DATA answers "can I see the mounts" and WF "is the renderer
+keeping up"): because the job reads the same mounts a failure there exits 2,
+and the joint tag keeps that reading in one place — ``down`` is the mounts,
+``waterfall degraded`` the renderer behind healthy mounts, ``waterfall
+failed`` a renderer bug — with its status, state file and journal on the
+files page below the scan (ui.md, the service-strip bullet).  Four things
 exist because they were missing the first time and an adversarial review found
 them: the run holds an **exclusive ``flock``** (systemd will not stack the
 oneshot, but a manual run racing the timer would interleave two processes'

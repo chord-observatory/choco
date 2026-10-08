@@ -44,7 +44,12 @@ the page's ``filesize`` filter is display, not data.  The page is reached from
 a **DATA badge** in the header strip (green up / red down, linking to
 ``/files``) rather than a dashboard button, which puts it alongside the other
 services and makes a dead mount visible from every page instead of only the
-one nobody opens when the filesystem is fine.  Its health is a **separate,
+one nobody opens when the filesystem is fine.  Since 2026-10-05 the badge
+and the page also carry the **waterfall renderer**, the job that reads these
+mounts: the tag shows the worse of the two halves (ui.md, the service-strip
+bullet) and the page ends with the renderer's status, state file and
+journal, so a mount problem and the renderer's reaction to it are read in
+one place.  The mounts' health is a **separate,
 deliberately tiny probe** (``DataFileScan.check_once``, its own 30 s greenlet
 like the hardware monitors): one ``readdir`` per root, never a walk, because
 the strip polls on every page.  A bare ``stat`` would not do — on NFS it is

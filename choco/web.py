@@ -38,6 +38,7 @@ from .services import (
 )
 from .state import NodeStatus, find_updatable_blocks, resolve_config_path
 from .sync import ChangeItem, ChangeType
+from .upstream import UpstreamError
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +367,18 @@ def skymap_night_png():
     the job has rendered it (``night: true`` in skymap.yaml).
     """
     return _send_skymap(_skymap_file(night=True))
+
+
+@bp.route("/service/mapmaker/<name>.png")
+@login_required
+def mapmaker_png(name):
+    """One of the mapmaker job's PNGs (sky, daily, clean and their -strip
+    forms), read from its state directory; 404 until rendered.
+    The name is looked up in an allowlist, never joined into a path."""
+    fname = MAPMAKER_IMAGES.get(name)
+    if fname is None:
+        abort(404)
+    return _send_skymap(_state_root() / "mapmaker" / fname)
 
 
 @bp.route("/partials/skymap")
@@ -724,27 +737,47 @@ def _check_library_save(registry, rel: str, content: str
         if data is not None and not isinstance(data, dict):
             return [], "vars.yaml must be a YAML mapping"
         return list(registry.nodes), None
-    path = registry.configs_dir / rel
-    overlay = {path: content}
-    direct, includers = registry.users_of(rel)
-    for node in direct:
-        try:
-            node.render(content, overlay=overlay)
-        except Exception as e:
-            return [], f"{node.key} would not render: {e}"
-    for node in includers:
-        if node.base_content is None:
-            continue
-        try:
-            node.render(node.base_content, overlay=overlay)
-        except Exception as e:
-            return [], f"{node.key} would not render: {e}"
-    if not direct and not includers:
-        try:
-            jinja2.Environment(autoescape=False).parse(content)
-        except jinja2.TemplateSyntaxError as e:
-            return [], f"Template syntax: {e}"
-    return [n.key for n in direct + includers], None
+    return _check_library_saves(registry, {rel: content})
+
+
+def _check_library_saves(registry, texts: dict[str, str]
+                         ) -> tuple[list[str], str | None]:
+    """The save check for several files at once (the upstream pull):
+    *texts* maps each library path to its new text, and every node that
+    renders or includes any of them is rendered with all of them overlaid
+    on disk -- so a set that is only consistent as a whole (an include
+    and the file that includes it, both changed) is judged as a whole,
+    never one new text against the old text of the others.  Returns
+    ``(affected node keys, error)`` like :func:`_check_library_save`.
+    """
+    overlay = {registry.configs_dir / rel: content
+               for rel, content in texts.items()}
+    affected: dict[str, None] = {}
+    for rel, content in texts.items():
+        direct, includers = registry.users_of(rel)
+        for node in direct:
+            try:
+                node.render(content, overlay=overlay)
+            except Exception as e:
+                return [], f"{node.key} would not render: {e}"
+            affected[node.key] = None
+        for node in includers:
+            # The includer's own file may be in the set: render its new text.
+            base = overlay.get(node.config_abspath, node.base_content)
+            if base is None:
+                continue
+            try:
+                node.render(base, overlay=overlay)
+            except Exception as e:
+                return [], f"{node.key} would not render: {e}"
+            affected[node.key] = None
+        if not direct and not includers:
+            try:
+                jinja2.Environment(autoescape=False).parse(content)
+            except jinja2.TemplateSyntaxError as e:
+                where = f"{rel}: " if len(texts) > 1 else ""
+                return [], f"{where}Template syntax: {e}"
+    return list(affected), None
 
 
 def _write_library_file(registry, rel: str, content: str, user: str
@@ -771,6 +804,146 @@ def _write_library_file(registry, rel: str, content: str, user: str
         f"{user}, {len(content)} bytes; re-rendering {affected or 'no nodes'}")
     _orchestrator().file_written(path)
     return affected
+
+
+def _pull_library(dry_run: bool, user: str) -> tuple[dict, int]:
+    """Mirror the upstream config directory (config.yaml's ``upstream:``,
+    kotekan's ``config/chord/`` by default) into the library, as one set.
+
+    The listing is classified against the mirror directory by git blob
+    sha (``Upstream.plan``), only new and changed files are fetched, and
+    the fetched texts are validated together through every node that
+    renders or includes any of them before anything is written: a
+    refusal writes nothing.  A file the listing no longer has is removed
+    unless a node still renders or includes it -- then it is kept and
+    reported, so a rename upstream lands as an addition the operator
+    can switch the node to, and the next pull removes the old file.
+    Every write is on disk before the sync loop hears of any of them, so
+    no node re-renders a half-pulled set, and the nodes re-rendered are
+    put in maintenance first (those not already), so a pull never
+    restarts anything: the new set is desired state the sync loop pushes
+    when the operator lifts maintenance.  With *dry_run* the reply is
+    the plan and nothing is written or paused.  Audit-logged like a
+    library save.
+    """
+    upstream = current_app.config.get("upstream")
+    if upstream is None:
+        return {"error": "no upstream configured (upstream: in config.yaml)"}, 404
+    registry = _registry()
+    try:
+        commit = upstream.resolve_commit()
+        plan = upstream.plan(registry.configs_dir, upstream.listing(commit),
+                             commit)
+        texts = {rel: upstream.fetch_text(commit, plan.names[rel], plan.shas[rel])
+                 for rel in plan.fetch}
+    except UpstreamError as e:
+        return {"error": f"GitHub: {e}"}, 502
+    remove, kept = [], []
+    for rel in plan.remove:
+        direct, includers = registry.users_of(rel)
+        if direct or includers:
+            kept.append({"path": rel,
+                         "used_by": [n.key for n in direct + includers]})
+        else:
+            remove.append(rel)
+    affected, error = _check_library_saves(registry, texts)
+    if error:
+        return {"error": error, "commit": commit}, 409
+    to_pause = [registry.get_node(key) for key in affected
+                if not registry.get_node(key).maintenance]
+    changing = bool(texts or remove)
+    result = {
+        "status": ("planned" if dry_run
+                   else "pulled" if changing else "unchanged"),
+        "dry_run": dry_run,
+        "upstream": upstream.label,
+        "commit": commit,
+        "into": upstream.into,
+        "added": plan.add,
+        "changed": plan.change,
+        "removed": remove,
+        "kept": kept,
+        "skipped": [{"name": n, "reason": r} for n, r in plan.skipped],
+        "unchanged": len(plan.same),
+        "reloaded": affected,
+        "paused": [n.key for n in to_pause],
+    }
+    result["summary"] = _pull_summary(result)
+    if dry_run or not changing:
+        return result, 200
+    # Paused before the files land: the sync loop then re-renders them
+    # onto the new set but makes no REST write until maintenance lifts.
+    _set_flag(to_pause, "maintenance", True)
+    written = []
+    for rel in plan.fetch:
+        path = registry.configs_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(texts[rel].encode("utf-8"))
+        tmp.replace(path)
+        written.append(path)
+    for rel in remove:
+        path = registry.configs_dir / rel
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        written.append(path)
+    logger.warning(
+        f"config library: pulled {upstream.label} @ {commit[:10]} into "
+        f"{upstream.into}/ by {user}: added {plan.add or 'none'}, changed "
+        f"{plan.change or 'none'}, removed {remove or 'none'}"
+        + (f", kept (in use) {[k['path'] for k in kept]}" if kept else "")
+        + f"; re-rendering {affected or 'no nodes'}"
+        + (f", paused {result['paused']}" if to_pause else ""))
+    orchestrator = _orchestrator()
+    for path in written:
+        orchestrator.file_written(path)
+    return result, 200
+
+
+def _pull_summary(result: dict) -> str:
+    """One line saying what a pull did (the flash; ``summary`` in the
+    JSON): the files by name under the mirror directory, the nodes
+    re-rendered and paused, then what was kept or skipped and why."""
+    into = result["into"] + "/"
+    where = f"{result['upstream']} @ {result['commit'][:10]}"
+
+    def names(rels):
+        return ", ".join(r.removeprefix(into) for r in rels)
+
+    parts = [f"{verb} {names(result[verb])}"
+             for verb in ("added", "changed", "removed") if result[verb]]
+    if not parts:
+        text = f"{into} is up to date with {where} ({result['unchanged']} files)"
+    else:
+        verb = "Would pull" if result["dry_run"] else "Pulled"
+        text = f"{verb} {where} into {into}: " + "; ".join(parts)
+        if result["reloaded"]:
+            dry = result["dry_run"]
+            nodes = ", ".join(result["reloaded"])
+            paused = result.get("paused") or []
+            if paused == result["reloaded"]:
+                text += ("; would re-render and pause " if dry
+                         else "; re-rendered and paused ") + nodes
+            elif paused:
+                already = [k for k in result["reloaded"] if k not in paused]
+                text += (f"; {'would re-render' if dry else 're-rendered'} {nodes}, "
+                         f"{'pausing' if dry else 'paused'} {', '.join(paused)} "
+                         f"({', '.join(already)} already in maintenance)")
+            else:
+                text += (f"; {'would re-render' if dry else 're-rendered'} {nodes} "
+                         "(already in maintenance)")
+            if not dry:
+                text += "; lift maintenance to restart them onto it"
+    if result["kept"]:
+        text += "; kept " + ", ".join(
+            f"{k['path']} (removed upstream, used by {', '.join(k['used_by'])})"
+            for k in result["kept"])
+    if result["skipped"]:
+        text += "; skipped " + ", ".join(
+            f"{s['name']} ({s['reason']})" for s in result["skipped"])
+    return text
 
 
 def _set_node_configs(nodes: list, config: str | None, user: str
@@ -821,7 +994,22 @@ def configs_page():
     the nodes that render or include each."""
     registry = _registry()
     files = [_library_entry(registry, rel) for rel in registry.config_files()]
-    return render_template("configs.html", files=files)
+    return render_template("configs.html", files=files,
+                           upstream=current_app.config.get("upstream"))
+
+
+@bp.route("/configs/pull", methods=["POST"])
+@login_required
+def configs_pull():
+    """The library page's "Pull <dir> from GitHub" button: mirror the
+    upstream config directory and say what changed (``_pull_library``)."""
+    _check_csrf()
+    result, status = _pull_library(False, _audit_user())
+    if status != 200:
+        flash(f"Not pulled: {result['error']}", "error")
+    else:
+        flash(result["summary"], "success")
+    return redirect(url_for("web.configs_page"))
 
 
 @bp.route("/configs/new", methods=["POST"])
@@ -1376,10 +1564,17 @@ def files_page():
     and the page has nothing to wait for it for.
     """
     scan = _datafile_scan()
+    # The waterfall renderer lives on this page (see _service_registry),
+    # so the title carries the joint DATA tag and the page ends with the
+    # renderer's status, state file and journal.
+    wf = _service_registry()["waterfall"]
     return render_template(
         "files.html",
         configured=bool(scan is not None and scan.configured),
         roots=[str(r) for r in (scan.roots if scan is not None else [])],
+        data=scan.to_dict() if scan is not None else None,
+        name="waterfall", nlines=_journal_lines_arg(),
+        **_service_page_context("waterfall", wf),
     )
 
 
@@ -1543,6 +1738,7 @@ def _service_registry() -> dict[str, dict]:
     eigencal_cfg = current_app.config.get("eigencal_cfg") or {}
     waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
     skymap_cfg = current_app.config.get("skymap_cfg") or {}
+    mapmaker_cfg = current_app.config.get("mapmaker_cfg") or {}
 
     # Every file read back from a job sits under <state_dir>/<job>/, the
     # layout systemd's StateDirectory=choco/<job> gives the jobs; the
@@ -1563,7 +1759,8 @@ def _service_registry() -> dict[str, dict]:
                    if bffs_cfg.get("control", True) else None)
 
     def job(label: str, unit: str, state_file, stale_after_s=None,
-            mtime_label="last run", run_file=None, manual_file=None) -> dict:
+            mtime_label="last run", run_file=None, manual_file=None,
+            page=None) -> dict:
         return {
             "kind": "job",
             "label": label,
@@ -1574,6 +1771,14 @@ def _service_registry() -> dict[str, dict]:
             "mtime_label": mtime_label,
             "run_file": run_file,
             "manual_file": manual_file,
+            # Where the job's status is shown.  None: its own
+            # /service/<name> page, a badge in the strip and a row in the
+            # landing table.  A path: the job is folded into that page's
+            # badge and row (the waterfall into DATA) and /service/<name>
+            # redirects there; it keeps its registry entry for the
+            # journal viewer, the status partial, /api/status and
+            # /metrics, which report it on its own.
+            "page": page,
         }
 
     # Dict order is the order of the strip's job badges and the landing
@@ -1581,7 +1786,8 @@ def _service_registry() -> dict[str, dict]:
     return {
         "choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
                   "timer": None, "state_file": None, "stale_after_s": None,
-                  "mtime_label": None, "run_file": None, "manual_file": None},
+                  "mtime_label": None, "run_file": None, "manual_file": None,
+                  "page": None},
         "eop": job("EOP",
                    eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
                    eop_state, EOP_STALE_AFTER_S, "last run"),
@@ -1602,17 +1808,27 @@ def _service_registry() -> dict[str, dict]:
                         run_file=root / "eigencal" / "run.json"),
         # waterfall rewrites its state file on every run, but a run with
         # nothing to render is the normal case between acquisitions, so
-        # the mtime is "last run" and never a health downgrade.
+        # the mtime is "last run" and never a health downgrade.  The
+        # renderer reads the mounts the DATA badge probes, so the two
+        # share one badge and one page: /files shows the mounts' scan
+        # with the renderer's status below it.
         "waterfall": job("WF",
                          waterfall_cfg.get("service_unit")
                          or "choco-waterfall.service",
                          root / "waterfall" / "state.json",
-                         None, "last run"),
+                         None, "last run", page="/files"),
         # skymap keeps no state file: the image is the record and its
         # title carries the render time, so the badge is systemd only.
         "skymap": job("SKYMAP",
                       skymap_cfg.get("service_unit") or "choco-skymap.service",
                       None, None, "last render"),
+        # mapmaker rewrites its state file on every run; a run with
+        # nothing new to fold in is the normal case between files, so the
+        # mtime is "last run" and never a health downgrade.
+        "mapmaker": job("MAP",
+                        mapmaker_cfg.get("service_unit") or "choco-mapmaker.service",
+                        root / "mapmaker" / "state.json",
+                        None, "last run"),
     }
 
 
@@ -1710,7 +1926,8 @@ def _nodes_health() -> dict:
 @login_required
 def partial_services():
     """Render the NODES + monitor (FPGA, PDB, DATA) + job (EOP, bffs,
-    eigencal, waterfall) strip."""
+    eigencal, skymap) strip.  DATA covers the mounts and the waterfall
+    renderer that reads them (``services["waterfall"]``)."""
     registry = _service_registry()
     services = _services_health(registry)
     return render_template(
@@ -1753,6 +1970,92 @@ def _fmt_utc(ts) -> str | None:
     if not ts:
         return None
     return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
+
+
+#: PNGs the mapmaker job writes, by the name the page requests them under:
+#: the fold-in's sky and daily maps, the deconvolution's clean map and
+#: that map in context on the 408 MHz sky.
+MAPMAKER_IMAGES = {"sky": "sky.png", "daily": "daily.png", "clean": "clean.png",
+                   "sky-strip": "sky-strip.png", "daily-strip": "daily-strip.png",
+                   "clean-strip": "clean-strip.png", "context": "context.png"}
+
+
+def _mapmaker_clean_facts(root: Path) -> dict | None:
+    """What the deconvolution step (``clean.py``, its own timer) last did,
+    from its ``clean.json``: the CLEAN's numbers, the brightest components
+    and why it is degraded if it is.  None until it has run."""
+    facts = read_state_json(root / "clean.json")
+    if not isinstance(facts, dict) or not facts:
+        return None
+    comps = []
+    for c in (facts.get("components") or [])[:8]:
+        try:
+            comps.append({"ra_deg": float(c["ra_deg"]), "dec_deg": float(c["dec_deg"]),
+                          "flux": float(c["flux"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    beam = facts.get("beam_deg") if isinstance(facts.get("beam_deg"), list) else None
+
+    def num(key):
+        v = facts.get(key)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    return {
+        "updated": _fmt_utc(facts.get("updated")),
+        "data_to": _fmt_utc(facts.get("map_data_time")) if facts.get("map_data_time") else None,
+        "iterations": int(facts["iterations"]) if isinstance(facts.get("iterations"), int) else None,
+        "n_components": int(facts["n_components"]) if isinstance(facts.get("n_components"), int) else None,
+        "threshold": num("threshold"),
+        "sigma_before": num("sigma_before"),
+        "sigma_after": num("sigma_after"),
+        "run_seconds": num("run_seconds"),
+        "beam_deg": [float(beam[0]), float(beam[1])] if beam and len(beam) == 2 else None,
+        "components": comps,
+        "degraded": [str(d) for d in (facts.get("degraded") or [])][:5],
+    }
+
+
+def _mapmaker_detail(state: dict) -> dict:
+    """The MAP page's facts from the job's per-run state file: what was
+    folded in, the calibration the maps rest on, and the images' mtimes
+    (so the page refetches a PNG exactly when a run replaced it)."""
+    gains = state.get("gains") if isinstance(state.get("gains"), dict) else None
+    coverage = state.get("coverage") if isinstance(state.get("coverage"), dict) else {}
+    root = _state_root() / "mapmaker"
+    images = {key: _file_mtime(root / fname) for key, fname in MAPMAKER_IMAGES.items()}
+    rng = state.get("colour_range_mhz") or []
+    return {
+        "updated": _fmt_utc(state.get("updated")),
+        "clean": _mapmaker_clean_facts(root),
+        "pointing_dec_deg": state.get("pointing_dec_deg"),
+        "colour_bins": int(state["colour_bins"]) if state.get("colour_bins") is not None else None,
+        "colour_range_mhz": (float(rng[0]), float(rng[1])) if len(rng) == 2 else None,
+        "stretch": state.get("stretch"),
+        "last_file_idx": state.get("last_file_idx"),
+        "last_sample": _fmt_utc(state.get("last_sample_time")) if state.get("last_sample_time") else None,
+        "files_processed": state.get("files_processed"),
+        "files_imaged": state.get("files_imaged"),
+        "files_uncalibrated": state.get("files_uncalibrated"),
+        "backlog": state.get("backlog"),
+        "run_seconds": state.get("run_seconds"),
+        "n_samples_total": state.get("n_samples_total"),
+        "calibrator": state.get("calibrator"),
+        "cal_samples_pending": state.get("cal_samples_pending"),
+        "gains": {
+            "calibrator": gains.get("calibrator"),
+            "solved_at": _fmt_utc(gains.get("solved_at")) if gains.get("solved_at") else None,
+            "transit": _fmt_utc(gains.get("transit_time")) if gains.get("transit_time") else None,
+            "n_samples": gains.get("n_samples"),
+            "n_dead_products": gains.get("n_dead_products"),
+            "n_products": gains.get("n_products"),
+        } if gains else None,
+        "coverage": {k: v for k, v in coverage.items() if isinstance(v, dict)},
+        "degraded": [str(d) for d in (state.get("degraded") or [])][:10],
+        "skipped": [str(e) for e in (state.get("skipped") or [])][:10],
+        "skipped_total": len(state.get("skipped") or []),
+        "errors": [str(e) for e in (state.get("errors") or [])][:10],
+        "images": images,
+    }
 
 
 def _service_detail(name: str, svc: dict) -> dict | None:
@@ -2171,6 +2474,9 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
             "last": _fmt_utc(stamps[-1] / 1e9),
         }
 
+    if name == "mapmaker":
+        return _mapmaker_detail(state)
+
     if name == "waterfall":
         errors = [str(e) for e in (state.get("errors") or [])]
         return {
@@ -2218,6 +2524,20 @@ def service_page(name):
     svc = _service_registry().get(name)
     if svc is None:
         abort(404)
+    if svc.get("page"):
+        # Folded into another page's badge (the waterfall into DATA):
+        # old links land there, ``?lines=`` and all.
+        query = request.query_string.decode()
+        return redirect(svc["page"] + ("?" + query if query else ""))
+    return render_template(
+        "service.html", name=name, nlines=_journal_lines_arg(),
+        **_service_page_context(name, svc))
+
+
+def _service_page_context(name: str, svc: dict) -> dict:
+    """What a job's page renders: live facts, timer, state-file summary
+    and the pretty-printed raw state file.  Shared by /service/<name>
+    and the page a folded job is shown on (the waterfall on /files)."""
     job = job_status(svc["unit"], state_file=svc["state_file"],
                      stale_after_s=svc["stale_after_s"])
     timer = timer_status(svc["timer"]) if svc["timer"] else None
@@ -2226,14 +2546,12 @@ def service_page(name):
     # json.load, so re-serializing them can't raise.
     state = read_state_json(svc["state_file"])
     state_json = json.dumps(state, indent=2) if state is not None else None
-    return render_template(
-        "service.html",
-        name=name, svc=svc, job=job, timer=timer,
-        detail=_service_detail(name, svc),
-        state_json=state_json,
-        nlines=_journal_lines_arg(),
-        now_ts=time.time(),
-    )
+    return {
+        "svc": svc, "job": job, "timer": timer,
+        "detail": _service_detail(name, svc),
+        "state_json": state_json,
+        "now_ts": time.time(),
+    }
 
 
 @bp.route("/partials/service-fpga")
@@ -3140,6 +3458,16 @@ def api_config_put(name):
     _write_library_file(registry, name, content, _audit_user())
     return {"status": "saved", "path": name, "created": created,
             "reloaded": affected}
+
+
+@bp.route("/api/configs/pull", methods=["POST"])
+@localhost_or_login_required
+def api_configs_pull():
+    """``choco config pull [-n]``: mirror the upstream config directory
+    into the library and report what changed as JSON; ``{"dry_run":
+    true}`` reports the plan and writes nothing."""
+    data = request.get_json(silent=True) or {}
+    return _pull_library(bool(data.get("dry_run")), _audit_user())
 
 
 @bp.route("/api/pdb/map", methods=["GET"])

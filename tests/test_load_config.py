@@ -34,6 +34,8 @@ class TestRetiredKeys:
         ("waterfall:\n  state_file: /x/state.json\n", "state_dir"),
         ("skymap:\n  image_file: /x/skymap.png\n", "skymap/skymap.png"),
         ("skymap:\n  night_image_file: /x/n.png\n", "skymap/skymap-night.png"),
+        ("mapmaker:\n  state_file: /x/s.json\n", "state_dir"),
+        ("mapmaker:\n  image_file: /x/m.png\n", "mapmaker/sky.png"),
     ])
     def test_each_retired_key_is_refused_with_the_fix(self, tmp_path, extra, fix):
         with pytest.raises(ValueError, match=fix):
@@ -55,3 +57,40 @@ class TestStateDir:
     def test_relative_root_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="absolute"):
             _load(tmp_path, "state_dir: dev/state\n")
+
+
+class TestUpstream:
+    """The config library's ``upstream:`` block: defaults to kotekan's
+    config/chord, merged with overrides, and a malformed block is a
+    startup error rather than a button that pulls from the wrong place."""
+
+    def test_defaults_to_kotekan_chord(self, tmp_path):
+        cfg = _load(tmp_path, "")
+        assert cfg["upstream"] == {
+            "enabled": True, "repo": "kotekan/kotekan", "ref": "chord",
+            "path": "config/chord", "into": "chord", "timeout": 20,
+        }
+
+    def test_overrides_merge(self, tmp_path):
+        cfg = _load(tmp_path, "upstream:\n  ref: develop\n  timeout: 5\n")
+        assert cfg["upstream"]["ref"] == "develop"
+        assert cfg["upstream"]["timeout"] == 5
+        assert cfg["upstream"]["repo"] == "kotekan/kotekan"
+
+    def test_disabled(self, tmp_path):
+        from choco.upstream import Upstream
+        cfg = _load(tmp_path, "upstream:\n  enabled: false\n")
+        assert cfg["upstream"]["enabled"] is False
+        assert Upstream.from_config(cfg["upstream"]) is None
+
+    @pytest.mark.parametrize("extra, message", [
+        ("upstream:\n  branch: chord\n", "unknown upstream key"),
+        ("upstream:\n  repo: kotekan\n", "owner/name"),
+        ("upstream:\n  into: ../etc\n", "upstream.into"),
+        ("upstream:\n  path: /\n", "upstream.path"),
+        ("upstream: chord\n", "mapping"),
+        ("upstream: false\n", "mapping"),
+    ])
+    def test_malformed_block_is_refused(self, tmp_path, extra, message):
+        with pytest.raises(ValueError, match=message):
+            _load(tmp_path, extra)

@@ -69,3 +69,43 @@ exposes the same single cluster fact.  The web UI itself is pinned to the
 light theme, so the landing card shows the day image and links the night one
 (``?v=`` mtime-busted like the day image); a browser-side ``<picture>``
 switch would never fire.
+
+## Backdrop: the 408 MHz HEALPix map (2026-10)
+
+The backdrop was a pre-rendered 862×431 PNG of unknown provenance.  It is now
+drawn from data: the destriped 408 MHz all-sky map (Haslam et al. 1982,
+reprocessed by Remazeilles et al. 2015, MNRAS 451, 4311; sources kept), a
+12.6 MB HEALPix FITS from NASA LAMBDA: nside 512 (6.9′ pixels, 56′ beam),
+RING order, Galactic coordinates, kelvin.  It is **fetched by
+`choco.sh install`** (`fetch_sky_map`, pinned by sha256) into
+`/opt/choco/jobs/skymap/`, not committed: it would double the repository, and
+install's `rsync` of `jobs/` has no `--delete`, so the copy survives later
+installs.  A hand run from the tree needs the file next to `skymap.py`
+(gitignored there).
+
+The reading and the pixel lookup live in `choco/healpix.py`, shared with
+the mapmaker's context image (jobs only: numpy, astropy's FITS reader on
+demand; the web process never imports it).  There is no healpy.
+`ang2pix_ring` is the HEALPix RING formula (Górski et al. 2005), checked in
+`tests/test_healpix.py` against an independent transcription of
+`pix2ang_ring` at every pixel centre.  The skymap's own `mollweide_raster`
+inverts the Mollweide projection onto the frame the overlay draws in: x = −l,
+so longitude increases to the left with the Galactic centre in the middle,
+and north is at the top.  A test pins that orientation.  The raster
+(1800×900) is built once per run and shared by the day and night renders,
+about 0.25 s.
+
+Colour is log T_b, linear between the 1st and 99.7th sky percentiles, through
+matplotlib's inferno.  The candidates (jet, turbo, viridis, inferno,
+cubehelix and gist_earth, each with the log stretch and with histogram
+equalisation) were compared on 2026-10-08.  Equalisation paints a broad band
+around the plane in the top colours and competes with the overlays.  Inferno
+on log keeps the plane and the bright sources as the only bright things.
+`background_fade` went from 0.42 to 0.55 at the same time: inferno's dark
+bottom washes out at the old fade.
+
+`background_map` names the file (`""` for a plain page); the old
+`background_image` key is refused, naming its replacement.  A missing or
+unreadable map still renders both images, on a plain page, and exits 2.  A
+file in another layout (NESTED, not Galactic, not a full sky) is a config
+error, exit 1: the projection assumes exactly this one.

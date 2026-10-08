@@ -4,11 +4,25 @@
 {% block content %}
 <div class="page-head">
     <h2>Config library</h2>
+    {% if upstream %}
+    <div class="page-actions">
+        <form method="post" action="/configs/pull" style="margin: 0;"
+              onsubmit="return confirm('Pull {{ upstream.path }} from {{ upstream.repo }} ({{ upstream.ref }}) into {{ upstream.into }}/?\n\nFiles that changed upstream are rewritten, new ones added and ones removed upstream deleted (a file a node still uses is kept). Every node rendering a changed file is re-rendered and put in maintenance; lift it to restart them onto the new set.')">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="secondary outline btn-sm"
+                    title="Mirror {{ upstream.repo }}'s {{ upstream.path }} at {{ upstream.ref }} into {{ upstream.into }}/: adds, updates and removes files to match, pausing the nodes it re-renders; refused if a node would no longer render">Pull {{ upstream.into }} from GitHub</button>
+        </form>
+    </div>
+    {% endif %}
 </div>
 <p class="note">Every config file under the configs directory, with the nodes that render or
 include it. <strong>Saving a file re-renders every node that uses it</strong> (a change that
 would not render on one of them is refused) and, <strong>outside maintenance, restarts
-them</strong> onto the new config.</p>
+them</strong> onto the new config.{% if upstream %} <strong>Pull</strong> mirrors
+<code>{{ upstream.path }}</code> of <code>{{ upstream.repo }}</code> at <code>{{ upstream.ref }}</code>
+into <code>{{ upstream.into }}/</code> as one set, checked the same way; a file removed upstream
+that a node still uses is kept, and the nodes it re-renders are <strong>put in maintenance
+first</strong>, so nothing restarts until you lift it.{% endif %}</p>
 
 <table>
     <thead>

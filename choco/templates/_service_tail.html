@@ -1,0 +1,30 @@
+{# The tail of a job's page: the raw state file, collapsed, and the
+   journal viewer.  Included by service.html and by files.html for the
+   waterfall renderer, so ``name`` is the registry slug and ``lines_href``
+   the page the lines picker reloads (default: the service page). #}
+{% set picker_href = lines_href or ('/service/' ~ name) %}
+{% if state_json %}
+<section>
+    <details>
+        <summary><strong>State file</strong>{% if job.state_file %} <small><code>{{ job.state_file }}</code></small>{% endif %}</summary>
+        <pre style="max-height: 28em; overflow: auto; font-size: 0.8em; margin-top: 0.5em;">{{ state_json }}</pre>
+    </details>
+</section>
+{% endif %}
+
+<section class="journal">
+    <div class="section-head">
+        <h3>Journal</h3>
+        <span class="lines-picker">
+            {% for n in (50, 100, 500, 1000) %}
+            {% if n == nlines %}<strong>{{ n }}</strong>{% else %}<a href="{{ picker_href }}?lines={{ n }}{{ lines_anchor or '' }}">{{ n }}</a>{% endif %}
+            {%- if not loop.last %} · {% endif %}
+            {% endfor %}
+            lines
+        </span>
+    </div>
+    <div id="journal"
+         hx-get="/partials/service-logs/{{ name }}?lines={{ nlines }}"
+         hx-trigger="load, every 30s"
+         hx-swap="innerHTML"></div>
+</section>

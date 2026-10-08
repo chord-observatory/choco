@@ -17,6 +17,7 @@ the jobs talk to choco the same way (``choco.jobclient``).
     choco config ls [-j]                 the config library and who renders what
     choco config get <path>              print a library file
     choco config put <path> <file|->     write a library file (its users must still render)
+    choco config pull [-n]               mirror the upstream (GitHub) config directory into the library
     choco config use <target> <path|none>  make nodes render a library file
     choco help [<command>]               this, or one command's usage
 
@@ -306,6 +307,9 @@ def cmd_config(c: Client, a) -> int:
         content = read_text(a.file)
         return _emit(*c.put("/api/configs/" + library_path(a.path),
                             {"content": content}))
+    if a.what == "pull":
+        return _emit(*c.post("/api/configs/pull",
+                             {"dry_run": bool(a.dry_run)}))
     # use: a nodes.yaml edit through /update, not a queue item
     target = target_path(a.target)
     config = None if a.path == "none" else a.path
@@ -390,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     PATH = "a library file, relative to the configs directory (chord/pathfinder.j2)"
     s = add("config", cmd_config,
             "the config library: the files under the configs directory and "
-            "which node renders which (ls, get, put, use)")
+            "which node renders which (ls, get, put, pull, use)")
     cs = s.add_subparsers(dest="what", metavar="<what>", required=True)
     w = cs.add_parser("ls", parents=[common],
                       help="list the library files and the nodes that use them")
@@ -404,6 +408,15 @@ def build_parser() -> argparse.ArgumentParser:
                            "longer render")
     w.add_argument("path", metavar="<path>", help=PATH)
     w.add_argument("file", metavar="<file>", help=FILE)
+    w = cs.add_parser("pull", parents=[common],
+                      help="mirror the upstream config directory (config.yaml's "
+                           "upstream:, kotekan's config/chord by default) into "
+                           "the library: changed files rewritten, new ones added, "
+                           "ones removed upstream deleted unless a node still "
+                           "uses them; the nodes re-rendered are put in maintenance "
+                           "first; refused if any node would no longer render")
+    w.add_argument("-n", "--dry-run", action="store_true",
+                   help="report what would change and write nothing")
     w = cs.add_parser("use", parents=[common],
                       help="make nodes render a library file (none: their own "
                            "per-node files); rewrites nodes.yaml and rebuilds the "

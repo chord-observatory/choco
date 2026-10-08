@@ -133,7 +133,8 @@ td code, th code, dd code, .group-bar code { padding: 0; background: none; color
 .tag-off   { background: var(--off-soft);   color: var(--off-text);   border-color: color-mix(in srgb, var(--off-text) 25%, transparent); }
 /* A quiet tag (the strip, for ok / info / off): label and dot only on
    neutral ground.  The dot keeps its tone, so a running job or an
-   unpolled node still reads at a glance; only warn and bad carry a word. */
+   unpolled node still reads at a glance.  No strip tag carries a word
+   (the macro drops it); warn and bad keep their tint instead. */
 .tag.quiet { background: var(--surface); color: var(--pico-color); border-color: var(--surface-border); }
 .tag-ok.quiet .dot { color: var(--ok); }
 .tag-info.quiet .dot { color: var(--info); }
@@ -142,7 +143,7 @@ a.tag:hover { filter: brightness(0.96); }
 h2 .tag { font-size: 0.5em; }
 td .tag, dd .tag { font-size: 0.85em; }
 /* The strip is nine services wide: compact metrics so it fits one nav
-   line when quiet. */
+   line. */
 .services-strip .tag { padding: 0.25em 0.5em; }
 
 /* ---- brand mark ------------------------------------------------------ */

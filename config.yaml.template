@@ -30,6 +30,22 @@ server:
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs
 
+# The config library's upstream: the directory of kotekan's repository that
+# holds the CHORD configs.  "Pull chord from GitHub" on /configs (and
+# `choco config pull`) mirrors it into <configs_dir>/<into>/ as one set --
+# changed files rewritten, new ones added, ones removed upstream deleted
+# unless a node still uses them -- after rendering every node that uses any
+# of them, which are put in maintenance first so nothing restarts until it
+# is lifted.  Anonymous GitHub API (the repository is public); enabled:
+# false hides the button.  Every key has this default.
+upstream:
+  enabled: true
+  repo: kotekan/kotekan
+  ref: chord                        # branch, tag or commit
+  path: config/chord                # directory in the repository
+  into: chord                       # directory under configs_dir
+  timeout: 20                       # HTTP timeout (seconds) per request
+
 # Where the jobs keep their state: <state_dir>/<job>/, the directories
 # systemd's StateDirectory=choco/<job> creates for them.  choco reads each
 # job's files from there by name (state.json, run.json, the bffs manual
@@ -106,6 +122,13 @@ waterfall:
 # palette, for wall displays); each 404s until rendered.
 skymap:
   service_unit: choco-skymap.service          # systemd unit to query for the SKYMAP badge
+
+# Drift-scan sky maps (frequency as colour) built by the mapmaker job (jobs/mapmaker,
+# every 2 min; configured in /etc/choco/mapmaker.yaml).  choco reads its
+# state.json and PNGs back from <state_dir>/mapmaker/ for the MAP badge and
+# the /service/mapmaker page.
+mapmaker:
+  service_unit: choco-mapmaker.service        # systemd unit to query for the MAP badge
 
 # Data-file roots shown on /files.  Each root is scanned one level deep:
 # its immediate subdirectories are listed with the number, total size and
