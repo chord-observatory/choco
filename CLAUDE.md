@@ -61,7 +61,8 @@ choco/
 ├── dishlabels.py   # dish_inputs table + per-element label layout (stdlib; shared with the jobs)
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client + atomic state write (stdlib; shared with the jobs and CLI)
-├── auth.py         # Flask-Login + direct ldap3 bind, localhost bypass decorator
+├── auth.py         # Flask-Login + direct LDAP bind, localhost bypass decorator
+├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
 jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
@@ -169,8 +170,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   and `remote_addr` is the real peer.
 - Keep the startup guardrails: a placeholder or short `server.secret_key` is
   refused; `server.dev_auth` requires a loopback `server.host`; LDAPS
-  verifies the server certificate (`Tls(CERT_REQUIRED)`, passed
-  unconditionally); a missing `ldap.ca_cert` file is a startup error; the
+  verifies the server certificate and hostname (`ldapbind` uses
+  `ssl.create_default_context`; no mode turns it off); a missing `ldap.ca_cert` file is a startup error; the
   session cookie is Secure (when `server.ssl`), HttpOnly, SameSite=Lax;
   `_next_target` rejects `//`, backslashes and control characters.
 - Dev mode turns login **and** CSRF off together (the token lives in the

@@ -12,36 +12,52 @@ with defaults. No environment variables.
 
 all routes require login via Flask-Login; users authenticated against FreeIPA
 LDAP (no local fallback). No roles yet — all authenticated users have full
-access. Authentication is a **direct bind** (``auth.LdapAuthenticator``, plain
-``ldap3``): the DN is strung together as
+access. Authentication is a **direct bind** (``auth.LdapAuthenticator`` over
+``choco.ldapbind``): the DN is strung together as
 ``<login_attr>=<user>,<user_dn>,<base_dn>`` (RDN-escaped) and bound with the
 user's own password, so no service account exists to protect.  Two guardrails
 matter: the empty-password check (an empty SIMPLE bind is an *anonymous* bind
-— it would "succeed") and ``escape_rdn`` on the username.  Legacy config keys
+— it would "succeed"; refused in ``authenticate`` and again in
+``simple_bind``) and ``escape_rdn`` on the username.  Legacy config keys
 from the flask-ldap3-login era (``bind_dn``, ``bind_password``,
 ``user_object_filter``, ``user_search_scope``) are read-and-ignored — that
 library's search-bind path (the only consumer of them) was unreachable with
 choco's settings, which is why the wrapper and its Flask-WTF/WTForms train
 could be dropped.  Defaults tuned for FreeIPA: ``cn=users,cn=accounts`` user
-DN, ``uid`` login attribute, LDAPS on port 636.  **The LDAPS connection
-verifies the server certificate** — found in the 2026-09 dependency audit:
-``ldap3.Server(use_ssl=True)`` with no ``tls=`` gets ldap3's default
-``Tls()``, whose ``validate`` is ``CERT_NONE``, and a live probe of ipa3
-confirmed the old construction accepted a connection to the bare IP with a
-hostname mismatch — so anyone on the path to IPA could have answered "bind
-succeeded" to any password.  ``LdapAuthenticator`` now passes
-``Tls(validate=CERT_REQUIRED, ca_certs_file=<ldap.ca_cert or None>)``; with no
-file ldap3 loads the system CA store (an IPA-enrolled host already carries the
-IPA CA there), and hostname matching is ldap3's own (it sets
-``check_hostname=False`` on the SSLContext and compares the certificate
-itself), verified live: by name connects, by IP is refused.  ``init_auth``
-refuses to start when ``ldap.ca_cert`` names a missing file, because ldap3
-would log an error and silently verify against the system store instead; the
-``Tls`` is passed *unconditionally* and the cleartext-password warning keys
-off the server's effective mode, because an ``ldaps://`` host URL turns SSL on
-inside ldap3 whatever ``use_ssl`` says — the first version built the ``Tls``
-only when the flag was true, and the test for that exact config got ldap3's
-``CERT_NONE`` default back.  Three guardrails from the same review sit next to
+DN, ``uid`` login attribute, LDAPS on port 636.
+
+**The bind is the standard library (2026-10-08).**  ldap3 went: its last
+stable release was 2021 and it calls pyasn1 APIs that are already
+deprecated (dependencies.md).  A direct bind needs one BindRequest, one
+BindResponse and an UnbindRequest, so ``choco/ldapbind.py`` BER-encodes
+exactly those (RFC 4511) over ``socket``/``ssl``, cooperative under gevent.
+Responses are length-checked before they are read (64 KiB cap, definite
+lengths only), and anything other than a clean ``success`` to message 1 is
+a failure: another result code, a Notice of Disconnection, another message
+ID, truncation.  The tests check the encoding byte for byte and bind against
+a fake server on loopback, plain and TLS.  It was verified live on
+2026-10-08 against ipa1 and ipa3 with a made-up uid (so no account's lockout
+counter moved): ``invalidCredentials`` by name, refused at the hostname check
+by IP.  ``LdapServer`` resolves ``ldap.host`` the way ldap3 did, so deployed
+configs mean what they meant: the ``ldaps://``/``ldap://`` scheme decides TLS
+whatever ``use_ssl`` says, a bare host follows ``use_ssl``, ``host:port`` in
+the string beats ``port``, and no port is 389 or 636.
+
+**The LDAPS connection verifies the server certificate and hostname.**  Found
+in the 2026-09 dependency audit: ``ldap3.Server(use_ssl=True)`` with no
+``tls=`` got ldap3's default ``Tls()``, whose ``validate`` was ``CERT_NONE``.
+A live probe of ipa3 confirmed the old construction accepted a connection to
+the bare IP with a hostname mismatch, so anyone on the path to IPA could have
+answered "bind succeeded" to any password.  That was fixed then with
+``Tls(validate=CERT_REQUIRED)`` passed unconditionally, since an ``ldaps://``
+URL turned SSL on inside ldap3 whatever ``use_ssl`` said and the first fix,
+built only when the flag was true, got ``CERT_NONE`` back.  Since 2026-10-08
+the context is ``ssl.create_default_context(cafile=<ldap.ca_cert or None>)``:
+chain and hostname checked, against the system store (an IPA-enrolled host
+carries the IPA CA there) or the named PEM, and there is no code path
+without it.  ``init_auth`` still refuses to start when ``ldap.ca_cert`` names
+a missing file, which would otherwise show up only as every login failing TLS.
+The cleartext-password warning keys off the server's effective mode.  Three guardrails from the same review sit next to
 it: ``load_config`` **refuses a placeholder or sub-16-character
 ``server.secret_key``** outside dev mode (it signs the session cookie, so a
 guessable key forges a login; ``choco.sh install`` seeds a random key so a
@@ -52,9 +68,10 @@ instance over a tunnel would never get it back) plus ``HttpOnly`` and
 ``SameSite=Lax``, and ``web._next_target`` rejects a ``?next=`` carrying a
 backslash or control character, because browsers resolve ``/\host`` in a
 Location header as ``//host``.  Not done yet: rate limiting on ``/login``
-(FreeIPA's lockout policy is the defence today).  The audit's conclusion on
-hand-rolling either ldap3 or flask-login: keep both — every finding above was
-configuration around the libraries, none was in them.
+(FreeIPA's lockout policy is the defence today).  The 2026-09 audit
+kept both ldap3 and flask-login (every finding was configuration around
+them, none was in them); ldap3 went a month later for its maintenance, not
+a defect (above), and flask-login stays.
 
 ## Dev mode
 

@@ -106,7 +106,7 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 
 choco authenticates against a FreeIPA LDAP directory by **direct bind**: the user's DN is strung together as `<user_login_attr>=<username>,<user_dn>,<base_dn>` and bound with their own password — the bind itself proves the credentials, so **no service account is needed**. The defaults are tuned for FreeIPA (`cn=users,cn=accounts` user DN, `uid` login attribute, LDAPS on port 636).
 
-The LDAPS connection **verifies the server's certificate and hostname** (ldap3's own default would accept any certificate, which lets anyone on the path to the IPA server answer "bind succeeded" to any password). By default it verifies against the system CA store, where `ipa-client-install` has already placed the IPA CA; `ldap.ca_cert` points at a PEM bundle instead, and a path to a missing file is a startup error rather than a silent fallback. `use_ssl: false` is allowed but logged as a warning, since passwords would then cross the network in cleartext.
+The LDAPS connection **verifies the server's certificate and hostname** — always; there is no setting that turns it off (an unverified connection lets anyone on the path to the IPA server answer "bind succeeded" to any password). The bind is a few dozen lines of standard-library code (`choco/ldapbind.py`), not an LDAP library. By default it verifies against the system CA store, where `ipa-client-install` has already placed the IPA CA; `ldap.ca_cert` points at a PEM bundle instead, and a path to a missing file is a startup error rather than a silent fallback. `use_ssl: false` is allowed but logged as a warning, since passwords would then cross the network in cleartext.
 
 Two other startup-time guardrails sit alongside: `server.secret_key` may not be a placeholder or shorter than 16 characters (it signs the session cookie, so a guessable key is a login bypass; `choco.sh install` generates one), and the session cookie is issued `Secure` (when `server.ssl` is on), `HttpOnly` and `SameSite=Lax`.
 
@@ -471,7 +471,8 @@ choco/
 ├── datafiles.py    # /files scan and the DATA badge probe
 ├── waterfalls.py   # Read side of the waterfall image tree
 ├── h5read.py       # h5py subprocess for the gain archive
-├── auth.py         # Flask-Login + direct ldap3 bind, localhost bypass decorator
+├── auth.py         # Flask-Login + direct LDAP bind, localhost bypass decorator
+├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
 ├── templates/      # Jinja2; _*.html are htmx partials
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
 jobs/               # One dir per job: systemd units, wrapper .sh, code, tests

@@ -3,7 +3,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from ldap3.core.exceptions import LDAPInvalidCredentialsResult
 import copy
 import ssl
 from urllib.parse import quote
@@ -12,6 +11,7 @@ from choco.app import _DEFAULT_CONFIG, create_app
 
 from choco.app import create_app
 from choco.auth import LdapAuthenticator, User, save_user, _users
+from choco.ldapbind import BindRejected, LdapError
 
 
 @pytest.fixture(autouse=True)
@@ -234,31 +234,31 @@ class TestLdapAuthenticator:
         return LdapAuthenticator(**defaults)
 
     def test_tls_verifies_the_server_certificate(self):
-        """ldap3's own default, Server(use_ssl=True) with no tls=, is
-        Tls(validate=CERT_NONE): any certificate from any host, so an
-        on-path attacker could answer "bind succeeded" to any password."""
+        """ldap3's own default, Server(use_ssl=True) with no tls=, was
+        Tls(validate=CERT_NONE): any certificate from any host.  The
+        stdlib bind has no such mode -- chain and hostname, always."""
         auth = self._auth()
         assert auth.server.ssl is True
-        assert auth.server.tls.validate == ssl.CERT_REQUIRED
-        assert auth.server.tls.ca_certs_file is None  # the system CA store
+        ctx = auth.server.ssl_context()
+        assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+        assert auth.server.ca_cert is None  # the system CA store
 
     def test_ca_cert_is_passed_through(self, tmp_path):
         pem = tmp_path / "ipa-ca.pem"
         pem.write_text("not a real certificate\n")
-        assert self._auth(ca_cert=str(pem)).server.tls.ca_certs_file == str(pem)
+        assert self._auth(ca_cert=str(pem)).server.ca_cert == str(pem)
 
     def test_ldaps_url_overrides_use_ssl_false_and_still_verifies(self):
-        """ldap3 lets the URL scheme win.  The first version built the
-        strict Tls only when use_ssl was true, so this exact config got
-        ldap3's CERT_NONE default back -- the test that caught it."""
+        """The URL scheme wins, as it did under ldap3.  The first ldap3
+        version built the strict Tls only when use_ssl was true, so this
+        exact config got CERT_NONE back -- the test that caught it."""
         auth = self._auth(host="ldaps://ipa.example", use_ssl=False)
         assert auth.server.ssl is True
-        assert auth.server.tls.validate == ssl.CERT_REQUIRED
+        assert auth.server.ssl_context().verify_mode == ssl.CERT_REQUIRED
 
     def test_plain_ldap_is_plain(self):
         auth = self._auth(host="ldap://ipa.example", use_ssl=False, port=389)
-        assert auth.server.ssl is False
-        assert auth.server.tls.validate == ssl.CERT_REQUIRED  # inert, but never CERT_NONE
+        assert auth.server.ssl is False and auth.server.port == 389
 
     def test_user_dn_construction(self):
         auth = self._auth()
@@ -277,30 +277,26 @@ class TestLdapAuthenticator:
 
     def test_successful_bind_returns_dn(self):
         auth = self._auth()
-        with patch("choco.auth.ldap3.Connection") as conn:
-            conn.return_value.__enter__ = MagicMock()
-            conn.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("choco.auth.simple_bind") as bind:
             dn = auth.authenticate("alice", "pw")
         assert dn == "uid=alice,cn=users,cn=accounts,dc=example,dc=ca"
-        kwargs = conn.call_args.kwargs
-        assert kwargs["user"] == dn
-        assert kwargs["password"] == "pw"
-        assert kwargs["raise_exceptions"] is True
+        server, bound_dn, password = bind.call_args.args
+        assert server is auth.server and bound_dn == dn and password == "pw"
 
-    def test_bad_credentials_returns_none(self):
+    @pytest.mark.parametrize("err", [BindRejected(49), LdapError("TLS to ipa.example: bad cert")])
+    def test_failed_bind_returns_none(self, err):
         auth = self._auth()
-        with patch("choco.auth.ldap3.Connection",
-                   side_effect=LDAPInvalidCredentialsResult):
+        with patch("choco.auth.simple_bind", side_effect=err):
             assert auth.authenticate("alice", "wrong") is None
 
     def test_empty_password_rejected_without_contacting_ldap(self):
         """An empty password would be an anonymous bind — the classic
         LDAP pitfall where 'authentication' succeeds with no credentials."""
         auth = self._auth()
-        with patch("choco.auth.ldap3.Connection") as conn:
+        with patch("choco.auth.simple_bind") as bind:
             assert auth.authenticate("alice", "") is None
             assert auth.authenticate("", "pw") is None
-        conn.assert_not_called()
+        bind.assert_not_called()
 
 
 class TestAuthenticatedAccess:
@@ -353,19 +349,18 @@ class TestInitAuthLdapConfig:
         pem = tmp_path / "ipa-ca.pem"
         pem.write_text("not a real certificate\n")
         app = self._app(tmp_path, ca_cert=str(pem))
-        tls = app.config["ldap_authenticator"].server.tls
-        assert tls.validate == ssl.CERT_REQUIRED
-        assert tls.ca_certs_file == str(pem)
+        server = app.config["ldap_authenticator"].server
+        assert server.ca_cert == str(pem)
 
     def test_missing_ca_cert_file_refuses_to_start(self, tmp_path):
-        """ldap3 would log an error and silently verify against the system
-        store instead -- the operator asked for a specific CA."""
+        """The operator asked for a specific CA; a missing file would only
+        surface as every login failing TLS."""
         with pytest.raises(ValueError, match="ldap.ca_cert"):
             self._app(tmp_path, ca_cert=str(tmp_path / "nope.pem"))
 
     def test_empty_ca_cert_means_system_store(self, tmp_path):
         app = self._app(tmp_path, ca_cert="")
-        assert app.config["ldap_authenticator"].server.tls.ca_certs_file is None
+        assert app.config["ldap_authenticator"].server.ca_cert is None
 
     def test_plain_ldap_is_loud(self, tmp_path, caplog):
         with caplog.at_level("WARNING", logger="choco.auth"):

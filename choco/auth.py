@@ -3,15 +3,13 @@
 import ipaddress
 import logging
 import os
-import ssl
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
 
-import ldap3
-from ldap3.core.exceptions import LDAPException
-from ldap3.utils.dn import escape_rdn
 from flask import Flask, Response, request, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_user
+
+from .ldapbind import LdapError, LdapServer, escape_rdn, simple_bind
 
 logger = logging.getLogger(__name__)
 
@@ -113,25 +111,18 @@ class LdapAuthenticator:
 
     def __init__(self, host: str, port: int = 636, use_ssl: bool = True,
                  base_dn: str = "", user_dn: str = "cn=users,cn=accounts",
-                 login_attr: str = "uid", ca_cert: str | None = None):
+                 login_attr: str = "uid", ca_cert: str | None = None,
+                 timeout: float = 10.0):
         self.host = host
-        # ldap3's own default -- an SSL server with no ``tls=`` -- is
-        # ``Tls(validate=CERT_NONE)``: any certificate from any host is
-        # accepted, so anyone on the path to the IPA server could answer
-        # "bind succeeded" to any password.  With CERT_REQUIRED and no
-        # file, ldap3 loads the system CA store (an IPA-enrolled host
-        # already has the IPA CA there) and does its own hostname match
-        # (it sets check_hostname=False on the SSLContext and compares
-        # the certificate itself).  Passed *unconditionally*: an
-        # ``ldaps://`` host URL turns SSL on inside ldap3 whatever
-        # ``use_ssl`` says, and building the Tls only when the flag was
-        # true reopened the default for exactly that config.  On a
-        # plaintext connection the object is inert.  A missing
-        # ``ca_cert`` file must be caught by the caller: ldap3 would log
-        # an error and silently fall back to the system store.
-        tls = ldap3.Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=ca_cert)
-        self.server = ldap3.Server(host, port=int(port), use_ssl=use_ssl,
-                                   tls=tls)
+        # TLS verifies the certificate chain *and* the hostname, against
+        # ca_cert or the system store (choco.ldapbind; there is no way to
+        # turn it off).  The URL scheme decides TLS whatever use_ssl says
+        # -- an ldaps:// host is TLS even with use_ssl false -- as it did
+        # under ldap3, so the cleartext warning keys off server.ssl.  A
+        # missing ca_cert file must be caught by the caller (init_auth):
+        # it would only surface at the first login, as a TLS failure.
+        self.server = LdapServer(host, port=int(port), use_ssl=use_ssl, ca_cert=ca_cert)
+        self.timeout = float(timeout)
         self.login_attr = login_attr
         parts = [p for p in (user_dn.strip(), base_dn.strip()) if p]
         self.user_container = ",".join(parts)
@@ -147,20 +138,15 @@ class LdapAuthenticator:
         The empty-password guard matters: LDAP treats a bind with a DN
         and no password as an *anonymous* bind, which "succeeds" on most
         servers — without the guard, a blank password would log anyone in.
+        (``simple_bind`` refuses one too.)
         """
         if not username or not password:
             return None
         dn = self.user_dn_for(username)
         try:
-            # Context manager: binds on enter (raising on bad
-            # credentials), unbinds on exit.
-            with ldap3.Connection(self.server, user=dn, password=password,
-                                  authentication=ldap3.SIMPLE,
-                                  raise_exceptions=True):
-                pass
-        except LDAPException as e:
-            logger.info(f"LDAP bind failed for '{username}': "
-                        f"{type(e).__name__}")
+            simple_bind(self.server, dn, password, timeout=self.timeout)
+        except LdapError as e:
+            logger.info(f"LDAP bind failed for '{username}': {e}")
             return None
         return dn
 
@@ -298,9 +284,8 @@ def init_auth(app: Flask, config: dict):
     use_ssl = bool(ldap.get("use_ssl", True))
     ca_cert = ldap.get("ca_cert") or None
     if ca_cert and not os.path.isfile(ca_cert):
-        # Refuse rather than let ldap3 quietly verify against the wrong
-        # store: the operator asked for a specific CA and would get the
-        # system one, with nothing in the logs a login failure points at.
+        # Refuse at startup: the operator asked for a specific CA, and a
+        # missing file would only show up as every login failing TLS.
         raise ValueError(
             f"ldap.ca_cert is set to {ca_cert!r} but no such file exists.")
     app.config["LDAP_ENABLED"] = True
@@ -315,7 +300,7 @@ def init_auth(app: Flask, config: dict):
     )
     app.config["ldap_authenticator"] = authenticator
     # The *effective* mode, not the flag: an ldaps:// host overrides
-    # use_ssl inside ldap3.
+    # use_ssl.
     if not authenticator.server.ssl:
         logger.warning(
             "LDAP connection is plaintext (ldap.use_ssl false, host not "

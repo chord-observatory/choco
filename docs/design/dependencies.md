@@ -4,7 +4,7 @@ Design rationale moved out of CLAUDE.md (2026-09).
 
 Dependencies are deliberately minimal: core = flask (plus jinja2, declared
 explicitly because `state.py` imports it directly for config rendering),
-flask-login, ldap3, gevent, requests, pyyaml; the scientific stack (astropy,
+flask-login, gevent, requests, pyyaml; the scientific stack (astropy,
 numpy, h5py, hdf5plugin, matplotlib) lives in the `[jobs]` extra because
 nothing in the web process imports it — the timer jobs do, and so does
 `choco.h5read`, which the FPGA page's gain card runs as a *subprocess*
@@ -24,8 +24,19 @@ pin against the latest PyPI release and the OSV vulnerability database (read-
 only, stdlib-only, exits 1 on a known advisory — cron-able); the vendored
 browser assets in `choco/static/` are outside the lock and are audited by hand
 against OSV's npm ecosystem.  Before adding a dependency, check the feature
-isn't a few lines of stdlib or an existing dep away.  Audited 2026-09: the
-lock's 37 pins are 20 for the web process (six declared, the rest their
+isn't a few lines of stdlib or an existing dep away.  **ldap3 was dropped
+2026-10-08** (with pyasn1, its only dependency; the lock went from 37
+pins to 35): its last stable release was 2.9.1 in 2021, only release
+candidates since, and it calls pyasn1's ``tagMap``/``typeMap``, deprecated
+and warned about on every test run, so the pyasn1 release that removes
+them would have broken login on a routine lock bump.  choco used one
+simple bind of it, now ``choco/ldapbind.py`` (auth.md).  Reviewed the same
+day and kept: Flask-Login (no release since 2023-10 but pure Python, a
+small API, working with Flask 3.1 -- revisit if a Flask release breaks
+it) and requests (urllib3 is where most advisories land, but the
+vendored ``jobs/eop/eop_utils.py`` imports requests, so the five pins stay
+for the EOP job whatever the web process uses).  Audited 2026-09: the
+lock's 37 pins (35 since ldap3 went) were 20 for the web process (six declared, the rest their
 closure), 16 for the jobs extra, plus pip; nothing declared is unused (a
 never-imported `pytest-mock` was dropped from `[dev]` then).  The one fat
 entry is ``hdf5plugin`` — 181 MB installed, eleven native HDF5 filters all
