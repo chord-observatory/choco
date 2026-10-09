@@ -1,0 +1,260 @@
+# Curated history of the CHORD pathfinder N² subset acquisitions
+# (/mnt/cs00/data/kotekan_vis_files/subset/acq_*).
+#
+# render.py joins these entries with what each acquisition's own files say and writes
+# README.md + acq_info.yaml into every acquisition directory.  Edit this file when
+# something new is learned (a label, a swap, a pointing change) and re-run render.py;
+# do not hand-edit the generated READMEs.
+#
+# Write `text` in ASD-STE100 style: one statement per sentence, at most about 25 words,
+# active voice, the same term for the same thing every time.  Keep technical names as
+# they are.
+#
+# Each entry applies to every acquisition whose span overlaps [from, to) (UTC; `to: null`
+# means still in force), or only to the acquisitions listed in `acqs:`.
+#   topic:  labels | polarization | pointing | rfi | fringestop | badfeed | data | software | calibration
+#   source: where the fact comes from, so a reader can judge it.
+#   swapped: (polarization entries) physical dishes whose X/Y feeds are swapped.
+
+entries:
+
+# ---- pointing -----------------------------------------------------------------------
+- topic: pointing
+  from: 2026-03-06
+  to: null
+  source: "kotekan b8de3c291 (2026-03-06, \"Updated pointing to approx tau A\"); dish_coelev_deg attribute of every file"
+  text: >-
+    Every file records `dish_coelev_deg = -27.3` (Dec +22.0, Tau A) and `coelev_disp_deg = 0`
+    for all dishes.  Thus kotekan, and all software that reads these attributes, assumes
+    that all dishes point at Dec +22.0.
+- topic: pointing
+  from: 2026-10-06T16:13
+  to: null
+  source: "kotekan 784676d14 / 227b5bc2d; /etc/choco/configs/chord/telescope.j2"
+  text: >-
+    On 2026-10-06 the config library changed `dish_coelev_deg` to -8.6 (Dec +40.7, Cyg A).
+    No file on disk has this value.  The newest files (to 2026-10-07 17:19 UTC) still
+    record -27.3.
+
+- topic: pointing
+  from: 2026-04-14
+  to: 2026-05-24
+  source: "this analysis (autocorrelation rise at transits, every acquisition of the period)"
+  text: >-
+    In this period the Sun (Dec +13 to +20) increases the autocorrelations 2-9 times at
+    440 MHz.  Cyg A increases them by only 15 %.  Thus the dishes pointed near Dec +20
+    (co-elevation about -29), near the config value of +22.0 (-27.3).  A short acquisition
+    without a usable transit probably has the same pointing.
+- topic: pointing
+  from: 2026-07-22
+  to: null
+  source: "this analysis (autocorrelation rise at transits, every acquisition of the period)"
+  text: >-
+    In this period Cyg A (Dec +40.7) increases the autocorrelations by 40-60 % at
+    440-620 MHz.  The Sun (Dec +18 in July, -5 in October) gives no signal.  Thus the
+    dishes moved to about Dec +41 (co-elevation about -8.6) between 2026-05-23 and
+    2026-07-22, and stayed there.  Eigencal (2026-10-04) and the Cyg A self-calibration
+    of the mapmaker agree.  The mapmaker (2026-10-08) measured these E-W beam centres:
+    B03 -0.30 deg, A02 +0.2 deg, all other dishes within 0.07 deg.
+
+# ---- labels ---------------------------------------------------------------------------
+- topic: labels
+  from: 2026-04-14
+  to: 2026-05-20
+  source: "file layout; sky audit 2026-09-21 (fringe rates, artifact \"Pathfinder Dish Order Audit\")"
+  text: >-
+    The files have 8 elements, FullUpperTri, and no `index_map/label`.  The 6-row
+    per-element table in the embedded config names elements 0-5 A01p1, A01p2, A06p1,
+    A06p2, A07p1 and A07p2.  Elements 6-7 are not used.  From 2026-04-23 19:03 the Sun
+    transits confirm the east-west column of each label.  All three dishes are in row A,
+    thus the row needs no check.
+- topic: labels
+  from: 2026-05-22
+  to: 2026-05-24
+  source: "file layout; sky audit 2026-09-21"
+  text: >-
+    The files have 8 elements and a 64-entry per-element `index_map/label` (A01p1 ...
+    A07p2, then Fake).  The labels agree with the east-west columns on the sky.
+- topic: labels
+  from: 2026-07-22
+  to: 2026-08-29
+  source: "file layout; sky audit 2026-09-21 (rows confirmed on 08-23, 08-24, 08-25, 08-27)"
+  text: >-
+    The files have 32 elements, FullUpperTri, and per-element labels A1X ... B8Y (the
+    pre-2026-08 table, element = dish_idx).  The sky audit found that these labels are
+    physically CORRECT.  Each live input is in the column that its label gives.  Where the
+    Sun and Cyg A were both clean, the row is also correct.  The choco readers do not use
+    this per-element layout.  This is a format rule, not a correctness problem.
+- topic: labels
+  from: 2026-08-31
+  to: 2026-09-08
+  source: "memory of the 2026-09 waterfall work; directory listing"
+  text: >-
+    Someone deleted the six subset acquisitions of 2026-08-31 to 2026-09-07 (32 compact
+    elements, no `input_list`).  Only their waterfall images remain.
+- topic: labels
+  from: 2026-09-09T04:56
+  to: 2026-10-01T20:18
+  source: "sky audit 2026-09-21 (fringe rates + Sun/Cyg A delay differences, rows confirmed 09-13 and 09-19); kotekan fix 28b66156e (2026-09-21) and PR #1695 (2026-09-22)"
+  text: >-
+    THE LABELS ARE WRONG.  kotekan wrote these files with the "Live wiring (Sep 2 2026)"
+    dish table.  This table is reversed in each group of eight inputs.  The file labels
+    agree with the config table, but not with the sky.  To get the physical dish, change
+    the row (A to B, B to A) and mirror the number in its half (1-4, 2-3, 5-8, 6-7).  For
+    example, file "B4" is A1, "A2" is B3, "B7" is A6 and "A5" is B8.  The RFI-antenna rows
+    come from inference only; no sky test confirms them.  kotekan 28b66156e and PR #1695
+    correct the table.  Files from 2026-10-01 20:18 UTC have physical labels.
+- topic: labels
+  from: 2026-10-01T20:18
+  to: null
+  source: "kotekan PR #1695 (2026-09-22); file labels; this analysis (fringe/pol check)"
+  text: >-
+    The labels are physical: per-element `A01X ... B08Y, RFIA1X ... RFIB4Y` with
+    `index_map/pol`.  The dish order is A01-A04, B01-B04, A05-A08, B05-B08.
+
+# ---- polarization ---------------------------------------------------------------------
+- topic: polarization
+  from: 2026-07-22
+  to: 2026-08-19
+  source: "sky audit 2026-09-21 (cross-pol / co-pol fringe amplitude 3-8x)"
+  text: >-
+    Dishes A4, B7 and B8 have their X and Y feeds swapped, relative to the rest of the
+    array.  On these dishes, use X as the array's Y, and Y as the array's X.
+  swapped: [A04, B07, B08]
+- topic: polarization
+  from: 2026-08-19
+  to: 2026-09-19
+  source: "sky audit 2026-09-21; this analysis (cross-pol check per acquisition, 610 MHz Cyg A transits)"
+  text: >-
+    Dishes A6, A7 and B7 (physical names) have their X and Y feeds swapped.  On each clean
+    Cyg A transit from 08-22 to 09-13, their cross-pol fringes are 4-9 times their co-pol
+    fringes.  In the 09-09 to 09-14 files these dishes have the reversed labels B7, B6 and
+    A6.  The swap was corrected between 2026-09-14 17:43 and 2026-09-19 02:31 UTC.  The
+    09-19 transit shows no swap.  The 2026-09-21 audit gave "through 09-20"; that date is
+    wrong.
+  swapped: [A06, A07, B07]
+- topic: polarization
+  from: 2026-09-19
+  to: null
+  source: "this analysis (cross-pol check at the Cyg A transit, 610 MHz)"
+  text: >-
+    No dish has swapped feeds.  The swap on A6, A7 and B7 was corrected between 2026-09-14
+    and 2026-09-19.  The check for this acquisition is below.
+
+# ---- RFI --------------------------------------------------------------------------------
+- topic: rfi
+  from: 2026-04-14
+  to: 2026-05-20
+  source: "embedded configs (no RfiFrameMask / SK settings in the cx pipeline)"
+  text: >-
+    The X-engine pipeline of this period has no RFI stages.  Thus kotekan removed no RFI.
+- topic: rfi
+  from: 2026-09-17
+  to: null
+  source: "kotekan cedbb4770 (2026-09-17)"
+  text: >-
+    From 2026-09-17, first-stage (SK) excision is an updatable config
+    (`rfi_first_stage_excision_enabled`), and the files record its duty cycle.  The config
+    value is only the start-up value.  Thus the measured `frac_rfi` is the better evidence.
+- topic: rfi
+  from: 2026-04-14
+  to: null
+  source: "rfi_frame_excision_enabled dataset in every file from 2026-05-14"
+  text: >-
+    No file on disk has second-stage (frame) excision enabled.
+
+# ---- fringestopping ------------------------------------------------------------------
+- topic: fringestop
+  from: 2026-10-06T17:00
+  to: null
+  source: "embedded configs; kotekan beca469f9 \"fringestop in N2Accumulate\"; stream map (cx47 = streams 1, 9; cx52 = 3, 11)"
+  text: >-
+    Only some nodes fringestop.  The chord-library nodes (cx47, cx52; kotekan +1099)
+    fringestop in N2Accumulate to the CONFIG pointing (Dec +22.0, which is wrong).  The
+    GNSS-build nodes do not fringestop.  Frequencies with index mod 16 in {1, 3, 9, 11}
+    are fringestopped; the others are not.  Use the two sets separately.
+
+# ---- bad-feed flagging ---------------------------------------------------------------
+- topic: badfeed
+  from: 2026-07-14
+  to: 2026-08-24T18:00
+  source: "kotekan d9cec7d6b (wiring, 2026-07-14); bffs state history (from 2026-07-16); zero-baseline check of the files"
+  text: >-
+    kotekan had bad-feed flagging, and bffs sent lists.  But these files have no zeroed
+    baselines and no record of an applied mask.  Thus the flagging had no visible effect
+    on the data.
+- topic: badfeed
+  from: 2026-08-24T18:00
+  to: 2026-08-29
+  source: "zero-baseline check of the files; PDB map"
+  text: >-
+    The applied mask sets the baselines of B1X, B2X, B1Y and B2Y to zero (92-99 % of their
+    cells).  These are the dishes with PDB power off, thus these flags are physically
+    correct.  The files have no other record of the mask.
+- topic: badfeed
+  from: 2026-09-09
+  to: 2026-10-01T20:18
+  source: "flags / flag_updates datasets; sky audit 2026-09-21; bffs power source (PDB)"
+  text: >-
+    The files record the applied mask per element in `flags` (and in `flag_updates` on
+    09-09).  kotekan does NOT set the visibilities to zero, thus a reader must apply
+    `flags`.  The dish table was reversed, thus the bffs requests went to the wrong
+    physical inputs.  The dishes with PDB power off (physical B1, B2, B4) have no flag,
+    and live dishes have flags.  Use the per-input table below (physical names), not the
+    file flags.
+- topic: badfeed
+  from: 2026-10-01T20:18
+  to: null
+  source: "flags + bad_feed_mask datasets; bffs deployment log (2026-10-03 20:53 UTC)"
+  text: >-
+    The files record the mask in `flags[freq, element, time]` (0 = flagged).  From
+    2026-10-03 they also record it per stream in `/bad_feed_mask`.  kotekan does not set
+    the visibilities to zero.  The labels are physical, thus the flags go to the correct
+    inputs.  The new bffs sources (subset power-outlier, dish-type, label-joined) started
+    at 2026-10-03 20:53 UTC.  bffs added B04X (hot) and B04Y (dead) at 2026-10-04 04:34 UTC.
+
+# ---- data / software ----------------------------------------------------------------
+- topic: data
+  acqs: [acq_20260414_213532_313167493, acq_20260417_024809_098082229]
+  source: "sky audit 2026-09-21"
+  text: >-
+    The autocorrelations are normal.  The cross-correlation coefficients are only about
+    0.005, and no pair has coherent fringes.  Do not use the cross-correlations.
+- topic: data
+  acqs: [acq_20260722_202105_314115900, acq_20260812_202657_148211755, acq_20260813_232627_308205183]
+  source: "frac_lost / frames_added of the files; sky audit 2026-09-21"
+  text: >-
+    Only one X-engine node (1/8 of the band, about 12 % of the frequencies) sent data for
+    the full acquisition.  The remaining band contains zeros.
+- topic: data
+  from: 2026-04-14
+  to: 2026-05-24
+  source: "sky audit 2026-09-21"
+  text: >-
+    In April and May the Cyg A transits occur in daytime.  Their fringes are about 17 % too
+    fast for Cyg A, thus a different source is dominant.  For all geometric work, use the
+    Sun.
+- topic: calibration
+  from: 2026-04-14
+  to: null
+  source: "mapmaker fidelity checks 2026-10-08"
+  text: >-
+    Each F-engine or kotekan restart changes the per-input delays by whole ADC samples
+    (312.5 ps).  Board groups also move 0.2-0.4 samples relative to each other.  Thus gains
+    from before a restart are not valid after it.  In one acquisition the gains are stable
+    (2-6 deg rms).
+- topic: data
+  from: 2026-10-07T17:19
+  to: null
+  source: "directory listing (2026-10-09)"
+  text: >-
+    recv1 stopped at 2026-10-07 17:21 UTC.  Up to 2026-10-09 it wrote no more subset files.
+- topic: software
+  from: 2026-09-09
+  to: 2026-10-04
+  source: "kotekan PR #1727 (config tracker); embedded config_json counts"
+  text: >-
+    In this period the recv node got the config of a sender only if that sender started
+    after the recv node.  Thus many files contain only the recv and F-engine configs.
+    Where a cx config is missing, the settings in these notes come from the measured data or
+    from a neighbouring acquisition.  PR #1727 corrected this on 2026-10-04.
