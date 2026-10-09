@@ -376,6 +376,49 @@ button.version-trigger:focus-visible { outline: 2px solid var(--info); outline-o
     font-size: 0.85em;
 }
 .version-popover .popover-section { margin: 0.75em 0 0.25em 0; }
+/* /files: an acquisition's notes (its README.md), behind the row's Info
+   button; same chrome as the version popover, wider for tables. */
+.notes-popover {
+    width: min(60em, 92vw);
+    max-height: 80vh;
+    overflow: auto;
+    padding: 0.75em 1.25em;
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    background: var(--pico-background-color);
+    color: var(--pico-color);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    font-family: var(--pico-font-family-sans-serif);
+    font-size: 0.9em;
+}
+/* Dims the page behind the open notes (a popover lives in the top layer). */
+.notes-popover::backdrop { background: rgba(0, 0, 0, 0.45); }
+/* The close button stays in the top-right corner while the notes scroll. */
+button.notes-close {
+    all: unset;
+    position: sticky;
+    top: 0;
+    float: right;
+    margin: -0.25em -0.5em 0 0.5em;
+    padding: 0 0.3em;
+    cursor: pointer;
+    font-size: 1.6em;
+    line-height: 1;
+    color: var(--pico-muted-color);
+    background: var(--pico-background-color);
+    border-radius: 4px;
+}
+button.notes-close:hover { color: var(--pico-color); }
+button.notes-close:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.notes-popover h4 { font-size: 1.1em; margin: 0 0 0.5em 0; }
+.notes-popover h5, .notes-popover h6 { font-size: 1em; margin: 1em 0 0.3em 0; }
+.notes-popover p, .notes-popover ul { margin-bottom: 0.5em; }
+.notes-popover table { font-size: 0.95em; margin-bottom: 0.75em; }
+.notes-popover td, .notes-popover th { padding: 0.15em 0.5em; }
+.notes-popover table.timeline td { vertical-align: top; }
+.notes-popover table.timeline td.when { white-space: nowrap; font-family: var(--pico-font-family-monospace); font-size: 0.9em; }
+.notes-popover table.timeline td.topic { white-space: nowrap; color: var(--pico-muted-color); }
+
 dl.version-meta, dl.build-settings {
     display: grid;
     grid-template-columns: max-content 1fr;

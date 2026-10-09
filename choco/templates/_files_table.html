@@ -10,6 +10,7 @@
 </p>
 
 {% for root in scan.roots %}
+{% set root_idx = loop.index0 %}
 {% set rname = root.path.rstrip('/').split('/')[-1] %}
 <div class="root-header section-head">
     <h3>{{ root.path }}</h3>
@@ -17,6 +18,18 @@
     <small>{{ root.dirs | length }} director{{ 'y' if root.dirs | length == 1 else 'ies' }} ·
            {{ root.files }} file{{ '' if root.files == 1 else 's' }} ·
            {{ root.bytes | filesize }}</small>
+    {% endif %}
+    {% if root.timeline %}
+    {% set tl_id = "timeline-" ~ root_idx %}
+    <button type="button" class="secondary outline btn-sm" popovertarget="{{ tl_id }}"
+            title="The curated history of these acquisitions (timeline.yaml)">Timeline</button>
+    <div id="{{ tl_id }}" popover class="notes-popover"
+         hx-get="/files/timeline/{{ root_idx }}"
+         hx-trigger="toggle once" hx-target="find .notes-body" hx-swap="innerHTML">
+        <button type="button" class="notes-close" popovertarget="{{ tl_id }}"
+                popovertargetaction="hide" title="Close" aria-label="Close">&times;</button>
+        <div class="notes-body"><p aria-busy="true">Loading timeline…</p></div>
+    </div>
     {% endif %}
 </div>
 
@@ -29,8 +42,10 @@
     <thead>
         <tr>
             <th>Directory</th>
+            <th>Notes</th>
             <th style="text-align: right;">Files</th>
             <th style="text-align: right;">Size</th>
+            <th>Span (UTC)</th>
             <th style="text-align: right;">Newest</th>
             <th style="text-align: right;">Waterfalls</th>
         </tr>
@@ -40,8 +55,26 @@
         <tr>
             <td class="name">{{ d.name }}{% if d.error %}
                 <br><small class="err">{{ d.error }}</small>{% endif %}</td>
+            <td class="notes">
+            {%- if d.notes %}
+                {# The notes load on first open (the popover's toggle event):
+                   the table itself never reads a README. #}
+                {% set pop_id = "notes-" ~ loop.index ~ "-" ~ root_idx %}
+                <button type="button" class="secondary outline btn-sm" popovertarget="{{ pop_id }}"
+                        title="What is known about this acquisition: times, software, labels, pointing, RFI, flags"
+                        aria-label="Notes on {{ d.name }}">Info</button>
+                <div id="{{ pop_id }}" popover class="notes-popover"
+                     hx-get="/files/notes/{{ root_idx }}/{{ d.name }}"
+                     hx-trigger="toggle once" hx-target="find .notes-body" hx-swap="innerHTML">
+                    <button type="button" class="notes-close" popovertarget="{{ pop_id }}"
+                            popovertargetaction="hide" title="Close" aria-label="Close">&times;</button>
+                    <div class="notes-body"><p aria-busy="true">Loading notes…</p></div>
+                </div>
+            {%- else %}<small class="muted">&mdash;</small>{%- endif %}
+            </td>
             <td class="num">{{ d.files }}</td>
             <td class="num">{{ d.bytes | filesize }}</td>
+            <td class="span"><small>{% if d.oldest %}{{ d.oldest | utc_minute }} &rarr; {{ d.newest | utc_minute(short=true) }}{% else %}&mdash;{% endif %}</small></td>
             <td class="num"><small>{{ since(d.newest, now_ts) }}</small></td>
             {% set wf = rendered.get(root.path.rstrip('/') ~ '/' ~ d.name)
             or rendered.get(rname ~ '/' ~ d.name) %}

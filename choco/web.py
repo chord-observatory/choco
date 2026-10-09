@@ -22,7 +22,7 @@ from flask_login import login_required, login_user, logout_user, current_user
 
 from .auth import save_user, localhost_or_login_required
 from .jobclient import MANUAL_OVERRIDES_NAME
-from .datafiles import human_bytes
+from .datafiles import TIMELINE_NAME, human_bytes, notes_html, read_notes, timeline_rows
 from . import dishlabels
 from .pdbmap import PdbMap, cross_check, kotekan_dish_labels, dish_layout, row_entries
 from .waterfalls import (
@@ -1545,6 +1545,14 @@ def partial_dashboard_table():
     return render_template("_dashboard_table.html", nodes=registry.nodes)
 
 
+@bp.app_template_filter("utc_minute")
+def _utc_minute(ts, short=False) -> str:
+    """An mtime as 'YYYY-MM-DD HH:MM' UTC (``short``: 'MM-DD HH:MM')."""
+    if not ts:
+        return "—"
+    return time.strftime("%m-%d %H:%M" if short else "%Y-%m-%d %H:%M", time.gmtime(ts))
+
+
 @bp.app_template_filter("filesize")
 def _filesize(n) -> str:
     return human_bytes(n)
@@ -1609,6 +1617,64 @@ def partial_files():
                 rendered[f"{summary['source_path'].rstrip('/')}/{acq}"] = summary
     return render_template("_files_table.html", scan=result,
                            rendered=rendered, now_ts=time.time())
+
+
+#: How long a notes read may block on NFS before the popover says so.
+NOTES_TIMEOUT_S = 5.0
+
+
+@bp.route("/files/notes/<int:root_idx>/<acq>")
+@login_required
+def files_notes(root_idx, acq):
+    """One acquisition's README.md, rendered for the table's info popover.
+
+    The root is an index into the configured roots and the acquisition
+    must be a directory the scan itself listed with notes: the caller's
+    string never becomes a path.  The read runs in the threadpool with a
+    timeout, like every other NFS access from the web process.
+    """
+    scan = _datafile_scan()
+    if scan is None or not scan.configured:
+        abort(404)
+    roots = scan.get().get("roots") or []
+    if not 0 <= root_idx < len(roots):
+        abort(404)
+    row = next((d for d in roots[root_idx]["dirs"]
+                if d["name"] == acq and d.get("notes")), None)
+    if row is None:
+        abort(404)
+    try:
+        text = gevent.get_hub().threadpool.spawn(read_notes, row["path"]).get(
+            timeout=NOTES_TIMEOUT_S)
+    except gevent.Timeout:
+        return render_template("_files_notes.html", error="the filesystem did not answer")
+    except OSError as exc:
+        return render_template("_files_notes.html", error=str(exc))
+    return render_template("_files_notes.html", html=notes_html(text))
+
+
+@bp.route("/files/timeline/<int:root_idx>")
+@login_required
+def files_timeline(root_idx):
+    """A root's ``timeline.yaml`` (the acquisition history that
+    tools/acqnotes renders the READMEs from), as a table for the root
+    header's popover.  Same allowlist and threadpool read as the notes:
+    an index into the configured roots whose cached scan saw the file."""
+    scan = _datafile_scan()
+    if scan is None or not scan.configured:
+        abort(404)
+    roots = scan.get().get("roots") or []
+    if not 0 <= root_idx < len(roots) or not roots[root_idx].get("timeline"):
+        abort(404)
+    try:
+        text = gevent.get_hub().threadpool.spawn(
+            read_notes, roots[root_idx]["path"], TIMELINE_NAME).get(timeout=NOTES_TIMEOUT_S)
+        rows = timeline_rows(text)
+    except gevent.Timeout:
+        return render_template("_files_timeline.html", error="the filesystem did not answer")
+    except (OSError, ValueError) as exc:
+        return render_template("_files_timeline.html", error=str(exc))
+    return render_template("_files_timeline.html", rows=rows, path=roots[root_idx]["path"])
 
 
 @bp.route("/files/<root>/<acq>/triangle")

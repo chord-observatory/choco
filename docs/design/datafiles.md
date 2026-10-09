@@ -63,3 +63,30 @@ after ``CHECK_TIMEOUT_S``, reporting ``down``; the thread stays stuck until
 the mount recovers, and ``_probing`` is what stops each subsequent tick from
 piling another blocked thread behind it — a stuck probe *is* the answer, so it
 is reported without waiting again.
+
+### Span and acquisition notes (2026-10)
+
+Each row also shows the **span** of its files — the oldest and newest ``.h5``
+mtime, in UTC — taken from the same ``scandir`` pass, so it costs nothing extra.
+An mtime is when a file was last written, so the span starts one file (~200 s)
+after the acquisition did; close enough to place a run in time.  The same pass
+notices a ``README.md`` in the acquisition (written by ``tools/acqnotes``) and
+the row grows an info button.  The README is **not** read by the scan: the
+button's popover fetches ``/files/notes/<root index>/<acq>`` on first open
+(``hx-trigger="toggle once"``).  That route never turns the caller's string
+into a path: the root is an index into the configured roots and the
+acquisition must be a row the cached scan listed with notes; the read runs in
+the threadpool with a 5 s timeout and a 256 KiB cap.  The Markdown is rendered
+by ``datafiles.notes_html``, a deliberately small subset (headings, paragraphs,
+``-`` lists, pipe tables, `code`, **bold**, *emphasis*) that escapes every line before
+recognising anything, so a README can produce only those elements — a Markdown
+library would be a new dependency and would pass raw HTML through by default.
+The same overlay shows the root's ``timeline.yaml`` behind a Timeline button
+in the root header: ``tools/acqnotes/render.py`` copies the curated history
+into the data root, because production choco runs from the installed package
+and cannot see the repository.  ``/files/timeline/<root index>`` reads it the
+same way (allowlisted by the scan, threadpool, timeout, size cap), parses it
+with ``yaml.safe_load`` and renders one row per entry, oldest first, every
+text field through the same escape-first inline formatter.  The overlay dims
+the page through the popover's ``::backdrop`` and has an explicit close
+button outside the swapped body, so the load cannot replace it.

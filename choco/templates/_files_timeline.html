@@ -1,0 +1,23 @@
+{# A root's timeline.yaml (tools/acqnotes), oldest entry first.  Every
+   text field arrives as escaped HTML from datafiles.timeline_rows. #}
+{% if error %}<p class="t-warn">Timeline unavailable: {{ error }}</p>{% else %}
+<h4>Acquisition timeline</h4>
+<p class="note">The curated history that the acquisition notes come from
+   (<code>{{ path }}/timeline.yaml</code>, a copy of
+   <code>tools/acqnotes/timeline.yaml</code>).  Times are UTC.</p>
+<table class="timeline">
+    <thead><tr><th>Period</th><th>Topic</th><th>Entry</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+        <td class="when">{{ r.when }}
+            {%- if r.acqs %}<br><small class="muted">{{ r.acqs | join(", ") }}</small>{% endif %}</td>
+        <td class="topic">{{ r.topic }}</td>
+        <td>{{ r.text }}
+            {%- if r.swapped %}<br><small><strong>X/Y swapped:</strong> {{ r.swapped | join(", ") }}</small>{% endif %}
+            <br><small class="muted">Source: {{ r.source }}</small></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}

@@ -10,7 +10,7 @@ import yaml
 from choco.app import create_app, load_config
 from choco.auth import save_user, _users
 from choco.datafiles import (
-    DataFileScan, human_bytes, probe_root, scan_dir, scan_root,
+    DataFileScan, human_bytes, notes_html, probe_root, scan_dir, scan_root,
 )
 
 
@@ -84,7 +84,21 @@ class TestScan:
 
     def test_empty_dir(self, roots):
         row = scan_dir(str(roots[0] / "acq_b"))
-        assert row == {"files": 0, "bytes": 0, "newest": None, "error": None}
+        assert row == {"files": 0, "bytes": 0, "oldest": None, "newest": None,
+                       "notes": False, "error": None}
+
+    def test_span_and_notes(self, roots):
+        d = roots[0] / "acq_a"
+        os.utime(d / "vis_0.h5", (1000, 1000))
+        os.utime(d / "vis_1.h5", (3000, 3000))
+        os.utime(d / "vis_2.h5", (5000, 5000))
+        row = scan_dir(str(d))
+        assert (row["oldest"], row["newest"]) == (1000, 5000)
+        assert row["notes"] is False
+        (d / "README.md").write_text("# acq_a\n")
+        row = scan_dir(str(d))
+        assert row["notes"] is True
+        assert row["files"] == 3      # the README is not counted
 
     def test_missing_dir_reports_error(self, tmp_path):
         row = scan_dir(str(tmp_path / "nope"))
@@ -138,6 +152,29 @@ class TestDataFileScan:
         first = scan.get()
         (roots[1] / "acq_a" / "vis_1.h5").write_bytes(b"x" * 50)
         assert scan.get()["files"] == first["files"] + 1
+
+
+class TestNotesHtml:
+    def test_subset(self):
+        html = str(notes_html(
+            "# acq_x\n\n**Summary:** labels `A01X`\n\n## Pointing\n\n"
+            "- one\n- two\n  wrapped\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"))
+        assert "<h4>acq_x</h4>" in html
+        assert "<strong>Summary:</strong> labels <code>A01X</code>" in html
+        assert "<h5>Pointing</h5>" in html
+        assert "<li>two wrapped</li>" in html
+        assert "<th>a</th>" in html and "<td>2</td>" in html
+        assert "---" not in html
+
+    def test_emphasis(self):
+        html = str(notes_html("*About: `a.yaml` and 2 * 3*\n\nx * y * z\n"))
+        assert "<em>About: <code>a.yaml</code> and 2 * 3</em>" in html
+        assert "<p>x * y * z</p>" in html
+
+    def test_markup_in_the_file_is_escaped(self):
+        html = str(notes_html("<script>alert(1)</script>\n| <b>x</b> |\n"))
+        assert "<script>" not in html and "<b>" not in html
+        assert "&lt;script&gt;" in html
 
 
 def test_human_bytes():
@@ -196,6 +233,67 @@ class TestFilesRoutes:
         assert data["bytes"] == 403
         names = {d["name"] for r in data["roots"] for d in r["dirs"]}
         assert names == {"acq_a", "acq_b"}
+
+    def test_partial_offers_notes_only_where_present(self, configs_dir, roots):
+        (roots[0] / "acq_a" / "README.md").write_text("# acq_a\n\n**hi**\n")
+        client = _app(configs_dir, roots).test_client()
+        _login(client)
+        body = client.get("/partials/files").get_data(as_text=True)
+        assert body.count('aria-label="Notes on') == 1
+        assert ">Info</button>" in body
+        assert 'popovertargetaction="hide"' in body         # the X
+        assert 'hx-target="find .notes-body"' in body       # the X survives the load
+        assert 'hx-get="/files/notes/0/acq_a"' in body
+        assert "Span (UTC)" in body
+
+    def test_notes_route(self, configs_dir, roots):
+        (roots[0] / "acq_a" / "README.md").write_text("# acq_a\n\n**hi**\n")
+        client = _app(configs_dir, roots).test_client()
+        _login(client)
+        body = client.get("/files/notes/0/acq_a").get_data(as_text=True)
+        assert "<h4>acq_a</h4>" in body and "<strong>hi</strong>" in body
+
+    def test_notes_route_allowlist(self, configs_dir, roots):
+        (roots[0] / "acq_a" / "README.md").write_text("x")
+        client = _app(configs_dir, roots).test_client()
+        _login(client)
+        # no notes there, unknown root, a name the scan did not list, traversal
+        for url in ("/files/notes/0/acq_b", "/files/notes/5/acq_a",
+                    "/files/notes/1/acq_a", "/files/notes/0/..",
+                    "/files/notes/0/acq_a%2F..%2F..%2Fetc"):
+            assert client.get(url).status_code == 404, url
+
+    def test_timeline_button_and_route(self, configs_dir, roots):
+        (roots[1] / "timeline.yaml").write_text(
+            "entries:\n"
+            "- topic: labels\n  from: 2026-09-09T04:56\n  to: 2026-10-01T20:18\n"
+            "  source: \"audit <b>\"\n  text: The labels are `wrong`.\n  swapped: [A06]\n"
+            "- topic: data\n  acqs: [acq_20260414_213532_313167493]\n  source: s\n  text: Early.\n")
+        client = _app(configs_dir, roots).test_client()
+        _login(client)
+        body = client.get("/partials/files").get_data(as_text=True)
+        assert body.count(">Timeline</button>") == 1          # only the root that has one
+        assert 'hx-get="/files/timeline/1"' in body
+        html = client.get("/files/timeline/1").get_data(as_text=True)
+        assert "2026-09-09 04:56 → 2026-10-01 20:18" in html
+        assert "The labels are <code>wrong</code>." in html
+        assert "&lt;b&gt;" in html and "<b>" not in html
+        assert "A06" in html
+        # oldest first: the acqs-only entry (2026-04-14) sorts before 2026-09-09
+        assert html.index("Early.") < html.index("The labels are")
+        assert client.get("/files/timeline/0").status_code == 404
+        assert client.get("/files/timeline/7").status_code == 404
+
+    def test_timeline_route_reports_a_bad_file(self, configs_dir, roots):
+        (roots[1] / "timeline.yaml").write_text("just: text\n")
+        client = _app(configs_dir, roots).test_client()
+        _login(client)
+        html = client.get("/files/timeline/1").get_data(as_text=True)
+        assert "Timeline unavailable" in html
+
+    def test_notes_route_requires_login(self, configs_dir, roots):
+        client = _app(configs_dir, roots).test_client()
+        assert client.get("/files/notes/0/acq_a").status_code == 302
 
     def test_api_unconfigured(self, configs_dir):
         client = _app(configs_dir, []).test_client()

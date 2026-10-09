@@ -33,33 +33,50 @@ kotekan acquisition, not of a page load.
 
 import logging
 import os
+import re
 import stat as stat_mod
 import time
 from pathlib import Path
 
 import gevent
+import yaml
 from gevent.lock import BoundedSemaphore
+from markupsafe import Markup, escape
 
 logger = logging.getLogger(__name__)
 
 #: Files counted by the scan.
 H5_SUFFIX = ".h5"
+#: An acquisition's notes (tools/acqnotes), shown behind the table's info button.
+NOTES_NAME = "README.md"
+#: Notes larger than this are refused rather than rendered.
+NOTES_MAX_BYTES = 256 * 1024
+#: A root's acquisition history (tools/acqnotes/timeline.yaml), behind the
+#: root header's Timeline button.
+TIMELINE_NAME = "timeline.yaml"
 
 
 def scan_dir(path: str) -> dict:
     """Count the ``.h5`` files sitting directly in one directory.
 
-    Returns ``{"files", "bytes", "newest", "error"}``.  ``newest`` is
-    the mtime of the most recently modified counted file (``None`` when
-    there are none), which is what says whether an acquisition is still
-    growing.
+    Returns ``{"files", "bytes", "oldest", "newest", "notes", "error"}``.
+    ``newest`` is the mtime of the most recently modified counted file
+    (``None`` when there are none), which is what says whether an
+    acquisition is still growing; ``oldest`` with it gives the span the
+    files cover.  ``notes`` says whether the directory carries a
+    ``README.md`` (written by ``tools/acqnotes``), noticed from the same
+    listing at no extra cost.
     """
     files = 0
     total = 0
-    newest = None
+    oldest = newest = None
+    notes = False
     try:
         with os.scandir(path) as it:
             for entry in it:
+                if entry.name == NOTES_NAME:
+                    notes = True
+                    continue
                 if not entry.name.endswith(H5_SUFFIX):
                     continue
                 try:
@@ -75,10 +92,14 @@ def scan_dir(path: str) -> dict:
                 total += st.st_size
                 if newest is None or st.st_mtime > newest:
                     newest = st.st_mtime
+                if oldest is None or st.st_mtime < oldest:
+                    oldest = st.st_mtime
     except OSError as exc:
-        return {"files": files, "bytes": total, "newest": newest,
+        return {"files": files, "bytes": total, "oldest": oldest,
+                "newest": newest, "notes": notes,
                 "error": f"{type(exc).__name__}: {exc}"}
-    return {"files": files, "bytes": total, "newest": newest, "error": None}
+    return {"files": files, "bytes": total, "oldest": oldest,
+            "newest": newest, "notes": notes, "error": None}
 
 
 def scan_root(root: str) -> dict:
@@ -90,13 +111,20 @@ def scan_root(root: str) -> dict:
     """
     path = str(root)
     started = time.monotonic()
+    timeline = False
     try:
         with os.scandir(path) as it:
-            entries = [e for e in it if e.is_dir()]
+            entries = []
+            for e in it:
+                if e.name == TIMELINE_NAME:
+                    timeline = True
+                elif e.is_dir():
+                    entries.append(e)
     except OSError as exc:
         logger.warning(f"data-files: cannot list {path}: {exc}")
         return {"path": path, "error": f"{type(exc).__name__}: {exc}",
-                "dirs": [], "files": 0, "bytes": 0, "duration_s": 0.0}
+                "dirs": [], "files": 0, "bytes": 0, "duration_s": 0.0,
+                "timeline": False}
 
     dirs = []
     for entry in sorted(entries, key=lambda e: e.name):
@@ -114,6 +142,7 @@ def scan_root(root: str) -> dict:
         "path": path,
         "error": None,
         "dirs": dirs,
+        "timeline": timeline,
         "files": sum(d["files"] for d in dirs),
         "bytes": sum(d["bytes"] for d in dirs),
         "duration_s": time.monotonic() - started,
@@ -316,6 +345,137 @@ class DataFileScan:
             "last_seen": self.last_ok,
             "error": self.error,
         }
+
+
+def read_notes(path: str, name: str = NOTES_NAME) -> str:
+    """The text of one notes file (an acquisition's ``README.md``, a root's
+    ``timeline.yaml``).  Blocking: run it in the threadpool.  Raises
+    ``OSError`` (missing, unreadable, too large)."""
+    with open(os.path.join(path, name), "rb") as fh:
+        data = fh.read(NOTES_MAX_BYTES + 1)
+    if len(data) > NOTES_MAX_BYTES:
+        raise OSError(f"{name} is larger than {NOTES_MAX_BYTES} bytes")
+    return data.decode("utf-8", errors="replace")
+
+
+_CODE = re.compile(r"`([^`]+)`")
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_EM = re.compile(r"(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*(?![*\w])")
+
+
+def _inline(text: str) -> str:
+    """Escape, then mark up `code`, **bold** and *emphasis*: nothing the
+    file says is ever passed through as HTML."""
+    s = str(escape(text))
+    s = _CODE.sub(r"<code>\1</code>", s)
+    s = _BOLD.sub(r"<strong>\1</strong>", s)
+    return _EM.sub(r"<em>\1</em>", s)
+
+
+def notes_html(text: str) -> Markup:
+    """The Markdown subset the acquisition notes use, as HTML: headings,
+    paragraphs, ``-`` lists, pipe tables, `code`, **bold** and *emphasis*.
+
+    Deliberately not a Markdown library (see dependencies.md): every line
+    is escaped before the few constructs are recognised, so a README can
+    only ever produce these elements.
+    """
+    out, para, items, rows = [], [], [], []
+
+    def flush():
+        if para:
+            out.append(f"<p>{_inline(' '.join(para))}</p>")
+            para.clear()
+        if items:
+            out.append("<ul>" + "".join(f"<li>{_inline(i)}</li>" for i in items) + "</ul>")
+            items.clear()
+        if rows:
+            head, body = rows[0], rows[1:]
+            html = ["<table><thead><tr>"]
+            html += [f"<th>{_inline(c)}</th>" for c in head]
+            html.append("</tr></thead><tbody>")
+            for r in body:
+                html.append("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in r) + "</tr>")
+            html.append("</tbody></table>")
+            out.append("".join(html))
+            rows.clear()
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("|"):
+            if para or items:
+                flush()
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= set("-: ") and c for c in cells):
+                continue  # the header separator row
+            rows.append(cells)
+            continue
+        if rows:
+            flush()
+        if not line:
+            flush()
+        elif line.startswith("#"):
+            flush()
+            level = len(line) - len(line.lstrip("#"))
+            tag = f"h{min(level + 3, 6)}"
+            out.append(f"<{tag}>{_inline(line[level:].strip())}</{tag}>")
+        elif line.startswith("- "):
+            if para:
+                flush()
+            items.append(line[2:])
+        elif items and raw.startswith("  "):
+            items[-1] += " " + line  # a wrapped list item
+        else:
+            para.append(line)
+    flush()
+    return Markup("\n".join(out))
+
+
+def timeline_rows(text: str) -> list[dict]:
+    """``timeline.yaml`` as display rows, oldest first.
+
+    Each row: ``when`` (the period, or "listed acquisitions"), ``topic``,
+    ``text`` and ``source`` as safe HTML (via ``_inline``), ``swapped``
+    and ``acqs`` as lists of plain strings.  Raises ``ValueError`` on a
+    file that is not the expected shape.
+    """
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"not valid YAML: {exc}") from None
+    entries = doc.get("entries") if isinstance(doc, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("no `entries:` list")
+    rows = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        start, end = e.get("from"), e.get("to")
+        acqs = [str(a) for a in e.get("acqs") or []]
+        if acqs:
+            when = "listed acquisitions"
+            m = re.match(r"acq_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})", min(acqs))
+            key = "%s-%s-%s %s:%s" % m.groups() if m else min(acqs)
+        else:
+            when = f"{_when(start)} → {_when(end) if end else 'now'}"
+            key = _when(start)
+        rows.append({
+            "key": key,
+            "when": when,
+            "topic": str(e.get("topic") or ""),
+            "text": Markup(_inline(str(e.get("text") or ""))),
+            "source": Markup(_inline(str(e.get("source") or ""))),
+            "swapped": [str(s) for s in e.get("swapped") or []],
+            "acqs": acqs,
+        })
+    rows.sort(key=lambda r: r["key"])
+    return rows
+
+
+def _when(v) -> str:
+    """A timeline bound (YAML date, datetime or string) as 'YYYY-MM-DD[ HH:MM]'."""
+    s = str(v or "").replace("T", " ")
+    return s[:16] if len(s) > 10 else s
 
 
 def human_bytes(n) -> str:

@@ -5,10 +5,12 @@
 {% block styles %}
 table.files td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.files td.wf a { text-decoration: none; }
+table.files td.notes .btn-sm { margin: 0; }
 table.files td.name { font-family: var(--pico-font-family, monospace); font-size: 0.9em; }
 table.files td, table.files th { padding: 0.3em 0.6em; }
 .root-header h3 { font-family: var(--pico-font-family-monospace); font-size: 1em; }
 .root-header small { color: var(--pico-muted-color); }
+.root-header .btn-sm { margin: 0 0 0 auto; }
 .lines-picker { margin-left: auto; font-size: 0.85em; }
 {% endblock %}
 
@@ -36,6 +38,9 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 <p class="note">
     HDF5 files directly inside each subdirectory of the configured roots.
     Files still being written under <code>.partial</code> are not counted.
+    <strong>Notes</strong> opens what is known about an acquisition (its
+    <code>README.md</code>: times, software, labels, pointing, RFI and flagging).
+    <strong>Span</strong> runs from the oldest to the newest file's write time.
     <strong>Waterfalls</strong> counts the files folded into each acquisition's
     rendered images; follow it for the upper-triangle contact sheet.
 </p>

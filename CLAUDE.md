@@ -145,9 +145,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   against `NAME_RE` / `SHARD_RE` / `IMAGE_RE`; a manual bffs flag's label
   against the element axis in the job's state file; a PDB row-power
   request's row and polarization become channel addresses only through
-  `pdbmap.row_entries`; a GitHub listing's file names go through
-  `resolve_config_path` too, and the raw URL is built from the validated
-  name at the resolved commit, never from the listing's `download_url`.
+  `pdbmap.row_entries`; an acquisition-notes request is a root index
+  plus a directory the cached `/files` scan listed with notes, and a
+  timeline request a root index whose scan saw `timeline.yaml`; a GitHub
+  listing's file names go through `resolve_config_path` too, and the raw
+  URL is built from the validated name at the resolved commit, never from
+  the listing's `download_url`.
   Extend the allowlist, never bypass it.
 - kotekan-supplied markup reaches the DOM only through
   `services.sanitize_pipeline_svg` (whitelist reconstruction; unknown
