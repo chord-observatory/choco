@@ -1,8 +1,8 @@
 """Tests for node registry and state tracking."""
 
-import pytest
-from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
 import yaml
 
 from choco.state import (
@@ -145,6 +145,33 @@ class TestRegistryReload:
         (tmp_path / "nodes.yaml").write_text("groups:\n  empty_grp:\n")
         registry = Registry(tmp_path)
         assert registry.nodes == {}
+
+    def test_reload_bare_node_takes_defaults(self, tmp_path):
+        """``cx47:`` with no body is a node with every default."""
+        (tmp_path / "nodes.yaml").write_text("groups:\n  cx:\n    cx47:\n")
+        registry = Registry(tmp_path)
+        node = registry.get_node("cx/cx47")
+        assert (node.host, node.port) == ("cx47", 12048)
+
+    @pytest.mark.parametrize("text", [
+        "groups:\n  cx:\n    cx47: oops\n    cx48: {}\n",   # node not a mapping
+        "groups:\n  cx: [cx47]\n  ok:\n    cx48: {}\n",    # group not a mapping
+    ])
+    def test_reload_skips_malformed_entry(self, tmp_path, caplog, text):
+        """A wrongly shaped entry is logged and skipped; the rest load."""
+        (tmp_path / "nodes.yaml").write_text(text)
+        with caplog.at_level("ERROR"):
+            registry = Registry(tmp_path)
+        assert [n.name for n in registry.nodes.values()] == ["cx48"]
+        assert any("not a mapping" in r.message for r in caplog.records)
+
+    @pytest.mark.parametrize("text", ["- a\n- b\n", "groups: 5\n"])
+    def test_reload_malformed_top_level_empties(self, tmp_path, caplog, text):
+        (tmp_path / "nodes.yaml").write_text(text)
+        with caplog.at_level("ERROR"):
+            registry = Registry(tmp_path)
+        assert registry.nodes == {}
+        assert any("not a mapping" in r.message for r in caplog.records)
 
     def test_reload_missing_file_clears_registry(self, configs_dir):
         registry = Registry(configs_dir)
@@ -764,3 +791,23 @@ class TestConfigKey:
         assert node.render("a: 1\n") == {"a": 1}
         with pytest.raises(Exception):
             node.render('{% include "x.j2" %}')
+
+
+class TestMaintenanceWrites:
+    """``maintenance=True`` means no REST write to the node: push_updatable,
+    start and kill all return False without a request."""
+
+    WRITES = [
+        lambda n: n.push_updatable("foo/bar", {"v": 1}),
+        lambda n: n.start({"config": "x"}),
+        lambda n: n.kill(),
+    ]
+
+    @pytest.mark.parametrize("maintenance", [True, False])
+    @pytest.mark.parametrize("write", WRITES, ids=["push_updatable", "start", "kill"])
+    def test_maintenance_blocks_every_write(self, write, maintenance):
+        node = Node(name="t", group="t", host="example", port=12048,
+                    timeout=1, maintenance=maintenance)
+        node._request = MagicMock(return_value=MagicMock())
+        assert write(node) is (not maintenance)
+        assert node._request.call_count == (0 if maintenance else 1)

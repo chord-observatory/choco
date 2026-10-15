@@ -45,7 +45,7 @@ green / yellow / red. See `eigencal.example.yaml` for an annotated config
 
 choco ships the units: `choco-eigencal.service` (oneshot) paired with
 `choco-eigencal.timer` (every 10 min), installed and enabled by
-`choco.sh install`. The service runs `jobs/eigencal/eigencal.sh` against
+`choco.sh install`. The service runs `jobs/run-job.sh eigencal/eigencal.py` against
 `/etc/choco/eigencal.yaml` (seeded from `eigencal.example.yaml` on first
 install). The timer is *not* the calibration cadence — the script self-gates
 and does real work only once per transit, at night.
@@ -156,9 +156,12 @@ These encode conventions that cannot be checked without real CHORD data
   subset data: with `telescope.fringestop_sign: -1` (now the default) the
   eigen-response phase is flat in hour angle (median 0.4-9 rad/rad across
   the healthy dishes at 600-900 MHz), with +1 it winds at ~500 rad/rad and
-  without fringestopping at ~250 — so kotekan's N² visibilities are not
-  fringestopped (`n2_accumulate/do_fringestop: false` in the live config)
-  and the correlator's conjugation is opposite to ch_util's;
+  without fringestopping at ~250 — so the correlator's conjugation is
+  opposite to ch_util's.  kotekan stops the 40 ms frames only *within* each
+  10 s bin, to the bin's centre, and only with `n2_accumulate/do_fringestop`
+  on (off on 2026-10-04, on in cx52's config from mid-October); nothing is
+  stopped *across* bins, so the phase still winds over a transit and
+  eigencal removes it either way;
 - **position frame** — `feed_positions_m` is read as kotekan's grid frame
   and rotated to East/North with `grid_orientation` (v_grid = R · v_topo,
   so positions @ R); verified against the kotekan source, not yet against

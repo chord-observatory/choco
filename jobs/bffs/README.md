@@ -46,7 +46,7 @@ BFFS badge renders these as green / yellow / red.
 
 choco ships the units: `choco-bffs-flag.service` (oneshot) paired with
 `choco-bffs-flag.timer` (every 30 s), installed and enabled by
-`choco.sh install`. The service runs `jobs/bffs/bffs-flag.sh` against
+`choco.sh install`. The service runs `jobs/run-job.sh bffs/bffs.py` against
 `/etc/choco/bffs.yaml` (seeded from `bffs.example.yaml` on first install).
 The timer interval is the flagging cadence — there is no internal scheduling.
 
@@ -140,10 +140,12 @@ are reported as unmeasured — `power-outlier` leaves them good rather than
 flagging 96 unwired slots as "dead" (kotekan's baseline mask already covers
 them; a feed the products *do* cover but that reads nothing is still
 dead-and-bad). `kotekan_file` may be a glob, spanning directories if needed
-(`subset/acq_*/*.h5`) — each run reads the newest match by mtime, i.e. the
-most recently written file of the current acquisition (`bffs.newest_file`
-compares the matches' directories first and stats only the newest one's
-files, so the lookup does not grow with the 15,000-file archive). kotekan
+(`subset/acq_*/*.h5`) — each run reads the most recently written file of
+the current acquisition (`bffs.newest_file` picks the latest acquisition
+by the start time in its directory name, never its mtime, which the
+acqnotes job moves when it rewrites an old acquisition's README, and
+stats only that directory's files, so the lookup does not grow with the
+15,000-file archive). kotekan
 writes a file in `.partial/` and renames it into the acquisition directory
 when it is complete, ~3.5 min of frames later, so the newest file is
 complete and the verdict lags the sky by up to that much. If that newest
@@ -200,9 +202,9 @@ PDB table** — ch_flag's `layout` idea — so the grid shows it as bad with tha
 reason on hover. That rule applies only when the table can be trusted: an
 operator's `map:` CSV, or choco's table when the cross-check finds no row
 naming a dish input kotekan does not know (a stale or renamed label would
-otherwise make real feeds look unmapped). With a stale table, or the bundled
-`sources/power_map.csv` fallback (dry runs, choco down), unmapped feeds are
-left good and the run reports degraded saying how many and why. Each flagged
+otherwise make real feeds look unmapped). With a stale table, unmapped feeds are
+left good and the run reports degraded saying how many and why; with no table
+at all (choco down, no `map:`) the source abstains the same way for every feed. Each flagged
 feed carries its reason (`off`, `unread`, `not in PDB table`) in the report's
 `feed_reasons`; the core copies it into the state file's `flag_reasons` for
 the page. `rfi` needs no map: kotekan's `RfiSKMetrics` stage serves a JSON

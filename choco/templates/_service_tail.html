@@ -1,7 +1,9 @@
 {# The tail of a job's page: the raw state file, collapsed, and the
    journal viewer.  Included by service.html and by files.html for the
-   waterfall renderer, so ``name`` is the registry slug and ``lines_href``
-   the page the lines picker reloads (default: the service page). #}
+   waterfall renderer and the acquisition notes, so ``name`` is the
+   registry slug, ``lines_href`` the page the lines picker reloads
+   (default: the service page) and ``journal_id`` the journal's id when a
+   page carries two. #}
 {% set picker_href = lines_href or ('/service/' ~ name) %}
 {% if state_json %}
 <section>
@@ -23,7 +25,7 @@
             lines
         </span>
     </div>
-    <div id="journal"
+    <div id="{{ journal_id or 'journal' }}" class="journal-log"
          hx-get="/partials/service-logs/{{ name }}?lines={{ nlines }}"
          hx-trigger="load, every 30s"
          hx-swap="innerHTML"></div>

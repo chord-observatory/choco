@@ -15,6 +15,8 @@ from jinja2 import meta as _jinja_meta
 import requests
 import yaml
 
+from .jobclient import write_json_atomic, write_text_atomic
+
 logger = logging.getLogger(__name__)
 
 # Config file extensions (order matters: later wins if both exist for same key)
@@ -514,8 +516,7 @@ class Node:
         path = self.config_abspath
         if path is None:
             raise ValueError(self._config_error or "node has no configs directory")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(base_content)
+        write_text_atomic(path, base_content)
         self.base_content = base_content
         self.dependencies = self.referenced_files(base_content)
         self.rendered_config = rendered
@@ -543,9 +544,8 @@ class Node:
             self.updatable_config = {}
         self.updatable_config[endpoint] = values
         if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
-                json.dump(self.updatable_config, f, indent=2)
+            # torn, this file would be a load error and stop all pushes
+            write_json_atomic(path, self.updatable_config)
         self._updatable_load_error = None
 
     def render(self, base_content: str, *,
@@ -831,12 +831,28 @@ class Registry:
             self.nodes.clear()
             return
 
+        groups = data.get("groups") if isinstance(data, dict) else data
+        if not isinstance(groups or {}, dict):
+            logger.error(f"{nodes_file}: 'groups' is not a mapping; registry empty")
+            self.nodes.clear()
+            return
         template_vars = self._load_vars()
 
+        # A hand edit can leave any level the wrong shape; such an entry
+        # is skipped and logged, never allowed to abort the rebuild (the
+        # workers are already stopped when this runs).  A bare ``node:``
+        # is a node with every default.
         self.nodes.clear()
-        for group_name, members in (data.get("groups") or {}).items():
+        for group_name, members in (groups or {}).items():
+            if not isinstance(members or {}, dict):
+                logger.error(f"{nodes_file}: group {group_name!r} is not a mapping; skipped")
+                continue
             for node_name, node_info in (members or {}).items():
                 key = f"{group_name}/{node_name}"
+                node_info = {} if node_info is None else node_info
+                if not isinstance(node_info, dict):
+                    logger.error(f"{nodes_file}: node {key!r} is not a mapping; skipped")
+                    continue
                 host = node_info.get("host", node_name)
                 port = node_info.get("port", 12048)
                 started = node_info.get("started", False)
@@ -860,12 +876,9 @@ class Registry:
 
     def save_nodes_yaml(self, data: dict):
         """Write *data* to ``nodes.yaml`` atomically (temp file + rename)."""
-        nodes_file = self.configs_dir / "nodes.yaml"
-        nodes_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = nodes_file.with_name(nodes_file.name + ".tmp")
-        with open(tmp, "w") as f:
-            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        tmp.replace(nodes_file)
+        write_text_atomic(self.configs_dir / "nodes.yaml",
+                          yaml.safe_dump(data, default_flow_style=False,
+                                         sort_keys=False))
 
     def get_node(self, key: str) -> Node | None:
         return self.nodes.get(key)

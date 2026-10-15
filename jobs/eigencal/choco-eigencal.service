@@ -8,7 +8,20 @@ Type=oneshot
 # systemd owns /var/lib/choco/eigencal (creates it with the right ownership)
 # and exports it as $STATE_DIRECTORY; the gain archive and state.json live there.
 StateDirectory=choco/eigencal
-ExecStart=/opt/choco/jobs/eigencal/eigencal.sh /etc/choco/eigencal.yaml
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/run-job.sh eigencal/eigencal.py /etc/choco/eigencal.yaml
+Nice=10
+IOSchedulingClass=idle
+# Most ticks exit at the gate; a transit reads about an hour of N² files
+# and eigen-decomposes per frequency.  Not yet measured under a cap:
+# generous backstops, so a runaway dies in its own cgroup rather than
+# waking the system OOM killer.  Check `systemctl show -p MemoryPeak`
+# during a transit run and tighten.
+CPUQuota=200%
+CPUWeight=20
+MemoryHigh=3G
+MemoryMax=4G
 # No Restart: the script self-gates (it exits 0 in seconds unless a transit
 # just completed and is unprocessed), so a failed run — N² data missing,
 # choco not up, transit not yet covered — is simply retried by the next

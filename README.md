@@ -368,6 +368,8 @@ A companion oneshot service generates an Earth Orientation Parameter (EOP) table
 
 **Schedule** — `choco-eop-broadcast.service` runs once on `choco.service` startup (`After=choco.service`, `WantedBy=choco.service`) and again daily at 12:00 UTC via `choco-eop-broadcast.timer` (`Persistent=true`, so a missed firing catches up on boot). One-off runs: `sudo systemctl start --no-block choco-eop-broadcast.service` (use `--no-block`: the unit retries forever on failure — deliberately, so it self-recovers when the FPGA master comes back — and a plain `start` would wait through those retries indefinitely).
 
+**Config** — `/etc/choco/eop.yaml`, seeded from `jobs/eop/eop.example.yaml` (choco's loopback URL, the fpga_master address, `intervals_before`/`intervals_after`, the endpoint).
+
 **Pipeline** (`jobs/eop/eop_update.py`):
 1. Read `frame0_ns` from `fpga_master` over TCP.
 2. Build a fresh EOP table on the UTC-midnight grid using `astropy` + IERS auto-download, covering `(now − intervals_before, now + intervals_after)` days.
@@ -389,8 +391,8 @@ localhost. choco then relays the values to every kotekan node in the group at
 `POST /updatable_config/bad_inputs`, where the `bufferBadInputs` stage turns
 them into the RFI-kernel feed mask.
 
-bffs runs from the choco venv (`jobs/bffs/bffs-flag.sh` finds `/opt/choco` or
-the local checkout) with its config at `/etc/choco/bffs.yaml`, seeded from
+bffs runs from the choco venv (`jobs/run-job.sh bffs/bffs.py` finds `/opt/choco`
+or the local checkout) with its config at `/etc/choco/bffs.yaml`, seeded from
 `jobs/bffs/bffs.example.yaml` on first install — see
 [jobs/bffs/README.md](jobs/bffs/README.md)
 for the config format and flagging sources. The service runs once on choco
@@ -475,7 +477,7 @@ choco/
 ├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
 ├── templates/      # Jinja2; _*.html are htmx partials
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
-jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
+jobs/               # One dir per job: systemd units, code, tests; run-job.sh runs any of them
 ├── choco.service   # Main service (Type=notify)
 ├── eop/            # EOP table broadcast; eop_utils.py is vendored from kotekan
 ├── bffs/           # Bad-feed flagging; sources/ = one module per signal
@@ -484,7 +486,7 @@ jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
 ├── skymap/         # Current-sky Mollweide plot
 └── mapmaker/       # Drift-scan sky maps, frequency as hue, and their CLEAN
 configs/            # nodes.yaml, vars.yaml, pdb_map.csv, <group>/<node>.yaml|.j2
-tests/              # pytest; test_<module>.py per module, test_web.py for routes
+tests/              # pytest; test_<module>.py per module, test_web_<area>.py for routes, test_route_auth.py sweeps every route's exposure
 docs/design/        # Design rationale, one file per subsystem
 ```
 

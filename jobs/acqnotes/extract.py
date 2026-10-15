@@ -1,17 +1,13 @@
-"""Summarize each subset acquisition's metadata into one JSON per acq."""
+"""Summarize one subset acquisition's metadata: attributes, labels, configs, flags, autos."""
 import glob
 import json
 import os
 import re
-import sys
 
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-ROOT = "/mnt/cs00/data/kotekan_vis_files/subset"
-OUT = sys.argv[1]
-ONLY = sys.argv[2:]
 
 KEYRE = re.compile(r"fringe|^rfi_|excision|sk_|coelev|dish_inputs|bad_feed|bf_mask|inst$|"
                    r"fringestop|pointing|num_elements|input_list|subset|ha_|dec_deg|feed_mask|"
@@ -138,29 +134,22 @@ def summarize_file(path):
     return s
 
 
-def main():
-    os.makedirs(OUT, exist_ok=True)
-    for d in sorted(glob.glob(ROOT + "/acq_*")):
-        name = os.path.basename(d)
-        if ONLY and name not in ONLY:
-            continue
-        files = sorted(glob.glob(d + "/*.h5"))
-        r = {"acq": name, "n_files": len(files),
-             "files_first_last": [os.path.basename(files[0]), os.path.basename(files[-1])] if files else [],
-             "partial": sorted(os.listdir(d + "/.partial")) if os.path.isdir(d + "/.partial") else None,
-             "total_bytes": sum(os.path.getsize(p) for p in files),
-             "file_times": [os.path.basename(p)[15:40] for p in files],
-             "samples": []}
-        if files:
-            idx = sorted({0, len(files) // 4, len(files) // 2, 3 * len(files) // 4, len(files) - 1})
-            for i in idx:
-                try:
-                    r["samples"].append(summarize_file(files[i]))
-                except Exception as e:  # noqa
-                    r["samples"].append({"file": os.path.basename(files[i]), "error": repr(e)})
-        with open(os.path.join(OUT, name + ".json"), "w") as fh:
-            json.dump(r, fh, default=jsonable)
-        print(name, len(files), flush=True)
-
-
-main()
+def analyse(d):
+    """Metadata of one acquisition directory *d* and five of its files."""
+    name = os.path.basename(d)
+    files = sorted(glob.glob(d + "/*.h5"))
+    r = {"acq": name, "n_files": len(files),
+         "files_first_last": [os.path.basename(files[0]), os.path.basename(files[-1])] if files else [],
+         "partial": sorted(os.listdir(d + "/.partial")) if os.path.isdir(d + "/.partial") else None,
+         "total_bytes": sum(os.path.getsize(p) for p in files),
+         "file_times": [os.path.basename(p)[15:40] for p in files],
+         "samples": []}
+    if files:
+        idx = sorted({0, len(files) // 4, len(files) // 2, 3 * len(files) // 4, len(files) - 1})
+        for i in idx:
+            try:
+                r["samples"].append(summarize_file(files[i]))
+            except Exception as e:  # noqa
+                r["samples"].append({"file": os.path.basename(files[i]), "error": repr(e)})
+    # through JSON once, so numpy scalars left in the attributes become plain values
+    return json.loads(json.dumps(r, default=jsonable))

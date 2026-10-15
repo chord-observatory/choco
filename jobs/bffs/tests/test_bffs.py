@@ -279,39 +279,6 @@ def test_failed_send_leaves_state_unwritten(tmp_path):
     assert json.loads(statef.read_text())["bad_inputs"] == ["f1X"]
 
 
-def test_send_to_choco_posts_group_update(monkeypatch):
-    import urllib.request
-    captured = {}
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return b""
-
-    def fake_urlopen(req, timeout=None, context=None):
-        captured["url"] = req.full_url
-        captured["body"] = json.loads(req.data)
-        captured["context"] = context
-        return _Resp()
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    cfg = bffs.Config(kotekan_file="n2.h5", url="https://localhost:5000", group="cx")
-    payload = {"update_id": "bffs-1", "start_time": 5.0, "bad_inputs": [3, 7]}
-    bffs.send_to_choco(cfg, payload)
-    assert captured["url"] == "https://localhost:5000/update/cx"
-    assert captured["body"] == {
-        "action": "updatable_config",
-        "endpoint": "updatable_config/bad_inputs",
-        "values": payload,
-    }
-    assert captured["context"] is not None  # self-signed TLS goes unverified
-
-
 def test_main_missing_kotekan_file_exits_degraded(tmp_path, caplog):
     """An environmental failure exits 2 (degraded) with one log line:
     the job is fine, its input wasn't — retries self-heal."""
@@ -391,26 +358,33 @@ def test_glob_across_acq_dirs_reads_newest(tmp_path):
     assert list(labels) == ["new0X", "new1X"]
 
 
-def test_newest_file_compares_directories_first(tmp_path):
+def test_newest_file_takes_the_latest_acquisition_by_name(tmp_path):
     """Only the newest directory's files are stat'ed, so the lookup does
-    not grow with the archive: a newer file in an older directory is not
-    seen until that directory's mtime moves."""
+    not grow with the archive, and an acquisition's age is its name:
+    acqnotes touching an old one's README must not make it the live one."""
     import os
-    a, b = tmp_path / "acq_a", tmp_path / "acq_b"
-    a.mkdir(), b.mkdir()
-    (a / "x.h5").write_bytes(b""), (a / "y.h5").write_bytes(b"")
-    (b / "z.h5").write_bytes(b"")
-    os.utime(a / "x.h5", (1_000, 1_000))
-    os.utime(a / "y.h5", (9_000, 9_000))     # newest file overall ...
-    os.utime(b / "z.h5", (5_000, 5_000))
-    os.utime(a, (1_000, 1_000))
-    os.utime(b, (5_000, 5_000))              # ... but b is the live directory
-    assert bffs.newest_file(str(tmp_path / "acq_*" / "*.h5")) == str(b / "z.h5")
-    os.utime(a, (9_000, 9_000))
-    assert bffs.newest_file(str(tmp_path / "acq_*" / "*.h5")) == str(a / "y.h5")
+    old, live = tmp_path / "acq_20260422_143735_218679712", tmp_path / "acq_20261012_122951_452061333"
+    old.mkdir(), live.mkdir()
+    (old / "x.h5").write_bytes(b""), (live / "y.h5").write_bytes(b""), (live / "z.h5").write_bytes(b"")
+    os.utime(live / "y.h5", (1_000, 1_000))
+    os.utime(live / "z.h5", (5_000, 5_000))
+    os.utime(old / "x.h5", (9_000, 9_000))
+    os.utime(live, (5_000, 5_000))
+    os.utime(old, (9_000, 9_000))            # acq_info.yaml rewritten in April's directory
+    assert bffs.newest_file(str(tmp_path / "acq_*" / "*.h5")) == str(live / "z.h5")
     assert bffs.newest_file(str(tmp_path / "nothing" / "*.h5")) is None
     # a single directory: plain newest-by-mtime
-    assert bffs.newest_file(str(a / "*.h5")) == str(a / "y.h5")
+    assert bffs.newest_file(str(live / "*.h5")) == str(live / "z.h5")
+
+
+def test_newest_file_falls_back_to_mtime_for_other_names(tmp_path):
+    import os
+    a, b = tmp_path / "run_a", tmp_path / "run_b"
+    a.mkdir(), b.mkdir()
+    (a / "x.h5").write_bytes(b""), (b / "z.h5").write_bytes(b"")
+    os.utime(a, (9_000, 9_000))
+    os.utime(b, (5_000, 5_000))
+    assert bffs.newest_file(str(tmp_path / "run_*" / "*.h5")) == str(a / "x.h5")
 
 
 def test_choco_context_injected_into_sources(tmp_path, monkeypatch):
@@ -524,11 +498,6 @@ def test_per_element_config_table_is_refused():
         assert "migrated" in str(e)
         return
     raise AssertionError("expected OSError for a per-element table")
-
-
-def test_uniquify_labels_suffixes_duplicates():
-    out = list(bffs.uniquify_labels(["A1X", "Fake", "Fake", "B2Y"]))
-    assert out == ["A1X", "Fake[1]", "Fake[2]", "B2Y"]
 
 
 # -- labels from a 2026-08 per-dish dish_inputs table ------------------------
@@ -1026,10 +995,9 @@ def test_state_dir_is_a_convention_not_a_setting(tmp_path, monkeypatch):
     cfg = bffs.load_config(cfg_file)
     assert cfg.state_dir == str(tmp_path / "state")
     assert cfg.state_path == str(tmp_path / "state" / "state.json")
-    assert cfg.run_path == str(tmp_path / "state" / "run.json")
     # ... unless --state-dir says otherwise ...
     cfg = bffs.load_config(cfg_file, state_dir=tmp_path / "elsewhere")
-    assert cfg.run_path == str(tmp_path / "elsewhere" / "run.json")
+    assert cfg.state_path == str(tmp_path / "elsewhere" / "state.json")
     # ... and without either it is /var/lib/choco/bffs
     monkeypatch.delenv("STATE_DIRECTORY")
     assert bffs.load_config(cfg_file).state_dir == "/var/lib/choco/bffs"
@@ -1100,7 +1068,8 @@ def test_main_writes_the_run_file_on_a_degraded_run(tmp_path, monkeypatch):
                     {"kind": "manual", "path": str(manualf)}],
     }))
     sent = []
-    monkeypatch.setattr(bffs, "send_to_choco", lambda cfg, payload: sent.append(payload))
+    monkeypatch.setattr(bffs, "push_updatable",
+                        lambda url, group, endpoint, payload: sent.append(payload))
     rc = bffs.main(["--config", str(cfg_file), "--state-dir", str(tmp_path)])
     assert rc == 2
     run = json.loads((tmp_path / "run.json").read_text())
@@ -1138,5 +1107,5 @@ def test_unwritable_run_file_does_not_change_the_exit_code(tmp_path, caplog):
     cfg_file = _run_file_config(tmp_path, n2, [])
     (tmp_path / "state" / "run.json").mkdir(parents=True)   # a directory cannot be replaced
     assert bffs.main(["--config", str(cfg_file)]) == 0
-    assert "could not write run file" in caplog.text
+    assert "could not write" in caplog.text and "run.json" in caplog.text
     assert (tmp_path / "state" / "state.json").exists()

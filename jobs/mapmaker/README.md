@@ -15,7 +15,7 @@ to violet (1500 MHz) in one image:
 - the **daily map**: the most recent pass over each part of the sky.
 
 ```sh
-./mapmaker.sh /etc/choco/mapmaker.yaml          # one pass
+../run-job.sh mapmaker/mapmaker.py /etc/choco/mapmaker.yaml   # one pass
 python mapmaker.py -c mapmaker.yaml -n          # what is pending
 python mapmaker.py -c mapmaker.yaml --max-files 0   # fold in everything pending
 python mapmaker.py -c mapmaker.yaml --state-dir /tmp/maps -vv   # a hand run, elsewhere
@@ -63,7 +63,7 @@ one 0.6° × 1.5° Gaussian beam for every bin plus the residual.  The
 robust sigma, the iteration cap, the restoring beam and the stretch.
 
 ```sh
-./clean.sh /etc/choco/mapmaker.yaml            # one deconvolution, if the map changed
+../run-job.sh mapmaker/clean.py /etc/choco/mapmaker.yaml      # one deconvolution, if the map changed
 python clean.py -c mapmaker.yaml --state-dir /tmp/maps -f -vv   # a hand run, forced
 ```
 
@@ -145,7 +145,6 @@ jobs/mapmaker/
 ├── render.py              # accumulators -> RGB strip PNGs and labelled figures
 ├── clean.py               # the deconvolution: dirty beam from the kernels, joint-bin CLEAN, restore
 ├── mapmaker.example.yaml  # seeded to /etc/choco/mapmaker.yaml by choco.sh install
-├── mapmaker.sh, clean.sh  # wrappers the units run
 ├── choco-mapmaker.{service,timer}         # fold-in, every 2 min
 ├── choco-mapmaker-clean.{service,timer}   # deconvolution, every 15 min
 └── tests/                 # synthetic N² files with a known source, gains and dead feeds

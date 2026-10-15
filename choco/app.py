@@ -15,6 +15,7 @@ from flask import Flask
 
 from .auth import init_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
+from .jobclient import STATE_ROOT
 from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .services import FpgaMonitor, GainArchive, PdbMonitor, FileArchive, newest_file
@@ -55,13 +56,14 @@ _DEFAULT_CONFIG = {
     "waterfall": {},
     "skymap": {},
     "mapmaker": {},
+    "acqnotes": {},
     "vis_files": {},
     "ldap": {},
     # Where the jobs keep their state (systemd's StateDirectory=choco/<job>).
     # choco reads <state_dir>/<job>/... here; a dev instance points it at
     # a scratch directory.  The per-job state_file keys this replaced are
     # refused (see _RETIRED_KEYS).
-    "state_dir": "/var/lib/choco",
+    "state_dir": str(STATE_ROOT),
 }
 
 # Secret keys that ship in a template or a default and were never meant
@@ -84,6 +86,17 @@ _RETIRED_KEYS = (
     (("psu",), "rename the block to pdb:"),
     (("eop", "fpga_master_host"), "move it to a top-level fpga_master.host"),
     (("eop", "fpga_master_port"), "move it to a top-level fpga_master.port"),
+    # The flask-ldap3-login era's search bind: choco binds as the user, so
+    # these were never read -- and a service password should not sit unused.
+    (("ldap", "bind_dn"), "remove it: choco binds as the user logging in"),
+    (("ldap", "bind_password"), "remove it: choco binds as the user logging in"),
+    (("ldap", "user_object_filter"), "remove it: there is no user search"),
+    (("ldap", "user_search_scope"), "remove it: there is no user search"),
+    # 2026-10: the eop job has its own /etc/choco/eop.yaml like every job
+    # (choco.sh install carries these values over into it).
+    (("eop", "intervals_before"), "move it to /etc/choco/eop.yaml"),
+    (("eop", "intervals_after"), "move it to /etc/choco/eop.yaml"),
+    (("eop", "endpoint"), "move it to /etc/choco/eop.yaml"),
     # 2026-10: state paths are a convention shared with the jobs, not
     # configuration -- two copies of the same path only ever drifted.
     (("eop", "state_file"), _STATE_FIX),
@@ -192,6 +205,7 @@ def load_config(path: str | Path) -> dict:
     config["waterfall"] = raw.get("waterfall") or {}
     config["skymap"] = raw.get("skymap") or {}
     config["mapmaker"] = raw.get("mapmaker") or {}
+    config["acqnotes"] = raw.get("acqnotes") or {}
     config["vis_files"] = raw.get("vis_files") or {}
     config["ldap"] = raw.get("ldap") or {}
     return config
@@ -290,9 +304,7 @@ def create_app(
     # directory on demand; the path is looked up at each refresh so a
     # state_dir set later (tests) and a new solution both take effect.
     app.config["eigencal_archive"] = FileArchive(
-        lambda: newest_file(
-            Path(app.config.get("state_dir") or config.get("state_dir")
-                 or "/var/lib/choco") / "eigencal", "gain_*.h5"))
+        lambda: newest_file(Path(app.config["state_dir"]) / "eigencal", "gain_*.h5"))
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)
@@ -302,6 +314,7 @@ def create_app(
     app.config["eigencal_cfg"] = config.get("eigencal") or {}
     app.config["skymap_cfg"] = config.get("skymap") or {}
     app.config["mapmaker_cfg"] = config.get("mapmaker") or {}
+    app.config["acqnotes_cfg"] = config.get("acqnotes") or {}
     waterfall_cfg = config.get("waterfall") or {}
     app.config["waterfall_cfg"] = waterfall_cfg
     # Read-only view of the tree jobs/waterfall writes.  No greenlet: the

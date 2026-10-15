@@ -1,10 +1,10 @@
-{# A root's timeline.yaml (tools/acqnotes), oldest entry first.  Every
+{# A root's timeline.yaml (jobs/acqnotes), oldest entry first.  Every
    text field arrives as escaped HTML from datafiles.timeline_rows. #}
 {% if error %}<p class="t-warn">Timeline unavailable: {{ error }}</p>{% else %}
 <h4>Acquisition timeline</h4>
 <p class="note">The curated history that the acquisition notes come from
    (<code>{{ path }}/timeline.yaml</code>, a copy of
-   <code>tools/acqnotes/timeline.yaml</code>).  Times are UTC.</p>
+   <code>jobs/acqnotes/timeline.yaml</code>).  Times are UTC.</p>
 <table class="timeline">
     <thead><tr><th>Period</th><th>Topic</th><th>Entry</th></tr></thead>
     <tbody>

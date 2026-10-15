@@ -32,7 +32,7 @@ editor button made the page too busy, and the header button is one click
 away.  The landing table's NODES row links the library beside the dashboard.
 ``landing.html`` renders one table row per header badge (CHOCO itself plus
 NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / SKYMAP / MAP, the waterfall
-renderer riding in the DATA row) with the detail the
+renderer and the acquisition notes riding in the DATA row) with the detail the
 strip only carries in a tooltip: monitor host:port and error, job unit and
 failure result, a one-line state-file summary (``web._service_detail`` — the
 same tolerant summariser the service pages use, so corrupt state degrades to
@@ -99,9 +99,10 @@ Both monitors are instantiated unconditionally so the UI is uniform; if
 as ``unconfigured`` and the greenlet doesn't spawn.  The ``fpga_master`` and
 ``pdb`` blocks are **top-level** in ``config.yaml`` (``fpga_master`` was
 nested under ``eop`` historically, and ``pdb`` was called ``psu`` before the
-rename); ``app.load_config`` accepts the legacy ``psu:`` block and (with
-``jobs/eop/eop_update.py``) the legacy ``eop.fpga_master_host`` /
-``eop.fpga_master_port`` keys, logging a deprecation warning for each.  The
+rename); ``app.load_config`` refuses the legacy ``psu:`` block and
+``eop.fpga_master_host`` / ``eop.fpga_master_port`` keys, naming the
+replacement, as it does the eop job's own settings, which moved to
+``/etc/choco/eop.yaml`` in 2026-10.  The
 jobs' files are read from ``<state_dir>/<job>/`` by name (``state_dir`` in
 config.yaml, default ``/var/lib/choco``; see jobs.md); the per-job blocks
 carry only ``service_unit`` (and ``bffs.control``).
@@ -122,6 +123,12 @@ degraded`` is the renderer behind healthy mounts, ``waterfall failed`` a
 renderer bug; the tooltip and the landing row carry both halves.
 ``/api/status`` and ``/metrics`` keep ``data`` and ``waterfall`` apart: they
 have different state vocabularies and alert rules key on the names.
+
+The acquisition-notes job (2026-10-13) went straight into the same tag: it
+writes the READMEs the ``/files`` table opens, so its status is a section of
+that page (status block, journal) and the tag takes a list of jobs,
+``[word, snapshot]`` each, worst first-listed on a tie: ``notes failed`` is
+the notes job behind healthy mounts and a healthy renderer.
 
 ## Service pages
 
@@ -304,7 +311,7 @@ in whatever the OS had.  Plex has even kerning, true tabular figures (so
 everywhere) and a mono sibling, so dish labels line up in both faces.
 Plex at 700 reads heavy, so **600 is the site's bold**: headings, ``strong``,
 table headers, the tag label and the brand mark; tag words are 400 and
-the tag body 500.  ``tests/test_web.py::TestVendoredFonts`` serves every
+the tag body 500.  ``tests/test_web_pages.py::TestVendoredFonts`` serves every
 file and checks the stylesheet names no external host — and that
 ``pyproject.toml`` lists ``static/fonts/*``, since setuptools' ``static/*``
 glob does not descend.

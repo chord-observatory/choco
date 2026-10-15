@@ -44,7 +44,8 @@ from astropy.time import Time
 
 import n2_io
 from choco.dishlabels import pol_suffix
-from choco.jobclient import job_state_dir, post_json, write_json_atomic
+from choco.jobclient import (STATE_NAME, atomic_output, failure, job_state_dir, push_updatable,
+                             refuse_retired, setup_logging, write_json_atomic, write_run)
 from transit_fit import (fit_transits, fringestop_phase, interpolate_gaps,
                          invert_no_zero)
 
@@ -131,13 +132,8 @@ _RETIRED_RUN_KEYS = ("archive_dir", "state_file")
 
 def load_config(path):
     raw = yaml.safe_load(Path(path).read_text()) or {}
-    retired = [k for k in _RETIRED_RUN_KEYS if k in (raw.get("run") or {})]
-    if retired:
-        raise ValueError(
-            f"run.{' and run.'.join(retired)} retired: remove it; the archive "
-            f"and state.json live in the job's state directory "
-            f"({job_state_dir('eigencal')}; systemd's StateDirectory=choco/eigencal, "
-            f"or --state-dir)")
+    refuse_retired(raw.get("run") or {}, _RETIRED_RUN_KEYS, "eigencal",
+                   "the archive and state.json live", prefix="run.")
     cfg = merge_config(DEFAULTS, raw)
     if not cfg["kotekan_file"]:
         raise ValueError("config needs 'kotekan_file' (the kotekan N² output glob)")
@@ -592,24 +588,11 @@ def build_payload(result, choco_cfg, now):
     }
 
 
-def send_to_choco(choco_cfg, payload):
-    """POST the gains through choco's group-update API (same path as bffs).
-
-    choco accepts ``{"action": "updatable_config", "endpoint": ..., "values":
-    ...}`` at ``POST /update/<group>`` and relays the values to every kotekan
-    node in the group.  Loopback, unverified TLS: ``choco.jobclient``.
-    """
-    post_json(choco_cfg["url"], f"/update/{choco_cfg['group']}", {
-        "action": "updatable_config",
-        "endpoint": choco_cfg["endpoint"],
-        "values": payload,
-    }, timeout=60.0)
-
-
 def write_archive(result, path, cfg):
+    """The solution's HDF5.  Atomic: the file's existence is the
+    already-processed record, so a torn one must never land."""
     import h5py
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(path, "w") as f:
+    with atomic_output(path, suffix=".h5") as tmp, h5py.File(tmp, "w") as f:
         f.attrs["source"] = result["source"]
         f.attrs["transit_time"] = result["transit_time"]
         f.attrs["created"] = time.time()
@@ -639,19 +622,6 @@ def write_state(state_file, result, sent, archive=None):
         "archive": archive, "sent": bool(sent)})
 
 
-def write_run(state_dir, status, exit_code, reason, **facts):
-    """``run.json``: what this run did and why, every run (the same
-    convention as bffs).  ``state.json`` changes only when a solution is
-    produced; this is how a run that did nothing explains itself to the
-    service page without anyone reading the journal."""
-    try:
-        write_json_atomic(Path(state_dir) / "run.json", {
-            "time": time.time(), "status": status, "exit_code": exit_code,
-            "reason": reason, **facts})
-    except OSError as e:
-        log.warning("could not write run.json: %s", e)
-
-
 # -- CLI ----------------------------------------------------------------------
 
 
@@ -672,10 +642,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     state_dir = job_state_dir("eigencal", args.state_dir)
 
-    logging.basicConfig(
-        level=logging.WARNING - 10 * min(args.verbose, 2),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    log.setLevel(min(log.getEffectiveLevel(), logging.INFO))
+    setup_logging(args.verbose, log)
 
     try:
         cfg = load_config(args.config)
@@ -686,8 +653,11 @@ def main(argv=None) -> int:
     facts: dict = {"source": cfg["source"]["name"], "dry_run": bool(args.dry_run),
                    "archive_only": not cfg["choco"].get("url")}
 
+    # run.json on every exit, with a one-line reason: state.json changes
+    # only when a solution is produced, so this is how a run that did
+    # nothing explains itself to the service page
     def done(code, status, reason):
-        write_run(state_dir, status, code, reason, **facts)
+        write_run(state_dir, code, status=status, reason=reason, **facts)
         return code
 
     try:
@@ -740,7 +710,7 @@ def main(argv=None) -> int:
             log.error("good fraction %.2f below threshold %.2f — archived, "
                       "not sent", result["good_frac"],
                       cfg["analysis"]["min_good_frac"])
-            write_state(state_dir / "state.json", result, sent=False, archive=outfile)
+            write_state(state_dir / STATE_NAME, result, sent=False, archive=outfile)
             return done(2, "degraded", "good fraction %.2f below threshold %.2f; archived, not sent"
                         % (result["good_frac"], cfg["analysis"]["min_good_frac"]))
         payload = build_payload(result, cfg["choco"], time.time())
@@ -749,27 +719,22 @@ def main(argv=None) -> int:
             log.info("not sent (%s): update_id=%s, gain %s, %.1f%% good",
                      why, payload["update_id"], result["gain"].shape,
                      100 * result["good_frac"])
-            write_state(state_dir / "state.json", result, sent=False, archive=outfile)
+            write_state(state_dir / STATE_NAME, result, sent=False, archive=outfile)
             return done(0, "ok", f"archived, not sent ({why})")
-        send_to_choco(cfg["choco"], payload)
+        # choco relays the gains to every kotekan node in the group
+        push_updatable(cfg["choco"]["url"], cfg["choco"]["group"],
+                       cfg["choco"]["endpoint"], payload, timeout=60.0)
         log.info("sent %s to choco group %s", payload["update_id"],
                  cfg["choco"]["group"])
-        write_state(state_dir / "state.json", result, sent=True, archive=outfile)
+        write_state(state_dir / STATE_NAME, result, sent=True, archive=outfile)
         return done(0, "ok", f"sent {payload['update_id']} to group {cfg['choco']['group']}")
 
-    except OSError as e:
-        # Environmental (no N² file yet, choco not up): exit 2 like the
-        # quality gate — degraded, not failed; the next tick retries.
-        # (Shared job exit-code convention, read by choco's badge:
-        # 0 ok, 2 degraded, 1 failed.)
-        log.error("%s: %s", type(e).__name__, e)
-        log.debug("traceback:", exc_info=True)
-        return done(2, "degraded", f"{type(e).__name__}: {e}")
-    except ValueError as e:
-        # Config or consistency errors — needs a human.
-        log.error("%s: %s", type(e).__name__, e)
-        log.debug("traceback:", exc_info=True)
-        return done(1, "failed", f"{type(e).__name__}: {e}")
+    except (OSError, ValueError) as e:
+        # jobclient's convention: environmental (no N² file yet, choco not
+        # up) is 2 like the quality gate, the next tick retries; a config
+        # or consistency error is 1
+        code, reason = failure(e, log)
+        return done(code, None, reason)
 
 
 if __name__ == "__main__":

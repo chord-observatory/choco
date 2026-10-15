@@ -137,6 +137,7 @@ def write_vis_file(path, idx, t0_unix, era0_deg, *, n_time=20, n_freq=128,
         f.create_dataset("bin_ERA_deg", data=era)
         f.attrs["feed_positions_m"] = pos
         f.attrs["itrs_lat_deg"] = LAT
+        f.attrs["dish_coelev_deg"] = pointing_dec - LAT     # kotekan's pointing, as it now says
         f.attrs["itrs_lon_deg"] = LON
         f.attrs["feed_separation_x_m"] = SEP_X
         f.attrs["feed_separation_y_m"] = SEP_Y

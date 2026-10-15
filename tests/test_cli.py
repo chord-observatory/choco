@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 import responses
-import yaml
 
 from choco import cli
 from choco.sync import ChangeType

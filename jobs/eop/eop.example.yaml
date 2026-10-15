@@ -1,0 +1,16 @@
+# eop job config: /etc/choco/eop.yaml, seeded from this file by
+# ./choco.sh install (which carries over the values an older choco
+# config.yaml held for it).  The merged table lives in the job's state
+# directory (/var/lib/choco/eop/state.json), not here.
+
+# choco's loopback API; the groups to broadcast to come from it.
+choco_url: https://localhost:5000
+
+# The F-engine master: frame0 (the instrument's time zero) is read from it.
+fpga_master:
+  host: chive.site.chord-observatory.ca
+  port: 54321
+
+intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
+intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
+endpoint: earth_rotation_data     # Kotekan updatable config endpoint name

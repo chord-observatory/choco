@@ -1,40 +1,51 @@
-"""Write README.md + acq_info.yaml into every subset acquisition directory.
+"""Render README.md + acq_info.yaml for the subset acquisitions.
 
 choco's /files table shows each README behind an Info button, next to the
 acquisition's file span, and the copy of timeline.yaml in the root behind a
-Timeline button; there is no index file.
+Timeline button; there is no index file.  acqnotes.py writes them.
 
 Joins three sources:
-  - the measurements made by extract.py, transit.py, polswap.py and zerovis.py
-    (JSON files under --work), i.e. what each acquisition's own files say;
+  - the measurements made by extract.py, transit.py, polswap.py, zerovis.py
+    and verify.py (JSON files in the job's state directory), i.e. what each
+    acquisition's own files say;
   - timeline.yaml (curated history: label/table changes, swaps, deployments);
   - fixed physical facts about the 2026-09 reversed dish table.
-
-Usage:
-  python render.py --work DIR [--root /mnt/cs00/data/kotekan_vis_files/subset] [--dry-run]
 """
-import argparse
+import collections
 import datetime
 import glob
 import json
 import os
 import re
-import shutil
 import statistics
 from zoneinfo import ZoneInfo
 
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TIMELINE = os.path.join(HERE, "timeline.yaml")
 PACIFIC = ZoneInfo("America/Vancouver")
 UTC = datetime.timezone.utc
 LAT = 49.32075144444
-FILE_S = 200.0  # one file = 20 bins x 10 s
+BIN_S = 10.0  # one time bin of a file
+
+
+def file_bins(samples):
+    """Time bins per file, from the sampled files' vis shape: 20 (200 s) until
+    2026-10, 40 (400 s) from 2026-10-10."""
+    for s in samples:
+        for name, shape, _ in s.get("datasets", []):
+            if name == "vis" and len(shape) == 3:
+                return int(shape[2])
+    return 20
+
 
 # The 2026-09-09 .. 2026-10-01 20:18 files used the "Sep 2" dish table, reversed within
 # each group of eight inputs (sky audit 2026-09-21).
 REVERSED_FROM = datetime.datetime(2026, 9, 9, 4, 0, tzinfo=UTC)
 REVERSED_TO = datetime.datetime(2026, 10, 1, 20, 18, tzinfo=UTC)
+# The nodes that run the GNSS build when they are on it (they name themselves in `inst`).
+GNSS_NODES = {"cx19", "cx27", "cx42", "cx43", "cx44", "cx51"}
 # Stream map of the chord-build nodes (frequency index mod 16).
 FRINGESTOP_STREAMS = {"cx47": (1, 9), "cx52": (3, 11)}
 
@@ -164,6 +175,7 @@ def config_groups(samples):
                 str(k.get("/rfi_mu_min")),
                 str(k.get("/rfi_mu_max")),
                 "RfiFrameMask" in c["stages"],
+                str(k.get("/telescope/dish_coelev_deg")),
             )
             g = groups.setdefault(key, {"insts": set(), "count": 0})
             names = {i.split(".")[0] for i in c.get("inst", [])}
@@ -172,8 +184,9 @@ def config_groups(samples):
             g["hashes"] = g.get("hashes", set()) | {c.get("json_hash")}
     out = []
     for key, g in groups.items():
-        ver, fs, fse, sig, mumin, mumax, rfi_stage = key
+        ver, fs, fse, sig, mumin, mumax, rfi_stage, coelev = key
         out.append({
+            "dish_coelev_deg": coelev,
             "kotekan_version": ver,
             "nodes": sorted(g["insts"]) or None,
             "n_distinct_configs": len(g["hashes"]),
@@ -184,6 +197,32 @@ def config_groups(samples):
             "rfi_mu_min": mumin,
             "rfi_mu_max": mumax,
         })
+    return sorted(out, key=lambda g: (g["kotekan_version"] or "", str(g["nodes"])))
+
+
+def config_groups_all(v):
+    """Distinct cx configs over every file (verify.py), same shape as config_groups."""
+    groups = {}
+    for f in v["files"]:
+        per_file = collections.Counter()
+        for c in f.get("configs", []):
+            if c["role"] != "cx":
+                continue
+            mu = c.get("mu") or (None, None)
+            key = (c["version"], str(c["fringestop"]), str(c["first_stage"]), str(c["sigma"]),
+                   str(mu[0]), str(mu[1]), bool(c["rfi_stage"]), str(c["coelev"]))
+            g = groups.setdefault(key, {"insts": set(), "n": 0})
+            g["insts"] |= {i for i in (c["inst"] or "").split(",") if i}
+            per_file[key] += 1
+        for key, n in per_file.items():
+            groups[key]["n"] = max(groups[key]["n"], n)
+    out = []
+    for key, g in groups.items():
+        ver, fs, fse, sig, mumin, mumax, rfi_stage, coelev = key
+        out.append({"kotekan_version": ver, "nodes": sorted(g["insts"]) or None,
+                    "n_distinct_configs": g["n"], "do_fringestop": fs, "rfi_stages": rfi_stage,
+                    "rfi_first_stage_excision_enabled": fse, "rfi_sk_rfimask_sigmas": sig,
+                    "rfi_mu_min": mumin, "rfi_mu_max": mumax, "dish_coelev_deg": coelev})
     return sorted(out, key=lambda g: (g["kotekan_version"] or "", str(g["nodes"])))
 
 
@@ -293,7 +332,7 @@ def pol_check(pol, axis, start):
     # emission dominates, every ratio sits near 1 and the test says nothing.
     c = median(contrast)
     typical = median([v["ratio"] for v in out.values() if v["ratio"] is not None and v["co"] > 0.2 * live_co])
-    conclusive = typical is not None and typical < 0.4
+    conclusive = typical is not None and typical < 0.4 and c is not None and c >= 2
     for d, v in out.items():
         v["live"] = max(v["co"], v["cross"]) > 0.2 * live_co  # a swapped dish has weak co-pol
         v["swapped"] = conclusive and v["live"] and v["ratio"] is not None and v["ratio"] > 1.0
@@ -335,6 +374,26 @@ def _as_dt(v):
 
 # ---------------------------------------------------------------- inference across acquisitions
 
+def neighbour_fringestop(acqs):
+    """For an acquisition with no node config at all: the fringestop setting of the
+    nearest acquisitions before and after that have one."""
+    for i, a in enumerate(acqs):
+        if a["cx_groups"] or not a["samples"]:
+            continue
+        before = next((b for b in reversed(acqs[:i]) if b["cx_groups"]), None)
+        after = next((b for b in acqs[i + 1:] if b["cx_groups"]), None)
+        parts = []
+        for label, b in (("before", before), ("after", after)):
+            if b:
+                vals = sorted({g["do_fringestop"] for g in b["cx_groups"]})
+                word = "off" if vals in (["False"], ["None"], ["False", "None"]) else "on" if vals == ["True"] else "mixed"
+                parts.append("the run %s (`%s`) has fringestop %s on all nodes" % (label, b["name"], word)
+                             if word != "mixed" else "the run %s (`%s`) has mixed fringestop" % (label, b["name"]))
+        if parts:
+            a["neighbour_fringestop"] = ("In " + " and in ".join(parts) + ".").replace(
+                "In the run", "The run", 1).replace(" and in the run", ", and the run")
+
+
 def infer_missing_configs(acqs):
     """Acquisitions whose files embed no cx config borrow the nearest one with the same recv build."""
     for i, a in enumerate(acqs):
@@ -352,24 +411,29 @@ def infer_missing_configs(acqs):
 
 # ---------------------------------------------------------------- rendering
 
-def analyse(name, root, work, entries, zerovis):
+def _load(work, step, name):
+    p = os.path.join(work, step, name + ".json")
+    return json.load(open(p)) if os.path.exists(p) else None
+
+
+def analyse(name, root, work, entries):
     d = os.path.join(root, name)
-    meta = json.load(open(os.path.join(work, "meta", name + ".json")))
-    trp = os.path.join(work, "transit", name + ".json")
-    tr = json.load(open(trp)) if os.path.exists(trp) else None
-    pp = os.path.join(work, "pol", name + ".json")
-    pol = json.load(open(pp)) if os.path.exists(pp) else None
+    meta = _load(work, "meta", name)
+    tr = _load(work, "transit", name)
+    pol = _load(work, "pol", name)
     samples = [s for s in meta["samples"] if "error" not in s]
     start = ts(name)
     a = {"name": name, "dir": d, "n_files": meta["n_files"], "bytes": meta["total_bytes"],
          "samples": samples, "start_dir": start}
     times = [file_time(x) for x in meta["file_times"]] if meta["n_files"] else []
+    a["file_bins"] = file_bins(samples)
+    file_s = a["file_bins"] * BIN_S
     a["first_file"] = times[0] if times else None
-    a["last_file_end"] = times[-1] + datetime.timedelta(seconds=FILE_S) if times else None
+    a["last_file_end"] = times[-1] + datetime.timedelta(seconds=file_s) if times else None
     gaps = []
     for t0, t1 in zip(times, times[1:]):
-        if (t1 - t0).total_seconds() > 1.6 * FILE_S:
-            gaps.append((t0 + datetime.timedelta(seconds=FILE_S), t1))
+        if (t1 - t0).total_seconds() > 1.6 * file_s:
+            gaps.append((t0 + datetime.timedelta(seconds=file_s), t1))
     a["gaps"] = gaps
     a["recv_versions"] = recv_versions(samples)
     a["cx_groups"] = config_groups(samples)
@@ -388,13 +452,22 @@ def analyse(name, root, work, entries, zerovis):
     else:
         a["sky"], a["sky_source"], a["sky_dec"] = [dict(rise=None, snr=None, ha=None, src=None)] * len(a["axis"]), None, None
     a["pol"] = pol_check(pol, a["axis"], start) if a["axis"] else None
-    a["zerovis"] = zerovis.get(name)
+    a["zerovis"] = _load(work, "zerovis", name)
+    a["verify"] = _load(work, "verify", name)
+    if a["verify"]:
+        a["cx_groups"] = config_groups_all(a["verify"])
     return a
 
 
 def element_status(a):
     """Per element: flagged in file?, alive on the sky?, hot?"""
     axis = a["axis"]
+    # Flags from every file (verify.py, one frequency row) when available: a
+    # mask that changes during the acquisition is then a fraction, not a sample.
+    all_files = None
+    if a.get("verify") and a["start_dir"] >= REVERSED_FROM:
+        all_files = [f["flagged"] for f in a["verify"]["files"]
+                     if f.get("flagged") is not None and f.get("live", 0) >= 0.9]
     flags = []
     if a["start_dir"] >= REVERSED_FROM:  # `flags` carries the applied mask from 2026-09-09 on
         for s in a["samples"]:
@@ -403,7 +476,13 @@ def element_status(a):
             if f and (s.get("freq_live_frac") or 0) >= 0.9:
                 flags.append(f)
     zero = []
-    if a["zerovis"]:
+    if a.get("verify") and a["start_dir"] < REVERSED_FROM:
+        import statistics as _st
+        good = [f["zero_frac"] for f in a["verify"]["files"]
+                if f.get("zero_frac") and _st.median(f["zero_frac"]) <= 0.8]
+        if good and any(sum(z[i] > 0.8 for z in good) > len(good) / 2 for i in range(len(good[0]))):
+            zero = [[sum(z[i] > 0.8 for z in good) / len(good) for i in range(len(good[0]))]]
+    if not zero and a["zerovis"]:
         for z in a["zerovis"]:
             if z["zero_frac"] and any(x and x > 0.5 for x in z["zero_frac"]):
                 zero.append(z["zero_frac"])
@@ -418,6 +497,11 @@ def element_status(a):
     for i, el in enumerate(axis):
         fl = median([f[i] for f in flags]) if flags else None
         changed = bool(flags) and len({f[i] > 0.9 for f in flags}) > 1
+        frac_flagged = None
+        if all_files:
+            frac_flagged = sum(f[i] for f in all_files if i < len(f)) / len(all_files)
+            fl = 1.0 if frac_flagged > 0.5 else 0.0
+            changed = 0.05 <= frac_flagged <= 0.95
         zf = median([z[i] for z in zero]) if zero else None
         flagged = None
         how = None
@@ -435,7 +519,8 @@ def element_status(a):
         auto = median([x[i] for x in autos if i < len(x)])
         hot = auto is not None and ref and auto > 4 * ref
         out.append({"flagged": flagged, "flag_record": how, "alive": alive, "rise": rise,
-                    "ha": sky.get("ha"), "auto": auto, "hot": hot, "flag_changed": changed})
+                    "ha": sky.get("ha"), "auto": auto, "hot": hot, "flag_changed": changed,
+                    "flag_frac": frac_flagged})
     return out
 
 
@@ -520,13 +605,25 @@ def pointing_summary(a):
             return None
         return s["bands"][k]["median_rise"]
 
+    coel = (a["attrs"] or {}).get("dish_coelev_deg")
+    cfg_dec = LAT + float(coel) if coel is not None else None
+
+    def vs_config(dec):
+        """How the measured Dec compares with the files' config value."""
+        if cfg_dec is None:
+            return ""
+        if abs(cfg_dec - dec) < 3:
+            return ", near the config value %+.0f (%s)" % (cfg_dec, coel)
+        return ", not at the config value %+.0f (%s)" % (cfg_dec, coel)
+
     cyg = rise("CygA")
     sun = rise("Sun")
     sun_dec = src["Sun"]["dec"] if "Sun" in src else None
     tau = rise("TauA")
     if cyg is not None and cyg >= 0.35:
         return {"dec": "+41 (Cyg A), co-elevation about -8.6",
-                "short": "the dishes point near Dec +41 (Cyg A; co-elevation -8.6), not at the config value +22 (-27.3)",
+                "short": "the dishes point near Dec +41 (Cyg A; co-elevation -8.6)" + vs_config(40.7),
+                "agrees": cfg_dec is not None and abs(cfg_dec - 40.7) < 3,
                 "why": "Cyg A increases the autocorrelations of the live dishes by %s at 440-460 MHz.  With Cyg A "
                        "in the main beam (October 2026) the increase is 60 %%" % pct(cyg)
                        + (".  Tau A (+22.0) gives %s" % pct(tau) if tau else ".  Tau A (+22.0) gives no signal"
@@ -534,7 +631,8 @@ def pointing_summary(a):
                        + (".  The Sun (Dec %+.0f) gives no signal" % sun_dec if "Sun" in src and not sun else "")}
     if sun is not None and sun > 1.0 and sun_dec is not None and sun_dec > 8:
         return {"dec": "about +20 (Sun at %+.0f in the main beam), co-elevation about -29" % sun_dec,
-                "short": "the dishes point near Dec +20 (co-elevation -29), near the config value +22 (-27.3)",
+                "short": "the dishes point near Dec +20 (co-elevation -29)" + vs_config(20.0),
+                "agrees": cfg_dec is not None and abs(cfg_dec - 20.0) < 3,
                 "why": "the Sun (Dec %+.1f) increases the autocorrelations %.0f times at 440-460 MHz, thus it is in "
                        "the main beam.  Cyg A (+40.7) gives only %s, from a sidelobe or from the diffuse "
                        "Cygnus emission" % (sun_dec, sun, pct(cyg))}
@@ -551,8 +649,8 @@ def render_readme(a, st, gen_time):
     L.append("# %s\n" % name)
     L.append("**Summary:** %s\n" % verdict(a, st))
     L.append("*About these notes: this is a CHORD pathfinder N² subset acquisition (recv1 "
-             "`hdf5_N2_write_subset`).  `choco/tools/acqnotes/render.py` wrote these notes on %s.  It uses "
-             "the files in this directory and the history in `tools/acqnotes/timeline.yaml`.  Do not edit "
+             "`hdf5_N2_write_subset`).  The choco acqnotes job (`jobs/acqnotes/`) wrote these notes on %s.  It uses "
+             "the files in this directory and the history in `jobs/acqnotes/timeline.yaml`.  Do not edit "
              "the README files.  To change them, edit the timeline or the scripts, then render again.  "
              "`acq_info.yaml` in this directory has the same data in machine-readable form.  Evidence tags: "
              "[file] comes from the HDF5 files of this acquisition; [sky] is measured from the data "
@@ -567,13 +665,17 @@ def render_readme(a, st, gen_time):
         dur = a["last_file_end"] - a["first_file"]
         L.append("| | UTC | Local (Penticton) |")
         L.append("|---|---|---|")
-        for lbl, t in (("Start (first file)", a["first_file"]), ("End (last file + 200 s)", a["last_file_end"])):
+        for lbl, t in (("Start (first file)", a["first_file"]), ("End (last file + %.0f s)" % (a["file_bins"] * BIN_S), a["last_file_end"])):
             lt = local(t)
             L.append("| %s | %s | %s %s |" % (lbl, t.strftime("%Y-%m-%d %H:%M"), lt.strftime("%Y-%m-%d %H:%M"),
                                               lt.tzname()))
         L.append("")
-        L.append("Duration %.1f h, %d files (20 x 10 s bins each), %.0f GB. [file]" % (
-            dur.total_seconds() / 3600, a["n_files"], a["bytes"] / 1e9))
+        L.append("Duration %.1f h, %d files (%d x 10 s bins each), %.0f GB. [file]" % (
+            dur.total_seconds() / 3600, a["n_files"], a["file_bins"], a["bytes"] / 1e9))
+        if a.get("newest"):
+            L.append("This is the newest acquisition, and kotekan can still add files to it.  These "
+                     "notes include the files to %s UTC.  The acqnotes job updates the notes while the "
+                     "acquisition grows." % a["last_file_end"].strftime("%Y-%m-%d %H:%M"))
         if a["gaps"]:
             L.append("Gaps between files: " + ", ".join(
                 "%s to %s UTC" % (g0.strftime("%m-%d %H:%M"), g1.strftime("%m-%d %H:%M")) for g0, g1 in a["gaps"]) + ".")
@@ -609,14 +711,21 @@ def render_readme(a, st, gen_time):
         L.append("- F-engine digital gains: %s [file]" % ", ".join("`%s`" % g.strip("[]'\"") for g in gains))
     L.append("")
     if groups:
-        L.append("| X-engine build | nodes | fringestop | RFI stages | 1st-stage SK excision | SK sigma | mu min/max |")
-        L.append("|---|---|---|---|---|---|---|")
+        L.append("| X-engine build | nodes | pointing (`dish_coelev_deg`) | fringestop | RFI stages | 1st-stage SK excision | SK sigma | mu min/max |")
+        L.append("|---|---|---|---|---|---|---|---|")
         for g in groups:
-            nodes = ", ".join(g["nodes"]) if g["nodes"] else "%d node config(s)%s" % (
-                g["n_distinct_configs"], " (chord build: cx47/cx52)" if "chord." in (g["kotekan_version"] or "")
-                and any(gg["nodes"] for gg in groups) else "")
-            L.append("| `%s` | %s | %s | %s | %s | %s | %s / %s |" % (
-                g["kotekan_version"], nodes, _yn(g["do_fringestop"], default_off=True),
+            named = {n for gg in groups for n in (gg["nodes"] or [])}
+            n = g["n_distinct_configs"]
+            if g["nodes"]:
+                nodes = ", ".join(g["nodes"])
+            elif n == 2 and named <= GNSS_NODES:
+                nodes = "cx47, cx52 (the two nodes not on the GNSS build)"
+            elif n == 8:
+                nodes = "all 8 cx nodes"
+            else:
+                nodes = "%d node%s, not named in the config" % (n, "" if n == 1 else "s")
+            L.append("| `%s` | %s | %s | %s | %s | %s | %s | %s / %s |" % (
+                g["kotekan_version"], nodes, _na(g.get("dish_coelev_deg")), _yn(g["do_fringestop"], default_off=True),
                 "yes" if g["rfi_stages"] else "no", _yn(g["rfi_first_stage_excision_enabled"]),
                 _na(g["rfi_sk_rfimask_sigmas"]), _na(g["rfi_mu_min"]), _na(g["rfi_mu_max"])))
         L.append("")
@@ -698,6 +807,11 @@ def render_readme(a, st, gen_time):
     if coel is not None:
         L.append("- Config: `dish_coelev_deg = %s`, thus Dec %+.1f for all dishes (`coelev_disp_deg` is 0 for all). [file]" % (
             coel, LAT + coel))
+    node_co = sorted({g.get("dish_coelev_deg") for g in a["cx_groups"]} - {None, "None", str(coel)})
+    if node_co and coel is not None:
+        L.append("- Some X-engine node configs have a different value: `dish_coelev_deg = %s` (see the "
+                 "node table).  The file attribute comes from the recv node.  Fringestop is off on these "
+                 "nodes, thus the value has no effect on the visibilities. [file]" % ", ".join(node_co))
     L.append("- Co-elevation is the angle between zenith and the pointing, along the meridian: "
              "**co-elevation = Dec - latitude** (latitude +49.32 deg).  A negative value is south of zenith.  "
              "The transit altitude is 90 deg - |co-elevation|.  Dec +22.0 (Tau A) is co-elevation -27.3 "
@@ -706,7 +820,7 @@ def render_readme(a, st, gen_time):
     p = pointing_summary(a)
     if p:
         L.append("- Measured: %s.  %s. [sky]" % (p["short"][0].upper() + p["short"][1:], p["why"][0].upper() + p["why"][1:]))
-        if p["dec"].startswith("+41") and coel is not None:
+        if p.get("agrees") is False and coel is not None:
             L.append("- **The config does not agree with the real pointing.**  All software that uses "
                      "`dish_coelev_deg` (kotekan fringestopping, beam models) assumes Dec %+.1f." % (LAT + coel))
     else:
@@ -767,6 +881,8 @@ def render_readme(a, st, gen_time):
 
     # ---- fringestop
     L.append("## Fringestopping\n")
+    if not groups and a.get("neighbour_fringestop"):
+        L.append("- These files contain no node config.  %s [inferred]" % a["neighbour_fringestop"])
     if groups:
         for g in groups:
             nodes = ", ".join(g["nodes"]) if g["nodes"] else "%s build nodes" % g["kotekan_version"]
@@ -793,10 +909,16 @@ def render_readme(a, st, gen_time):
             if flr else ""))
         fc = flag_check(a, st)
         dead_unflagged, live_flagged = fc["dead_unflagged"], fc["live_flagged"]
-        changed = [_phys(el) for el, x in zip(a["axis"], st) if x["flag_changed"] and el["dish"]]
-        if changed:
+        changed = [(el, x) for el, x in zip(a["axis"], st) if x["flag_changed"] and el["dish"]]
+        if changed and all(x["flag_frac"] is not None for _, x in changed):
+            L.append("- The mask changed during the acquisition.  These inputs have a flag for part of "
+                     "the time (fraction of all files, at 610 MHz): %s.  The table shows the state with "
+                     "a flag for more than half of the files. [file]" % ", ".join(
+                         "%s %.0f %%" % (_phys(el), 100 * x["flag_frac"]) for el, x in changed))
+        elif changed:
             L.append("- These inputs changed their flag state during the acquisition (between sampled "
-                     "files): %s.  The table shows the most frequent state. [file]" % ", ".join(changed))
+                     "files): %s.  The table shows the most frequent state. [file]" % ", ".join(
+                         _phys(el) for el, _ in changed))
         if a["sky_source"]:
             if not dead_unflagged and not live_flagged:
                 L.append("- Sky test (%s transit): all inputs with no sky signal have a flag, and no healthy "
@@ -877,7 +999,7 @@ element_status_cache = {}
 def info_yaml(a, st):
     doc = {
         "acquisition": a["name"],
-        "generated_by": "choco tools/acqnotes/render.py",
+        "generated_by": "choco jobs/acqnotes",
         "summary": verdict(a, st),
         "n_files": a["n_files"],
         "start_utc": a["first_file"].isoformat() if a["first_file"] else None,
@@ -901,37 +1023,38 @@ def info_yaml(a, st):
     return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=100)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--work", required=True)
-    ap.add_argument("--root", default="/mnt/cs00/data/kotekan_vis_files/subset")
-    ap.add_argument("--dry-run", action="store_true", help="write into --work/out instead of --root")
-    args = ap.parse_args()
-    entries = yaml.safe_load(open(os.path.join(HERE, "timeline.yaml")))["entries"]
-    zp = os.path.join(args.work, "zerovis.json")
-    zerovis = json.load(open(zp)) if os.path.exists(zp) else {}
-    names = sorted(os.path.basename(p) for p in glob.glob(os.path.join(args.root, "acq_*")))
-    # acquisitions not yet measured (e.g. still being written) are skipped
-    pending = [n for n in names if not os.path.exists(os.path.join(args.work, "meta", n + ".json"))]
-    acqs = [analyse(n, args.root, args.work, entries, zerovis) for n in names if n not in pending]
+#: The README header's generation date, which alone does not make a note changed.
+GEN_DATE_RE = re.compile(r"wrote these notes on \d{4}-\d{2}-\d{2}")
+
+
+def timeline_entries():
+    return yaml.safe_load(open(TIMELINE))["entries"]
+
+
+def timeline_text():
+    """timeline.yaml as shipped, for the root's copy."""
+    with open(TIMELINE) as fh:
+        return fh.read()
+
+
+def render_all(names, root, work, newest=None, gen_time=None):
+    """``[(name, readme, acq_info)]`` for the measured acquisitions *names*.
+
+    All are analysed together: configs missing from one acquisition's files
+    and the fringestop state are inferred from its neighbours.  *newest*
+    is the acquisition kotekan may still be writing.
+    """
+    entries = timeline_entries()
+    acqs = [analyse(n, root, work, entries) for n in sorted(names)]
     infer_missing_configs(acqs)
-    gen_time = datetime.datetime.now(UTC)
-    out_root = os.path.join(args.work, "out") if args.dry_run else args.root
+    neighbour_fringestop(acqs)
+    gen_time = gen_time or datetime.datetime.now(UTC)
+    out = []
     for a in acqs:
+        a["newest"] = a["name"] == newest
         st = element_status(a) if a["axis"] else []
         element_status_cache[a["name"]] = st
     for a in acqs:
         st = element_status_cache[a["name"]]
-        d = os.path.join(out_root, a["name"])
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "README.md"), "w") as fh:
-            fh.write(render_readme(a, st, gen_time))
-        with open(os.path.join(d, "acq_info.yaml"), "w") as fh:
-            fh.write(info_yaml(a, st))
-    # choco's /files page shows this copy behind the root's Timeline button
-    shutil.copyfile(os.path.join(HERE, "timeline.yaml"), os.path.join(out_root, "timeline.yaml"))
-    print("wrote %d acquisitions and timeline.yaml to %s" % (len(acqs), out_root))
-
-
-if __name__ == "__main__":
-    main()
+        out.append((a["name"], render_readme(a, st, gen_time), info_yaml(a, st)))
+    return out

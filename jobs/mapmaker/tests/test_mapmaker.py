@@ -10,7 +10,7 @@ import yaml
 
 import imaging as I
 import mapmaker as M
-from conftest import SRC_DEC, SRC_RA, write_acquisition, write_cfg, file_name, write_vis_file
+from conftest import SRC_DEC, SRC_RA, write_acquisition, write_cfg
 
 
 # --- config ----------------------------------------------------------------
@@ -158,6 +158,26 @@ def test_first_pass_solves_gains_then_images(acquisition, tmp_path):
     assert not (sd / M.CALSUM_FILE).exists()        # consumed by the solve
     assert report["last_file_idx"] == 1019
     assert report["degraded"] == []                  # gains exist now
+    assert report["pointing_check"]["agrees"] is True
+
+
+@pytest.mark.parametrize("offset,agrees", [(0.1, True), (2.0, False)])
+def test_pointing_check_warns_when_kotekan_disagrees(tmp_path, caplog, offset, agrees):
+    """The config stays the authority; a disagreement wider than a Dec row
+    is recorded in the state file and logged."""
+    import types
+    import reduce as R
+    from conftest import write_vis_file, file_name
+    path = tmp_path / file_name(1000, 1_791_000_000.0)
+    write_vis_file(str(path), 1000, 1_791_000_000.0, 0.0, pointing_dec=SRC_DEC)
+    ax = R.read_axes(str(path))
+    assert ax.kotekan_dec_deg == pytest.approx(SRC_DEC)
+    run = types.SimpleNamespace(cfg={"pointing_dec_deg": SRC_DEC + offset, "dec_step_deg": 0.25},
+                                report={})
+    with caplog.at_level("WARNING"):
+        M.Run.check_pointing(run, ax)
+    assert run.report["pointing_check"]["agrees"] is agrees
+    assert ("one of them is stale" in caplog.text) is (not agrees)
 
 
 def test_solved_gains_match_the_injected_ones(acquisition, tmp_path):

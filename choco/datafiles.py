@@ -47,13 +47,29 @@ logger = logging.getLogger(__name__)
 
 #: Files counted by the scan.
 H5_SUFFIX = ".h5"
-#: An acquisition's notes (tools/acqnotes), shown behind the table's info button.
+#: An acquisition's notes (the acqnotes job, jobs/acqnotes), shown behind the table's info button.
 NOTES_NAME = "README.md"
 #: Notes larger than this are refused rather than rendered.
 NOTES_MAX_BYTES = 256 * 1024
-#: A root's acquisition history (tools/acqnotes/timeline.yaml), behind the
+#: A root's acquisition history (jobs/acqnotes/timeline.yaml), behind the
 #: root header's Timeline button.
 TIMELINE_NAME = "timeline.yaml"
+
+
+def run_blocking(fn, *args, timeout: float):
+    """``fn(*args)`` in gevent's threadpool, waited on for at most *timeout*.
+
+    The one way the web process touches NFS.  A timeout raises
+    ``TimeoutError`` (an ``OSError``), so a caller treats a wedged mount
+    like any other unreadable file.  Only the greenlet gives up: a thread
+    blocked in the kernel cannot be interrupted and stays until the mount
+    answers.
+    """
+    try:
+        return gevent.get_hub().threadpool.spawn(fn, *args).get(timeout=timeout)
+    except gevent.Timeout:
+        raise TimeoutError(
+            f"no answer from the filesystem in {timeout:.0f}s") from None
 
 
 def scan_dir(path: str) -> dict:
@@ -64,7 +80,7 @@ def scan_dir(path: str) -> dict:
     (``None`` when there are none), which is what says whether an
     acquisition is still growing; ``oldest`` with it gives the span the
     files cover.  ``notes`` says whether the directory carries a
-    ``README.md`` (written by ``tools/acqnotes``), noticed from the same
+    ``README.md`` (written by the acqnotes job), noticed from the same
     listing at no extra cost.
     """
     files = 0
@@ -184,12 +200,17 @@ class DataFileScan:
     """
 
     DEFAULT_TTL_S = 30.0
+    #: How long one scan waits for a root's walk.  A root that does not
+    #: finish in time reports an error row; its walk keeps its thread and
+    #: is picked up, not restarted, by the next scan.
+    SCAN_TIMEOUT_S = 30.0
 
     def __init__(self, roots=(), ttl_s: float = DEFAULT_TTL_S):
         self.roots = [Path(r) for r in (roots or ())]
         self.ttl_s = float(ttl_s)
         self._result: dict | None = None
         self._lock = BoundedSemaphore(1)
+        self._walks: dict = {}                  # root -> its unfinished walk
         # Badge state, kept by the health probe rather than the scan:
         # the strip polls every 30 s and must never walk the mount.
         self.health: str = "unknown" if self.configured else "unconfigured"
@@ -228,9 +249,33 @@ class DataFileScan:
     def _scan(self) -> dict:
         started = time.monotonic()
         # One thread per root, so two mounts are walked at once and a
-        # slow one doesn't serialise behind a fast one.
+        # slow one doesn't serialise behind a fast one.  A walk still
+        # running from an earlier scan is waited on again rather than
+        # joined by a second one: a wedged mount holds one thread, not
+        # one per page load (the pool is shared with gevent's resolver).
         pool = gevent.get_hub().threadpool
-        roots = list(pool.map(scan_root, [str(p) for p in self.roots]))
+        paths = [str(p) for p in self.roots]
+        for p in paths:
+            if p not in self._walks:
+                self._walks[p] = pool.spawn(scan_root, p)
+        deadline = started + self.SCAN_TIMEOUT_S
+        roots = []
+        for p in paths:
+            walk = self._walks[p]
+            try:
+                roots.append(walk.get(timeout=max(0.0, deadline - time.monotonic())))
+            except gevent.Timeout:
+                logger.warning(f"data-files: scan of {p} timed out")
+                roots.append({"path": p, "dirs": [], "files": 0, "bytes": 0,
+                              "duration_s": self.SCAN_TIMEOUT_S, "timeline": False,
+                              "error": f"no answer from the filesystem in "
+                                       f"{self.SCAN_TIMEOUT_S:.0f}s"})
+                continue
+            except Exception as exc:                 # never break the page
+                roots.append({"path": p, "dirs": [], "files": 0, "bytes": 0,
+                              "duration_s": 0.0, "timeline": False,
+                              "error": f"{type(exc).__name__}: {exc}"})
+            del self._walks[p]
         duration = time.monotonic() - started
         logger.info(
             f"data-files: scanned {len(roots)} root(s), "

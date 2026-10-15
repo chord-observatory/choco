@@ -46,7 +46,7 @@ import yaml
 
 from choco.dishlabels import find_key
 from choco.healpix import default_sky_map, load_healpix, log_stretch, sample_galactic
-from choco.jobclient import get_json, job_state_dir
+from choco.jobclient import atomic_output, get_json, job_state_dir, refuse_retired
 
 import matplotlib
 matplotlib.use("Agg")
@@ -847,14 +847,13 @@ def _plot_skymap(cfg, beams, now, T, output, sky):
     plt.subplots_adjust(left=0.06, right=0.94, bottom=0.18, top=0.90)
 
     # Atomic write: choco serves this file, so it must never be readable
-    # half-written.  A rename on the same filesystem is atomic.
-    out = Path(output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".tmp")
-    plt.savefig(tmp, format='png', dpi=int(cfg["dpi"]), bbox_inches='tight',
-                facecolor=T["face"])
-    plt.close(fig)
-    os.replace(tmp, out)
+    # half-written.
+    try:
+        with atomic_output(output, suffix=".png") as tmp:
+            plt.savefig(tmp, format='png', dpi=int(cfg["dpi"]), bbox_inches='tight',
+                        facecolor=T["face"])
+    finally:
+        plt.close(fig)
     return {
         "sun_ra_h": float(sun.ra.hour), "sun_dec_d": float(sun.dec.deg),
         "moon_ra_h": float(moon.ra.hour), "moon_dec_d": float(moon.dec.deg),
@@ -879,13 +878,9 @@ def load_config(path):
                 f"{path}: background_image retired: the backdrop is now a HEALPix "
                 f"map, set by background_map (default: the 408 MHz map that "
                 f"choco.sh install fetches next to skymap.py; \"\" for none)")
-        retired = [k for k in _RETIRED_KEYS if k in loaded]
-        if retired:
-            raise ValueError(
-                f"{path}: {' and '.join(retired)} retired: remove it; the job "
-                f"writes skymap.png and skymap-night.png in its state directory "
-                f"({job_state_dir('skymap')}; systemd's StateDirectory=choco/skymap, "
-                f"or --state-dir); set night: false to skip the night render")
+        refuse_retired(loaded, _RETIRED_KEYS, "skymap",
+                       "skymap.png and skymap-night.png (night: false skips "
+                       "the night render) are written")
         cfg.update({k: v for k, v in loaded.items() if v is not None})
     cfg["night"] = bool(cfg["night"])
     return cfg

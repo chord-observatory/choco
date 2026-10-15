@@ -1,7 +1,7 @@
 """Shared fixtures: a choco app over a small two-group registry.
 
 ``configs_dir`` / ``app`` / ``client`` serve every route-level suite
-(test_web, test_cli, ...).  A module that needs a different registry
+(test_web_*, test_cli, ...).  A module that needs a different registry
 defines its own fixture of the same name, which overrides these.
 """
 
@@ -9,6 +9,16 @@ import pytest
 import yaml
 
 from choco.app import create_app
+from choco.auth import _users
+from tests.helpers import JOB_STUB
+
+
+@pytest.fixture(autouse=True)
+def clear_users():
+    """The in-memory user store is per process: empty it around each test."""
+    _users.clear()
+    yield
+    _users.clear()
 
 
 @pytest.fixture
@@ -47,3 +57,18 @@ def app(configs_dir, tmp_path):
 @pytest.fixture
 def client(app):
     return app.test_client()
+
+
+@pytest.fixture
+def jobs(monkeypatch):
+    """systemd stubbed out: every job's ``job_status`` is ``JOB_STUB``
+    (``jobs(**fields)`` changes what they all report) and no job has a
+    timer.  The hermetic default for any page that lists the services."""
+    state = dict(JOB_STUB)
+    monkeypatch.setattr("choco.web.job_status", lambda *a, **k: dict(state))
+    monkeypatch.setattr("choco.web.timer_status", lambda *a, **k: None)
+
+    def set_fields(**fields):
+        state.clear()
+        state.update(JOB_STUB, **fields)
+    return set_fields

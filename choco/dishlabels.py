@@ -186,7 +186,8 @@ def file_element_labels(labels, num_elements: int | None = None,
     return out
 
 
-def connected_elements(dish_inputs, num_polarizations: int = 2) -> list[int]:
+def connected_elements(dish_inputs, num_polarizations: int = 2,
+                       num_dishes: int | None = None) -> list[int]:
     """Fiducial element indices of a compact ``DishInputs`` axis, in order.
 
     Mirrors ``CHORDTelescope::get_connected_elements`` (kotekan develop,
@@ -199,14 +200,27 @@ def connected_elements(dish_inputs, num_polarizations: int = 2) -> list[int]:
     caller must still check the length against the descriptor's
     ``num_elements``: a disagreement means the rule has drifted, and a
     wrong identity on an element is worse than none.
+
+    Rows are placed as kotekan places them: at their ``dish_idx`` (a row
+    without one at its list position) in ``num_dishes`` slots (default:
+    the table's length), and a slot no row names is ``Missing``.  A
+    duplicate, negative or out-of-range ``dish_idx`` raises
+    ``ValueError``, as kotekan refuses the table outright.
     """
     npol = int(num_polarizations)
     if npol < 1:
         raise ValueError(f"num_polarizations must be positive, got {npol}")
-    num_dishes = len(dish_inputs)
+    ndish = len(dish_inputs) if num_dishes is None else int(num_dishes)
+    slots = {}
+    for pos, row in enumerate(dish_inputs):
+        idx = int(row.get("dish_idx", pos)) if isinstance(row, dict) else pos
+        if not 0 <= idx < ndish or idx in slots:
+            raise ValueError(f"dish_idx {idx} is duplicated or outside "
+                             f"0..{ndish - 1}")
+        slots[idx] = row
     connected = [
-        dish for dish, row in enumerate(dish_inputs)
-        if not (isinstance(row, dict)
-                and str(row.get("type")) == PLACEHOLDER_LABEL)
+        dish for dish in range(ndish)
+        if dish in slots and not (isinstance(slots[dish], dict)
+                                  and str(slots[dish].get("type")) == PLACEHOLDER_LABEL)
     ]
-    return [dish + pol * num_dishes for pol in range(npol) for dish in connected]
+    return [dish + pol * ndish for pol in range(npol) for dish in connected]

@@ -37,7 +37,7 @@ is zero; ``vis_weight`` would say more but is 199 MB stored, a ~45% surcharge
 on the I/O that dominates.  **Gains are deliberately not divided out**, so a
 mid-acquisition gain update draws as a visible step rather than being
 normalised away; the per-product value scale is frozen from the acquisition's
-first file (2–99.5 percentile padded outward by half the observed log span)
+first file with usable data (2–99.5 percentile padded outward by half the observed log span)
 because it is baked into every pixel and cannot be revised later.  What *can*
 be revised is the display: **histogram equalization lives in the palette, not
 the pixels**.  Equalizing the indices costs ~15% (it is maximum-entropy by
@@ -81,8 +81,9 @@ per acquisition; 100 elements = 358 MB per source file and ~157 GB per
 observing day), which is why ``waterfall.py`` visits acquisitions **newest
 first** under a per-run budget: a full backfill is ~24 h and must never starve
 the live acquisition.  On choco's side ``waterfalls.py`` is **read-only** and
-hub-safe — the summary sweep and each index read go through gevent's
-threadpool with a timeout, for the same reason ``datafiles.py`` does, and are
+hub-safe — the summary sweep, each index read and every open and chunk of a
+streamed image go through ``datafiles.run_blocking`` (threadpool, timeout),
+for the same reason ``datafiles.py`` does, and the reads are
 cached on a TTL and on mtime respectively.  Every path component from the URL
 is matched against the pattern the writer uses before it is joined
 (``NAME_RE`` / ``SHARD_RE`` / ``IMAGE_RE``), the same never-pass-the-
@@ -182,8 +183,13 @@ deflate segments into one image, and the recovery discipline replays a
 file merely to size the backlog measured **454 s against the 10,864-file
 archive**, which a 2-minute timer cannot absorb — 8.1 s after); a file that
 can *never* be rendered (no ``abs_file_idx``, an empty frame, a shape that
-cannot join the acquisition) is recorded once in ``index["skipped"]`` rather
-than re-reported, because exit 2 means "retries self-heal" and these do not;
+cannot join the acquisition, no usable data) is recorded once in ``index["skipped"]`` rather
+than re-reported, because exit 2 means "retries self-heal" and these do not.
+Before an acquisition has an index (no file has set its scale yet) the skips
+go to ``skipped.json`` and ``start`` adopts them; at most ``SCALE_TRIES`` (3)
+files are sampled per run for the scale.  Without this, an empty first file
+(common: the first file of a run is often partial) was re-read on every run
+and the acquisition never started (2026-10-09);
 and a mid-acquisition ``OSError`` **returns rather than raises**, so the files
 already committed still count against ``max_files_per_run`` and a flaky mount
 cannot let one run render several times the cap.  A small **``summary.json``**

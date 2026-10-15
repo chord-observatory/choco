@@ -19,7 +19,6 @@ import yaml
 import eigencal
 from eigencal import (DEFAULTS, Ephemeris, beam_sigma_rad, merge_config,
                       process_transit, source_flux_jy)
-from transit_fit import invert_no_zero
 
 NDISH = 4                      # 4 dishes x 2 pol = 8 inputs
 NFEED = 2 * NDISH
@@ -223,7 +222,7 @@ def test_quality_gate_rejects_noise_only_data(setup):
     """With no source in the data the dynamic-range gate starves the fit."""
     cfg, eph, transit, tmp_path = setup
     rng = np.random.default_rng(4)
-    gain_in = _make_file(cfg, eph, transit, tmp_path, rng)
+    _make_file(cfg, eph, transit, tmp_path, rng)
 
     # Overwrite vis with pure noise (keep everything else).
     path = tmp_path / "n2_0000.h5"

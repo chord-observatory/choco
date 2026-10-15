@@ -11,7 +11,7 @@ Type=oneshot
 StateDirectory=choco/skymap
 User=choco
 Group=choco
-ExecStart=/opt/choco/jobs/skymap/skymap.sh /etc/choco/skymap.yaml
+ExecStart=/opt/choco/jobs/run-job.sh skymap/skymap.py /etc/choco/skymap.yaml
 # No Restart: a failed render (choco unreachable, no pointing in any
 # config) exits 2 and leaves the previous image up; the next timer tick
 # retries.  Exit 1 = config error / bug.

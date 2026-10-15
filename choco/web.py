@@ -20,9 +20,12 @@ from flask import (
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
+from . import auth
 from .auth import save_user, localhost_or_login_required
-from .jobclient import MANUAL_OVERRIDES_NAME
-from .datafiles import TIMELINE_NAME, human_bytes, notes_html, read_notes, timeline_rows
+from .jobclient import (MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT,
+                        write_text_atomic)
+from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
+                        run_blocking, timeline_rows)
 from . import dishlabels
 from .pdbmap import PdbMap, cross_check, kotekan_dish_labels, dish_layout, row_entries
 from .waterfalls import (
@@ -56,32 +59,13 @@ def _csrf_token() -> str:
     return session["_csrf_token"]
 
 
-def _dev_auth() -> bool:
-    """True when running with ``server.dev_auth`` (loopback-only, no auth).
-
-    CSRF has to come off with login rather than stay on: the token lives
-    in the session cookie, so with auto-login re-established per request
-    a stale cookie would 403 every POST — toggles, edits, PDB writes —
-    with no login flow left to reset it.
-    """
-    return bool(current_app.config.get("DEV_AUTH"))
-
-
 def _check_csrf():
-    if _dev_auth():
-        return
-    token = request.form.get("_csrf_token", "")
-    if not token or token != session.get("_csrf_token"):
-        abort(403)
+    auth.require_csrf_token(request.form.get("_csrf_token", ""))
 
 
 def _check_csrf_header():
     """CSRF check for JSON POSTs: token comes in via an ``X-CSRF-Token`` header."""
-    if _dev_auth():
-        return
-    token = request.headers.get("X-CSRF-Token", "")
-    if not token or token != session.get("_csrf_token"):
-        abort(403)
+    auth.require_csrf_token(request.headers.get("X-CSRF-Token", ""))
 
 
 @bp.app_context_processor
@@ -321,7 +305,7 @@ def _state_root() -> Path:
     """Where the jobs keep their files: ``state_dir`` (default
     ``/var/lib/choco``), the root systemd's ``StateDirectory=choco/<job>``
     lays out.  Everything choco reads back from a job sits under it."""
-    return Path(current_app.config.get("state_dir") or "/var/lib/choco")
+    return Path(current_app.config.get("state_dir") or STATE_ROOT)
 
 
 def _skymap_file(night: bool = False) -> Path:
@@ -709,8 +693,7 @@ def _library_entry(registry, rel: str) -> dict:
         "path": rel,
         "size": size,
         "mtime": mtime,
-        "modified": (time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-                     if mtime else None),
+        "modified": _utc_minute(mtime) if mtime else None,     # UTC, like every page
         "used_by": [n.key for n in direct],
         "included_by": [n.key for n in includers],
         # vars.yaml is the shared template context: every node reads it.
@@ -790,10 +773,7 @@ def _write_library_file(registry, rel: str, content: str, user: str
     """
     path = registry.configs_dir / rel
     created = not path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content)
-    tmp.replace(path)
+    write_text_atomic(path, content)
     if rel == "vars.yaml":
         affected = list(registry.nodes)
     else:
@@ -877,10 +857,7 @@ def _pull_library(dry_run: bool, user: str) -> tuple[dict, int]:
     written = []
     for rel in plan.fetch:
         path = registry.configs_dir / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_bytes(texts[rel].encode("utf-8"))
-        tmp.replace(path)
+        write_text_atomic(path, texts[rel])
         written.append(path)
     for rel in remove:
         path = registry.configs_dir / rel
@@ -1269,8 +1246,12 @@ def _fill_implicit_input_list(node, frame: dict) -> None:
     if not table:
         return
     npol = dishlabels.find_key(config, "num_polarizations")
+    ndish = dishlabels.find_key(config, "num_dishes")
+    if isinstance(ndish, bool) or not isinstance(ndish, int):
+        ndish = None                      # an expression: the table's own length
     try:
-        inputs = dishlabels.connected_elements(table, 2 if npol is None else npol)
+        inputs = dishlabels.connected_elements(
+            table, 2 if npol is None else npol, num_dishes=ndish)
     except (TypeError, ValueError):
         return
     if len(inputs) == num_elements:
@@ -1575,14 +1556,17 @@ def files_page():
     # The waterfall renderer lives on this page (see _service_registry),
     # so the title carries the joint DATA tag and the page ends with the
     # renderer's status, state file and journal.
-    wf = _service_registry()["waterfall"]
+    # The acquisition notes job is folded in the same way, as a second
+    # section with its own status block.
+    registry = _service_registry()
     return render_template(
         "files.html",
         configured=bool(scan is not None and scan.configured),
         roots=[str(r) for r in (scan.roots if scan is not None else [])],
         data=scan.to_dict() if scan is not None else None,
         name="waterfall", nlines=_journal_lines_arg(),
-        **_service_page_context("waterfall", wf),
+        notes=_service_page_context("acqnotes", registry["acqnotes"]),
+        **_service_page_context("waterfall", registry["waterfall"]),
     )
 
 
@@ -1644,10 +1628,7 @@ def files_notes(root_idx, acq):
     if row is None:
         abort(404)
     try:
-        text = gevent.get_hub().threadpool.spawn(read_notes, row["path"]).get(
-            timeout=NOTES_TIMEOUT_S)
-    except gevent.Timeout:
-        return render_template("_files_notes.html", error="the filesystem did not answer")
+        text = run_blocking(read_notes, row["path"], timeout=NOTES_TIMEOUT_S)
     except OSError as exc:
         return render_template("_files_notes.html", error=str(exc))
     return render_template("_files_notes.html", html=notes_html(text))
@@ -1657,7 +1638,7 @@ def files_notes(root_idx, acq):
 @login_required
 def files_timeline(root_idx):
     """A root's ``timeline.yaml`` (the acquisition history that
-    tools/acqnotes renders the READMEs from), as a table for the root
+    the acqnotes job renders the READMEs from), as a table for the root
     header's popover.  Same allowlist and threadpool read as the notes:
     an index into the configured roots whose cached scan saw the file."""
     scan = _datafile_scan()
@@ -1667,11 +1648,9 @@ def files_timeline(root_idx):
     if not 0 <= root_idx < len(roots) or not roots[root_idx].get("timeline"):
         abort(404)
     try:
-        text = gevent.get_hub().threadpool.spawn(
-            read_notes, roots[root_idx]["path"], TIMELINE_NAME).get(timeout=NOTES_TIMEOUT_S)
+        text = run_blocking(read_notes, roots[root_idx]["path"], TIMELINE_NAME,
+                            timeout=NOTES_TIMEOUT_S)
         rows = timeline_rows(text)
-    except gevent.Timeout:
-        return render_template("_files_timeline.html", error="the filesystem did not answer")
     except (OSError, ValueError) as exc:
         return render_template("_files_timeline.html", error=str(exc))
     return render_template("_files_timeline.html", rows=rows, path=roots[root_idx]["path"])
@@ -1805,6 +1784,7 @@ def _service_registry() -> dict[str, dict]:
     waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
     skymap_cfg = current_app.config.get("skymap_cfg") or {}
     mapmaker_cfg = current_app.config.get("mapmaker_cfg") or {}
+    acqnotes_cfg = current_app.config.get("acqnotes_cfg") or {}
 
     # Every file read back from a job sits under <state_dir>/<job>/, the
     # layout systemd's StateDirectory=choco/<job> gives the jobs; the
@@ -1812,12 +1792,12 @@ def _service_registry() -> dict[str, dict]:
     root = _state_root()
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
-    eop_state = root / "eop" / "state.json"
-    bffs_state = root / "bffs" / "state.json"
+    eop_state = root / "eop" / STATE_NAME
+    bffs_state = root / "bffs" / STATE_NAME
     # bffs also rewrites a run file on *every* run — what each source
     # measured, what it abstained from and why the exit status was what
     # it was.
-    bffs_run = root / "bffs" / "run.json"
+    bffs_run = root / "bffs" / RUN_NAME
     # The manual override file the job's ``manual`` source reads; with
     # it the element grid toggles manual flags.  ``bffs.control: false``
     # makes the grid read-only (the same switch the PDB page has).
@@ -1869,9 +1849,9 @@ def _service_registry() -> dict[str, dict]:
         "eigencal": job("EIGENCAL",
                         eigencal_cfg.get("service_unit")
                         or "choco-eigencal.service",
-                        root / "eigencal" / "state.json",
+                        root / "eigencal" / STATE_NAME,
                         None, "last calibration",
-                        run_file=root / "eigencal" / "run.json"),
+                        run_file=root / "eigencal" / RUN_NAME),
         # waterfall rewrites its state file on every run, but a run with
         # nothing to render is the normal case between acquisitions, so
         # the mtime is "last run" and never a health downgrade.  The
@@ -1881,7 +1861,7 @@ def _service_registry() -> dict[str, dict]:
         "waterfall": job("WF",
                          waterfall_cfg.get("service_unit")
                          or "choco-waterfall.service",
-                         root / "waterfall" / "state.json",
+                         root / "waterfall" / STATE_NAME,
                          None, "last run", page="/files"),
         # skymap keeps no state file: the image is the record and its
         # title carries the render time, so the badge is systemd only.
@@ -1893,8 +1873,18 @@ def _service_registry() -> dict[str, dict]:
         # mtime is "last run" and never a health downgrade.
         "mapmaker": job("MAP",
                         mapmaker_cfg.get("service_unit") or "choco-mapmaker.service",
-                        root / "mapmaker" / "state.json",
+                        root / "mapmaker" / STATE_NAME,
                         None, "last run"),
+        # acqnotes rewrites its index only when it measures an
+        # acquisition, so the mtime is "last measurement"; between
+        # acquisitions an hourly run that finds nothing new is normal.
+        # It writes the notes /files shows, so it is folded into DATA
+        # like the waterfall.
+        "acqnotes": job("NOTES",
+                        acqnotes_cfg.get("service_unit") or "choco-acqnotes.service",
+                        root / "acqnotes" / "index.json",
+                        None, "last measurement",
+                        run_file=root / "acqnotes" / RUN_NAME, page="/files"),
     }
 
 
@@ -1926,18 +1916,18 @@ def _services_health(registry: dict | None = None) -> dict:
 def _run_reasons(run_file) -> list[str]:
     """Why a job's last run was not plain ok, in the job's own words.
 
-    Read from the job's per-run file (bffs: ``degraded`` reasons and
-    ``error``), so a yellow badge can say *which* input was unavailable
-    instead of just "degraded".  A missing or malformed file contributes
-    nothing; the verdict itself stays systemd's.
+    Read from the job's per-run file (``degraded`` reasons, ``error``,
+    and the one-line ``reason`` eigencal gives), so a yellow badge can say
+    *which* input was unavailable instead of just "degraded".  A missing
+    or malformed file contributes nothing; the verdict itself stays
+    systemd's.
     """
     run = read_state_json(run_file)
     if not isinstance(run, dict):
         return []
     reasons = run.get("degraded")
     out = [str(r) for r in reasons] if isinstance(reasons, list) else []
-    if run.get("error"):
-        out.append(str(run["error"]))
+    out += [str(run[k]) for k in ("error", "reason") if run.get(k)]
     return out[:5]
 
 
@@ -2094,6 +2084,8 @@ def _mapmaker_detail(state: dict) -> dict:
         "updated": _fmt_utc(state.get("updated")),
         "clean": _mapmaker_clean_facts(root),
         "pointing_dec_deg": state.get("pointing_dec_deg"),
+        "pointing_check": (state["pointing_check"]
+                           if isinstance(state.get("pointing_check"), dict) else None),
         "colour_bins": int(state["colour_bins"]) if state.get("colour_bins") is not None else None,
         "colour_range_mhz": (float(rng[0]), float(rng[1])) if len(rng) == 2 else None,
         "stretch": state.get("stretch"),
@@ -2542,6 +2534,23 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
 
     if name == "mapmaker":
         return _mapmaker_detail(state)
+
+    if name == "acqnotes":
+        # state is index.json ({acq: what it was measured at}); the run
+        # record says what the last run did
+        run = read_state_json(svc.get("run_file"))
+        if not isinstance(state, dict) and not isinstance(run, dict):
+            return None
+        run = run if isinstance(run, dict) else {}
+        return {
+            "n_with_notes": len(state) if isinstance(state, dict) else 0,
+            "acquisitions": run.get("acquisitions"),
+            "backlog": run.get("backlog"),
+            "measured": [str(a) for a in (run.get("measured") or [])],
+            "written": [str(a) for a in (run.get("written") or [])],
+            "run_time": _fmt_utc(run.get("time")) if run.get("time") else None,
+            "run_status": run.get("status"),
+        }
 
     if name == "waterfall":
         errors = [str(e) for e in (state.get("errors") or [])]

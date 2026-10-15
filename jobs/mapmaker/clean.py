@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -42,7 +41,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from choco.jobclient import job_state_dir, write_json_atomic
+from choco.jobclient import Degraded, job_state_dir, setup_logging, single_run, write_json_atomic
 
 import imaging as I
 import mapmaker as M
@@ -61,10 +60,6 @@ LOCK_FILE = "clean.lock"
 MIN_TAPER = 1e-3
 #: Brightest components listed in clean.json.
 N_LISTED = 20
-
-
-class Degraded(Exception):
-    """A dependency is missing; retries self-heal; exit 2."""
 
 
 # --- the dirty beam ----------------------------------------------------------
@@ -368,9 +363,7 @@ def main(argv=None) -> int:
     ap.add_argument("-v", "--verbose", action="count", default=0)
     args = ap.parse_args(argv)
 
-    logging.basicConfig(level=logging.WARNING - 10 * min(args.verbose, 2),
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    log.setLevel(min(log.getEffectiveLevel(), logging.INFO))
+    setup_logging(args.verbose, log)
 
     try:
         cfg = M.load_config(args.config)
@@ -383,22 +376,16 @@ def main(argv=None) -> int:
     except OSError as e:
         log.error("state directory %s: %s", state_dir, e)
         return 2
-    with M.single_run(state_dir / LOCK_FILE) as acquired:
+    with single_run(state_dir / LOCK_FILE) as acquired:
         if not acquired:
             log.info("another deconvolution holds the lock; nothing to do")
             return 0
         try:
             facts = run(cfg, state_dir, force=args.force)
-        except Degraded as e:
+        except (Degraded, OSError) as e:
             # keep the last successful run's numbers on the page, add the reason
             facts = read_facts(state_dir / FACTS_FILE)
             facts.update({"updated": time.time(), "degraded": [str(e)], "errors": []})
-            write_facts(state_dir / FACTS_FILE, facts)
-            log.warning("degraded: %s", e)
-            return 2
-        except OSError as e:
-            facts = read_facts(state_dir / FACTS_FILE)
-            facts.update({"updated": time.time(), "degraded": [f"{e}"], "errors": []})
             write_facts(state_dir / FACTS_FILE, facts)
             log.warning("degraded: %s", e)
             return 2

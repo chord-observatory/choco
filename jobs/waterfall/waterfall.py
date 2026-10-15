@@ -25,8 +25,6 @@ was unavailable — retries self-heal); 1 = config error or bug.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
 import glob
 import logging
 import os
@@ -38,7 +36,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from choco.jobclient import job_state_dir, write_json_atomic
+from choco.jobclient import (STATE_NAME, Degraded, job_state_dir, refuse_retired,
+                             setup_logging, single_run, write_json_atomic)
 
 import reduce as R
 import wfpng
@@ -71,43 +70,10 @@ _RETIRED_KEYS = ("state_file", "lock_file")
 _NAME_INDEX_RE = re.compile(r"^vis_0*(\d+)_")
 
 
-class Degraded(Exception):
-    """A dependency was unavailable.  Retries self-heal; exit 2."""
-
-
 def index_from_name(basename: str) -> int | None:
     """The source index in a filename, or None if it is not named that way."""
     m = _NAME_INDEX_RE.match(basename)
     return int(m.group(1)) if m else None
-
-
-@contextlib.contextmanager
-def single_run(path):
-    """Hold an exclusive lock for the duration of a run, or yield False.
-
-    systemd will not start a second ``choco-waterfall.service`` while one
-    is running, but nothing stops a manual run racing the timer — and two
-    processes appending to the same image would interleave their deflate
-    segments and corrupt it.  The crash-recovery discipline replays a
-    *sequential* history; it cannot repair an interleaved one.
-    """
-    lock = Path(path)
-    try:
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(lock, "w")
-    except OSError as exc:
-        log.warning("could not open lock file %s: %s", lock, exc)
-        yield True                      # a missing lock must not stop the job
-        return
-    try:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        yield True
-    finally:
-        fh.close()
 
 
 def load_config(path) -> dict:
@@ -115,13 +81,7 @@ def load_config(path) -> dict:
         raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
         raise ValueError("config must be a mapping")
-    retired = [k for k in _RETIRED_KEYS if k in raw]
-    if retired:
-        raise ValueError(
-            f"{' and '.join(retired)} retired: remove it; state.json and "
-            f"waterfall.lock live in the job's state directory "
-            f"({job_state_dir('waterfall')}; systemd's StateDirectory=choco/waterfall, "
-            f"or --state-dir)")
+    refuse_retired(raw, _RETIRED_KEYS, "waterfall", "state.json and waterfall.lock live")
     cfg = dict(DEFAULTS)
     cfg.update(raw)
     roots = cfg.get("roots") or []
@@ -163,6 +123,35 @@ def source_files(acq_dir: str) -> list[str]:
     return sorted(glob.glob(os.path.join(acq_dir, "*.h5")))
 
 
+#: Files sampled per run to find one that can set a new acquisition's scale.
+SCALE_TRIES = 3
+
+
+def pending_candidates(store, files) -> list[tuple]:
+    """``(named_index, path, basename)`` for each file still to fold in.
+
+    Decided from the *filenames* alone, so only the files a run will
+    actually render are opened: opening every pending file just to size
+    the backlog cost 454 s against a 10,864-file archive, which no
+    2-minute timer can absorb.  Index order where the name gives one;
+    anything unnamed goes last, since its index is only knowable by
+    opening it.  The dry run counts with this too, so both agree on what
+    "pending" means (skipped files included).
+    """
+    done, skipped = store.processed, store.skipped
+    candidates = []
+    for path in files:
+        basename = os.path.basename(path)
+        if basename in skipped:
+            continue
+        named = index_from_name(basename)
+        if named is not None and named in done:
+            continue
+        candidates.append((named, path, basename))
+    candidates.sort(key=lambda c: (c[0] is None, c[0] or 0, c[2]))
+    return candidates
+
+
 def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
                         report: dict) -> int:
     """Fold up to ``budget`` new files into one acquisition.  Returns how many."""
@@ -177,9 +166,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
     if not files:
         return 0
 
-    done, skipped = store.processed, store.skipped
-
-    dropped: dict = {}
+    done = store.processed
 
     def drop(basename: str, why: str) -> None:
         """Record a file that can never be folded in.
@@ -188,34 +175,14 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         with no index, or one whose shape cannot join this acquisition,
         would otherwise reappear in the backlog and in the exit code on
         every run, and exit 2 is supposed to mean "retries self-heal".
-
-        Collected rather than written straight through, because on a
-        first run the scan that finds these happens before the store
-        exists to record them in.
+        Before the acquisition has an index the store keeps these in
+        ``skipped.json``, so an empty first file is not re-read forever.
         """
         report["errors"].append(f"{basename}: {why}")
         report["skipped"] += 1
-        dropped[basename] = why
-        if store.started:
-            store.skip(dropped)
-            dropped.clear()
+        store.skip({basename: why})
 
-    # Decide what is pending from the *filenames*, and open only the files
-    # this run will actually render.  Opening every pending file just to
-    # size the backlog cost 454 s against a 10,864-file archive, which no
-    # 2-minute timer can absorb.
-    candidates = []
-    for path in files:
-        basename = os.path.basename(path)
-        if basename in skipped:
-            continue
-        named = index_from_name(basename)
-        if named is not None and named in done:
-            continue
-        candidates.append((named, path, basename))
-    # index order where the name gives one; anything unnamed goes last,
-    # since its index is only knowable by opening it
-    candidates.sort(key=lambda c: (c[0] is None, c[0] or 0, c[2]))
+    candidates = pending_candidates(store, files)
     report["backlog"] += len(candidates)
     if not candidates or budget <= 0:
         # Out of budget for this run, but the backlog above is still
@@ -251,26 +218,37 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         return 0
 
     if not store.started:
-        _, first_path, first_axes = pending[0]
-        log.info("%s: new acquisition, %d products, %d x %d — setting scale",
-                 acq, first_axes.n_prod, first_axes.n_freq, first_axes.n_time)
-        try:
-            sample = R.sample_magnitudes(first_path)
-        except OSError as exc:
-            report["errors"].append(f"{first_path}: {exc}")
-            report["degraded"] = True
+        # The first file of a run is often partial or empty, so the scale
+        # comes from the first pending file with usable data.  Empty ones
+        # are skipped for good; at most SCALE_TRIES are sampled per run, so
+        # an acquisition with no data at all stays cheap and works through
+        # its files a few at a time.
+        scaled = None
+        for _, path, axes in pending[:SCALE_TRIES]:
+            log.info("%s: new acquisition, %d products, %d x %d — setting scale from %s",
+                     acq, axes.n_prod, axes.n_freq, axes.n_time, os.path.basename(path))
+            try:
+                sample = R.sample_magnitudes(path)
+            except OSError as exc:
+                report["errors"].append(f"{path}: {exc}")
+                report["degraded"] = True
+                return 0
+            lo, hi = R.scale_from_sample(sample)
+            if int(np.isfinite(lo).sum()) == 0:
+                drop(os.path.basename(path), "no product has usable data")
+                continue
+            scaled = (path, axes, lo, hi)
+            break
+        if scaled is None:
             return 0
-        lo, hi = R.scale_from_sample(sample)
+        first_path, first_axes, lo, hi = scaled
         n_scaled = int(np.isfinite(lo).sum())
-        if n_scaled == 0:
-            drop(os.path.basename(first_path), "no product has usable data")
-            return 0
         if n_scaled < first_axes.n_prod:
             log.warning("%s: %d of %d products have no usable data",
                         acq, first_axes.n_prod - n_scaled, first_axes.n_prod)
         store.start(first_axes, lo, hi)
-        store.skip(dropped)                           # collected before it existed
-        dropped.clear()
+        # the files dropped above are behind the scale file; never fold them
+        pending = [p for p in pending if os.path.basename(p[1]) not in store.skipped]
 
     lo, hi = store.scale()
     buf = None
@@ -490,9 +468,7 @@ def main(argv=None) -> int:
     ap.add_argument("-v", "--verbose", action="count", default=0)
     args = ap.parse_args(argv)
 
-    logging.basicConfig(level=logging.WARNING - 10 * min(args.verbose, 2),
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    log.setLevel(min(log.getEffectiveLevel(), logging.INFO))
+    setup_logging(args.verbose, log)
 
     try:
         cfg = load_config(args.config)
@@ -516,14 +492,17 @@ def main(argv=None) -> int:
             for acq in acqs:
                 store = AcquisitionStore(
                     Path(cfg["waterfalls_dir"]) / root["name"] / acq, acq, root["name"])
-                n = len(source_files(os.path.join(root["path"], acq)))
-                pend = n - len(store.processed)
+                files = source_files(os.path.join(root["path"], acq))
+                n, pend = len(files), len(pending_candidates(store, files))
                 if pend > 0:
                     print(f"{root['name']}/{acq}: {pend} of {n} files pending")
                     total += pend
         print(f"{total} files pending")
         return 0
 
+    # Two processes appending to one image would interleave their deflate
+    # segments and corrupt it: the crash-recovery discipline replays a
+    # *sequential* history, it cannot repair an interleaved one.
     lock_path = state_dir / "waterfall.lock"
     with single_run(lock_path) as acquired:
         if not acquired:
@@ -547,7 +526,7 @@ def main(argv=None) -> int:
                      report["run_seconds"])
             return 2 if report["degraded"] else 0
         report = run(cfg, only_acq=args.acq)
-        write_state(state_dir / "state.json", cfg, report)
+        write_state(state_dir / STATE_NAME, cfg, report)
 
     for e in report["errors"][:20]:
         log.warning("%s", e)

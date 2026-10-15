@@ -6,7 +6,7 @@
 table.files td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.files td.wf a { text-decoration: none; }
 table.files td.notes .btn-sm { margin: 0; }
-table.files td.name { font-family: var(--pico-font-family, monospace); font-size: 0.9em; }
+table.files td.name { font-family: var(--pico-font-family-monospace); font-size: 0.9em; }
 table.files td, table.files th { padding: 0.3em 0.6em; }
 .root-header h3 { font-family: var(--pico-font-family-monospace); font-size: 1em; }
 .root-header small { color: var(--pico-muted-color); }
@@ -15,11 +15,12 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 {% endblock %}
 
 {% block content %}
-{# The DATA badge's page: the mounts' scan, then the waterfall renderer
-   that reads them.  The title tag is the strip's joint DATA tag; the
-   renderer's own tag heads its section. #}
+{# The DATA badge's page: the mounts' scan, then the jobs that read them
+   (the waterfall renderer, the acquisition notes).  The title tag is the
+   strip's joint DATA tag; each job's own tag heads its section. #}
+{% set data_jobs = [['waterfall', job], ['notes', notes.job]] %}
 <div class="page-head">
-    <h2>Data files {{ tag(data_tone(data, job), data_word(data, job)) }}</h2>
+    <h2>Data files {{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</h2>
     {% if configured %}
     <div class="page-actions">
         <button class="secondary outline btn-sm"
@@ -69,5 +70,27 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 </div>
 {% set lines_href = '/files' %}{% set lines_anchor = '#waterfall' %}
 {% include "_service_tail.html" %}
+</section>
+
+<section id="acqnotes">
+<div class="section-head">
+    <h3>Acquisition notes</h3>
+    {{ tag(job_tone(notes.job.health, notes.job.running), job_label(notes.job.health, notes.job.running)) }}
+</div>
+<p class="note">Writes each acquisition's <code>README.md</code> and
+   <code>acq_info.yaml</code> (the Notes button above) and the root's
+   <code>timeline.yaml</code>, every hour.  It measures only new or grown
+   acquisitions; a note is rewritten only when its text changes.</p>
+<div id="notes-status"
+     hx-get="/partials/service-status/acqnotes"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML">
+{% with name='acqnotes', job=notes.job, svc=notes.svc, timer=notes.timer, detail=notes.detail, now_ts=notes.now_ts %}
+{% include "_service_status.html" %}
+{% endwith %}
+</div>
+{% with name='acqnotes', job=notes.job, state_json=None, lines_anchor='#acqnotes', journal_id='notes-journal' %}
+{% include "_service_tail.html" %}
+{% endwith %}
 </section>
 {% endblock %}

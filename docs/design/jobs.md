@@ -9,8 +9,9 @@ a "job" is a standalone script that pushes through choco's localhost JSON API
 (auth is bypassed for localhost callers), keeps its state under the shared
 ``/var/lib/choco/<name>/`` namespace (``StateDirectory=choco/<name>``, so
 systemd owns creation and ownership and exports the path to the job as
-``$STATE_DIRECTORY``), and lives in its own ``jobs/<name>/`` directory (units,
-wrapper script, and code together), shipping as ``choco-<name>.service``
+``$STATE_DIRECTORY``), and lives in its own ``jobs/<name>/`` directory (units and code together;
+every unit's ``ExecStart`` is the one ``jobs/run-job.sh <name>/<script>.py
+<config>``, which finds the venv), shipping as ``choco-<name>.service``
 (oneshot) + ``choco-<name>.timer``, installed and enabled by the
 ``jobs/*/choco-*.{service,timer}`` glob in ``choco.sh install``.  Jobs share
 an **exit-code convention**, read back by ``job_status`` via systemd's
@@ -20,7 +21,16 @@ the job itself is fine but a dependency or input wasn't
 failing its quality gate); retries self-heal, badge yellow — and **1 =
 failed** — a config error or bug that needs a human; badge red.  Rule of thumb
 inside a job's ``main``: ``OSError`` (network, missing files) → 2,
-``ValueError``/``yaml.YAMLError`` (config, consistency) → 1.  Jobs
+``ValueError``/``yaml.YAMLError`` (config, consistency) → 1.  The plumbing
+every job needs lives once, in ``choco.jobclient`` (2026-10; until then each
+job carried its own copy, and the copies had drifted): ``Degraded`` and
+``failure`` (the exit-code mapping, one log line), ``setup_logging``,
+``single_run`` (the flock that keeps a hand run from racing the timer),
+``refuse_retired``, ``atomic_output`` / ``write_json_atomic`` (hidden unique
+temp file, mode 0644, optional fsync, rename), ``push_updatable`` and
+``write_run`` (``run.json``: ``time``, ``status``, ``exit_code`` and the
+job's facts, its why in ``reason``, ``error`` or ``degraded``, all three
+shown on the badge).  Jobs
 deliberately run as separate processes, not in-process greenlets: they do
 blocking C-extension work (astropy IERS downloads, h5py reads of files kotekan
 is writing) that would stall the gevent hub, and keeping them out of the choco
@@ -149,7 +159,7 @@ file's own axis), where ``dish_types`` is None.
 
 ## eigencal's run record (2026-10)
 
-eigencal writes ``run.json`` on **every** exit (bffs's convention): ``status``
+eigencal writes ``run.json`` on **every** exit, as bffs does: ``status``
 (``ok`` / ``skipped`` / ``degraded`` / ``failed``), ``exit_code``, a one-line
 ``reason`` ("transit not complete yet", "last transit too old", "transit in
 daytime", "transit already processed", "archived, not sent (no choco url)",
@@ -169,6 +179,36 @@ the same to systemd; the journal had the answer and needed sudo.
 ``web._eigencal_detail`` reads both files plus the ``gain_*.h5`` list, and
 ``services.FileArchive`` serves the newest archive to the shared plot panel
 (``/api/eigencal/gain-data``, the F-engine gains' protocol).
+
+## acqnotes: notes written into the data (2026-10)
+
+The per-acquisition READMEs began (2026-10-09) as ``tools/acqnotes``, scripts
+run by hand into a work directory and copied into ``subset/`` with sudo; by
+10-12 seven acquisitions had none.  The job keeps the same scripts, each now a
+``analyse(acq_dir)`` function, and adds only scheduling and write-out.  Three
+choices differ from the other jobs.  (1) It writes *into* the acquisition
+directories, not a sibling tree like the waterfall: ``/files`` finds the notes
+there, and they are meant to travel with the data.  Those directories are
+``nobody:nogroup`` 775 (kotekan's squashed root), so the unit runs as root,
+which NFS squashes to the same ``nobody``; ``User=choco`` cannot write there.
+It needs nothing from choco's API, so it does not ``Require`` choco.service.
+(2) Measurements are incremental: ``index.json`` records the file count and
+newest file each acquisition was measured at, so a run measures only new or
+grown acquisitions, at most ``max_acqs_per_run`` (newest first, about 5-10
+minutes of NFS reads each).  The newest acquisition is re-measured at most
+every ``remeasure_hours``, and ``verify`` reuses its per-file records.  (3)
+Rendering is cheap (seconds) and covers every acquisition, because a timeline
+edit or a new neighbour can change any note, but a file is written only when
+its text changed, ignoring the README's generation date.  A run with nothing
+new therefore writes nothing to the data mount.  ``run.json`` and ``index.json``
+(whose mtime is its "last measurement") feed the job's section of
+``/files``; like the waterfall it has no badge of its own and rides in DATA.
+
+The 10-10 acquisitions also showed why the scripts must not assume a file
+length: kotekan went from 20 to 40 ten-second bins per file, and the
+hard-coded 200 s halved every transit's coverage below the 0.6 gate, so no
+source was found, and every file boundary was reported as a gap.  The bin
+count now comes from the files' ``vis`` shape.
 
 ## EOP merge policy
 

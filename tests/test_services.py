@@ -58,6 +58,14 @@ class TestFpgaMonitorPollOnce:
         assert monitor.health == "down"
         assert "ConnectionError" in monitor.error
 
+    def test_bare_oserror_is_down_not_an_escape(self, monitor):
+        """gevent can fail a connect with the builtin ConnectionError,
+        which requests never wraps; it must read as down like any other."""
+        with patch("choco.services.requests.get",
+                   side_effect=ConnectionResetError("reset by peer")):
+            monitor.poll_once()
+        assert monitor.health == "down" and "ConnectionResetError" in monitor.error
+
     @responses.activate
     def test_status_ok_but_timing_missing(self, monitor):
         responses.get(f"{BASE}/status", json={"ok": True})
@@ -447,6 +455,12 @@ class TestPdbSetChannel:
         assert ok is False
         assert "ConnectionError" in message
 
+    def test_bare_oserror_is_reported_not_raised(self, pdb):
+        with patch("choco.services.requests.get",
+                   side_effect=ConnectionResetError("reset by peer")):
+            ok, message = pdb.set_channel(0, 0, "A", 0, True)
+        assert ok is False and "ConnectionResetError" in message
+
     def test_invalid_address(self, pdb):
         ok, message = pdb.set_channel(0, 0, "C", 0, True)
         assert ok is False
@@ -728,75 +742,33 @@ def _backdate(path: Path, age_s: float):
 class TestJobStatusViaSystemctl:
     """systemd's Result is the failure signal; mtime carries staleness."""
 
-    def test_success_and_fresh_state_ok(self, tmp_path):
+    @pytest.mark.parametrize("props,state_age_s,stale_after,expect", [
+        ({}, 0, EOP_STALE_AFTER_S,
+         {"health": "ok", "result": "success", "systemd": True}),
+        ({}, None, EOP_STALE_AFTER_S, {"health": "ok"}),       # no state file yet
+        ({"Result": "exit-code", "ExecMainStatus": "1"}, None, None,
+         {"health": "failed", "result": "exit-code"}),
+        # exit 2: the job is fine but a dependency or input was not
+        ({"Result": "exit-code", "ExecMainStatus": "2"}, None, None,
+         {"health": "degraded", "exit_status": "2"}),
+        # a degraded run explains the staleness: show the cause
+        ({"Result": "exit-code", "ExecMainStatus": "2"}, 2 * EOP_STALE_AFTER_S,
+         EOP_STALE_AFTER_S, {"health": "degraded"}),
+        ({}, 30 * 3600, EOP_STALE_AFTER_S, {"health": "stale"}),   # past 25 h
+        ({"ExecMainExitTimestamp": ""}, None, None, {"health": "never_run"}),
+        # bffs-style: the state file changes only with the flag list, so
+        # with no threshold an old mtime never degrades a succeeding job
+        ({}, 90 * 86400, None, {"health": "ok"}),
+    ])
+    def test_health(self, tmp_path, props, state_age_s, stale_after, expect):
         p = tmp_path / "state.json"
-        p.write_text("{}")
-        with _with_systemctl(), _patch_systemctl(_props()):
-            out = job_status(UNIT, state_file=p,
-                             stale_after_s=EOP_STALE_AFTER_S)
-        assert out["health"] == "ok"
-        assert out["result"] == "success"
-        assert out["systemd"] is True
-        assert out["state_mtime"] is not None
-
-    def test_success_without_state_file_ok(self, tmp_path):
-        with _with_systemctl(), _patch_systemctl(_props()):
-            out = job_status(UNIT, state_file=tmp_path / "missing.json",
-                             stale_after_s=EOP_STALE_AFTER_S)
-        assert out["health"] == "ok"
-
-    def test_failed_run(self, tmp_path):
-        with _with_systemctl(), \
-             _patch_systemctl(_props(Result="exit-code", ExecMainStatus="1")):
-            out = job_status(UNIT, state_file=tmp_path / "missing.json")
-        assert out["health"] == "failed"
-        assert out["result"] == "exit-code"
-
-    def test_exit_2_is_degraded_not_failed(self, tmp_path):
-        # Shared job convention: exit 2 = the job is fine but a
-        # dependency/input wasn't (fpga_master down, stale data).
-        with _with_systemctl(), \
-             _patch_systemctl(_props(Result="exit-code", ExecMainStatus="2")):
-            out = job_status(UNIT, state_file=tmp_path / "missing.json")
-        assert out["health"] == "degraded"
-        assert out["exit_status"] == "2"
-
-    def test_degraded_beats_stale(self, tmp_path):
-        # A degraded run explains the staleness — show the cause.
-        p = tmp_path / "state.json"
-        p.write_text("{}")
-        _backdate(p, 2 * EOP_STALE_AFTER_S)
-        with _with_systemctl(), \
-             _patch_systemctl(_props(Result="exit-code", ExecMainStatus="2")):
-            out = job_status(UNIT, state_file=p,
-                             stale_after_s=EOP_STALE_AFTER_S)
-        assert out["health"] == "degraded"
-
-    def test_stale_state_beats_systemd_success(self, tmp_path):
-        p = tmp_path / "state.json"
-        p.write_text("{}")
-        _backdate(p, 30 * 3600)  # past the 25h EOP threshold
-        with _with_systemctl(), _patch_systemctl(_props()):
-            out = job_status(UNIT, state_file=p,
-                             stale_after_s=EOP_STALE_AFTER_S)
-        assert out["health"] == "stale"
-
-    def test_never_run(self, tmp_path):
-        with _with_systemctl(), \
-             _patch_systemctl(_props(ExecMainExitTimestamp="")):
-            out = job_status(UNIT, state_file=tmp_path / "missing.json")
-        assert out["health"] == "never_run"
-
-    def test_no_stale_threshold_old_state_still_ok(self, tmp_path):
-        # bffs-style: state file only changes when the flag list changes,
-        # so an old mtime must not degrade a succeeding job.
-        p = tmp_path / "state.json"
-        p.write_text("{}")
-        _backdate(p, 90 * 86400)
-        with _with_systemctl(), _patch_systemctl(_props()):
-            out = job_status(UNIT, state_file=p)
-        assert out["health"] == "ok"
-
+        if state_age_s is not None:
+            p.write_text("{}")
+            _backdate(p, state_age_s)
+        with _with_systemctl(), _patch_systemctl(_props(**props)):
+            out = job_status(UNIT, state_file=p, stale_after_s=stale_after)
+        assert {k: out[k] for k in expect} == expect
+        assert (out["state_mtime"] is not None) == (state_age_s is not None)
 
     # systemd resets Result / ExecMainStatus and blanks ExecMainExitTimestamp
     # while a oneshot runs, so the in-flight snapshot alone reads like a
@@ -1300,7 +1272,6 @@ class TestFileArchive:
         monkeypatch.setattr(services, "_h5read", lambda *a: (calls.append(a), real(*a))[1])
         assert archive.refresh() and calls == []           # same file, same mtime: cached
         self._archive(path, n=5)
-        import os, time as _t
         os.utime(path, None)
         assert archive.refresh() and len(calls) == 1       # re-read on mtime change
         assert {d["name"]: d for d in archive.to_dict()["datasets"]}["gain"]["extents"] == [5, 2]

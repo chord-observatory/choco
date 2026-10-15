@@ -17,13 +17,12 @@ than tinting it.
 from __future__ import annotations
 
 import math
-import os
-import tempfile
 from datetime import datetime, timezone
 
 import numpy as np
 
 from choco.healpix import load_healpix, log_stretch, sample_equatorial
+from choco.jobclient import atomic_output
 
 import matplotlib
 matplotlib.use("Agg")
@@ -141,19 +140,8 @@ def write_png_atomic(path, rgb: np.ndarray, row_repeat: int = 1) -> None:
     """Write an RGB array as PNG via a temp file and rename, rows upscaled
     by *row_repeat* so a thin Dec strip stays visible at native size."""
     img = np.repeat(rgb, max(1, int(row_repeat)), axis=0)
-    d = os.path.dirname(str(path)) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".png", dir=d)
-    os.close(fd)
-    try:
+    with atomic_output(path, suffix=".png") as tmp:     # 0644: choco reads it
         plt.imsave(tmp, img[::-1], origin="upper")      # row 0 is the southernmost Dec: put north up
-        os.chmod(tmp, 0o644)                            # mkstemp makes it private; choco reads it
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def write_figure_atomic(path, rgb: np.ndarray, dec_deg: np.ndarray, title: str,
@@ -267,19 +255,9 @@ def write_context_atomic(path, map_path, strip_rgb: np.ndarray, dec_deg: np.ndar
 
 
 def _save_atomic(fig, path) -> None:
-    d = os.path.dirname(str(path)) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".png", dir=d)
-    os.close(fd)
     try:
-        fig.savefig(tmp)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+        with atomic_output(path, suffix=".png") as tmp:
+            fig.savefig(tmp)
     finally:
         plt.close(fig)
 

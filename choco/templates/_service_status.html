@@ -36,6 +36,17 @@
     <dt>Change queue</dt><dd>{{ detail.queued }} item{{ '' if detail.queued == 1 else 's' }} pending</dd>
     <dt>Configs</dt><dd><code>{{ detail.configs_dir }}</code></dd>
 </dl>
+{% elif name == 'acqnotes' and detail %}
+<dl>
+    <dt>Notes</dt>
+    <dd>{{ detail.n_with_notes }}{% if detail.acquisitions is not none %} of {{ detail.acquisitions }}{% endif %} acquisitions measured{% if detail.backlog %}, {{ detail.backlog }} waiting{% endif %}</dd>
+    {% if detail.run_time %}
+    <dt>Last run</dt>
+    <dd>{{ detail.run_time }} &middot;
+        {% if detail.measured %}measured {% for a in detail.measured %}<code>{{ a }}</code>{{ ", " if not loop.last }}{% endfor %}{% else %}nothing new to measure{% endif %}
+        &middot; {% if detail.written %}wrote {{ detail.written | length }} note{{ 's' if detail.written | length != 1 }}{% else %}no note changed{% endif %}</dd>
+    {% endif %}
+</dl>
 {% elif name == 'eop' and detail %}
 <dl class="service-facts">
     <dt>EOP table</dt>
@@ -243,7 +254,7 @@
     <dt>Data to</dt><dd>{{ detail.last_sample }}{% if detail.last_file_idx is not none %} &middot; file {{ detail.last_file_idx }}{% endif %}</dd>
     {% endif %}
     <dt>Samples mapped</dt><dd>{{ detail.n_samples_total or 0 }}</dd>
-    <dt>Pointing</dt><dd>dec {{ detail.pointing_dec_deg }}&deg;{% if detail.colour_bins %} &middot; {{ detail.colour_bins }} colour bins{% if detail.colour_range_mhz %}, {{ detail.colour_range_mhz[0] | int }}–{{ detail.colour_range_mhz[1] | int }} MHz red to violet{% endif %}{% endif %}{% if detail.stretch %} &middot; {{ detail.stretch }} stretch{% endif %}</dd>
+    <dt>Pointing</dt><dd>dec {{ detail.pointing_dec_deg }}&deg;{% set pc = detail.pointing_check %}{% if pc and pc.kotekan_dec_deg is not none %} <span class="{{ 'muted' if pc.agrees else 't-warn' }}">(kotekan: {{ pc.kotekan_dec_deg }}&deg;{% if not pc.agrees %}, disagrees{% endif %})</span>{% endif %}{% if detail.colour_bins %} &middot; {{ detail.colour_bins }} colour bins{% if detail.colour_range_mhz %}, {{ detail.colour_range_mhz[0] | int }}–{{ detail.colour_range_mhz[1] | int }} MHz red to violet{% endif %}{% endif %}{% if detail.stretch %} &middot; {{ detail.stretch }} stretch{% endif %}</dd>
     {% if detail.coverage %}
     <dt>Coverage</dt>
     <dd>{% for k, c in detail.coverage.items() %}{{ k }}: {{ c.bins_covered }} bins{{ ' &middot; ' | safe if not loop.last }}{% endfor %}</dd>

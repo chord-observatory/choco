@@ -3,7 +3,6 @@ synthetic accumulators (a two-row array's Dec ridge), the restore, the
 run's gating and exits, and the ingest's bookkeeping it depends on."""
 
 import json
-import os
 
 import numpy as np
 import pytest

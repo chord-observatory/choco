@@ -43,24 +43,32 @@
              ~ '\n\nclick for details' %}
 {{ tag(monitor_tone(pdb.health), monitor_label(pdb.health), label='PDB', href='/service/pdb', title=tip, quiet=true) }}
 {% endif %}
-{# DATA is the mounts and the waterfall renderer that reads them, one
-   tag (data_tone / data_word pick the worse half); the renderer has no
-   badge of its own (its registry entry names this page). #}
-{% set wf = services.waterfall %}
-{% if data or wf %}
-{% set tip = 'Data-file roots' ~ (' (' ~ data.n_roots ~ ')' if data else '') ~ ' and the waterfall renderer'
+{# DATA is the mounts and the jobs that read them (the waterfall
+   renderer, the acquisition notes), one tag (data_tone / data_word pick
+   the worst part); the jobs have no badges of their own (their registry
+   entries name this page). #}
+{% set wf = services.waterfall %}{% set notes = services.acqnotes %}
+{% if data or wf or notes %}
+{% macro job_tip(word, name, j) -%}
+{%- if j -%}
+{{ '\n' ~ word ~ ' (' ~ j.unit ~ '): ' ~ job_label(j.health, j.running)
+   ~ (" · " ~ svc[name].mtime_label ~ " " ~ since(j.state_mtime, now_ts) if j.state_mtime else "")
+   ~ ('\nresult: ' ~ j.result if j.result else '')
+   ~ ('\nwhy: ' ~ (j.reasons | join('\nwhy: ')) if j.reasons else '')
+   ~ ('\na run is in progress; showing the last completed one' if j.running else '')
+   ~ ('' if j.systemd else '\nsystemd not reachable') }}
+{%- endif -%}
+{%- endmacro %}
+{% set tip = 'Data-file roots' ~ (' (' ~ data.n_roots ~ ')' if data else '') ~ ', the waterfall renderer and the acquisition notes'
              ~ (('\nmounts: ' ~ data.health
                  ~ (' · reachable ' ~ data.n_ok ~ ' / ' ~ data.n_roots if data.n_roots else '')
                  ~ (' · last seen ' ~ since(data.last_seen, now) if data.last_seen else '')
                  ~ ('\nerror: ' ~ data.error if data.error else '')) if data else '')
-             ~ (('\nwaterfall (' ~ wf.unit ~ '): ' ~ job_label(wf.health, wf.running)
-                 ~ (' · ' ~ svc.waterfall.mtime_label ~ ' ' ~ since(wf.state_mtime, now) if wf.state_mtime else '')
-                 ~ ('\nresult: ' ~ wf.result if wf.result else '')
-                 ~ ('\nwhy: ' ~ (wf.reasons | join('\nwhy: ')) if wf.reasons else '')
-                 ~ ('\na run is in progress; showing the last completed one' if wf.running else '')
-                 ~ ('' if wf.systemd else '\nsystemd not reachable')) if wf else '')
+             ~ job_tip('waterfall', 'waterfall', wf)
+             ~ job_tip('notes', 'acqnotes', notes)
              ~ '\n\nclick for details' %}
-{{ tag(data_tone(data, wf), data_word(data, wf), label='DATA', href='/files', title=tip, quiet=true) }}
+{% set data_jobs = [['waterfall', wf], ['notes', notes]] %}
+{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs), label='DATA', href='/files', title=tip, quiet=true) }}
 {% endif %}
 {% for name, s in svc.items() if s.kind == 'job' and not s.page %}
 {{ job_tag(s.label, name, services[name], s.mtime_label) }}

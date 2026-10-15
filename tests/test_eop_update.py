@@ -189,12 +189,23 @@ class TestComputeLowerCutoffNs:
         assert c_morning == c_evening
 
 
-class TestChocoBaseUrl:
-    """The job reads choco's own config, so the scheme follows server.ssl."""
+class TestLoadConfig:
+    EXAMPLE = Path(__file__).parent.parent / "jobs" / "eop" / "eop.example.yaml"
 
-    def test_defaults_to_https_on_5000(self):
-        assert eop_update.choco_base_url({}) == "https://localhost:5000"
+    def test_the_example_loads(self):
+        cfg = eop_update.load_config(self.EXAMPLE)
+        assert cfg["choco_url"] == "https://localhost:5000"
+        assert cfg["fpga_master"]["port"] == 54321
+        assert (cfg["intervals_before"], cfg["intervals_after"]) == (2, 2)
 
-    def test_follows_server_ssl_and_port(self):
-        server = {"ssl": False, "port": 8080}
-        assert eop_update.choco_base_url(server) == "http://localhost:8080"
+    @pytest.mark.parametrize("text,match", [
+        ("eop: {intervals_before: 2}\nserver: {port: 5000}\n", "choco's config.yaml"),
+        ("state_file: /x\n", "retired"),
+        ("fpga_master: {host: h, port: 1}\nintervals_before: 2\n", "missing"),
+        ("intervals_before: 2\nintervals_after: 2\nendpoint: e\n", "fpga_master"),
+    ])
+    def test_refusals(self, tmp_path, text, match):
+        path = tmp_path / "eop.yaml"
+        path.write_text(text)
+        with pytest.raises(ValueError, match=match):
+            eop_update.load_config(path)

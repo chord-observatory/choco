@@ -1,7 +1,7 @@
 <div class="journal-head">
     <small>journalctl -u {{ unit }} -n {{ nlines }}</small>
     <button hx-get="/partials/service-logs/{{ name }}?lines={{ nlines }}"
-            hx-target="#journal" hx-swap="innerHTML"
+            hx-target="closest .journal-log" hx-swap="innerHTML"
             title="Refresh" class="secondary outline btn-sm" style="margin-left: auto;">&#x21bb;</button>
 </div>
 {% if lines is none %}

@@ -1,12 +1,13 @@
 """LDAP authentication for choco."""
 
+import hmac
 import ipaddress
 import logging
 import os
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
 
-from flask import Flask, Response, request, url_for
+from flask import Flask, Response, abort, current_app, request, session, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_user
 
 from .ldapbind import LdapError, LdapServer, escape_rdn, simple_bind
@@ -81,18 +82,33 @@ def parse_trusted_hosts(raw) -> list[tuple[ipaddress.IPv4Network | ipaddress.IPv
     return out
 
 
-def trusted_host_label(trusted: list, remote_addr: str | None) -> str | None:
-    """The label for *remote_addr* if it is inside a trusted network."""
-    if not trusted or not remote_addr:
-        return None
+def peer_address(remote_addr: str | None):
+    """*remote_addr* as an ``ipaddress`` object, or None if it is not one.
+
+    A dual-stack bind ("::") reports IPv4 peers as ::ffff:a.b.c.d; those
+    are judged by the IPv4 address, the one an operator writes down and
+    the one a local job connects from.
+    """
     try:
-        addr = ipaddress.ip_address(remote_addr)
+        addr = ipaddress.ip_address(remote_addr or "")
     except ValueError:
         return None
-    # A dual-stack bind ("::") reports IPv4 peers as ::ffff:a.b.c.d; judge
-    # those by the IPv4 address the operator actually wrote down.
     if addr.version == 6 and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped
+    return addr
+
+
+def is_loopback(remote_addr: str | None) -> bool:
+    """Whether the peer is this host (the jobs and the CLI)."""
+    addr = peer_address(remote_addr)
+    return addr is not None and addr.is_loopback
+
+
+def trusted_host_label(trusted: list, remote_addr: str | None) -> str | None:
+    """The label for *remote_addr* if it is inside a trusted network."""
+    addr = peer_address(remote_addr) if trusted else None
+    if addr is None:
+        return None
     for net, label in trusted:
         if addr.version == net.version and addr in net:
             return label
@@ -109,7 +125,7 @@ class LdapAuthenticator:
     service account involved.
     """
 
-    def __init__(self, host: str, port: int = 636, use_ssl: bool = True,
+    def __init__(self, host: str, port: int | None = None, use_ssl: bool = True,
                  base_dn: str = "", user_dn: str = "cn=users,cn=accounts",
                  login_attr: str = "uid", ca_cert: str | None = None,
                  timeout: float = 10.0):
@@ -121,7 +137,10 @@ class LdapAuthenticator:
         # under ldap3, so the cleartext warning keys off server.ssl.  A
         # missing ca_cert file must be caught by the caller (init_auth):
         # it would only surface at the first login, as a TLS failure.
-        self.server = LdapServer(host, port=int(port), use_ssl=use_ssl, ca_cert=ca_cert)
+        # No port is ldapbind's rule (389, or 636 under TLS); a default
+        # here would send an ldap:// bind in cleartext to the LDAPS port.
+        self.server = LdapServer(host, port=None if port is None else int(port),
+                                 use_ssl=use_ssl, ca_cert=ca_cert)
         self.timeout = float(timeout)
         self.login_attr = login_attr
         parts = [p for p in (user_dn.strip(), base_dn.strip()) if p]
@@ -151,15 +170,51 @@ class LdapAuthenticator:
         return dn
 
 
+def dev_auth_active() -> bool:
+    """True when running with ``server.dev_auth`` (loopback-only, no auth).
+
+    CSRF has to come off with login rather than stay on: the token lives
+    in the session cookie, so with auto-login re-established per request
+    a stale cookie would 403 every POST — toggles, edits, PDB writes —
+    with no login flow left to reset it.
+    """
+    return bool(current_app.config.get("DEV_AUTH"))
+
+
+def require_csrf_token(token: str) -> None:
+    """403 unless *token* is this session's CSRF token (constant-time)."""
+    if dev_auth_active():
+        return
+    expected = session.get("_csrf_token") or ""
+    # bytes: compare_digest refuses a non-ASCII str, which a forged form can send
+    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
+        abort(403)
+
+
+#: Methods that change state.
+_WRITES = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
 def localhost_or_login_required(f):
-    """Like @login_required, but skip auth for requests from localhost."""
+    """Like @login_required, but loopback callers (the jobs and the CLI)
+    need no login.
+
+    A state-changing request from anywhere else is a browser session, and
+    needs what every other browser write needs: the session's CSRF token
+    (``X-CSRF-Token``).  It must also be JSON, which no cross-site HTML
+    form can send, so an empty-bodied forgery cannot reach a route that
+    acts on no body at all (``/api/configs/pull``).
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
-        if request.remote_addr in ("127.0.0.1", "::1"):
+        if is_loopback(request.remote_addr):
             return f(*args, **kwargs)
         if not current_user.is_authenticated:
-            from flask import current_app
             return current_app.login_manager.unauthorized()
+        if request.method in _WRITES:
+            require_csrf_token(request.headers.get("X-CSRF-Token", ""))
+            if not request.is_json:
+                abort(415)
         return f(*args, **kwargs)
     return decorated
 
@@ -291,7 +346,7 @@ def init_auth(app: Flask, config: dict):
     app.config["LDAP_ENABLED"] = True
     authenticator = LdapAuthenticator(
         host=ldap_host,
-        port=int(ldap.get("port", 636)),
+        port=ldap.get("port"),
         use_ssl=use_ssl,
         base_dn=ldap.get("base_dn", ""),
         user_dn=ldap.get("user_dn", "cn=users,cn=accounts"),

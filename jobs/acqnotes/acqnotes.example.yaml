@@ -1,0 +1,25 @@
+# acqnotes — per-acquisition READMEs for the N² subset data.
+#
+# Copy to /etc/choco/acqnotes.yaml and edit.  Every key is optional; the
+# values below are the defaults.  The curated history the notes quote is
+# timeline.yaml beside the job (installed to /opt/choco/jobs/acqnotes/):
+# edit it in the repo and reinstall, and the next run rewrites every note
+# it changes.
+
+# The acquisitions' root.  The job writes README.md and acq_info.yaml into
+# each acq_* directory and copies timeline.yaml into the root, where choco's
+# /files page shows them behind the Info and Timeline buttons.
+root: /mnt/cs00/data/kotekan_vis_files/subset
+
+# Acquisitions measured per run, newest first.  Each costs ~5-10 min of NFS
+# reads; the rest wait for the next hourly run.
+max_acqs_per_run: 3
+
+# The newest acquisition (kotekan may still be writing it) is re-measured
+# at most this often; a finished one is re-measured as soon as its files
+# change.
+remeasure_hours: 3
+
+# The measurements (meta/, transit/, pol/, zerovis/, verify/), index.json,
+# run.json and the run lock live in /var/lib/choco/acqnotes, the job's state
+# directory.  Not a setting; --state-dir redirects a hand run.

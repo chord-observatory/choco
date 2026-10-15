@@ -1,0 +1,29 @@
+[Unit]
+Description=choco job: measure N² subset acquisitions and write their READMEs
+After=choco.service
+
+[Service]
+Type=oneshot
+# systemd owns /var/lib/choco/acqnotes and exports it as $STATE_DIRECTORY;
+# the per-acquisition measurements, index.json, run.json and the run lock
+# live there.
+StateDirectory=choco/acqnotes
+# Runs as root, unlike the waterfall: the notes go *into* the acquisition
+# directories, which belong to nobody:nogroup (kotekan's root, squashed by
+# NFS) with mode 775.  Root is squashed to the same nobody here, so the
+# READMEs are owned like the data beside them; User=choco cannot write
+# there.  The job needs no choco API, so it does not Require choco.service.
+ExecStart=/opt/choco/jobs/run-job.sh acqnotes/acqnotes.py /etc/choco/acqnotes.yaml
+# No Restart: the next timer tick retries.  Exit 2 = degraded (the mount
+# or a file was unreadable); 1 = config error or a measurement bug.
+# The reads share the NFS server kotekan writes to: ~5-10 min of reads per
+# new acquisition, capped by max_acqs_per_run (a backfill of every
+# acquisition takes a few hours of runs).
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=100%
+CPUWeight=20
+# The largest read is one 32-channel block of every product across a
+# transit (polswap): a few hundred MB.
+MemoryHigh=2G
+MemoryMax=3G

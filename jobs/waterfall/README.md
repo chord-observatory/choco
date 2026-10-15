@@ -9,7 +9,7 @@ kotekan writes: each new source file appends its time samples as
 scanlines. Nothing is recomputed and no written byte is rewritten.
 
 ```sh
-./waterfall.sh /etc/choco/waterfall.yaml          # one pass
+../run-job.sh waterfall/waterfall.py /etc/choco/waterfall.yaml   # one pass
 python waterfall.py -c waterfall.yaml -n          # what is pending
 python waterfall.py -c waterfall.yaml --acq acq_20260723_232332_046022478
 python waterfall.py -c waterfall.yaml --max-files 0 --level 4   # backfill

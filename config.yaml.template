@@ -89,9 +89,7 @@ pdb:
 
 # Earth Orientation Parameter service settings.
 eop:
-  intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)
-  intervals_after: 2                # Days of future entries (later stored entries are kept, never overwritten)
-  endpoint: earth_rotation_data     # Kotekan updatable config endpoint name
+  # The job's own settings live in /etc/choco/eop.yaml (jobs/eop/eop.example.yaml).
   service_unit: choco-eop-broadcast.service  # systemd unit to query for last-run status
 
 # bffs feed-flagging job (BFFS badge in the web UI header).  Its files --
@@ -129,6 +127,13 @@ skymap:
 # the /service/mapmaker page.
 mapmaker:
   service_unit: choco-mapmaker.service        # systemd unit to query for the MAP badge
+
+# Per-acquisition READMEs for the N² subset data, written by the acqnotes job
+# (jobs/acqnotes, hourly; configured in /etc/choco/acqnotes.yaml) into the
+# acquisition directories, where /files shows them.  choco reads its index.json
+# and run.json from <state_dir>/acqnotes/ for its section of /files (in the DATA tag).
+acqnotes:
+  service_unit: choco-acqnotes.service        # systemd unit to query for the DATA tag's notes part
 
 # Data-file roots shown on /files.  Each root is scanned one level deep:
 # its immediate subdirectories are listed with the number, total size and

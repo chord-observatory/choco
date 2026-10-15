@@ -13,7 +13,7 @@ StateDirectory=choco/mapmaker
 # and nothing it writes needs root.
 User=choco
 Group=choco
-ExecStart=/opt/choco/jobs/mapmaker/mapmaker.sh /etc/choco/mapmaker.yaml
+ExecStart=/opt/choco/jobs/run-job.sh mapmaker/mapmaker.py /etc/choco/mapmaker.yaml
 # No Restart: the script self-gates and caps its own work (max_files_per_run),
 # so a run that fails -- mount unavailable, a file unreadable -- is simply
 # retried by the next timer tick.  Exit 2 = degraded (a dependency missing,

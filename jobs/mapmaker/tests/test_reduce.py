@@ -5,7 +5,7 @@ import pytest
 
 import imaging as I
 import reduce as R
-from conftest import SRC_DEC, SRC_RA, file_name, write_vis_file
+from conftest import SRC_RA, file_name, write_vis_file
 
 
 @pytest.fixture
@@ -83,7 +83,7 @@ def test_reduced_shapes_and_masks(tmp_path):
 def test_sub_band_average_of_a_calibrated_source_is_coherent(tmp_path):
     """With the true gains divided out, averaging 16 channels keeps the
     source amplitude; without them the delays decorrelate it."""
-    from conftest import LAT, LON, element_gains, element_table
+    from conftest import LON, element_gains, element_table
     t0 = 1_791_000_000.0
     # a file straddling the transit, source at the pointing
     era0 = (SRC_RA - LON - 0.02 * I.ERA_DEG_PER_DAY / 24) % 360

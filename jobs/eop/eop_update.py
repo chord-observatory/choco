@@ -15,8 +15,8 @@ point, so currently-used EOP values should never change.
 The state is kept in a single file so all nodes should receive
 an identical table regardless of individual node state.
 
-Reads fpga_master and eop settings from choco's config.yaml; the node groups
-come from choco itself (``GET /api/nodes``).
+Reads its own config (/etc/choco/eop.yaml, seeded from eop.example.yaml);
+the node groups come from choco itself (``GET /api/nodes``).
 """
 import json
 import logging
@@ -29,7 +29,9 @@ from astropy.time import Time
 import astropy.utils.iers
 import astropy.utils.data
 
-from choco.jobclient import get_json, job_state_dir, post_json, write_json_atomic
+from choco.jobclient import (STATE_NAME, Degraded, failure, get_json, job_state_dir,
+                             push_updatable, refuse_retired, setup_logging,
+                             write_json_atomic)
 
 sys.path.insert(0, str(Path(__file__).parent))
 import eop_utils  # noqa: E402
@@ -40,13 +42,8 @@ astropy.utils.iers.conf.auto_max_age = 10.0
 log = logging.getLogger("eop")
 
 INTERVAL_LENGTH_DAYS = 1.0
-EOP_REQUIRED_KEYS = [
-    "intervals_before", "intervals_after", "endpoint",
-]
-
-
-class Degraded(Exception):
-    """A dependency was unavailable (fpga_master, choco).  Exit 2."""
+DEFAULTS = {"choco_url": "https://localhost:5000"}
+REQUIRED_KEYS = ("intervals_before", "intervals_after", "endpoint")
 
 
 def build_fresh_table(frame0_ns: int, n_before: int, n_after: int) -> list[dict]:
@@ -149,14 +146,28 @@ def merge_tables(stored: list[dict], fresh: list[dict],
     return merged
 
 
-def choco_base_url(server: dict) -> str:
-    """choco's loopback URL, from the ``server`` block of its config.
-
-    The scheme follows ``server.ssl`` so a plain-HTTP instance
-    (``./choco.sh develop``) is reachable too; jobclient handles both.
-    """
-    scheme = "https" if server.get("ssl", True) else "http"
-    return f"{scheme}://localhost:{int(server.get('port', 5000))}"
+def load_config(path) -> dict:
+    """The job's YAML (``eop.example.yaml`` documents it), checked."""
+    with open(path) as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: top level must be a mapping")
+    if "eop" in raw or "server" in raw:
+        # the job read choco's own config.yaml until 2026-10
+        raise ValueError(f"{path} is choco's config.yaml; eop reads its own "
+                         f"/etc/choco/eop.yaml (see jobs/eop/eop.example.yaml)")
+    refuse_retired(raw, ("state_file",), "eop", "the table lives as state.json")
+    cfg = {**DEFAULTS, **raw}
+    missing = [k for k in REQUIRED_KEYS if k not in cfg]
+    if missing:
+        raise ValueError(f"{path}: missing {', '.join(missing)}")
+    fpga = cfg.get("fpga_master") or {}
+    if fpga.get("host") is None or fpga.get("port") is None:
+        raise ValueError(f"{path}: fpga_master.host / fpga_master.port not set")
+    cfg["fpga_master"] = {"host": str(fpga["host"]), "port": int(fpga["port"])}
+    cfg["intervals_before"] = int(cfg["intervals_before"])
+    cfg["intervals_after"] = int(cfg["intervals_after"])
+    return cfg
 
 
 def wait_for_choco(choco_url: str, timeout: int = 30) -> None:
@@ -175,15 +186,11 @@ def wait_for_choco(choco_url: str, timeout: int = 30) -> None:
 def push_to_choco(choco_url: str, groups: list[str],
                   eop_table: list[dict], endpoint: str) -> bool:
     """POST the EOP table to choco. Returns True if all groups succeeded."""
-    payload = {
-        "action": "updatable_config",
-        "endpoint": endpoint,
-        "values": {"earth_orientation_parameter_table": eop_table},
-    }
+    values = {"earth_orientation_parameter_table": eop_table}
     failures = 0
     for group in groups:
         try:
-            post_json(choco_url, f"/update/{group}", payload, timeout=30)
+            push_updatable(choco_url, group, endpoint, values, timeout=30)
             log.info("POST /update/%s OK", group)
         except OSError as e:
             log.error("POST /update/%s FAILED: %s", group, e)
@@ -195,49 +202,36 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="eop_update",
                                  description="merge and broadcast the EOP table")
-    ap.add_argument("config", nargs="?", default=None,
-                    help="choco's config.yaml (default: /etc/choco/config.yaml, ./config.yaml)")
+    ap.add_argument("-c", "--config", required=True, help="path to YAML config")
     ap.add_argument("--state-dir", default=None,
                     help="where state.json lives (default: systemd's "
                          "$STATE_DIRECTORY, else /var/lib/choco/eop)")
     args = ap.parse_args(argv)
-    # Find config
-    config_path = args.config
-    if config_path is None:
-        for candidate in ["/etc/choco/config.yaml", "config.yaml"]:
-            if Path(candidate).exists():
-                config_path = candidate
-                break
-    if config_path is None:
-        raise ValueError("no config.yaml found")
+    # every step of a run belongs in the journal: it runs once a day
+    setup_logging(1)
+    # Exit codes: jobclient's convention.  fpga_master or choco
+    # unreachable, the IERS download down, a group not accepting: 2, and
+    # the unit's Restart / next timer tick self-heals.  A config or
+    # state-file problem (JSONDecodeError is a ValueError): 1.  Anything
+    # else is a bug and keeps its traceback.
+    try:
+        return run(args.config, args.state_dir)
+    except (OSError, ValueError, yaml.YAMLError, Degraded) as e:
+        return failure(e, log)[0]
 
-    with open(config_path) as f:
-        config = yaml.safe_load(f) or {}
+
+def run(config_path, state_dir=None) -> int:
+    """One merge-and-broadcast, raising on any trouble (see :func:`main`)."""
+    cfg = load_config(config_path)
     log.info("Config: %s", config_path)
-
-    # EOP settings (all required)
-    eop_cfg = config.get("eop") or {}
-    missing = [k for k in EOP_REQUIRED_KEYS if k not in eop_cfg]
-    if missing:
-        raise ValueError(f"missing eop config keys: {', '.join(missing)}")
-    fpga_cfg = config.get("fpga_master") or {}
-    fpga_host, fpga_port = fpga_cfg.get("host"), fpga_cfg.get("port")
-    if fpga_host is None or fpga_port is None:
-        raise ValueError("fpga_master.host / fpga_master.port not set in config")
-    fpga_port = int(fpga_port)
-    n_before = int(eop_cfg["intervals_before"])
-    n_after = int(eop_cfg["intervals_after"])
-    endpoint = eop_cfg["endpoint"]
+    fpga_host, fpga_port = cfg["fpga_master"]["host"], cfg["fpga_master"]["port"]
+    n_before, n_after = cfg["intervals_before"], cfg["intervals_after"]
+    endpoint = cfg["endpoint"]
 
     # The table is append-only across runs, so where it lives is not a
     # detail: it is the job's state directory, fixed by the unit and read
-    # by choco from the same place.  A configured path only ever drifted.
-    if "state_file" in eop_cfg:
-        raise ValueError(
-            "eop.state_file is retired: remove it; the table lives at "
-            f"{job_state_dir('eop') / 'state.json'} (systemd's "
-            "StateDirectory=choco/eop, or --state-dir)")
-    state_file = job_state_dir("eop", args.state_dir) / "state.json"
+    # by choco from the same place (load_config refuses a state_file key).
+    state_file = job_state_dir("eop", state_dir) / STATE_NAME
 
     # Frame0
     log.info("Reading frame0 from fpga_master at %s:%d ...", fpga_host, fpga_port)
@@ -268,7 +262,7 @@ def main(argv=None) -> int:
         final_table = fresh_table
 
     # Push to choco: every group it knows.
-    choco_url = choco_base_url(config.get("server") or {})
+    choco_url = cfg["choco_url"]
     wait_for_choco(choco_url)
     groups = list((get_json(choco_url, "/api/nodes").get("groups") or {}).keys())
     if not groups:
@@ -286,23 +280,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    # Exit codes (shared job convention, read by choco's badge):
-    #   0 ok; 2 degraded — the job is fine but a dependency wasn't
-    #   (fpga_master unreachable, IERS download down, choco/groups not
-    #   accepting; the unit's Restart / next timer tick self-heals);
-    #   1 failed — config error or bug, needs a human.
-    try:
-        sys.exit(main())
-    except (Degraded, OSError) as e:
-        # Environmental: IERS download unreachable, network errors
-        # (urllib errors are OSError).
-        log.error("%s: %s", type(e).__name__, e)
-        sys.exit(2)
-    except (ValueError, yaml.YAMLError) as e:
-        # Config or state-file problems (JSONDecodeError is a
-        # ValueError) — needs a human.  Anything else is a bug and
-        # keeps its traceback.
-        log.error("%s: %s", type(e).__name__, e)
-        sys.exit(1)
+    sys.exit(main())

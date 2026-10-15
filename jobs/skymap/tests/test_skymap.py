@@ -1,7 +1,6 @@
 """Tests for the skymap job: pointing helpers, config, and one render."""
 
-import json
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -33,9 +32,9 @@ class TestFindKey:
 
 
 class TestPointingMath:
-    def test_dec_from_coelev_matches_tau_a(self):
-        # The recv config's -27.3 with its own "Approx Tau A" comment.
-        assert skymap.dec_from_coelev(-27.3) == pytest.approx(22.02, abs=0.01)
+    def test_dec_from_coelev_is_latitude_plus_coelevation(self):
+        # kotekan's corrected -8.6 (2026-10) points at Cyg A's +40.7.
+        assert skymap.dec_from_coelev(-8.6) == pytest.approx(40.72, abs=0.01)
 
     def test_parse_dec_deg(self):
         assert skymap._parse_dec_deg('+22d00m52.2s') == pytest.approx(22.0145)

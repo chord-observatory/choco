@@ -10,7 +10,7 @@ Type=oneshot
 StateDirectory=choco/mapmaker
 User=choco
 Group=choco
-ExecStart=/opt/choco/jobs/mapmaker/clean.sh /etc/choco/mapmaker.yaml
+ExecStart=/opt/choco/jobs/run-job.sh mapmaker/clean.py /etc/choco/mapmaker.yaml
 # No Restart: the script self-gates (nothing to do until the fold-in has
 # added data) and a failed run is simply retried by the next timer tick.
 # Exit 2 = degraded (no accumulators or geometry yet); 1 = config error / bug.

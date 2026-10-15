@@ -34,7 +34,7 @@ install steps, dependencies or run commands.
 ./choco.sh install   # venv, hash-locked deps, config seeding, systemd units (root)
 ./choco.sh run       # run against ./config.yaml (root, for the iptables redirects)
 ./choco.sh develop   # loopback-only dev instance: no auth, no TLS, dev/ configs
-./choco.sh test      # main suite + the five job suites (args forwarded to pytest)
+./choco.sh test      # main suite + the job suites (args forwarded to pytest)
 ./choco.sh lock      # regenerate requirements.lock after editing pyproject.toml
 ./choco.sh audit     # check pins against PyPI and OSV (read-only)
 ```
@@ -60,21 +60,22 @@ choco/
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
 ├── dishlabels.py   # dish_inputs table + per-element label layout (stdlib; shared with the jobs)
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
-├── jobclient.py    # loopback JSON client + atomic state write (stdlib; shared with the jobs and CLI)
+├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
 ├── auth.py         # Flask-Login + direct LDAP bind, localhost bypass decorator
 ├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
-jobs/               # One dir per job: systemd units, wrapper .sh, code, tests
+jobs/               # One dir per job: systemd units, code, tests; run-job.sh runs any of them
 ├── choco.service   # Main service (Type=notify)
 ├── eop/            # EOP table broadcast (on choco start + daily); eop_utils.py is vendored
 ├── bffs/           # Bad-feed flagging (30 s timer); sources/ = one module per signal
 ├── eigencal/       # Point-source gain calibration (10 min timer, self-gating)
 ├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
 ├── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
-└── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
+├── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
+└── acqnotes/       # Per-acquisition README + acq_info.yaml written into subset/ (hourly); timeline.yaml is curated history
 configs/            # nodes.yaml, vars.yaml, pdb_map.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
-tests/              # pytest; test_<module>.py per module, test_web.py for routes
+tests/              # pytest; test_<module>.py per module, test_web_<area>.py for routes, test_route_auth.py sweeps every route's exposure
 docs/design/        # Design rationale, one file per subsystem (see the end of this file)
 ```
 
@@ -160,12 +161,17 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 **Auth and exposure** ([auth.md](docs/design/auth.md), [ui.md](docs/design/ui.md))
 - Every route requires login except `/metrics`, `/skymap.png` and
   `/skymap-night.png`, which are cross-host and must stay aggregate-only: no
-  node names, hosts or configs.
+  node names, hosts or configs.  `tests/test_route_auth.py` sweeps the URL
+  map for this, the loopback bypass and CSRF; a new exception goes in its
+  lists, deliberately.
 - `/update/*`, `/oneshot/*` and `/api/*` (including the config library's
   `/api/configs`) bypass login for loopback callers
-  (`localhost_or_login_required`); the jobs and the CLI use only these.  FPGA
-  and PDB controls stay login + CSRF because their audit line names a person
-  or a trusted-host label.
+  (`localhost_or_login_required`); the jobs and the CLI use only these.  From
+  any other address a write there needs a login, the CSRF token
+  (`X-CSRF-Token`) and a JSON body; only this host scripts choco.
+  `/api/fpga/gain-data` is login-only even from loopback.  FPGA and PDB
+  controls stay login + CSRF because their audit line names a person or a
+  trusted-host label.
 - `server.trusted_hosts` (default empty) logs a listed peer in as a synthetic
   `User(trusted=True)` named by its label.  CSRF stays on; the user never
   enters `_users`, so its cookie is worthless from any other address; a real
@@ -195,7 +201,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   actions with Pico's filled primary kept for the page's one main action,
   `.notice` for static warnings (`.flash` is transient only).  Controls are
   not status: switches are tinted only when on, group buttons colour their
-  glyph text, never a fill.
+  glyph text on the tone's soft tint, never a solid fill.
 - Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
   `static/fonts/*` in pyproject's package-data); no page loads anything from
   an outside host.  600 is the site's bold, never 700.  The base size is
@@ -229,16 +235,20 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `output`, `image_file`) rather than read them.
 - Exit codes: **0** ok or nothing to do, **2** degraded (a dependency or
   input was unavailable; retries self-heal; badge yellow), **1** failed
-  (config error or bug; badge red).  Inside `main`: `OSError` → 2,
-  `ValueError`/`yaml.YAMLError` → 1.
+  (config error or bug; badge red).  Inside `main`: `OSError` and
+  `Degraded` → 2, `ValueError`/`yaml.YAMLError` → 1 (`jobclient.failure`).
 - A new badge costs one entry in `web._service_registry()` plus, optionally,
   a summary branch in `web._service_detail`.  A job shown on another page
-  sets the entry's `page` instead (the waterfall on `/files`, folded into
-  the DATA tag): no badge or landing row of its own and `/service/<name>`
+  sets the entry's `page` instead (the waterfall and acqnotes on `/files`,
+  folded into the DATA tag): no badge or landing row of its own and `/service/<name>`
   redirects, but `/api/status` and `/metrics` still report it by name.
 - Jobs reach choco through `choco.jobclient` and derive feed labels through
   `choco.dishlabels`; both are stdlib-only so the jobs' venv is the only
-  requirement.  Do not copy either into a job.
+  requirement.  Do not copy either into a job.  The run plumbing is
+  jobclient's too (`Degraded`, `failure`, `setup_logging`, `single_run`,
+  `refuse_retired`, `atomic_output`, `write_run`, `push_updatable`): a job
+  uses it rather than writing its own, and every unit runs its script
+  through `jobs/run-job.sh`.
 - A bffs source that cannot measure a feed leaves it good and reports
   `degraded`; "no data" is never turned into "bad" (power-outlier abstains
   below `min_coverage`, rfi skips down nodes and stale gauges).  Absence from
@@ -289,23 +299,28 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   hour angle is the file's `bin_ERA_deg` + `itrs_lon_deg` − CIRS RA; a
   baseline is `feed_positions_m[input_b] − feed_positions_m[input_a]`
   (x east, y north); a source at ENU `u` phases as `−k (b_x u_E + b_y u_N)`.
-  N2Accumulate's fringestop (to the pointing at the bin's ERA) is already
-  the frozen-sky-per-dump model; never undo it.  Gains are applied per
+  N2Accumulate's fringestop (a config flag; the 40 ms frames of a 10 s bin
+  to the pointing at the bin's ERA, never across bins) is already the
+  frozen-sky-per-dump model; never undo it.  Gains are applied per
   channel before any frequency or redundancy average; colour bins average
   maps, never visibilities, and one stretch curve serves every bin.  The
   exposure is `Σ W B⁴` along the pointing row (not `Σ W B²`, which
   flattens the two-row Dec grating lobes, nor the pixel's own `Σ W B⁴`,
   which amplifies them), and the pointing declination is a config value
-  (kotekan's `dish_coelev_deg` has been wrong).  The deconvolution's dirty
+  (kotekan's `dish_coelev_deg` was wrong until 2026-10), checked against
+  the files' `dish_coelev_deg` every run and warned on disagreement.  The deconvolution's dirty
   beam is computed from the same kernels and the per-baseline weights the
   scatter accumulated (`sky_blw`), never fitted, so the beam keys are part
   of the grid signature and the daily map is not deconvolved.
 
 **Retired config keys are refused, not read.** `load_config` raises on
-`sync.num_workers`, a `psu:` block, `eop.fpga_master_*` and every per-job
-state path (`*.state_file`, `bffs.run_file`/`manual_file`,
+`sync.num_workers`, a `psu:` block, `eop.fpga_master_*`, the eop job's own
+settings (now `/etc/choco/eop.yaml`), the search-bind LDAP keys and every
+per-job state path (`*.state_file`, `bffs.run_file`/`manual_file`,
 `skymap.image_file`/`night_image_file`), naming the replacement.  Do not add
 a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
+`choco.sh install` loads the config under the new code before restarting
+anything, so a retired key stops the install, not the service.
 
 ## Design docs
 

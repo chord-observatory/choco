@@ -542,7 +542,13 @@ class Orchestrator:
         for path in changed + deleted:
             action = "deleted" if path in deleted else "changed"
             logger.info(f"Config file {action}: {path}")
-            self.on_file_changed(str(path))
+            # One bad file must not end the scan loop (it runs in run()'s
+            # greenlet with nothing above it), nor skip the other paths:
+            # the mtimes are already baselined, so a fix re-triggers it.
+            try:
+                self.on_file_changed(str(path))
+            except Exception:
+                logger.exception(f"Handling config file {path} failed")
 
     def file_written(self, path: Path):
         """Dispatch a config-file write choco made itself.

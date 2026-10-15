@@ -13,8 +13,8 @@ The channel->input map comes from choco's master PDB table
 choco's own PDB page agree on which breaker feeds which feed; choco
 cross-checks that table against kotekan's ``dish_inputs`` and reports the
 verdict in the same payload, which is logged here. Setting ``map:`` in the
-source config overrides it with a local CSV, and the bundled placeholder is
-the last resort (dry runs, choco down).
+source config overrides it with a local CSV; with neither (choco down) the
+source abstains, every feed unjudged and the run degraded.
 
 PROVISIONAL: the wiring itself is assumed until the hardware database
 (padloper) provides the real table. The board/chip byte framing in
@@ -31,7 +31,6 @@ import argparse
 import json
 import logging
 import urllib.request
-from pathlib import Path
 
 from .common import choco_pdb_map, load_map, project, report
 
@@ -39,7 +38,6 @@ log = logging.getLogger("bffs.power")
 
 # A power channel is addressed by (spi_bus, board, chip, channel); see power_db_v3.
 Channel = tuple[int, int, str, int]
-_DEFAULT_MAP = str(Path(__file__).with_name("power_map.csv"))
 
 
 def _key(row: dict) -> Channel:
@@ -51,8 +49,8 @@ def resolve_map(src: dict) -> dict[Channel, str]:
 
     An explicit ``map:`` is an operator override and wins.  Otherwise
     choco's master table is used when choco is reachable (the normal
-    path), falling back to the bundled placeholder CSV so dry runs and a
-    choco outage still produce a mask rather than failing the source.
+    path).  Without either the map is empty and the source abstains:
+    there is no wiring to judge a feed by.
     """
     return resolve_map_info(src)[0]
 
@@ -61,7 +59,7 @@ def resolve_map_info(src: dict) -> tuple[dict[Channel, str], dict]:
     """:func:`resolve_map` plus where the map came from, for the report.
 
     The info dict carries ``map_source`` (``config CSV``, ``choco master
-    table`` or ``bundled placeholder``), ``map_path`` for the CSVs, and
+    table`` or ``none``, with ``map_missing_reason``), ``map_path`` for a CSV, and
     for choco's table its ``check`` verdict against kotekan's
     ``dish_inputs`` and the number of unparseable rows.
     """
@@ -69,14 +67,12 @@ def resolve_map_info(src: dict) -> tuple[dict[Channel, str], dict]:
         return load_map(src["map"], _key), {
             "map_source": "config CSV", "map_path": str(src["map"])}
     choco_url = src.get("choco_url")
-    fallback_reason = None
+    missing = "no map: configured and no choco_url"
     if choco_url:
         try:
             payload = choco_pdb_map(choco_url)
         except (OSError, ValueError) as e:
-            log.warning("no PDB map from choco (%s); using %s",
-                        e, _DEFAULT_MAP)
-            fallback_reason = f"no PDB map from choco: {e}"
+            missing = f"no PDB map from choco: {e}"
         else:
             check = payload.get("check") or {}
             errors = payload.get("errors") or []
@@ -98,10 +94,7 @@ def resolve_map_info(src: dict) -> tuple[dict[Channel, str], dict]:
             else:
                 info["map_check"] = f"not cross-checked ({check.get('reason')})"
             return table, info
-    info = {"map_source": "bundled placeholder", "map_path": _DEFAULT_MAP}
-    if fallback_reason:
-        info["map_fallback_reason"] = fallback_reason
-    return load_map(_DEFAULT_MAP, _key), info
+    return {}, {"map_source": "none", "map_missing_reason": missing}
 
 
 def table_trusted(info: dict) -> tuple[bool, str | None]:
@@ -112,8 +105,7 @@ def table_trusted(info: dict) -> tuple[bool, str | None]:
     cross-check it against kotekan's ``dish_inputs`` and found no row
     naming a dish input kotekan does not know — a stale or renamed label
     there would make real feeds look unmapped, and flagging *those*
-    absent is the one mistake this rule must not make.  The bundled
-    placeholder never qualifies.
+    absent is the one mistake this rule must not make.
     """
     source = info.get("map_source")
     if source == "config CSV":
@@ -126,7 +118,7 @@ def table_trusted(info: dict) -> tuple[bool, str | None]:
             return False, (f"the table names {unknown} dish input(s) kotekan does "
                            f"not know (stale rows?)")
         return True, None
-    return False, "the map is the bundled placeholder"
+    return False, "there is no PDB map"
 
 
 def _log_check(check: dict, errors: list) -> None:
@@ -202,6 +194,12 @@ def mask(src: dict, labels, kotekan_file: str):
     the element grid's hover text.
     """
     power_map, info = resolve_map_info(src)
+    if info["map_source"] == "none":
+        # nothing says which channel feeds which element: judge nothing
+        why = info["map_missing_reason"]
+        log.warning("power: %s; every feed left unjudged", why)
+        return project({}, labels), report(
+            "degraded", f"{why}; every feed left unjudged", n_measured=0, **info)
     state = read_power_state(src["url"])
     input_good = {inp: state.get(ch, False) for ch, inp in power_map.items()}
     axis = [str(lbl) for lbl in labels]
@@ -247,15 +245,16 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="sources.power",
                                 description="report CHORD feed power by correlator input (read-only)")
     p.add_argument("-m", "--map", default=None,
-                   help="channel->input map CSV (default: choco's master table, "
-                        "or the bundled placeholder if --choco is unset)")
+                   help="channel->input map CSV (default: choco's master table)")
     p.add_argument("-c", "--choco", default=None,
                    help="choco base URL to read /api/pdb/map from")
     p.add_argument("-u", "--url", default="http://10.222.0.30:5000", help="power_db base URL")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    power_map = resolve_map({"map": args.map, "choco_url": args.choco})
+    power_map, info = resolve_map_info({"map": args.map, "choco_url": args.choco})
+    if not power_map:
+        p.error(info.get("map_missing_reason") or "the map is empty")
     state = read_power_state(args.url)
     input_good = {inp: state.get(ch, False) for ch, inp in power_map.items()}
     unmapped_powered = sorted(ch for ch, on in state.items() if on and ch not in power_map)

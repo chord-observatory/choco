@@ -180,7 +180,7 @@ cmd_install() {
     # localhost JSON-API client) on PATH.  The daemon is `choco-server`.
     ln -sfn "$INSTALL_DIR/.venv/bin/choco" /usr/local/bin/choco
 
-    # Jobs (one subdir per job: units, wrapper script, Python code)
+    # Jobs (one subdir per job: units and Python code; jobs/run-job.sh runs any of them)
     rsync -a --exclude='__pycache__' --exclude='.pytest_cache' \
         "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
     find "$INSTALL_DIR/jobs" -name '*.sh' -exec chmod +x {} +
@@ -221,42 +221,51 @@ cmd_install() {
     fi
     check_config "$CONFIG_DIR/config.yaml"
 
-    # Seed the bffs config on first install; never overwrite an edited one
-    if [ ! -f "$CONFIG_DIR/bffs.yaml" ]; then
-        cp "$SCRIPT_DIR/jobs/bffs/bffs.example.yaml" "$CONFIG_DIR/bffs.yaml"
-        echo "Seeded $CONFIG_DIR/bffs.yaml from jobs/bffs/bffs.example.yaml -- edit before use"
+    # eop read choco's config.yaml until 2026-10; carry the values it held
+    # into eop's own config the first time, so the seed is not a guess.
+    if [ ! -f "$CONFIG_DIR/eop.yaml" ] && grep -qE '^\s+intervals_before:' "$CONFIG_DIR/config.yaml"; then
+        "$INSTALL_DIR/.venv/bin/python" - "$CONFIG_DIR/config.yaml" "$SCRIPT_DIR/jobs/eop/eop.example.yaml" \
+            "$CONFIG_DIR/eop.yaml" <<'PY'
+import sys, yaml
+old = yaml.safe_load(open(sys.argv[1])) or {}
+cfg = yaml.safe_load(open(sys.argv[2]))
+eop, server = old.get("eop") or {}, old.get("server") or {}
+cfg.update({k: eop[k] for k in ("intervals_before", "intervals_after", "endpoint") if k in eop})
+fpga = old.get("fpga_master") or {}
+cfg["fpga_master"] = {"host": fpga.get("host", cfg["fpga_master"]["host"]),
+                      "port": fpga.get("port", cfg["fpga_master"]["port"])}
+scheme = "https" if server.get("ssl", True) else "http"
+cfg["choco_url"] = f"{scheme}://localhost:{int(server.get('port', 5000))}"
+with open(sys.argv[3], "w") as f:
+    f.write("# Carried over from config.yaml by choco.sh install; see jobs/eop/eop.example.yaml.\n")
+    yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+PY
+        echo "Wrote $CONFIG_DIR/eop.yaml from the eop values in config.yaml;"
+        echo "  remove eop.intervals_before, eop.intervals_after and eop.endpoint from config.yaml."
     fi
 
-    # Seed the eigencal configs on first install; never overwrite edited ones
-    if [ ! -f "$CONFIG_DIR/eigencal.yaml" ]; then
-        cp "$SCRIPT_DIR/jobs/eigencal/eigencal.example.yaml" "$CONFIG_DIR/eigencal.yaml"
-        echo "Seeded $CONFIG_DIR/eigencal.yaml from jobs/eigencal/eigencal.example.yaml -- edit before use"
-    fi
+    # Seed each job's config (jobs/<job>/<job>.example.yaml -> <job>.yaml)
+    # on first install; never overwrite an edited one.
+    local example job
+    for example in "$SCRIPT_DIR"/jobs/*/*.example.yaml; do
+        job="$(basename "$(dirname "$example")")"
+        [ "$(basename "$example")" = "$job.example.yaml" ] || continue
+        if [ ! -f "$CONFIG_DIR/$job.yaml" ]; then
+            cp "$example" "$CONFIG_DIR/$job.yaml"
+            echo "Seeded $CONFIG_DIR/$job.yaml from jobs/$job/$job.example.yaml -- edit before use"
+        fi
+    done
 
-    # Seed the waterfall config on first install; never overwrite an edited one
-    if [ ! -f "$CONFIG_DIR/waterfall.yaml" ]; then
-        cp "$SCRIPT_DIR/jobs/waterfall/waterfall.example.yaml" "$CONFIG_DIR/waterfall.yaml"
-        echo "Seeded $CONFIG_DIR/waterfall.yaml from jobs/waterfall/waterfall.example.yaml -- edit before use"
-    fi
-
-    # Seed the skymap config on first install; never overwrite an edited one
-    if [ ! -f "$CONFIG_DIR/skymap.yaml" ]; then
-        cp "$SCRIPT_DIR/jobs/skymap/skymap.example.yaml" "$CONFIG_DIR/skymap.yaml"
-        echo "Seeded $CONFIG_DIR/skymap.yaml from jobs/skymap/skymap.example.yaml -- edit before use"
-    fi
-
-    # Seed the mapmaker config on first install; never overwrite an edited one
-    if [ ! -f "$CONFIG_DIR/mapmaker.yaml" ]; then
-        cp "$SCRIPT_DIR/jobs/mapmaker/mapmaker.example.yaml" "$CONFIG_DIR/mapmaker.yaml"
-        echo "Seeded $CONFIG_DIR/mapmaker.yaml from jobs/mapmaker/mapmaker.example.yaml -- edit before use"
-    fi
-
-    # The waterfall, skymap and mapmaker units run as User=choco (waterfall
-    # so the images it writes to NFS are not owned by the squashed root
-    # account); warn rather than create one.
+    # The job units run as User=choco (the waterfall also so the images it
+    # writes to NFS are not owned by the squashed root account; eop keeps
+    # astropy's IERS cache in its home).  acqnotes alone is root: it writes
+    # into kotekan's acquisition directories, which NFS squashes to nobody.
+    # Warn rather than create the user.
     if ! id choco >/dev/null 2>&1; then
-        echo "Note: choco-waterfall.service, choco-skymap.service, choco-mapmaker.service and choco-mapmaker-clean.service run as User=choco, which does not exist."
-        echo "      Create it (useradd -r -s /usr/sbin/nologin choco) or edit the units."
+        local as_choco
+        as_choco="$(grep -l '^User=choco' "$SCRIPT_DIR"/jobs/*/*.service | xargs -n1 basename | paste -sd' ')"
+        echo "Note: $as_choco run as User=choco, which does not exist."
+        echo "      Create it (useradd -r -m -s /usr/sbin/nologin choco) or edit the units."
     fi
 
     # Seed or overwrite kotekan configs from repo.  pdb_map.csv is excluded
@@ -289,6 +298,17 @@ cmd_install() {
     ensure_iptables
     apt install -y iptables-persistent
     netfilter-persistent save
+
+    # Preflight: the config must load under the code just installed (a key
+    # this version retires is refused at startup), checked before anything
+    # is restarted so a stale config costs a re-run, not an outage.
+    if ! "$INSTALL_DIR/.venv/bin/python" -c 'import sys; from choco.app import load_config; load_config(sys.argv[1])' \
+            "$CONFIG_DIR/config.yaml"; then
+        echo ""
+        echo "Error: this version refuses $CONFIG_DIR/config.yaml (see above)."
+        echo "  Fix it and re-run install.  Nothing has been restarted."
+        exit 1
+    fi
 
     # systemd units: main service + any job units (jobs/<name>/choco-*.{service,timer})
     cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/
@@ -395,8 +415,12 @@ cmd_run() {
     check_ports 5000 8080
     ensure_iptables
 
-    # Drop back to invoking user so choco can access user-owned files (.ssl, etc.)
-    exec sudo -u "$SUDO_USER" "$SCRIPT_DIR/.venv/bin/choco-server" "${@:-$SCRIPT_DIR/config.yaml}"
+    # Drop back to invoking user so choco can access user-owned files (.ssl, etc.).
+    # From a root login there is no one to drop back to: run as root.
+    if [ -n "${SUDO_USER:-}" ]; then
+        exec sudo -u "$SUDO_USER" "$SCRIPT_DIR/.venv/bin/choco-server" "${@:-$SCRIPT_DIR/config.yaml}"
+    fi
+    exec "$SCRIPT_DIR/.venv/bin/choco-server" "${@:-$SCRIPT_DIR/config.yaml}"
 }
 
 cmd_develop() {
@@ -504,12 +528,13 @@ EOF
 cmd_test() {
     ensure_local_venv
     "$SCRIPT_DIR/.venv/bin/pytest" "$SCRIPT_DIR/tests" -v "$@"
-    # the jobs have their own pytest.ini (pythonpath, testpaths)
-    (cd "$SCRIPT_DIR/jobs/bffs" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
-    (cd "$SCRIPT_DIR/jobs/eigencal" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
-    (cd "$SCRIPT_DIR/jobs/waterfall" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
-    (cd "$SCRIPT_DIR/jobs/skymap" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
-    (cd "$SCRIPT_DIR/jobs/mapmaker" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    # Each job suite has its own pytest.ini (pythonpath, testpaths; two
+    # jobs have a reduce.py, so they cannot share a rootdir), and every
+    # job that has one runs: a new job's tests are not left out.
+    local ini
+    for ini in "$SCRIPT_DIR"/jobs/*/pytest.ini; do
+        (cd "$(dirname "$ini")" && "$SCRIPT_DIR/.venv/bin/pytest" -v "$@")
+    done
 }
 
 cmd_lock() {

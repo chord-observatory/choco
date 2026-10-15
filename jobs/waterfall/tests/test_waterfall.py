@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 import yaml
 
-import store as S
 import waterfall as W
 import wfpng
 from test_reduce import make_file
@@ -491,6 +490,67 @@ class TestPermanentSkips:
         assert any("empty frame" in e for e in state["errors"])
 
 
+# --- a new acquisition whose first files are empty ----------------------
+
+def zero_vis(p):
+    """Turn a source file into one with no usable data (all visibilities 0)."""
+    with h5py.File(p, "r+") as f:
+        f["vis"][...] = 0
+
+
+class TestEmptyFirstFiles:
+    ACQ = "acq_20260303_000000_000000000"
+
+    def test_the_scale_comes_from_the_first_usable_file(self, tmp_path):
+        root = tmp_path / "subset"
+        zero_vis(add_source(root / self.ACQ, 300))
+        add_source(root / self.ACQ, 301)
+        add_source(root / self.ACQ, 302)
+        cfg = W.load_config(write_cfg(tmp_path, root))
+
+        first = W.run(cfg)
+        assert first["files_rendered"] == 2
+        assert any("no product has usable data" in e for e in first["errors"])
+        index = json.loads((tmp_path / "wf" / "subset" / self.ACQ / "index.json").read_text())
+        assert index["files"] == [301, 302]
+        assert list(index["skipped"]) == ["vis_0000000300_20260723T_000000_000000000.h5"]
+        assert not (tmp_path / "wf" / "subset" / self.ACQ / "skipped.json").exists()
+
+        second = W.run(cfg)
+        assert second["errors"] == [] and second["backlog"] == 0
+
+    def test_an_empty_acquisition_is_not_reread_forever(self, tmp_path, monkeypatch, capsys):
+        root = tmp_path / "subset"
+        for i in range(5):
+            zero_vis(add_source(root / self.ACQ, 400 + i))
+        cfg = W.load_config(write_cfg(tmp_path, root))
+        sampled = []
+        real = W.R.sample_magnitudes
+        monkeypatch.setattr(W.R, "sample_magnitudes", lambda p: sampled.append(os.path.basename(p)) or real(p))
+
+        first = W.run(cfg)
+        assert first["files_rendered"] == 0 and first["skipped"] == W.SCALE_TRIES
+        out = tmp_path / "wf" / "subset" / self.ACQ
+        assert not (out / "index.json").exists()      # nothing for choco to show
+        assert len(json.loads((out / "skipped.json").read_text())) == W.SCALE_TRIES
+
+        second = W.run(cfg)
+        assert second["skipped"] == 5 - W.SCALE_TRIES  # the rest, not the same ones
+        assert len(sampled) == 5 and len(set(sampled)) == 5
+        assert W.run(cfg)["errors"] == []
+        # the dry run agrees: skipped files are not pending
+        assert W.main(["-c", str(write_cfg(tmp_path, root)), "-n"]) == 0
+        assert "0 files pending" in capsys.readouterr().out
+
+        # data arrives: the acquisition starts and adopts the earlier skips
+        add_source(root / self.ACQ, 410)
+        rep = W.run(cfg)
+        assert rep["files_rendered"] == 1
+        index = json.loads((out / "index.json").read_text())
+        assert len(index["skipped"]) == 5 and index["files"] == [410]
+        assert not (out / "skipped.json").exists()
+
+
 # --- degraded runs keep their accounting ---------------------------------
 
 class TestDegradedAccounting:
@@ -501,7 +561,6 @@ class TestDegradedAccounting:
         cfg = W.load_config(write_cfg(tmp_path, root, max_files_per_run=2))
 
         calls = {"n": 0}
-        real = W.store_add if hasattr(W, "store_add") else None
         from store import AcquisitionStore
         real_add = AcquisitionStore.add_file
 
@@ -536,18 +595,6 @@ class TestRunLock:
             assert not (tmp_path / "wf").exists()   # rendered nothing
         assert W.main(["-c", str(cfg_path)]) == 0
         assert (tmp_path / "wf").exists()
-
-    def test_the_lock_is_released(self, tmp_path):
-        lock = tmp_path / "x.lock"
-        with W.single_run(lock) as a:
-            assert a
-        with W.single_run(lock) as b:
-            assert b
-
-    def test_an_unopenable_lock_does_not_stop_the_job(self, tmp_path):
-        (tmp_path / "afile").write_text("x")
-        with W.single_run(tmp_path / "afile" / "x.lock") as held:
-            assert held
 
 
 class TestBacklogIsCheap:

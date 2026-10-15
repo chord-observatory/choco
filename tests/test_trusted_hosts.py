@@ -15,6 +15,7 @@ import yaml
 from werkzeug.exceptions import Forbidden
 
 from choco import web
+from tests.helpers import csrf
 from choco.app import _DEFAULT_CONFIG, create_app, load_config
 from choco.auth import (_users, parse_trusted_hosts, save_user,
                         trusted_host_label)
@@ -25,13 +26,6 @@ STRANGER = "10.0.0.9"
 
 TRUSTED = {"127.0.0.1": "localhost", "::1": "localhost",
            LAB_NET: "lab", CHIVE: "chive"}
-
-
-@pytest.fixture(autouse=True)
-def clear_users():
-    _users.clear()
-    yield
-    _users.clear()
 
 
 def _config(configs_dir, **server):
@@ -46,6 +40,7 @@ def trusted_app(configs_dir):
     app = create_app(configs_dir=configs_dir,
                      config=_config(configs_dir, trusted_hosts=TRUSTED))
     app.config["TESTING"] = True
+    app.config["state_dir"] = configs_dir / "state"   # never the host's /var/lib/choco
     return app
 
 
@@ -54,17 +49,12 @@ def plain_app(configs_dir):
     """Shipped defaults: no trusted hosts."""
     app = create_app(configs_dir=configs_dir, config=_config(configs_dir))
     app.config["TESTING"] = True
+    app.config["state_dir"] = configs_dir / "state"   # never the host's /var/lib/choco
     return app
 
 
 def _from(addr):
     return {"environ_base": {"REMOTE_ADDR": addr}}
-
-
-def _csrf(client, **kw):
-    client.get("/nodes", **kw)
-    with client.session_transaction() as sess:
-        return sess["_csrf_token"]
 
 
 class TestDefaultOff:
@@ -75,6 +65,21 @@ class TestDefaultOff:
 
     def test_no_hook_installed(self, plain_app):
         assert plain_app.config["TRUSTED_PEERS"] == []
+
+
+class TestLoopbackBypass:
+    """The jobs' and the CLI's routes skip login for this host, however
+    the bind reports it (a dual-stack "::" bind gives ::ffff:127.0.0.1)."""
+
+    @pytest.mark.parametrize("addr", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
+    def test_loopback_peer_bypasses_login(self, plain_app, addr):
+        resp = plain_app.test_client().get("/api/nodes", **_from(addr))
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize("addr", ["10.222.0.54", "::ffff:10.222.0.54", "garbage"])
+    def test_other_peer_must_log_in(self, plain_app, addr):
+        resp = plain_app.test_client().get("/api/nodes", **_from(addr))
+        assert resp.status_code == 302 and "/login" in resp.headers["Location"]
 
 
 class TestTrustedPeer:
@@ -143,7 +148,7 @@ class TestCsrfStaysOn:
     def test_post_with_token_goes_through(self, trusted_app):
         action = next(iter(web._MAINTENANCE_ACTIONS))
         client = trusted_app.test_client()
-        token = _csrf(client)
+        token = csrf(client)
         resp = client.post(f"/nodes/set-maintenance-all/{action}",
                            data={"_csrf_token": token},
                            headers={"HX-Request": "true"})

@@ -3,14 +3,13 @@
 For each source transiting inside the acquisition (best-covered transit per source),
 reads the autos of a few frequency bands around the transit and reports, per element and
 band: the fractional power bump at transit, its significance, and the hour angle of the
-peak (E-W beam centre).  Output: one JSON per acquisition.
+peak (E-W beam centre).
 """
 import datetime
 import glob
 import json
 import os
 import re
-import sys
 
 import h5py
 import hdf5plugin  # noqa: F401
@@ -22,7 +21,6 @@ from astropy.utils import iers
 
 iers.conf.auto_download = False
 
-ROOT = "/mnt/cs00/data/kotekan_vis_files/subset"
 LAT, LON = 49.32075144444, -119.62081125
 SITE = EarthLocation(lat=LAT * u.deg, lon=LON * u.deg, height=545 * u.m)
 SOURCES = {
@@ -34,6 +32,16 @@ SOURCES = {
 }
 BANDS = [(440, 460), (600, 620), (1400, 1420)]
 FNAME = re.compile(r"vis_\d+_(\d{8})T_(\d{6})_\d+\.h5$")
+
+
+BIN_S = 10.0  # one time bin of a file (9.94-9.98 s)
+
+
+def file_span(p):
+    """Seconds one file of this acquisition covers: 20 bins (200 s) until 2026-10,
+    40 bins (400 s) from 2026-10-10."""
+    with h5py.File(p, "r") as f:
+        return f["vis"].shape[2] * BIN_S
 
 
 def file_start(p):
@@ -67,7 +75,7 @@ def read_autos(path, chans_by_band):
                 t = tt
         if t is None:
             t0 = file_start(path)
-            t = t0 + (np.arange(nt) + 0.5) * 10.0
+            t = t0 + (np.arange(nt) + 0.5) * BIN_S
         out = []
         for sl in chans_by_band:
             v = f["vis"][sl, auto.tolist(), :]
@@ -75,14 +83,15 @@ def read_autos(path, chans_by_band):
         return t, el, out
 
 
-def analyse(acq):
-    d = os.path.join(ROOT, acq)
+def analyse(d):
+    acq = os.path.basename(d)
     files = sorted(glob.glob(d + "/*.h5"))
     res = {"acq": acq, "transits": []}
     if not files:
         return res
     starts = np.array([file_start(p) for p in files])
-    t_end = starts[-1] + 200
+    span = file_span(files[0])
+    t_end = starts[-1] + span
     with h5py.File(files[0], "r") as f:
         fr = f["index_map/freq"]["centre"]
         chans = []
@@ -110,8 +119,8 @@ def analyse(acq):
             lam_m = 0.3 / 0.45
             w_ha = 1.2 * np.degrees(lam_m / 6.0) / max(np.cos(np.radians(dec)), 0.2)
             half = min(max(3.2 * w_ha / 15.0 * 3600, 1.6 * 3600), 2.6 * 3600)
-            sel = np.where((starts > tt - half - 200) & (starts < tt + half))[0]
-            cov = len(sel) * 200 / (2 * half)
+            sel = np.where((starts > tt - half - span) & (starts < tt + half))[0]
+            cov = len(sel) * span / (2 * half)
             if best is None or cov > best[1]:
                 best = (tt, cov, sel, half, dec, ra)
         if best is None or best[1] < 0.6:
@@ -171,12 +180,3 @@ def analyse(acq):
         res["transits"].append(tr)
     return res
 
-
-if __name__ == "__main__":
-    out = sys.argv[1]
-    os.makedirs(out, exist_ok=True)
-    for acq in sys.argv[2:]:
-        r = analyse(acq)
-        with open(os.path.join(out, acq + ".json"), "w") as fh:
-            json.dump(r, fh)
-        print(acq, [(t["source"], round(t["coverage"], 2)) for t in r["transits"]], flush=True)

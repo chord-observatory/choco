@@ -1,25 +1,15 @@
 """Tests for LDAP authentication."""
 
-import pytest
-from unittest.mock import MagicMock, patch
-
 import copy
 import ssl
+from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
-from choco.app import _DEFAULT_CONFIG, create_app
+import pytest
 
-from choco.app import create_app
+from choco.app import _DEFAULT_CONFIG, create_app
 from choco.auth import LdapAuthenticator, User, save_user, _users
 from choco.ldapbind import BindRejected, LdapError
-
-
-@pytest.fixture(autouse=True)
-def clear_users():
-    """Clear the in-memory user store between tests."""
-    _users.clear()
-    yield
-    _users.clear()
 
 
 @pytest.fixture
@@ -29,6 +19,7 @@ def app(tmp_path):
     nodes_yaml.write_text("groups: {}\n")
     app = create_app(configs_dir=tmp_path)
     app.config["TESTING"] = True
+    app.config["state_dir"] = tmp_path / "state"   # never the host's /var/lib/choco
     return app
 
 
@@ -58,22 +49,8 @@ class TestUser:
 
 
 class TestUnauthenticatedAccess:
-    """All routes should redirect to login when not authenticated."""
-
-    def test_dashboard_redirects(self, client):
-        resp = client.get("/", follow_redirects=False)
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_node_edit_redirects(self, client):
-        resp = client.get("/nodes/edit/cx/cx1", follow_redirects=False)
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_partials_redirect(self, client):
-        resp = client.get("/partials/dashboard-table", follow_redirects=False)
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
+    """The login page and its flow (every other route's redirect is swept
+    in test_route_auth)."""
 
     def test_login_page_accessible(self, client):
         resp = client.get("/login")
@@ -259,6 +236,21 @@ class TestLdapAuthenticator:
     def test_plain_ldap_is_plain(self):
         auth = self._auth(host="ldap://ipa.example", use_ssl=False, port=389)
         assert auth.server.ssl is False and auth.server.port == 389
+
+    @pytest.mark.parametrize("host,port", [("ldap://ipa.example", 389),
+                                           ("ldaps://ipa.example", 636)])
+    def test_no_port_follows_the_scheme(self, host, port):
+        """No configured port is ldapbind's rule, not a blanket 636: an
+        ldap:// bind must never go in cleartext to the LDAPS port."""
+        assert self._auth(host=host, port=None).server.port == port
+
+    def test_init_auth_passes_no_port_through(self, tmp_path):
+        from choco.auth import init_auth
+        from flask import Flask
+        app = Flask(__name__)
+        app.secret_key = "x" * 32
+        init_auth(app, {"ldap": {"host": "ldap://ipa.example", "use_ssl": False}})
+        assert app.config["ldap_authenticator"].server.port == 389
 
     def test_user_dn_construction(self):
         auth = self._auth()

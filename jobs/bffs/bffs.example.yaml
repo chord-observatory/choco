@@ -97,9 +97,9 @@ sources:
   #   # (GET /api/pdb/map, i.e. <configs_dir>/pdb_map.csv) so this job and
   #   # choco's PDB page agree on the wiring; choco's cross-check of that
   #   # table against kotekan's dish_inputs is logged on every run. Set
-  #   # `map:` to override with a local CSV; the bundled placeholder
-  #   # (sources/power_map.csv) is the fallback when choco is unreachable.
-  #   # map: sources/power_map.csv
+  #   # `map:` to override with a local CSV.  With neither (choco down) the
+  #   # source abstains: every feed unjudged, the run degraded.
+  #   # map: /etc/choco/power_map.csv
   #
   # - kind: fpga                 # F-engine health: overflow / no frames / ADC RMS
   #   url: http://fpga-node:5000

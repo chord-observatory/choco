@@ -14,14 +14,6 @@ from werkzeug.exceptions import Forbidden
 
 from choco import web
 from choco.app import _DEFAULT_CONFIG, _make_ssl_context, create_app, load_config
-from choco.auth import _users
-
-
-@pytest.fixture(autouse=True)
-def clear_users():
-    _users.clear()
-    yield
-    _users.clear()
 
 
 def _config(configs_dir, **server):
@@ -45,6 +37,7 @@ def dev_app(configs_dir):
         config=_config(configs_dir, host="127.0.0.1", dev_auth="dev", ssl=False),
     )
     app.config["TESTING"] = True
+    app.config["state_dir"] = configs_dir / "state"   # never the host's /var/lib/choco
     return app
 
 
@@ -53,6 +46,7 @@ def prod_app(configs_dir):
     """App with the shipped defaults — dev_auth unset."""
     app = create_app(configs_dir=configs_dir, config=_config(configs_dir))
     app.config["TESTING"] = True
+    app.config["state_dir"] = configs_dir / "state"   # never the host's /var/lib/choco
     return app
 
 

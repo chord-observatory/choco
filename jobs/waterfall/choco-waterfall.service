@@ -15,7 +15,7 @@ StateDirectory=choco/waterfall
 # will do; it just must not be root.
 User=choco
 Group=choco
-ExecStart=/opt/choco/jobs/waterfall/waterfall.sh /etc/choco/waterfall.yaml
+ExecStart=/opt/choco/jobs/run-job.sh waterfall/waterfall.py /etc/choco/waterfall.yaml
 # No Restart: the script self-gates and caps its own work, so a run that
 # fails -- mount unavailable, a file unreadable -- is simply retried by
 # the next timer tick.  Exit code 2 = degraded (a dependency was missing,

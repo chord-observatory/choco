@@ -34,13 +34,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 
 import numpy as np
 
 import wfpng
+from choco.jobclient import atomic_output
 from reduce import Axes, thumb_rows
 
 log = logging.getLogger("waterfall.store")
@@ -56,12 +56,10 @@ THUMB_MAX_ROWS = 256
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    # fsync'd before the rename: the commit order (see ``append``) is the
+    # crash-safety contract, and it only holds if each file is durable
+    with atomic_output(path, fsync=True) as tmp:
+        tmp.write_bytes(data)
 
 
 def _append_at(path: Path, offset: int, data: bytes) -> int:
@@ -126,22 +124,48 @@ class AcquisitionStore:
         return set(self.index.get("files", []))
 
     @property
+    def prestart_path(self) -> Path:
+        """Skips recorded before the acquisition has an index.
+
+        An acquisition only gets its index once a file can set the value
+        scale.  Until then its unusable files (an empty first file, or a
+        run with no data at all) still have to be remembered, or every
+        run would re-read them and never get past them.  ``start`` folds
+        this file into the index and removes it; choco's read side ignores
+        a directory that holds only this file.
+        """
+        return self.path / "skipped.json"
+
+    def _prestart_skipped(self) -> dict:
+        try:
+            doc = json.loads(self.prestart_path.read_text())
+        except (OSError, ValueError):
+            return {}
+        return doc if isinstance(doc, dict) else {}
+
+    @property
     def skipped(self) -> dict:
         """Source files that can never be folded in, and why.
 
         Kept so a permanently-unusable file is reported once instead of
         reappearing in the backlog — and in the exit code — on every run.
         """
+        if not self.started:
+            return self._prestart_skipped()
         return self.index.get("skipped") or {}
 
     def skip(self, entries: dict) -> None:
         """Record files as permanently unusable and commit.
 
-        Takes a mapping so a batch costs one commit, which matters
-        because the first run of an acquisition collects its skips while
-        scanning — before the store exists to write them to.
+        Takes a mapping so a batch costs one commit.  Before the index
+        exists the entries go to ``skipped.json``; ``start`` adopts them.
         """
-        if not self.started or not entries:
+        if not entries or self.broken:
+            return
+        if not self.started:
+            merged = {**self._prestart_skipped(), **entries}
+            self.path.mkdir(parents=True, exist_ok=True)
+            _atomic_write(self.prestart_path, json.dumps(merged, separators=(",", ":")).encode())
             return
         self.index.setdefault("skipped", {}).update(entries)
         self._save_index()
@@ -210,7 +234,7 @@ class AcquisitionStore:
             "thumb_bins": min(THUMB_BINS, int(axes.n_freq)),
             "labels": list(axes.labels),
             "files": [],
-            "skipped": {},
+            "skipped": self._prestart_skipped(),
             "thumb_stride": 0,
             "thumb_rows": 0,
             "times_bytes": 0,
@@ -226,6 +250,10 @@ class AcquisitionStore:
         }
         self._counts = np.zeros((axes.n_prod, 256), np.int64)
         self._save_index()
+        try:
+            self.prestart_path.unlink()
+        except OSError:
+            pass
 
     def relabel(self, labels) -> bool:
         """Replace the element labels and commit; True if they changed.

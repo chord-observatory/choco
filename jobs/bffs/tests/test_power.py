@@ -78,17 +78,26 @@ class TestResolveMap:
         m = power.resolve_map({"choco_url": "https://localhost:5000"})
         assert m == {(0, 7, "B", 1): "A1X"}     # chip letter normalized
 
-    def test_choco_unreachable_falls_back_to_the_bundled_csv(self, monkeypatch,
-                                                             caplog):
+    def test_choco_unreachable_leaves_no_map(self, monkeypatch):
         def boom(url, **k):
             raise OSError("connection refused")
         monkeypatch.setattr(power, "choco_pdb_map", boom)
-        m = power.resolve_map({"choco_url": "https://localhost:5000"})
-        assert m == load_map(power._DEFAULT_MAP, power._key)
-        assert "no PDB map from choco" in caplog.text
+        m, info = power.resolve_map_info({"choco_url": "https://localhost:5000"})
+        assert m == {} and info["map_source"] == "none"
+        assert "connection refused" in info["map_missing_reason"]
 
-    def test_no_choco_url_uses_the_bundled_csv(self):
-        assert power.resolve_map({}) == load_map(power._DEFAULT_MAP, power._key)
+    def test_no_choco_url_leaves_no_map(self):
+        assert power.resolve_map({}) == {}
+
+    def test_without_a_map_the_source_abstains(self, monkeypatch):
+        """No wiring, no verdict: every feed good, the run degraded, and
+        the controller not even read."""
+        monkeypatch.setattr(power, "read_power_state",
+                            lambda url: pytest.fail("read without a map"))
+        mask, rep = power.mask({"url": "http://pdb:5000"}, ["A1X", "A1Y"], None)
+        assert mask.tolist() == [True, True]
+        assert rep["status"] == "degraded" and rep["n_measured"] == 0
+        assert "every feed left unjudged" in rep["reason"]
 
     def test_disagreement_with_kotekan_is_logged_not_fatal(self, monkeypatch,
                                                            caplog):
@@ -175,17 +184,15 @@ class TestReport:
         np.testing.assert_array_equal(good, [True, True])
         assert rep["status"] == "degraded" and "could not cross-check" in rep["reason"]
 
-    def test_placeholder_map_never_flags_unmapped_feeds(self, monkeypatch):
+    def test_choco_down_never_flags_anything(self, monkeypatch):
         def boom(url, **k):
             raise OSError("connection refused")
         monkeypatch.setattr(power, "choco_pdb_map", boom)
-        monkeypatch.setattr(power, "read_power_state",
-                            lambda url: power.decode_channel_states(_LIVE_BUF, 0))
         good, rep = power.mask({"kind": "power", "url": "http://pdb:5000",
                                 "choco_url": "https://localhost:5000"},
                                np.array(["E01X", "E02X"]), "n2.h5")
         np.testing.assert_array_equal(good, [True, True])
-        assert rep["status"] == "degraded" and "bundled placeholder" in rep["reason"]
+        assert rep["status"] == "degraded" and "connection refused" in rep["reason"]
 
     def test_operator_csv_is_trusted(self, tmp_path, monkeypatch):
         csv_file = tmp_path / "map.csv"
@@ -208,8 +215,8 @@ class TestReport:
                                        "map_check_available": True,
                                        "map_unknown_to_kotekan": 2})
         assert not ok and "2 dish input(s)" in why
-        ok, why = power.table_trusted({"map_source": "bundled placeholder"})
-        assert not ok and "placeholder" in why
+        ok, why = power.table_trusted({"map_source": "none"})
+        assert not ok and "no PDB map" in why
 
     def test_unread_channel_is_degraded(self, monkeypatch):
         # a map row for a bus the controller did not report
@@ -223,10 +230,4 @@ class TestReport:
         assert rep["detail"]["unread"] == ["A1X"]
         assert rep["detail"]["feed_reasons"] == {"A1X": "unread"}
 
-    def test_fallback_map_is_named(self, monkeypatch):
-        def boom(url, **k):
-            raise OSError("connection refused")
-        monkeypatch.setattr(power, "choco_pdb_map", boom)
-        _, info = power.resolve_map_info({"choco_url": "https://localhost:5000"})
-        assert info["map_source"] == "bundled placeholder"
-        assert "connection refused" in info["map_fallback_reason"]
+

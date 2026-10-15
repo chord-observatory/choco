@@ -29,10 +29,18 @@ import requests
 import yaml
 from gevent.lock import BoundedSemaphore
 
+from .jobclient import write_text_atomic
+
 logger = logging.getLogger(__name__)
 
 
 _RETRY_DELAY_S = 1.0
+
+# HTTP failures are caught as OSError throughout: requests' own errors are
+# OSErrors (RequestException subclasses IOError), and under gevent a
+# connection can also fail with a bare ConnectionError that requests never
+# wraps.  Catching only RequestException let that one escape a poll (stale
+# health) or a PDB route (a 500).
 
 
 def _get_with_retry(url: str, timeout: float) -> requests.Response:
@@ -47,7 +55,7 @@ def _get_with_retry(url: str, timeout: float) -> requests.Response:
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
         return resp
-    except requests.RequestException:
+    except OSError:
         gevent.sleep(_RETRY_DELAY_S)
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
@@ -143,7 +151,7 @@ class FpgaMonitor:
                 data = {}
             self.state = data.get("state")
             self.start_result = data.get("start_result") or None
-        except requests.RequestException as e:
+        except OSError as e:
             self.health = "down"
             self.state = None
             err = f"{type(e).__name__}: {e}"
@@ -164,7 +172,7 @@ class FpgaMonitor:
             self.health = "ok"
             self.error = None
             self.last_seen = self.last_polled
-        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+        except (OSError, ValueError, KeyError, TypeError) as e:
             self.health = "no_timing"
             self.error = f"/get-frame0-time: {type(e).__name__}: {e}"
 
@@ -214,7 +222,7 @@ class FpgaMonitor:
             resp = requests.post(f"{self.base_url}/start", json={},
                                  timeout=self.timeout)
             resp.raise_for_status()
-        except requests.RequestException as e:
+        except OSError as e:
             return False, f"{type(e).__name__}: {e}"
         ok, message = _wtl_result(resp)
         self.poll_once()
@@ -235,7 +243,7 @@ class FpgaMonitor:
             resp = requests.get(f"{self.base_url}/stop",
                                 timeout=self.STOP_TIMEOUT_S)
             resp.raise_for_status()
-        except requests.RequestException as e:
+        except OSError as e:
             logger.error(f"fpga_master stop failed: {e}")
             self.poll_once()
             return False, f"{type(e).__name__}: {e}"
@@ -632,7 +640,7 @@ class PdbMonitor:
                 for bus, info in (buses or {}).items()
                 if isinstance(info, dict)
             } if isinstance(buses, dict) else {}
-        except (requests.RequestException, ValueError, TypeError) as e:
+        except (OSError, ValueError, TypeError) as e:
             self.health = "down"
             self.error = f"{type(e).__name__}: {e}"
             return
@@ -645,7 +653,7 @@ class PdbMonitor:
             self.health = "ok"
             self.error = None
             self.last_seen = self.last_polled
-        except (requests.RequestException, ValueError, KeyError,
+        except (OSError, ValueError, KeyError,
                 TypeError) as e:
             self.health = "no_states"
             self.error = f"/channel_states: {type(e).__name__}: {e}"
@@ -699,7 +707,7 @@ class PdbMonitor:
             self.channels = {b: self._rows(o) for b, o in readback.items()}
             self.last_seen = time.time()
             got = readback[bus][chip_num]
-        except (requests.RequestException, ValueError, KeyError,
+        except (OSError, ValueError, KeyError,
                 TypeError, IndexError) as e:
             return False, f"{label}: {type(e).__name__}: {e}"
         if got != wanted:
@@ -753,7 +761,7 @@ class PdbMonitor:
 
         try:
             states = self._fetch_states()
-        except (requests.RequestException, ValueError, KeyError,
+        except (OSError, ValueError, KeyError,
                 TypeError) as e:
             return False, f"{scope}: {type(e).__name__}: {e}"
 
@@ -783,7 +791,7 @@ class PdbMonitor:
         for bus, _chip_num, b, c, wanted, _current in todo:
             try:
                 self._write_out_byte(bus, b, c, wanted)
-            except (requests.RequestException, ValueError) as e:
+            except (OSError, ValueError) as e:
                 failures.append(f"bus {bus} board {b} chip {c} "
                                 f"({type(e).__name__})")
 
@@ -791,7 +799,7 @@ class PdbMonitor:
             readback = self._fetch_states()
             self.channels = {b: self._rows(o) for b, o in readback.items()}
             self.last_seen = time.time()
-        except (requests.RequestException, ValueError, KeyError,
+        except (OSError, ValueError, KeyError,
                 TypeError) as e:
             return False, (
                 f"{scope}: wrote {len(todo) - len(failures)} of "
@@ -849,7 +857,7 @@ class PdbMonitor:
 
         try:
             outs = self._fetch_states().get(bus)
-        except (requests.RequestException, ValueError, KeyError,
+        except (OSError, ValueError, KeyError,
                 TypeError) as e:
             return False, f"{scope}: {type(e).__name__}: {e}"
         if outs is None:
@@ -878,7 +886,7 @@ class PdbMonitor:
         for _chip_num, b, c, _current in todo:
             try:
                 self._write_out_byte(bus, b, c, wanted)
-            except (requests.RequestException, ValueError) as e:
+            except (OSError, ValueError) as e:
                 failures.append(f"board {b} chip {c} ({type(e).__name__})")
 
         try:
@@ -886,7 +894,7 @@ class PdbMonitor:
             self.channels = {b: self._rows(o) for b, o in readback.items()}
             self.last_seen = time.time()
             got = readback[bus]
-        except (requests.RequestException, ValueError, KeyError,
+        except (OSError, ValueError, KeyError,
                 TypeError) as e:
             return False, (
                 f"{scope}: wrote {len(todo) - len(failures)} of "
@@ -1326,21 +1334,9 @@ def toggle_manual_flag(path: Path | str, label: str) -> bool:
     else:
         bad.discard(label)
     doc["bad_inputs"] = sorted(bad)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    text = _MANUAL_HEADER + yaml.safe_dump(doc, default_flow_style=False,
-                                           sort_keys=False, allow_unicode=True)
-    fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(p.parent))
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, p)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    # 0644 (atomic_output's default): the bffs job, another user, reads it
+    write_text_atomic(p, _MANUAL_HEADER + yaml.safe_dump(
+        doc, default_flow_style=False, sort_keys=False, allow_unicode=True))
     return flagged
 
 

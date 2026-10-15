@@ -75,6 +75,7 @@ class FileAxes:
     feed_pos: np.ndarray     # (n_el, 3) metres, grid frame
     lat_deg: float
     lon_deg: float
+    kotekan_dec_deg: float | None   # latitude + kotekan's dish_coelev_deg, if the file says
     sep_x: float
     sep_y: float
     era_deg: np.ndarray      # (n_time,) Earth rotation angle per sample
@@ -126,6 +127,8 @@ def read_axes(path: str) -> FileAxes:
             freq_mhz=im["freq"]["centre"][:].astype(float),
             feed_pos=np.asarray(attrs["feed_positions_m"], dtype=float),
             lat_deg=float(attrs["itrs_lat_deg"]), lon_deg=float(attrs["itrs_lon_deg"]),
+            kotekan_dec_deg=(float(attrs["itrs_lat_deg"]) + float(attrs["dish_coelev_deg"])
+                             if "dish_coelev_deg" in attrs else None),
             sep_x=float(attrs.get("feed_separation_x_m", 6.3)),
             sep_y=float(attrs.get("feed_separation_y_m", 8.5)),
             era_deg=era, t_unix=t,

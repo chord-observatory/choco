@@ -53,6 +53,7 @@ import glob
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,7 +65,8 @@ import sources
 from choco.dishlabels import (PLACEHOLDER_LABEL, expand_dish_labels,
                               find_dish_inputs, find_key,
                               labels_are_per_element)
-from choco.jobclient import job_state_dir, post_json, write_json_atomic
+from choco.jobclient import (STATE_NAME, failure, job_state_dir, push_updatable,
+                             refuse_retired, setup_logging, write_json_atomic, write_run)
 from kotekan_io import read_labels, uniquify_labels  # noqa: F401 (re-exported)
 from sources.common import choco_group_config
 
@@ -83,9 +85,8 @@ class Config:
     group: str | None = None       # choco node group to broadcast to
     endpoint: str = "updatable_config/bad_inputs"  # kotekan updatable endpoint
     sync_delay: float = 5.0
-    state_dir: str | None = None   # the job's state directory; unset -> stateless
+    state_dir: str | None = None   # the job's state directory (run.json); unset -> no run record
     state_path: str | None = None  # <state_dir>/state.json, the change history
-    run_path: str | None = None    # <state_dir>/run.json, rewritten every run
     max_history: int = 0           # cap on history entries kept (0 = keep all)
 
 
@@ -107,13 +108,9 @@ def load_config(path: str | Path, state_dir: str | Path | None = None) -> Config
     if choco.get("url") and not choco.get("group"):
         raise ValueError("config needs 'choco.group' (the choco node group) when choco.url is set")
     state = raw.get("state") or {}
-    retired = [k for k in _RETIRED_STATE_KEYS if k in state]
-    if retired:
-        raise ValueError(
-            f"state.{' and state.'.join(retired)} retired: remove it; bffs keeps "
-            f"state.json and run.json in its state directory "
-            f"({job_state_dir('bffs')}; systemd's StateDirectory=choco/bffs, "
-            f"or --state-dir), and choco reads them there")
+    refuse_retired(state, _RETIRED_STATE_KEYS, "bffs",
+                   "state.json and run.json live (choco reads them there)",
+                   prefix="state.")
     sdir = job_state_dir("bffs", state_dir)
     return Config(
         kotekan_file=kotekan_file,
@@ -123,8 +120,7 @@ def load_config(path: str | Path, state_dir: str | Path | None = None) -> Config
         endpoint=str(choco.get("endpoint", "updatable_config/bad_inputs")),
         sync_delay=float(choco.get("sync_delay", 5.0)),
         state_dir=str(sdir),
-        state_path=str(sdir / "state.json"),
-        run_path=str(sdir / "run.json"),
+        state_path=str(sdir / STATE_NAME),
         max_history=int(state.get("max_history", 0)),
     )
 
@@ -251,18 +247,22 @@ def file_axis_mismatch(axis, file_labels) -> str | None:
             f"from before the running config?")
 
 
+#: kotekan names an acquisition directory for its start, ``acq_YYYYMMDD_...``.
+_ACQ_NAME_RE = re.compile(r"acq_\d{8}")
+
+
 def newest_file(pattern: str) -> str | None:
     """The most recently written match of *pattern*, or None.
 
-    Two-stage so the cost does not grow with the archive: the matches'
-    directories are compared by mtime first (an acquisition directory's
-    mtime moves each time kotekan renames a finished file into it), then
-    only that directory's files are stat'ed.  ``subset/`` holds some
-    15,000 files and gains ~400 a day; a flat stat of every match took
-    2.6 s per 30 s tick over NFS when measured (2026-10-03) and would
-    only climb.  A directory touched for another reason wins for a
-    moment, its newest file then fails ``max_age`` and the live
-    directory takes over again at its next file.
+    Two-stage so the cost does not grow with the archive: the newest
+    directory is chosen first, then only its files are stat'ed.
+    ``subset/`` holds some 15,000 files and gains ~400 a day; a flat stat
+    of every match took 2.6 s per 30 s tick over NFS when measured
+    (2026-10-03) and would only climb.  Acquisition directories are
+    ordered by the start time in their names, not their mtimes: the
+    acqnotes job rewrites an old acquisition's README and acq_info.yaml,
+    and on 2026-10-15 that had bffs judging an April file.  Directories
+    not named that way fall back to their mtimes.
     """
     matches = glob.glob(pattern)
     if not matches:
@@ -271,7 +271,10 @@ def newest_file(pattern: str) -> str | None:
     for m in matches:
         by_dir.setdefault(os.path.dirname(m), []).append(m)
     if len(by_dir) > 1:
-        newest_dir = max(by_dir, key=os.path.getmtime)
+        if all(_ACQ_NAME_RE.match(os.path.basename(d)) for d in by_dir):
+            newest_dir = max(by_dir, key=os.path.basename)
+        else:
+            newest_dir = max(by_dir, key=os.path.getmtime)
         matches = by_dir[newest_dir]
     return max(matches, key=os.path.getmtime)
 
@@ -633,21 +636,7 @@ def run(
     return payload, send, degraded
 
 
-# -- send & CLI -----------------------------------------------------------
-
-
-def send_to_choco(config: Config, payload: dict) -> None:
-    """POST the flag values to choco's group-update API.
-
-    choco accepts ``{"action": "updatable_config", "endpoint": ..., "values":
-    ...}`` at ``POST /update/<group>`` and relays the values to every kotekan
-    node in the group.  Loopback, unverified TLS: ``choco.jobclient``.
-    """
-    post_json(config.url, f"/update/{config.group}", {
-        "action": "updatable_config",
-        "endpoint": config.endpoint,
-        "values": payload,
-    }, timeout=10.0)
+# -- CLI ------------------------------------------------------------------
 
 
 def main(argv=None) -> int:
@@ -662,10 +651,8 @@ def main(argv=None) -> int:
     p.add_argument("-v", "--verbose", action="count", default=0)
     args = p.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.WARNING - 10 * min(args.verbose, 2),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    # bffs's own info lines stay behind -v: it runs every 30 s
+    setup_logging(args.verbose)
 
     try:
         config = load_config(args.config, state_dir=args.state_dir)
@@ -677,12 +664,15 @@ def main(argv=None) -> int:
 
     sender = None
     if not args.dry_run and config.url:
-        sender = lambda payload: send_to_choco(config, payload)  # noqa: E731
+        # choco relays the values to every kotekan node in the group
+        sender = lambda payload: push_updatable(  # noqa: E731
+            config.url, config.group, config.endpoint, payload)
 
-    # Exit codes (shared job convention, read by choco's badge):
-    #   0 ok; 2 degraded — the job is fine but a dependency or input
-    #   wasn't (no/stale data, choco or nodes unreachable; retries
-    #   self-heal); 1 failed — config error or bug, needs a human.
+    # Exit codes: jobclient's convention.  Environmental trouble (no
+    # usable kotekan file with nothing else to measure, unreadable HDF5,
+    # choco or the nodes unreachable) is 2; a config or consistency error
+    # (unknown source kind, element count mismatch, a bad override file)
+    # is 1.
     now = time.time()
     report: dict = {"time": now, "dry_run": bool(args.dry_run)}
     rc, error = 0, None
@@ -690,19 +680,8 @@ def main(argv=None) -> int:
         payload, send, degraded = run(
             config, now=now, force=args.force, write=not args.dry_run,
             sender=sender, report=report)
-    except OSError as e:
-        # Environmental: no usable kotekan file with nothing else to
-        # measure, unreadable HDF5, choco/nodes unreachable (urllib
-        # errors are OSError). One useful line; -vv adds the traceback.
-        log.error("%s: %s", type(e).__name__, e)
-        log.debug("traceback:", exc_info=True)
-        rc, error = 2, f"{type(e).__name__}: {e}"
-    except (ValueError, yaml.YAMLError) as e:
-        # Config or consistency errors (unknown source kind, element
-        # count mismatch, a bad override file) — needs a human.
-        log.error("%s: %s", type(e).__name__, e)
-        log.debug("traceback:", exc_info=True)
-        rc, error = 1, f"{type(e).__name__}: {e}"
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        rc, error = failure(e, log)
     else:
         if args.dry_run or not config.url:
             print(json.dumps(payload))
@@ -714,34 +693,15 @@ def main(argv=None) -> int:
         if degraded:
             log.warning("degraded run: %s", "; ".join(degraded))
             rc = 2
-    _write_run_report(config, report, rc, error, write=not args.dry_run)
+    # run.json, whatever the outcome: unlike the state file, which changes
+    # only when the bad list does, it is rewritten every run so choco's
+    # BFFS page can show which sources measured, which abstained and why.
+    # A dry run writes nothing.
+    if not args.dry_run and config.state_dir:
+        report.setdefault("degraded", [])
+        report.setdefault("sources", [])
+        write_run(config.state_dir, rc, error=error, **report)
     return rc
-
-
-_RUN_STATUS = {0: "ok", 2: "degraded", 1: "failed"}
-
-
-def _write_run_report(config: Config, report: dict, rc: int,
-                      error: str | None, *, write: bool) -> None:
-    """Record how this run went (``run.json`` in the state directory),
-    whatever the outcome.
-
-    Unlike the state file, which changes only when the bad list does,
-    this is rewritten every run so choco's BFFS page can show which
-    sources measured, which abstained and why, and what the exit status
-    meant.  A dry run writes nothing.  Failing to write it is logged and
-    never changes the exit code — it is a window onto the run, not part
-    of it.
-    """
-    report.update(status=_RUN_STATUS.get(rc, "failed"), exit_code=rc, error=error)
-    report.setdefault("degraded", [])
-    report.setdefault("sources", [])
-    if not write or not config.run_path:
-        return
-    try:
-        write_json_atomic(config.run_path, report)
-    except OSError as e:
-        log.warning("could not write run file %s: %s", config.run_path, e)
 
 
 if __name__ == "__main__":

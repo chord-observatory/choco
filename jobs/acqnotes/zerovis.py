@@ -1,23 +1,23 @@
 """Per element: fraction of its cross products that are exactly zero / NaN in a mid-band block.
 
 A bad-feed mask applied by N2Accumulate zeroes every baseline of a masked element, so this
-shows the applied mask in files that do not record it.  Reads three files per acquisition.
+shows the applied mask in files that do not record it.  Reads three files of the acquisition.
 """
 import glob
-import json
 import os
-import sys
 
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-ROOT = "/mnt/cs00/data/kotekan_vis_files/subset"
-out = {}
-for d in sorted(glob.glob(ROOT + "/acq_*")):
+
+
+def analyse(d):
+    """Per sampled file of acquisition directory *d*, the zeroed fraction of each
+    element's cross products (None for an empty directory)."""
     files = sorted(glob.glob(d + "/*.h5"))
     if not files:
-        continue
+        return None
     res = []
     for p in [files[len(files) // 4], files[len(files) // 2], files[(3 * len(files)) // 4]]:
         with h5py.File(p, "r") as f:
@@ -43,6 +43,4 @@ for d in sorted(glob.glob(ROOT + "/acq_*")):
                 wzero.append(float((ww[denom] == 0).mean()) if denom.any() else None)
         res.append({"file": os.path.basename(p), "zero_frac": frac, "weight_zero_frac": wzero,
                      "cells_with_data": float(has.mean())})
-    out[os.path.basename(d)] = res
-    print(os.path.basename(d), [round(x, 2) if x is not None else None for x in res[1]["zero_frac"]], flush=True)
-json.dump(out, open(sys.argv[1], "w"))
+    return res

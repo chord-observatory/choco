@@ -8,17 +8,10 @@ import pytest
 import yaml
 
 from choco.app import create_app, load_config
-from choco.auth import save_user, _users
+from tests.helpers import login
 from choco.datafiles import (
     DataFileScan, human_bytes, notes_html, probe_root, scan_dir, scan_root,
 )
-
-
-@pytest.fixture(autouse=True)
-def clear_users():
-    _users.clear()
-    yield
-    _users.clear()
 
 
 @pytest.fixture
@@ -62,13 +55,8 @@ def _app(configs_dir, roots):
     config["vis_files"] = {"roots": [str(r) for r in roots], "ttl": 30}
     app = create_app(configs_dir=configs_dir, config=config)
     app.config["TESTING"] = True
+    app.config["state_dir"] = configs_dir.parent / "state"   # never the host's /var/lib/choco
     return app
-
-
-def _login(client):
-    user = save_user("cn=tester,dc=example", "tester")
-    with client.session_transaction() as sess:
-        sess["_user_id"] = user.get_id()
 
 
 # --- the scan itself ---
@@ -154,6 +142,52 @@ class TestDataFileScan:
         assert scan.get()["files"] == first["files"] + 1
 
 
+class TestBlockingTimeouts:
+    """A wedged mount costs a bounded wait and one thread, never the hub.
+
+    The stand-in for a wedged mount is a read on an empty pipe: a real
+    kernel block in the worker thread (threading primitives are gevent's
+    under the monkey-patching), released by writing to it.
+    """
+
+    def test_run_blocking_returns_and_times_out(self):
+        from choco.datafiles import run_blocking
+        assert run_blocking(sum, [1, 2], timeout=5) == 3
+        r, w = os.pipe()
+        try:
+            with pytest.raises(TimeoutError, match="no answer"):
+                run_blocking(os.read, r, 1, timeout=0.05)
+        finally:
+            os.write(w, b"x")
+
+    def test_wedged_root_reports_and_is_not_rewalked(self, roots, monkeypatch):
+        import choco.datafiles as df
+        r, w = os.pipe()
+        calls = []
+        real = df.scan_root
+
+        def slow(path):
+            calls.append(path)
+            if path == str(roots[0]):
+                os.read(r, 1)
+            return real(path)
+
+        monkeypatch.setattr(df, "scan_root", slow)
+        scan = DataFileScan(roots, ttl_s=0)
+        scan.SCAN_TIMEOUT_S = 0.05
+        try:
+            first = scan.get()
+            wedged, ok = first["roots"]
+            assert "no answer" in wedged["error"] and ok["error"] is None
+            scan.get()                   # still wedged: waited on, not re-walked
+            assert calls.count(str(roots[0])) == 1
+        finally:
+            os.write(w, b"x")
+        scan.SCAN_TIMEOUT_S = 5
+        assert scan.get()["roots"][0]["error"] is None   # the old walk's answer
+        assert calls.count(str(roots[0])) == 1
+
+
 class TestNotesHtml:
     def test_subset(self):
         html = str(notes_html(
@@ -188,15 +222,9 @@ def test_human_bytes():
 # --- routes ---
 
 class TestFilesRoutes:
-    def test_page_requires_login(self, configs_dir, roots):
-        client = _app(configs_dir, roots).test_client()
-        resp = client.get("/files")
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
     def test_page_renders_lazily(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         resp = client.get("/files")
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
@@ -209,7 +237,7 @@ class TestFilesRoutes:
 
     def test_partial_lists_dirs_and_counts(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         body = client.get("/partials/files").get_data(as_text=True)
         assert "acq_a" in body and "acq_b" in body
         assert "4 files" in body
@@ -217,7 +245,7 @@ class TestFilesRoutes:
 
     def test_unconfigured_page(self, configs_dir):
         client = _app(configs_dir, []).test_client()
-        _login(client)
+        login(client)
         body = client.get("/files").get_data(as_text=True)
         assert "No data roots configured" in body
         assert "/partials/files" not in body
@@ -226,7 +254,7 @@ class TestFilesRoutes:
 
     def test_api_returns_raw_numbers(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         data = json.loads(client.get("/api/files").get_data())
         assert data["configured"] is True
         assert data["files"] == 4
@@ -237,7 +265,7 @@ class TestFilesRoutes:
     def test_partial_offers_notes_only_where_present(self, configs_dir, roots):
         (roots[0] / "acq_a" / "README.md").write_text("# acq_a\n\n**hi**\n")
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         body = client.get("/partials/files").get_data(as_text=True)
         assert body.count('aria-label="Notes on') == 1
         assert ">Info</button>" in body
@@ -249,14 +277,14 @@ class TestFilesRoutes:
     def test_notes_route(self, configs_dir, roots):
         (roots[0] / "acq_a" / "README.md").write_text("# acq_a\n\n**hi**\n")
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         body = client.get("/files/notes/0/acq_a").get_data(as_text=True)
         assert "<h4>acq_a</h4>" in body and "<strong>hi</strong>" in body
 
     def test_notes_route_allowlist(self, configs_dir, roots):
         (roots[0] / "acq_a" / "README.md").write_text("x")
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         # no notes there, unknown root, a name the scan did not list, traversal
         for url in ("/files/notes/0/acq_b", "/files/notes/5/acq_a",
                     "/files/notes/1/acq_a", "/files/notes/0/..",
@@ -270,7 +298,7 @@ class TestFilesRoutes:
             "  source: \"audit <b>\"\n  text: The labels are `wrong`.\n  swapped: [A06]\n"
             "- topic: data\n  acqs: [acq_20260414_213532_313167493]\n  source: s\n  text: Early.\n")
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         body = client.get("/partials/files").get_data(as_text=True)
         assert body.count(">Timeline</button>") == 1          # only the root that has one
         assert 'hx-get="/files/timeline/1"' in body
@@ -287,24 +315,20 @@ class TestFilesRoutes:
     def test_timeline_route_reports_a_bad_file(self, configs_dir, roots):
         (roots[1] / "timeline.yaml").write_text("just: text\n")
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         html = client.get("/files/timeline/1").get_data(as_text=True)
         assert "Timeline unavailable" in html
 
-    def test_notes_route_requires_login(self, configs_dir, roots):
-        client = _app(configs_dir, roots).test_client()
-        assert client.get("/files/notes/0/acq_a").status_code == 302
-
     def test_api_unconfigured(self, configs_dir):
         client = _app(configs_dir, []).test_client()
-        _login(client)
+        login(client)
         data = json.loads(client.get("/api/files").get_data())
         assert data == {"configured": False, "roots": []}
 
     def test_api_refresh_bypasses_cache(self, configs_dir, roots):
         app = _app(configs_dir, roots)
         client = app.test_client()
-        _login(client)
+        login(client)
         first = json.loads(client.get("/api/files").get_data())["files"]
         (roots[1] / "acq_a" / "vis_1.h5").write_bytes(b"x")
         assert json.loads(client.get("/api/files").get_data())["files"] == first
@@ -424,7 +448,7 @@ class TestHealth:
 
 
 # The DATA badge also carries the waterfall renderer (the job that reads
-# these mounts; tests/test_web.py covers that half), so the renderer's
+# these mounts; tests/test_web_pages.py covers that half), so the renderer's
 # job_status is stubbed ok here and the badge is the mounts' alone.
 _RENDERER_OK = {"health": "ok", "running": False, "state_mtime": None,
                 "result": "success", "systemd": True, "active_state": None,
@@ -441,7 +465,7 @@ def _strip(client) -> str:
 class TestDataBadge:
     def test_pill_rendered_green_when_up(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         body = _strip(client)
         assert "DATA" in body
         assert 'href="/files"' in body
@@ -450,7 +474,7 @@ class TestDataBadge:
     def test_pill_red_when_roots_gone(self, configs_dir, tmp_path):
         app = _app(configs_dir, [tmp_path / "gone"])
         client = app.test_client()
-        _login(client)
+        login(client)
         app.config["datafile_scan"].check_once()
         body = _strip(client)
         assert "DATA" in body and 'class="tag tag-bad"' in body    # monitor_tone('down')
@@ -458,20 +482,20 @@ class TestDataBadge:
 
     def test_unconfigured_pill_is_grey(self, configs_dir):
         client = _app(configs_dir, []).test_client()
-        _login(client)
+        login(client)
         body = _strip(client)
         assert "DATA" in body and "not configured" in body
 
     def test_dashboard_has_no_data_button(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()
-        _login(client)
+        login(client)
         body = client.get("/").get_data(as_text=True)
         assert "Data files" not in body
 
     def test_api_status_carries_data_health(self, configs_dir, roots):
         app = _app(configs_dir, roots)
         client = app.test_client()
-        _login(client)
+        login(client)
         app.config["datafile_scan"].check_once()
         data = json.loads(client.get("/api/status").get_data())
         assert data["services"]["data"] == "ok"

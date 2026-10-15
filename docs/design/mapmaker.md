@@ -56,15 +56,23 @@ Fixed against files 11–50 of ``acq_20261004_012627_261398483`` (scripts in
   coherence over the transit against 0.07 for the two with the EW sign
   flipped and 0.87 with only the NS sign flipped (two rows constrain it
   weakly, through the curvature of the fringe over the transit).
-* **Fringestopping.** ``N2Accumulate`` stops each 10 s bin to the pointing
-  centre at the bin's own ERA (``Telescope::fill_fringestop_phases_1d``):
-  the sky frozen at the bin centre, exactly the kernel's model.  Nothing
-  needs undoing.
+* **Fringestopping.** With ``n2_accumulate/do_fringestop`` on, ``N2Accumulate``
+  stops the 40 ms frames of each 10 s bin to the pointing centre at the
+  bin's own ERA (``Telescope::fill_fringestop_phases_1d``): the sky frozen
+  at the bin centre, exactly the kernel's model.  Nothing needs undoing.
+  Nothing is stopped across bins, which is what the kernel's per-bin phase
+  supplies.  With the flag off (as on 2026-10-04) the frames rotate within
+  a bin, a small smear on the pathfinder's short baselines.
 * **The beam**: a Gaussian with FWHM 1.03 λ/D.  Cyg A's transit measured
   4.9°, 3.2° and 2.0° at 677, 1002 and 1402 MHz against 4.4°, 2.9° and 2.1°.
 * **Pointing**: Cyg A transits 8.5° south of zenith, so the dishes point
   at dec ≈ 40.8, not the −27.3° co-elevation (Tau A) kotekan's config
-  says.  The pointing is therefore a config value, not read from kotekan.
+  said.  The pointing is therefore a config value, not read from kotekan:
+  it is part of the grid signature, so following kotekan would restart
+  the maps.  kotekan was corrected in October 2026 (−8.6°, dec 40.72), and
+  each run now compares the file's ``itrs_lat_deg + dish_coelev_deg``
+  with the config, recording it as ``pointing_check`` in state.json and
+  warning (log and MAP page) when they differ by more than a Dec row.
 * A small unexplained offset: the transit arrives ~0.2° (50 s) early
   against the CIRS/ERA model in the upper bands.  Two pixels; harmless for
   a quick look, to be understood before absolute positions are trusted.

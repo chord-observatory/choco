@@ -19,15 +19,19 @@ larger than it can be read as — and it means a root whose files nest deeper
 (the archived ``old/`` layout) honestly reports zeros instead of silently
 descending into a different shape.  Three implementation choices carry the
 weight.  The walk runs in **gevent's threadpool**
-(``gevent.get_hub().threadpool.map``, one thread per root so two mounts are
-walked at once): these roots are NFS, so ``stat`` is not the cheap local call
+(one thread per root so two mounts are walked at once, waited on for at most
+``SCAN_TIMEOUT_S``; a root that misses it reports an error row, and its walk
+keeps its one thread and is picked up by the next scan rather than joined by
+a second walk, so a wedged mount cannot fill the pool): these roots are NFS, so ``stat`` is not the cheap local call
 it looks like — 20k of them cost ~300 ms warm — and a wedged mount blocks for
 as long as it likes, which *in the hub* would freeze the sync loop, the
 monitors and every other request.  Measured: a direct scan lets a 5 ms
 heartbeat greenlet tick **zero** times in 114 ms, the threadpooled one keeps
 it ticking with a 5.7 ms worst stall.  It is the h5py-subprocess reasoning one
 step down in weight — a blocking syscall to isolate, but no C extension, so a
-thread suffices.  The result is **cached** (``DataFileScan``, 30 s, serialised
+thread suffices.  Every other NFS call from the web process (the badge probe
+aside, which keeps its own one-in-flight guard) goes through
+``datafiles.run_blocking``: threadpool, bounded wait, ``TimeoutError``.  The result is **cached** (``DataFileScan``, 30 s, serialised
 behind a ``BoundedSemaphore`` exactly as ``GainArchive`` is) so several
 viewers cost one walk, with an explicit Rescan button passing ``?refresh=1``.
 And the table is a **lazily loaded partial** (``/partials/files``, ``hx-
@@ -70,7 +74,7 @@ Each row also shows the **span** of its files — the oldest and newest ``.h5``
 mtime, in UTC — taken from the same ``scandir`` pass, so it costs nothing extra.
 An mtime is when a file was last written, so the span starts one file (~200 s)
 after the acquisition did; close enough to place a run in time.  The same pass
-notices a ``README.md`` in the acquisition (written by ``tools/acqnotes``) and
+notices a ``README.md`` in the acquisition (written by the acqnotes job, ``jobs/acqnotes``) and
 the row grows an info button.  The README is **not** read by the scan: the
 button's popover fetches ``/files/notes/<root index>/<acq>`` on first open
 (``hx-trigger="toggle once"``).  That route never turns the caller's string
@@ -82,7 +86,7 @@ by ``datafiles.notes_html``, a deliberately small subset (headings, paragraphs,
 recognising anything, so a README can produce only those elements — a Markdown
 library would be a new dependency and would pass raw HTML through by default.
 The same overlay shows the root's ``timeline.yaml`` behind a Timeline button
-in the root header: ``tools/acqnotes/render.py`` copies the curated history
+in the root header: the acqnotes job copies the curated history
 into the data root, because production choco runs from the installed package
 and cannot see the repository.  ``/files/timeline/<root index>`` reads it the
 same way (allowlisted by the scan, threadpool, timeout, size cap), parses it

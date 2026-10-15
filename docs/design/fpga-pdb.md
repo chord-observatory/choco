@@ -159,8 +159,9 @@ kotekan configs).  It is the *master* table, deliberately not copied: its
 ``dish_input`` values label every grid cell on the PDB page (``● A1X`` rather
 than ``on``), and it is served at ``GET /api/pdb/map`` — where
 ``jobs/bffs/sources/power.py`` now reads it from (explicit ``map:`` in the
-bffs source config still overrides; the bundled ``power_map.csv`` is the
-fallback for dry runs and choco outages).  The label column is canonically
+bffs source config still overrides; with neither, the source abstains and
+the run reports degraded — the bundled placeholder CSV it used to fall back
+to named no real feed, 2026-10).  The label column is canonically
 ``dish_input`` with ``correlator_input`` / ``label`` accepted as aliases, and
 ``to_dict`` emits both names so either consumer works.  Parsing is row-at-a-
 time resilient in the same spirit as ``Registry.reload``: ``#``-comments and

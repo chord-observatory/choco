@@ -71,14 +71,16 @@
             <td>{% if pdb.last_seen %}seen {{ since(pdb.last_seen, now) }}{% else %}<span class="muted">never seen</span>{% endif %}</td>
         </tr>
         {% endif %}
-        {# DATA: the mounts and the waterfall renderer that reads them,
-           one row like the strip's one tag (see _services_status.html). #}
-        {% set data = services.data %}{% set wf = services.waterfall %}
-        {% if data or wf %}
+        {# DATA: the mounts and the jobs that read them (waterfalls,
+           acquisition notes), one row like the strip's one tag (see
+           _services_status.html). #}
+        {% set data = services.data %}{% set wf = services.waterfall %}{% set notes = services.acqnotes %}
+        {% set data_jobs = [['waterfall', wf], ['notes', notes]] %}
+        {% if data or wf or notes %}
         {% set d = details.get('waterfall') %}{% set timer = timers.get('waterfall') %}
         <tr>
             <td class="svc"><a href="/files"><strong>DATA</strong></a></td>
-            <td>{{ tag(data_tone(data, wf), data_word(data, wf)) }}</td>
+            <td>{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</td>
             <td>
                 {% if data and data.configured %}
                 {{ data.n_ok }} / {{ data.n_roots }} data root{{ 's' if data.n_roots != 1 }} reachable
@@ -100,11 +102,22 @@
                 <br><small class="err">{{ r }}</small>
                 {% endfor %}
                 {% endif %}
+                {% if notes %}{% set nd = details.get('acqnotes') %}
+                {% if data or wf %}<br>{% endif %}notes:
+                {% if nd and nd.acquisitions is not none %}{{ nd.n_with_notes }} / {{ nd.acquisitions }} acquisitions{% if nd.backlog %}, {{ nd.backlog }} to measure{% endif %}{% else %}{{ job_label(notes.health, notes.running) }}{% endif %}
+                {% if notes.result and notes.result != 'success' %}
+                <br><small class="err">notes result: {{ notes.result }}{% if notes.exit_status %} (exit {{ notes.exit_status }}){% endif %}</small>
+                {% endif %}
+                {% for r in notes.reasons or [] %}
+                <br><small class="err">{{ r }}</small>
+                {% endfor %}
+                {% endif %}
             </td>
             <td>
                 {% if data %}{% if data.last_seen %}seen {{ since(data.last_seen, now) }}{% else %}<span class="muted">never seen</span>{% endif %}{% endif %}
                 {% if wf %}{% if data %}<br>{% endif %}{{ svc.waterfall.mtime_label }} {{ since(wf.state_mtime, now) }}
                 {% if timer and timer.next_elapse %}<br><small class="muted">next {{ timer.next_elapse }}</small>{% endif %}{% endif %}
+                {% if notes and notes.state_mtime %}{% if data or wf %}<br>{% endif %}notes: {{ svc.acqnotes.mtime_label }} {{ since(notes.state_mtime, now) }}{% endif %}
             </td>
         </tr>
         {% endif %}

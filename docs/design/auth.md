@@ -20,10 +20,11 @@ matter: the empty-password check (an empty SIMPLE bind is an *anonymous* bind
 — it would "succeed"; refused in ``authenticate`` and again in
 ``simple_bind``) and ``escape_rdn`` on the username.  Legacy config keys
 from the flask-ldap3-login era (``bind_dn``, ``bind_password``,
-``user_object_filter``, ``user_search_scope``) are read-and-ignored — that
-library's search-bind path (the only consumer of them) was unreachable with
-choco's settings, which is why the wrapper and its Flask-WTF/WTForms train
-could be dropped.  Defaults tuned for FreeIPA: ``cn=users,cn=accounts`` user
+``user_object_filter``, ``user_search_scope``) are refused at startup
+(2026-10; they had been silently ignored, and an unused service password
+should not sit in a config) — that library's search-bind path (the only
+consumer of them) was unreachable with choco's settings, which is why the
+wrapper and its Flask-WTF/WTForms train could be dropped.  Defaults tuned for FreeIPA: ``cn=users,cn=accounts`` user
 DN, ``uid`` login attribute, LDAPS on port 636.
 
 **The bind is the standard library (2026-10-08).**  ldap3 went: its last
@@ -144,6 +145,24 @@ dict directly): a non-mapping, an unparsable key or an empty label is a
 startup error naming the entry.  Entries are matched most-specific first so
 a host inside a listed network can carry its own label.  Default is empty,
 which is also what keeps the test suite honest -- Flask's test client
-presents as ``127.0.0.1``, so every ``test_requires_login`` in the suite is
-implicitly a test that the default is off.  ``tests/test_trusted_hosts.py``
-covers the rest.
+presents as ``127.0.0.1``, so a test that wants a remote peer must say so
+(``tests/test_route_auth.py`` sweeps every route from ``10.222.0.54``).
+``tests/test_trusted_hosts.py`` covers the rest.
+
+## The loopback API from a browser (2026-10)
+
+``localhost_or_login_required`` admits loopback callers -- the jobs and the
+CLI -- with no login, no token and no checks beyond the route's own.  Until
+2026-10 a logged-in caller from anywhere else got the same treatment, so
+the write routes behind it (``/update/*``, ``/oneshot/*``, ``PUT
+/api/configs/*``, ``POST /api/configs/pull``) took no CSRF token, and a pull
+with an empty body acted (a pull puts the nodes it re-renders in
+maintenance).  The ``SameSite=Lax`` cookie kept a cross-*site* page out, but
+not a page on a sibling ``chord-observatory.ca`` host or another port of
+this one.  No page in choco calls these routes and only this host scripts
+them, so a non-loopback write now needs what every other browser write
+needs, the session's token (``X-CSRF-Token``), and a JSON body besides:
+no HTML form can send one cross-origin, so even a leaked token cannot be
+spent by a form.  A trusted-host peer is a browser session like any other
+here.  ``/api/fpga/gain-data`` alone is login-only even from loopback:
+nothing on the host reads the F-engine's gains.

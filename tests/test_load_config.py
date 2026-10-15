@@ -17,7 +17,7 @@ def _load(tmp_path, extra: str):
 class TestRetiredKeys:
     def test_clean_config_loads(self, tmp_path):
         cfg = _load(tmp_path, "pdb:\n  host: p\n  port: 5000\n"
-                              "eop:\n  endpoint: earth_rotation_data\n")
+                              "eop:\n  service_unit: choco-eop-broadcast.service\n")
         assert cfg["pdb"]["host"] == "p"
 
     @pytest.mark.parametrize("extra, fix", [
@@ -25,6 +25,12 @@ class TestRetiredKeys:
         ("psu:\n  host: p\n", "pdb:"),
         ("eop:\n  fpga_master_host: chive\n", "fpga_master.host"),
         ("eop:\n  fpga_master_port: 54321\n", "fpga_master.port"),
+        # 2026-10: the eop job's own settings moved to its own config
+        ("eop:\n  intervals_before: 2\n", "/etc/choco/eop.yaml"),
+        ("ldap:\n  bind_dn: uid=svc\n", "binds as the user"),
+        ("ldap:\n  bind_password: s3cret\n", "binds as the user"),
+        ("ldap:\n  user_search_scope: SUBTREE\n", "no user search"),
+        ("eop:\n  endpoint: earth_rotation_data\n", "/etc/choco/eop.yaml"),
         # 2026-10: state paths are a convention, not configuration
         ("eop:\n  state_file: /var/lib/choco/eop/state.json\n", "state_dir"),
         ("bffs:\n  state_file: /var/lib/choco/bffs/state.json\n", "state_dir"),

@@ -2,17 +2,28 @@
 Description=choco job: EOP table broadcast
 Requires=choco.service
 After=choco.service
+# Restart= below retries forever: no start-rate limit
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 # systemd owns /var/lib/choco/eop (creates it with the right ownership) and
 # exports it as $STATE_DIRECTORY; the EOP table (state.json) lives there.
 StateDirectory=choco/eop
-ExecStart=/opt/choco/jobs/eop/eop-broadcast.sh /etc/choco/config.yaml
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/run-job.sh eop/eop_update.py /etc/choco/eop.yaml
 # Retry forever so the job self-recovers when the FPGA master comes back.
 Restart=on-failure
 RestartSec=60
-StartLimitIntervalSec=0
+Nice=10
+IOSchedulingClass=idle
+# astropy builds the table from IERS data (cached in ~choco/.astropy):
+# seconds of CPU and a few hundred MB.  Backstops, like the other jobs'.
+CPUQuota=100%
+CPUWeight=20
+MemoryHigh=1G
+MemoryMax=2G
 
 [Install]
 WantedBy=choco.service

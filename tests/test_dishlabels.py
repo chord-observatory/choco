@@ -128,6 +128,24 @@ class TestConnectedElements:
         with pytest.raises(ValueError):
             dl.connected_elements(self.TABLE, 0)
 
+    def test_rows_go_to_their_dish_idx_like_kotekan(self):
+        """kotekan fills num_dishes slots by dish_idx; an unnamed slot is
+        Missing.  Out of order and sparse must not shift the axis."""
+        table = [{"label": "A2", "type": "ArrayDish", "dish_idx": 2},
+                 {"label": "A0", "type": "ArrayDish", "dish_idx": 0}]
+        assert dl.connected_elements(table, 1, num_dishes=4) == [0, 2]
+        assert dl.connected_elements(table, 2, num_dishes=4) == [0, 2, 4, 6]
+
+    @pytest.mark.parametrize("rows,ndish", [
+        ([{"dish_idx": 1}, {"dish_idx": 1}], 4),       # duplicate
+        ([{"dish_idx": 4}], 4),                        # out of range
+        ([{"dish_idx": -1}], 4),
+        ([{"dish_idx": 2}], None),                     # past the table's own length
+    ])
+    def test_a_table_kotekan_refuses_raises(self, rows, ndish):
+        with pytest.raises(ValueError):
+            dl.connected_elements(rows, 1, num_dishes=ndish)
+
     def test_live_pathfinder_table(self):
         # cx52, 2026-10: 16 ArrayDish + 8 RFIDish rows among 64, both
         # pols — the 48-element compact axis kotekan reports.

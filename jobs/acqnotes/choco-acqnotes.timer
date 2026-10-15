@@ -1,0 +1,10 @@
+[Unit]
+Description=measure new subset acquisitions and write their READMEs (hourly)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

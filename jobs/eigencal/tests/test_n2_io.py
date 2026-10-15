@@ -201,37 +201,6 @@ def test_xy_spelling_is_read_with_the_pol_index(tmp_path, chord_file):
         n2_io.read_meta(chord_file)
 
 
-def test_pre_2026_08_per_element_labels_are_refused(tmp_path, chord_file):
-    with h5py.File(chord_file, "r+") as f:
-        del f["index_map"]["label"]
-        del f["index_map"]["pol"]
-        f["index_map"].create_dataset(
-            "label", data=np.array(OLD_LABELS, dtype="S10"))
-    with pytest.raises(OSError, match="per-element label"):
-        n2_io.read_meta(chord_file)
-
-
-def test_per_dish_label_table_is_refused(tmp_path):
-    """The 2026-08..09 layout (one label per dish, expanded by the reader)
-    is not accepted any more: the count does not match the element axis."""
-    a, b = _prods(4)
-    path = tmp_path / "chord_per_dish.h5"
-    with h5py.File(path, "w") as f:
-        f.attrs["num_elements"] = 4
-        im = f.create_group("index_map")
-        im.create_dataset("label", data=np.array([b"A1", b"B1"], dtype="S10"))
-        freq = np.zeros(1, dtype=[("centre", "<f8"), ("width", "<f8")])
-        freq["centre"], freq["width"] = 400.0, 100.0
-        im.create_dataset("freq", data=freq)
-        im.create_dataset("time", data=np.array([1000.0]))
-        prod = np.zeros(a.size, dtype=[("input_a", "<u2"), ("input_b", "<u2")])
-        prod["input_a"], prod["input_b"] = a, b
-        im.create_dataset("prod", data=prod)
-        f.create_dataset("vis", data=np.zeros((1, a.size, 1), np.complex64))
-    with pytest.raises(OSError, match="2 entries for 4 elements"):
-        n2_io.read_meta(path)
-
-
 def test_read_products(chord_file):
     m = n2_io.read_meta(chord_file)
     a, b = _prods(NFEED)

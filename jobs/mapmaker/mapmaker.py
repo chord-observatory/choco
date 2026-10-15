@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import glob
 import json
 import logging
@@ -46,7 +45,8 @@ import numpy as np
 import yaml
 
 from choco.healpix import default_sky_map
-from choco.jobclient import job_state_dir, write_json_atomic
+from choco.jobclient import (STATE_NAME, Degraded, atomic_output, job_state_dir, refuse_retired,
+                             setup_logging, single_run, write_json_atomic)
 
 import imaging as I
 import reduce as R
@@ -112,14 +112,10 @@ _RENAMED_KEYS = {"bands": "colour_bins and colour_range_mhz (hues now run over t
 MAPS_FILE = "maps.npz"
 GAINS_FILE = "gains.npz"
 CALSUM_FILE = "calsum.npz"
-STATE_FILE = "state.json"
+STATE_FILE = STATE_NAME
 LOCK_FILE = "mapmaker.lock"
 IMAGES = {"sky": "sky.png", "daily": "daily.png",
           "sky_strip": "sky-strip.png", "daily_strip": "daily-strip.png"}
-
-
-class Degraded(Exception):
-    """A dependency was unavailable.  Retries self-heal; exit 2."""
 
 
 # --- config -----------------------------------------------------------------
@@ -129,13 +125,8 @@ def load_config(path) -> dict:
         raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
         raise ValueError("config must be a mapping")
-    retired = [k for k in _RETIRED_KEYS if k in raw]
-    if retired:
-        raise ValueError(
-            f"{' and '.join(retired)} retired: remove it; the maps, gains, state.json "
-            f"and the run lock live in the job's state directory "
-            f"({job_state_dir('mapmaker')}; systemd's StateDirectory=choco/mapmaker, "
-            f"or --state-dir)")
+    refuse_retired(raw, _RETIRED_KEYS, "mapmaker",
+                   "the maps, gains, state.json and the run lock live")
     renamed = [k for k in _RENAMED_KEYS if k in raw]
     if renamed:
         raise ValueError("; ".join(f"{k} retired: use {_RENAMED_KEYS[k]}" for k in renamed))
@@ -251,31 +242,6 @@ def colour_bin_of(freq_mhz: float, edges: np.ndarray) -> int | None:
     if freq_mhz < edges[0] or freq_mhz >= edges[-1]:
         return None
     return int(np.searchsorted(edges, freq_mhz, side="right") - 1)
-
-
-# --- the run lock -------------------------------------------------------------
-
-@contextlib.contextmanager
-def single_run(path):
-    """Hold an exclusive lock for the duration of a run, or yield False.
-    Two runs would double-count samples into the accumulators."""
-    lock = Path(path)
-    try:
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(lock, "w")
-    except OSError as exc:
-        log.warning("could not open lock file %s: %s", lock, exc)
-        yield True
-        return
-    try:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        yield True
-    finally:
-        fh.close()
 
 
 # --- source positions ---------------------------------------------------------
@@ -419,11 +385,10 @@ class Maps:
                            "n_samples": self.n_samples,
                            "n_sun_skipped": self.n_sun_skipped,
                            "geometry": self.geometry})
-        tmp = str(path) + ".tmp.npz"
-        np.savez(tmp, signature=np.array(self.signature), sky_num=self.sky_num,
-                 sky_exp=self.sky_exp, sky_blw=self.sky_blw, pass_num=self.passes.num,
-                 pass_exp=self.passes.exp, pass_idx=self.passes.idx, meta=np.array(meta))
-        os.replace(tmp, path)
+        with atomic_output(path, suffix=".npz") as tmp:
+            np.savez(tmp, signature=np.array(self.signature), sky_num=self.sky_num,
+                     sky_exp=self.sky_exp, sky_blw=self.sky_blw, pass_num=self.passes.num,
+                     pass_exp=self.passes.exp, pass_idx=self.passes.idx, meta=np.array(meta))
 
 
 def load_gains(path):
@@ -439,9 +404,8 @@ def load_gains(path):
 
 
 def save_gains(path, gains: np.ndarray, meta: dict) -> None:
-    tmp = str(path) + ".tmp.npz"
-    np.savez(tmp, gains=gains, meta=np.array(json.dumps(meta)))
-    os.replace(tmp, path)
+    with atomic_output(path, suffix=".npz") as tmp:
+        np.savez(tmp, gains=gains, meta=np.array(json.dumps(meta)))
 
 
 def load_calsum(path) -> I.CalAccumulator | None:
@@ -466,9 +430,8 @@ def save_calsum(path, acc: I.CalAccumulator | None) -> None:
         return
     meta = json.dumps({"n_samples": acc.n_samples, "calibrator": acc.calibrator,
                        "first_time": acc.first_time, "last_time": acc.last_time})
-    tmp = str(path) + ".tmp.npz"
-    np.savez(tmp, gsum=acc.gsum, gwt=acc.gwt, meta=np.array(meta))
-    os.replace(tmp, path)
+    with atomic_output(path, suffix=".npz") as tmp:
+        np.savez(tmp, gsum=acc.gsum, gwt=acc.gwt, meta=np.array(meta))
 
 
 # --- the run -----------------------------------------------------------------------
@@ -562,10 +525,31 @@ class Run:
         cosang = uE * pvec[0] + uN * pvec[1] + uU * pvec[2]
         return np.rad2deg(np.arccos(np.clip(cosang, -1, 1))) > self.cfg["sun_exclusion_deg"]
 
+    def check_pointing(self, ax) -> None:
+        """Record kotekan's pointing beside the config's, once per run, and
+        warn when they disagree by more than a Dec row.
+
+        The config value stays the authority: it is part of the grid
+        signature, so following kotekan would restart the maps, and
+        kotekan's ``dish_coelev_deg`` was wrong until October 2026.  Now
+        that it is right, a disagreement means one of the two is stale.
+        """
+        if ax.kotekan_dec_deg is None or "pointing_check" in self.report:
+            return
+        config_dec = self.cfg["pointing_dec_deg"]
+        agrees = abs(ax.kotekan_dec_deg - config_dec) <= self.cfg["dec_step_deg"]
+        self.report["pointing_check"] = {"kotekan_dec_deg": round(ax.kotekan_dec_deg, 3),
+                                         "config_dec_deg": config_dec, "agrees": agrees}
+        if not agrees:
+            log.warning("kotekan points the dishes at dec %.2f (dish_coelev_deg in %s) but "
+                        "pointing_dec_deg is %.2f: one of them is stale",
+                        ax.kotekan_dec_deg, os.path.basename(ax.path), config_dec)
+
     def process(self, path: str) -> None:
         cfg = self.cfg
         t_start = time.perf_counter()
         ax = R.read_axes(path)
+        self.check_pointing(ax)
         pols = R.pol_sets(ax)
         self.setup(ax, pols)
         era_local = I.era_local_deg(ax.era_deg, ax.lon_deg)
@@ -776,9 +760,7 @@ def main(argv=None) -> int:
     ap.add_argument("-v", "--verbose", action="count", default=0)
     args = ap.parse_args(argv)
 
-    logging.basicConfig(level=logging.WARNING - 10 * min(args.verbose, 2),
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    log.setLevel(min(log.getEffectiveLevel(), logging.INFO))
+    setup_logging(args.verbose, log)
 
     try:
         cfg = load_config(args.config)
@@ -806,6 +788,7 @@ def main(argv=None) -> int:
     except OSError as e:
         log.error("state directory %s: %s", state_dir, e)
         return 2
+    # two runs would double-count samples into the accumulators
     with single_run(state_dir / LOCK_FILE) as acquired:
         if not acquired:
             log.info("another run holds the lock; nothing to do")

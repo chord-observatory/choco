@@ -22,31 +22,38 @@
 {%- else -%}{{ h | replace('_', ' ') }}
 {%- endif -%}
 {%- endmacro %}
-{# The DATA badge covers two things that fail together: the data mounts
-   (datafiles.DataFileScan, a monitor) and the waterfall renderer that
-   reads them (a job).  One tag shows the worse half -- bad over warn over
-   off over ok, the mounts on a tie, since a dead mount is what explains a
-   degraded renderer.  The renderer's word is prefixed so a red DATA
-   whose tooltip says "waterfall failed" cannot be read as a dead mount.  A missing
-   half (no scan object, no job snapshot) simply does not count. #}
-{% macro _data_pick(data, wf) -%}
+{# The DATA badge covers the data mounts (datafiles.DataFileScan, a
+   monitor) and the jobs that read them (the waterfall renderer, the
+   acquisition notes), which fail together.  One tag shows the worst --
+   bad over warn over off over ok, the mounts on a tie, since a dead mount
+   is what explains a degraded job.  *jobs* is a list of [word, snapshot]
+   pairs; a job's word prefixes its state so a red DATA whose tooltip says
+   "waterfall failed" cannot be read as a dead mount.  A missing part (no
+   scan object, no job snapshot) simply does not count. #}
+{% macro _data_pick(data, jobs) -%}
 {%- set rank = {'bad': 3, 'warn': 2, 'off': 1, 'info': 0, 'ok': 0} -%}
-{%- set mt = monitor_tone(data.health) | trim if data else none -%}
-{%- set jt = job_tone(wf.health, wf.running) | trim if wf else none -%}
-{%- if mt is none -%}renderer
-{%- elif jt is none -%}mounts
-{%- elif rank[jt] > rank[mt] -%}renderer
-{%- else -%}mounts
+{%- set ns = namespace(pick=-1, r=-1) -%}
+{%- if data -%}{%- set ns.r = rank[monitor_tone(data.health) | trim] -%}{%- endif -%}
+{%- for word, j in jobs -%}
+{%- if j -%}
+{%- set r = rank[job_tone(j.health, j.running) | trim] -%}
+{%- if r > ns.r -%}{%- set ns.pick, ns.r = loop.index0, r -%}{%- endif -%}
+{%- endif -%}
+{%- endfor -%}
+{{ ns.pick }}
+{%- endmacro %}
+{% macro data_tone(data, jobs) -%}
+{%- set i = _data_pick(data, jobs) | trim | int -%}
+{%- if i >= 0 -%}{{ job_tone(jobs[i][1].health, jobs[i][1].running) }}
+{%- elif data -%}{{ monitor_tone(data.health) }}
+{%- else -%}off
 {%- endif -%}
 {%- endmacro %}
-{% macro data_tone(data, wf) -%}
-{%- if _data_pick(data, wf) | trim == 'renderer' -%}{{ job_tone(wf.health, wf.running) }}
-{%- else -%}{{ monitor_tone(data.health) }}
-{%- endif -%}
-{%- endmacro %}
-{% macro data_word(data, wf) -%}
-{%- if _data_pick(data, wf) | trim == 'renderer' -%}waterfall {{ job_label(wf.health, wf.running) }}
-{%- else -%}{{ monitor_label(data.health) }}
+{% macro data_word(data, jobs) -%}
+{%- set i = _data_pick(data, jobs) | trim | int -%}
+{%- if i >= 0 -%}{{ jobs[i][0] }} {{ job_label(jobs[i][1].health, jobs[i][1].running) }}
+{%- elif data -%}{{ monitor_label(data.health) }}
+{%- else -%}unknown
 {%- endif -%}
 {%- endmacro %}
 {# job states: ok; degraded (dependency/input trouble, exit 2) and stale

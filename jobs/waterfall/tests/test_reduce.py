@@ -103,23 +103,6 @@ def test_read_axes_compact_labels_are_read_as_written(tmp_path):
     assert R.read_axes(path).labels == ["B4X", "RFIA1X", "B4Y", "RFIA1Y"]
 
 
-def test_read_axes_without_pol_index_trusts_the_suffix(tmp_path):
-    path = tmp_path / "vis_0000000001_x.h5"
-    make_file(path, n_elem=4)
-    _labels(path, ["A0p1", "A1p1", "A0p2", "A1p2"])
-    assert R.read_axes(path).labels == ["A0X", "A1X", "A0Y", "A1Y"]
-
-
-def test_read_axes_per_dish_table_stores_nothing(tmp_path, caplog):
-    """The 2026-08..09 per-dish table (one label per dish, half the axis)
-    is not expanded any more: indices, and a warning."""
-    path = tmp_path / "vis_0000000001_x.h5"
-    make_file(path, n_elem=4)
-    _labels(path, ["A1", "B1"])
-    assert R.read_axes(path).labels == []
-    assert "2 entries for 4 elements" in caplog.text
-
-
 def test_read_axes_xy_labels_are_read_as_written(tmp_path):
     """kotekan PR #1695 (2026-09-22; subset acquisitions from 2026-10-01):
     the polarization *name* is the suffix and index_map/pol is alongside.
@@ -141,22 +124,6 @@ def test_read_axes_xy_labels_without_pol_index_store_nothing(tmp_path, caplog):
     _labels(path, ["A0X", "A1X", "A0Y", "A1Y"])
     assert R.read_axes(path).labels == []
     assert "no index_map/pol to vouch" in caplog.text
-
-
-def test_read_axes_labels_without_either_suffix_store_nothing(tmp_path, caplog):
-    path = tmp_path / "vis_0000000001_x.h5"
-    make_file(path, n_elem=4)
-    _labels(path, ["d0_pA", "d1_pA", "d0_pB", "d1_pB"], pol=[0, 0, 1, 1])
-    assert R.read_axes(path).labels == []
-    assert "no polarization suffix" in caplog.text
-
-
-def test_read_axes_pol_index_disagreeing_with_suffix_stores_nothing(tmp_path, caplog):
-    path = tmp_path / "vis_0000000001_x.h5"
-    make_file(path, n_elem=4)
-    _labels(path, ["A0p1", "A1p1", "A0p2", "A1p2"], pol=[0, 0, 0, 1])
-    assert R.read_axes(path).labels == []
-    assert "index_map/pol says 0" in caplog.text
 
 
 def test_product_names_are_sortable_and_padded(vis_file):

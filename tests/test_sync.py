@@ -16,39 +16,6 @@ from choco.sync import (
 
 
 @pytest.fixture
-def configs_dir(tmp_path):
-    """Temporary configs directory with two groups."""
-    nodes = {
-        "groups": {
-            "cx": {
-                "cx1": {"host": "cx1.chord.ca", "port": 12048},
-                "cx2": {"host": "cx2.chord.ca", "port": 12048},
-            },
-            "recv": {
-                "recv1": {"host": "recv1.chord.ca", "port": 12048},
-            },
-        }
-    }
-    with open(tmp_path / "nodes.yaml", "w") as f:
-        yaml.dump(nodes, f)
-
-    cx_dir = tmp_path / "cx"
-    cx_dir.mkdir()
-    config = {"num_elements": 2048, "log_level": "info"}
-    with open(cx_dir / "cx1.yaml", "w") as f:
-        yaml.dump(config, f)
-    with open(cx_dir / "cx2.yaml", "w") as f:
-        yaml.dump(config, f)
-
-    recv_dir = tmp_path / "recv"
-    recv_dir.mkdir()
-    with open(recv_dir / "recv1.yaml", "w") as f:
-        yaml.dump({"buffer_depth": 12}, f)
-
-    return tmp_path
-
-
-@pytest.fixture
 def registry(configs_dir):
     reg = Registry(configs_dir)
     # Registry constructs nodes in maintenance mode; flip back to normal
@@ -714,39 +681,8 @@ class TestDiscoverNodeStates:
 
 
 class TestMaintenanceMode:
-    """In maintenance mode, push_updatable / start are no-ops and the
-    sync loop short-circuits before any push.  Kill is unaffected.
-    """
-
-    def test_node_push_updatable_noop_in_maintenance(self):
-        node = Node(name="t", group="t", host="example", port=12048,
-                    timeout=1, maintenance=True)
-        node._request = MagicMock(return_value=MagicMock())
-        assert node.push_updatable("foo/bar", {"v": 1}) is False
-        node._request.assert_not_called()
-
-    def test_node_start_noop_in_maintenance(self):
-        node = Node(name="t", group="t", host="example", port=12048,
-                    timeout=1, maintenance=True)
-        node._request = MagicMock(return_value=MagicMock())
-        assert node.start({"config": "x"}) is False
-        node._request.assert_not_called()
-
-    def test_node_kill_noop_in_maintenance(self):
-        node = Node(name="t", group="t", host="example", port=12048,
-                    timeout=1, maintenance=True)
-        node._request = MagicMock(return_value=MagicMock())
-        assert node.kill() is False
-        node._request.assert_not_called()
-
-    def test_node_push_paths_work_when_not_in_maintenance(self):
-        node = Node(name="t", group="t", host="example", port=12048,
-                    timeout=1, maintenance=False)
-        node._request = MagicMock(return_value=MagicMock())
-        assert node.push_updatable("foo/bar", {"v": 1}) is True
-        assert node.start({"config": "x"}) is True
-        assert node.kill() is True
-        assert node._request.call_count == 3
+    """In maintenance mode the sync loop short-circuits before any push
+    (the Node-level no-ops are in test_state)."""
 
     def test_sync_skips_push_in_maintenance(self, orchestrator):
         """Drift detected but maintenance is on -> no /kill, no /start."""
@@ -859,6 +795,28 @@ class TestConfigFileScan:
 
         for node in orchestrator.registry.nodes.values():
             assert node.queue_empty
+
+    def test_failing_path_does_not_stop_the_scan(self, configs_dir,
+                                                  orchestrator, caplog):
+        """A handler that raises is logged; the other paths still land."""
+        self._baseline(orchestrator)
+        a, b = configs_dir / "cx" / "cx1.yaml", configs_dir / "recv" / "recv1.yaml"
+        for path in (a, b):
+            self._bump(path)
+        seen = []
+        real = orchestrator.on_file_changed
+
+        def flaky(path):
+            seen.append(path)
+            if len(seen) == 1:
+                raise RuntimeError("boom")
+            real(path)
+
+        orchestrator.on_file_changed = flaky
+        with caplog.at_level("ERROR"):
+            orchestrator.check_config_files()
+        assert sorted(seen) == sorted([str(a), str(b)])
+        assert any("failed" in r.message for r in caplog.records)
 
     def test_unchanged_scan_is_quiet(self, configs_dir, orchestrator):
         self._baseline(orchestrator)

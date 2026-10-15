@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from choco.app import create_app
-from choco.auth import save_user, _users
+from tests.helpers import login
 from choco.waterfalls import (
     INDEX_CACHE_MAX, WaterfallStore, freq_ticks, open_stream, palette_gradient,
     parse_elements, read_npy_1d, read_png_head, read_times, summarize_dir,
@@ -56,13 +56,6 @@ def j2000_ns(iso: str) -> int:
 #: One scanline every 9.6 s from an arbitrary night.
 T0_NS = j2000_ns("2026-08-20T22:00:00")
 STEP_NS = 9_600_000_000
-
-
-@pytest.fixture(autouse=True)
-def clear_users():
-    _users.clear()
-    yield
-    _users.clear()
 
 
 def make_index(path, n_elements=3, files=(1, 2), rows=12, rendered_pairs=None,
@@ -310,13 +303,8 @@ def _app(tmp_path, images):
     config["waterfall"] = {"images_dir": str(images), "ttl": 0}
     app = create_app(configs_dir=tmp_path / "configs", config=config)
     app.config["TESTING"] = True
+    app.config["state_dir"] = tmp_path / "state"   # never the host's /var/lib/choco
     return app
-
-
-def _login(client):
-    user = save_user("cn=tester,dc=example", "tester")
-    with client.session_transaction() as sess:
-        sess["_user_id"] = user.get_id()
 
 
 @pytest.fixture
@@ -328,14 +316,10 @@ def client(tmp_path, images):
 
 class TestRoutes:
     def test_image_is_served(self, client):
-        _login(client)
+        login(client)
         resp = client.get(f"/waterfall/subset/{ACQ}/e0000/th_e0000xe0001.png")
         assert resp.status_code == 200
         assert resp.data.startswith(b"\x89PNG")
-
-    def test_image_requires_login(self, client):
-        resp = client.get(f"/waterfall/subset/{ACQ}/e0000/th_e0000xe0001.png")
-        assert resp.status_code in (302, 401)
 
     @pytest.mark.parametrize("path", [
         "/waterfall/subset/{acq}/e0000/wf_e0009xe0009.png",   # not written
@@ -344,11 +328,11 @@ class TestRoutes:
         "/waterfall/subset/{acq}/nope/wf_e0000xe0000.png",
     ])
     def test_bad_image_requests_are_404(self, client, path):
-        _login(client)
+        login(client)
         assert client.get(path.format(acq=ACQ)).status_code == 404
 
     def test_triangle_page_renders(self, client):
-        _login(client)
+        login(client)
         resp = client.get(f"/files/subset/{ACQ}/triangle")
         assert resp.status_code == 200
         body = resp.data.decode()
@@ -358,20 +342,17 @@ class TestRoutes:
         assert "2 source files folded in" in body
 
     def test_triangle_page_honours_the_element_filter(self, client):
-        _login(client)
+        login(client)
         body = client.get(f"/files/subset/{ACQ}/triangle?elements=0,1").data.decode()
         assert "th_e0000xe0001.png" in body
         assert "e0002xe0002" not in body
 
-    def test_triangle_page_requires_login(self, client):
-        assert client.get(f"/files/subset/{ACQ}/triangle").status_code in (302, 401)
-
     def test_triangle_of_an_unknown_acquisition_is_404(self, client):
-        _login(client)
+        login(client)
         assert client.get("/files/subset/acq_nope/triangle").status_code == 404
 
     def test_triangle_rejects_a_traversal(self, client):
-        _login(client)
+        login(client)
         assert client.get("/files/../../etc/triangle").status_code in (301, 404)
 
     def test_files_table_links_to_the_triangle(self, tmp_path, images):
@@ -382,7 +363,7 @@ class TestRoutes:
         (data / "vis_1.h5").write_bytes(b"x")
         app = _app(tmp_path, images)
         with app.test_client() as c:
-            _login(c)
+            login(c)
             body = c.get("/partials/files").data.decode()
         assert f"/files/subset/{ACQ}/triangle" in body
         assert ">2/2<" in body                      # 2 of 2 files folded in
@@ -393,7 +374,7 @@ class TestRoutes:
         (data / "vis_0.h5").write_bytes(b"x")
         app = _app(tmp_path, images)
         with app.test_client() as c:
-            _login(c)
+            login(c)
             body = c.get("/partials/files").data.decode()
         assert "acq_unrendered" in body
         assert "/files/subset/acq_unrendered/triangle" not in body
@@ -405,8 +386,9 @@ class TestRoutes:
         config = dict(_DEFAULT_CONFIG)
         app = create_app(configs_dir=tmp_path / "configs", config=config)
         app.config["TESTING"] = True
+        app.config["state_dir"] = tmp_path / "state"
         with app.test_client() as c:
-            _login(c)
+            login(c)
             assert c.get(f"/files/subset/{ACQ}/triangle").status_code == 404
             assert c.get(
                 f"/waterfall/subset/{ACQ}/e0000/th_e0000xe0000.png").status_code == 404
@@ -510,8 +492,24 @@ class TestStreaming:
     def test_open_stream_of_a_missing_file_is_none(self, tmp_path):
         assert open_stream(tmp_path / "nope.png") is None
 
+    def test_open_stream_gives_up_on_a_wedged_mount(self, tmp_path, monkeypatch):
+        import os
+        import choco.waterfalls as wf
+        r, w = os.pipe()             # a real kernel block, as in test_datafiles
+
+        def wedged(path):
+            os.read(r, 1)
+            raise OSError("late")
+
+        monkeypatch.setattr(wf, "_open_and_stat", wedged)
+        monkeypatch.setattr(wf, "READ_TIMEOUT_S", 0.05)
+        try:
+            assert open_stream(tmp_path / "x.png") is None
+        finally:
+            os.write(w, b"x")
+
     def test_route_streams_and_sets_length(self, client, images):
-        _login(client)
+        login(client)
         p = images / "subset" / ACQ / "e0000" / "wf_e0000xe0001.png"
         resp = client.get(f"/waterfall/subset/{ACQ}/e0000/wf_e0000xe0001.png")
         assert resp.status_code == 200
@@ -540,8 +538,9 @@ class TestRootKeying:
         config["waterfall"] = {"images_dir": str(images), "ttl": 0}
         app = create_app(configs_dir=tmp_path / "configs", config=config)
         app.config["TESTING"] = True
+        app.config["state_dir"] = tmp_path / "state"
         with app.test_client() as c:
-            _login(c)
+            login(c)
             body = c.get("/partials/files").data.decode()
         assert f"/files/cs00/{ACQ}/triangle" in body
         assert f"/files/cs01/{ACQ}/triangle" in body
@@ -550,7 +549,7 @@ class TestRootKeying:
 class TestAxisLabels:
     def test_element_names_label_the_axes(self, client):
         """The dish name belongs on the axis, not only in a tooltip."""
-        _login(client)
+        login(client)
         body = client.get(f"/files/subset/{ACQ}/triangle").data.decode()
         assert '<td class="num col" title="element 0">A0X</td>' in body
         assert '<td class="num row" title="element 2">A2X</td>' in body
@@ -708,7 +707,7 @@ class TestTicks:
 
 class TestViewerRoute:
     def test_viewer_renders_axes_and_colorbar(self, client):
-        _login(client)
+        login(client)
         resp = client.get(f"/waterfall/subset/{ACQ}/view/wf_e0000xe0001.png")
         assert resp.status_code == 200
         body = resp.data.decode()
@@ -719,10 +718,6 @@ class TestViewerRoute:
         assert f"/waterfall/subset/{ACQ}/e0000/wf_e0000xe0001.png" in body
         assert f"/files/subset/{ACQ}/triangle" in body
 
-    def test_viewer_requires_login(self, client):
-        resp = client.get(f"/waterfall/subset/{ACQ}/view/wf_e0000xe0001.png")
-        assert resp.status_code in (302, 401)
-
     @pytest.mark.parametrize("path", [
         "/waterfall/subset/{acq}/view/wf_e0009xe0009.png",    # not rendered
         "/waterfall/subset/{acq}/view/th_e0000xe0001.png",    # not a full image
@@ -731,7 +726,7 @@ class TestViewerRoute:
         "/waterfall/subset/{acq}/view/wf_..xe0001.png",
     ])
     def test_bad_viewer_requests_are_404(self, client, path):
-        _login(client)
+        login(client)
         assert client.get(path.format(acq=ACQ)).status_code == 404
 
     def test_viewer_degrades_without_side_files(self, tmp_path, images):
@@ -742,7 +737,7 @@ class TestViewerRoute:
             f.write_bytes(b"\x89PNG\r\n\x1a\nwf")              # no PLTE inside
         app = _app(tmp_path, images)
         with app.test_client() as client:
-            _login(client)
+            login(client)
             body = client.get(
                 f"/waterfall/subset/{acq}/view/wf_e0000xe0001.png").data.decode()
         assert "in channel index" in body
@@ -750,6 +745,6 @@ class TestViewerRoute:
         assert "linear-gradient" not in body
 
     def test_triangle_links_to_the_viewer(self, client):
-        _login(client)
+        login(client)
         body = client.get(f"/files/subset/{ACQ}/triangle").data.decode()
         assert f"/waterfall/subset/{ACQ}/view/wf_e0000xe0001.png" in body

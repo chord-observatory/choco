@@ -32,8 +32,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import gevent
 from gevent.lock import BoundedSemaphore
+
+from .datafiles import run_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -422,21 +423,25 @@ def open_stream(path, chunk: int = 256 * 1024):
     the file is neither stat-ed nor read in the hub, and it is streamed
     rather than buffered.
     """
-    pool = gevent.get_hub().threadpool
     try:
-        fh, st = pool.apply(_open_and_stat, (str(path),))
+        fh, st = run_blocking(_open_and_stat, str(path), timeout=READ_TIMEOUT_S)
     except OSError:
         return None
 
     def chunks():
+        # A read that times out ends the response early (the client sees
+        # a truncated body), which beats holding the greenlet forever.
         try:
             while True:
-                data = pool.apply(fh.read, (chunk,))
+                data = run_blocking(fh.read, chunk, timeout=READ_TIMEOUT_S)
                 if not data:
                     return
                 yield data
         finally:
-            pool.apply(fh.close)
+            try:
+                run_blocking(fh.close, timeout=READ_TIMEOUT_S)
+            except OSError:
+                pass
 
     return st.st_size, st.st_mtime, chunks()
 
@@ -498,15 +503,12 @@ class WaterfallStore:
         with self._lock:
             if not force and not self._stale():       # filled while we waited
                 return self._summaries
-            result = gevent.get_hub().threadpool.spawn(sweep, str(self.images_dir))
             try:
-                self._summaries = result.get(timeout=READ_TIMEOUT_S)
-            except gevent.Timeout:
-                logger.warning(
-                    f"waterfalls: sweep of {self.images_dir} timed out; "
-                    f"serving the last known map")
+                self._summaries = run_blocking(sweep, str(self.images_dir),
+                                               timeout=READ_TIMEOUT_S)
             except Exception as exc:                  # never break the page
-                logger.warning(f"waterfalls: sweep failed: {exc}")
+                logger.warning(f"waterfalls: sweep of {self.images_dir} failed "
+                               f"({exc}); serving the last known map")
             self._swept_at = time.time()
             return self._summaries
 
@@ -525,13 +527,10 @@ class WaterfallStore:
             return None
         key = str(base)
         cached = self._index_cache.get(key)
-        result = gevent.get_hub().threadpool.spawn(
-            stat_and_read, str(base), cached[0] if cached else None)
         try:
-            stamp, index = result.get(timeout=READ_TIMEOUT_S)
-        except gevent.Timeout:
-            logger.warning(f"waterfalls: read of {base} timed out")
-            return cached[1] if cached else None
+            stamp, index = run_blocking(stat_and_read, str(base),
+                                        cached[0] if cached else None,
+                                        timeout=READ_TIMEOUT_S)
         except Exception as exc:
             logger.warning(f"waterfalls: read of {base} failed: {exc}")
             return cached[1] if cached else None
@@ -564,13 +563,10 @@ class WaterfallStore:
             return None
         key = str(base / filename)
         cached = self._side_cache.get(key)
-        result = gevent.get_hub().threadpool.spawn(
-            _stat_parse, key, cached[0] if cached else None, parser)
         try:
-            stamp, value = result.get(timeout=READ_TIMEOUT_S)
-        except gevent.Timeout:
-            logger.warning(f"waterfalls: read of {key} timed out")
-            return cached[1] if cached else None
+            stamp, value = run_blocking(_stat_parse, key,
+                                        cached[0] if cached else None, parser,
+                                        timeout=READ_TIMEOUT_S)
         except Exception as exc:
             logger.warning(f"waterfalls: read of {key} failed: {exc}")
             return cached[1] if cached else None
@@ -606,13 +602,9 @@ class WaterfallStore:
         if resolved is None:
             return None
         directory, filename = resolved
-        result = gevent.get_hub().threadpool.spawn(
-            read_png_head, str(directory / filename))
         try:
-            return result.get(timeout=READ_TIMEOUT_S)
-        except gevent.Timeout:
-            logger.warning(f"waterfalls: head read of {filename} timed out")
-            return None
+            return run_blocking(read_png_head, str(directory / filename),
+                                timeout=READ_TIMEOUT_S)
         except Exception as exc:
             logger.warning(f"waterfalls: head of {filename}: {exc}")
             return None

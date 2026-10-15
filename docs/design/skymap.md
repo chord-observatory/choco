@@ -14,15 +14,16 @@ each beam in its own colour with list order picking the primary — the
 **current** Sun and Moon positions (single markers, not trajectories), a
 translucent "beam now" disk per beam — the 300 MHz HPBW footprint on the sky,
 projected honestly, so it stretches near the map edge, splits across the seam,
-and closes into a cap when it swallows a galactic pole (which a dec +22° beam
-does daily; the NGP sits at dec +27.1°) — where the meridian crosses its
+and closes into a cap when it swallows a galactic pole (which a beam near
+the NGP's dec +27.1° does daily) — where the meridian crosses its
 strip, and local-time labels (primary strip only) for where the beams will
 point over the next 24 h — exact by construction, since the beam always points
 at RA = LST, which is also what replaced the original standalone script's
 solar-transit search.  The pointing is read live from choco
 (``/api/config/<group>`` → a recursive search for ``dish_coelev_deg``;
-declination = DRAO latitude + co-elevation, 49.32° − 27.3° ≈ +22° = Tau A,
-matching the config's own comment), with every group read when ``skymap.yaml``
+declination = DRAO latitude + co-elevation; kotekan is the authority, and
+since its October 2026 correction says −8.6°, so +40.7°, Cyg A's
+declination, where the mapmaker found the dishes pointing), with every group read when ``skymap.yaml``
 names none, near-duplicate beams (<0.1°) drawn once; ``nearest_major_source``
 names the source in the title when one lies within 1.5°.  IERS auto-download
 is off with ``auto_max_age=None`` — a render must never block on the network,

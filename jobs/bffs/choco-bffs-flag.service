@@ -9,7 +9,18 @@ Type=oneshot
 # exports it as $STATE_DIRECTORY; state.json, run.json and the manual
 # override file live there, and choco reads them from the same place.
 StateDirectory=choco/bffs
-ExecStart=/opt/choco/jobs/bffs/bffs-flag.sh /etc/choco/bffs.yaml
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/run-job.sh bffs/bffs.py /etc/choco/bffs.yaml
+Nice=10
+IOSchedulingClass=idle
+# A tick reads one N² file's autos and a few REST endpoints: ~60 MB and
+# well under a second of CPU (measured 2026-10-15).  The caps are
+# backstops, like the other jobs'.
+CPUQuota=100%
+CPUWeight=20
+MemoryHigh=512M
+MemoryMax=1G
 # No Restart: bffs sends only on change and records state after a successful
 # send, so a failed run (choco not up yet, N2 file missing) is simply retried
 # by the next timer tick.
