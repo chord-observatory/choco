@@ -147,10 +147,10 @@ timer's next/last run via ``jobstatus.timer_status`` — systemd's own timestamp
 strings, displayed never parsed), a per-service summary read from the job's
 JSON state file (``jobstatus.read_state_json``: bffs element grid — every
 element of the recorded axis, eight to a column in kotekan's order, good/bad
-with the flagging source on hover, ``web._element_grid``; the bad list alone
+with the flagging source on hover, ``jobdetail.element_grid``; the bad list alone
 for a state file that predates the axis — + recent transitions, EOP table
 span, eigencal last transit; one summariser per service in
-``web._SERVICE_DETAILS``, one ``_detail_<name>.html`` each, both behind
+``jobdetail.JOB_DETAILS``, one ``_detail_<name>.html`` each, both behind
 ``web._service_detail``), a collapsed ``<details>`` dump of the **raw** state-
 file JSON (pretty-printed once at page-load, kept out of the 5 s status poll
 so a large EOP table isn't re-sent), and an htmx-refreshed journal viewer
@@ -170,7 +170,7 @@ error path); a PDB poll failure keeps the last-known grid with an explicit
 file summarising so corrupt job state degrades to "no summary", never a 500.
 
 The EIGENCAL page (2026-10) reads the job's ``run.json`` the same way
-(``web._eigencal_detail``): a **Last run** fact with a status tag and the
+(``jobdetail.eigencal_detail``): a **Last run** fact with a status tag and the
 reason, the **transit considered** with its completion and eligibility
 times and the sun's altitude, the **next transit**, the **last solution**
 (good fraction over the calibrated elements, sent or archived, the archive
@@ -195,7 +195,7 @@ are dropped as the list is built.
 
 The BFFS page additionally reads the job's per-run file (``run.json`` in
 its state directory; see jobs.md) through
-``web._bffs_detail`` / ``_bffs_run_summary``: a **Last run** fact (status
+``jobdetail.bffs_detail`` / ``_bffs_run_summary``: a **Last run** fact (status
 pill, time, bad count, whether it was sent, the degraded reasons or the
 error) and an **N² file** fact (the file used, its age, or why none was),
 then a **Sources** table — one row per configured source with a status

@@ -502,6 +502,13 @@ def _when(v) -> str:
     return s[:16] if len(s) > 10 else s
 
 
+def utc_minute(ts, short: bool = False) -> str:
+    """An mtime as 'YYYY-MM-DD HH:MM' UTC (``short``: 'MM-DD HH:MM')."""
+    if not ts:
+        return "—"
+    return time.strftime("%m-%d %H:%M" if short else "%Y-%m-%d %H:%M", time.gmtime(ts))
+
+
 def human_bytes(n) -> str:
     """1024-based size for display.  ``None`` and 0 both read as '0 B'."""
     n = float(n or 0)

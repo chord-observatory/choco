@@ -50,6 +50,8 @@ choco/
 ├── app.py          # load_config, create_app, TLS, gevent server, `choco-server`
 ├── cli.py          # `choco`: stdlib client for the localhost JSON API
 ├── web.py          # Flask blueprint: all routes and partials
+├── library.py      # the config library: entries, the save check (every user re-rendered), writes, the upstream pull
+├── jobdetail.py    # what each job's page summarises from its files (JOB_DETAILS; no Flask)
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
@@ -251,7 +253,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   (config error or bug; badge red).  Inside `main`: `OSError` and
   `Degraded` → 2, `ValueError`/`yaml.YAMLError` → 1 (`jobclient.failure`).
 - A new badge costs one entry in `web._JOBS` plus, optionally, a summariser
-  in `web._SERVICE_DETAILS` with its `_detail_<name>.html`.  A job shown on another page
+  in `jobdetail.JOB_DETAILS` with its `_detail_<name>.html`.  A job shown on another page
   sets the entry's `page` instead (the waterfall and acqnotes on `/files`,
   folded into the DATA tag): no badge or landing row of its own and `/service/<name>`
   redirects, but `/api/status` and `/metrics` still report it by name.

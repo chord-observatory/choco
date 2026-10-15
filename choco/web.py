@@ -11,8 +11,6 @@ from pathlib import Path
 from urllib.parse import quote
 
 import gevent
-import jinja2
-import yaml
 from markupsafe import Markup
 
 from flask import (
@@ -21,24 +19,24 @@ from flask import (
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
-from . import auth
+from . import auth, library
 from .auth import save_user, localhost_or_login_required
-from .jobclient import (EIGENCAL_ARCHIVE_GLOB, MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME,
-                        STATE_ROOT, write_text_atomic)
+from .jobclient import MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT
 from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
-                        run_blocking, timeline_rows)
+                        run_blocking, timeline_rows, utc_minute)
 from . import dishlabels
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
 from .waterfalls import (open_stream, parse_elements, rendered_index, triangle as wf_triangle,
                          view_context as wf_view_context)
+from .jobdetail import (JOB_DETAILS, MAPMAKER_IMAGES, file_mtime, float_or_none, fmt_utc,
+                        job_manual_path, same_path)
 from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json,
                         timer_status)
-from .manualflags import read_manual_flags, toggle_manual_flag
+from .manualflags import toggle_manual_flag
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
-from .state import NodeStatus, find_updatable_blocks, resolve_config_path, validate_nodes_payload
+from .state import NodeStatus, find_updatable_blocks, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
-from .upstream import UpstreamError
 
 logger = logging.getLogger(__name__)
 
@@ -78,20 +76,9 @@ def _orchestrator():
     return current_app.config["orchestrator"]
 
 
-def _set_flag(nodes, attr: str, value: bool) -> None:
-    """Set a desired flag (``started`` / ``maintenance``) on *nodes* and
-    wake each node's worker with a POLL, so the change takes effect now
-    rather than at the node's next scheduled check (which for a backed-off
-    node is up to ``max_retry_interval`` away)."""
-    orchestrator = _orchestrator()
-    for node in nodes:
-        setattr(node, attr, value)
-        orchestrator.submit_node(node.key, ChangeItem(ChangeType.POLL))
-
-
 def _flag_response(nodes, attr: str, value: bool):
     """Reply to a bulk toggle: the dashboard table for htmx, else a redirect."""
-    _set_flag(nodes, attr, value)
+    _orchestrator().set_flag(nodes, attr, value)
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", nodes=_registry().nodes)
     return redirect(url_for("web.dashboard"))
@@ -311,15 +298,6 @@ def _skymap_file(night: bool = False) -> Path:
     return _state_root() / "skymap" / ("skymap-night.png" if night else "skymap.png")
 
 
-def _file_mtime(path: Path | None) -> int | None:
-    if path is None:
-        return None
-    try:
-        return int(path.stat().st_mtime)
-    except OSError:
-        return None
-
-
 def _send_png(path: Path | None):
     """A job's PNG as it stands, revalidated on every request."""
     if path is None or not path.is_file():
@@ -381,8 +359,8 @@ def partial_skymap():
     card links the night-palette image when one has been rendered.
     """
     return render_template("_skymap.html",
-                           mtime=_file_mtime(_skymap_file()),
-                           night_mtime=_file_mtime(_skymap_file(night=True)),
+                           mtime=file_mtime(_skymap_file()),
+                           night_mtime=file_mtime(_skymap_file(night=True)),
                            now_ts=time.time())
 
 
@@ -422,7 +400,7 @@ def node_edit(node_key):
             # form post.  The path is validated before it is read.
             rel = request.form.get("config", "")
             try:
-                path = _library_path(registry, rel)
+                path = library.file_path(registry, rel)
             except ValueError as e:
                 flash(f"One-off not started: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
@@ -442,9 +420,10 @@ def node_edit(node_key):
 
         elif action == "set_config":
             # Which library file this node renders: a nodes.yaml edit,
-            # so a registry rebuild (see _set_node_configs).
-            body, status = _set_node_configs(
-                [node], request.form.get("config") or None, _audit_user())
+            # so a registry rebuild (see library.set_node_configs).
+            body, status = library.set_node_configs(
+                _registry(), _orchestrator(), [node], request.form.get("config") or None,
+                _audit_user())
             if status == 200:
                 fresh = registry.get_node(node_key)
                 flash(f"{node_key} now renders {fresh.config_filename}; "
@@ -635,312 +614,30 @@ def nodes_save():
     return {"status": "ok"}
 
 
-# --- Config library: the files under configs_dir, and which node uses which ---
-
-def _library_path(registry, rel: str) -> Path:
-    """``configs_dir / rel`` once *rel* passes ``resolve_config_path``
-    (``ValueError`` otherwise).  The plain join, deliberately: ``users_of``,
-    ``Node.config_abspath`` and ``Orchestrator.file_written`` compare plain
-    joins too, so a resolved path would not match them under a symlinked
-    configs directory."""
-    resolve_config_path(registry.configs_dir, rel)
-    return registry.configs_dir / rel
-
-
-def _library_entry(registry, rel: str) -> dict:
-    """One row of the config library: *rel*'s size and mtime plus the
-    nodes that render it (``used_by``) or include it (``included_by``)."""
-    path = registry.configs_dir / rel
-    try:
-        st = path.stat()
-        size, mtime = st.st_size, st.st_mtime
-    except OSError:
-        size, mtime = None, None
-    direct, includers = registry.users_of(rel)
-    return {
-        "path": rel,
-        "size": size,
-        "mtime": mtime,
-        "modified": _utc_minute(mtime) if mtime else None,     # UTC, like every page
-        "used_by": [n.key for n in direct],
-        "included_by": [n.key for n in includers],
-        # vars.yaml is the shared template context: every node reads it.
-        "is_vars": rel == "vars.yaml",
-    }
-
-
-def _check_library_save(registry, rel: str, content: str
-                        ) -> tuple[list[str], str | None]:
-    """Validate *content* as the new text of library file *rel* without
-    writing it: every node that renders or includes the file is rendered
-    with the text overlaid on disk.
-
-    Returns ``(affected node keys, error)``; the error is None when every
-    user renders.  vars.yaml must parse as a YAML mapping (every node
-    reads it); a file no node uses is only parsed as a template, since
-    nothing says it must render to a config on its own.
-    """
-    if rel == "vars.yaml":
-        try:
-            data = yaml.safe_load(content)
-        except yaml.YAMLError as e:
-            return [], f"Invalid YAML: {e}"
-        if data is not None and not isinstance(data, dict):
-            return [], "vars.yaml must be a YAML mapping"
-        return [n.key for n in registry.affected_by(rel)], None
-    return _check_library_saves(registry, {rel: content})
-
-
-def _check_library_saves(registry, texts: dict[str, str]
-                         ) -> tuple[list[str], str | None]:
-    """The save check for several files at once (the upstream pull):
-    *texts* maps each library path to its new text, and every node that
-    renders or includes any of them is rendered with all of them overlaid
-    on disk -- so a set that is only consistent as a whole (an include
-    and the file that includes it, both changed) is judged as a whole,
-    never one new text against the old text of the others.  Returns
-    ``(affected node keys, error)`` like :func:`_check_library_save`.
-    """
-    overlay = {registry.configs_dir / rel: content
-               for rel, content in texts.items()}
-    affected: dict[str, None] = {}
-    for rel, content in texts.items():
-        direct, includers = registry.users_of(rel)
-        for node in direct + includers:
-            # a direct user renders the new text; an includer its own
-            # file, which may itself be in the set
-            base = content if node in direct else overlay.get(node.config_abspath, node.base_content)
-            if base is None:
-                continue
-            try:
-                node.render(base, overlay=overlay)
-            except Exception as e:
-                return [], f"{node.key} would not render: {e}"
-            affected[node.key] = None
-        if not direct and not includers:
-            try:
-                jinja2.Environment(autoescape=False).parse(content)
-            except jinja2.TemplateSyntaxError as e:
-                where = f"{rel}: " if len(texts) > 1 else ""
-                return [], f"{where}Template syntax: {e}"
-    return list(affected), None
-
-
-def _write_library_file(registry, rel: str, content: str, user: str
-                        ) -> list[str]:
-    """Write library file *rel* atomically and hand the change to the
-    sync loop now (the mtime scan would see it within a tick anyway).
-
-    Returns the keys of the nodes re-rendered.  Audit-logged, since one
-    library write can change what several nodes run.
-    """
-    path = registry.configs_dir / rel
-    created = not path.exists()
-    write_text_atomic(path, content)
-    affected = [n.key for n in registry.affected_by(rel)]
-    logger.warning(
-        f"config library: {rel} {'created' if created else 'replaced'} by "
-        f"{user}, {len(content)} bytes; re-rendering {affected or 'no nodes'}")
-    _orchestrator().file_written(path)
-    return affected
-
-
-def _pull_library(dry_run: bool, user: str) -> tuple[dict, int]:
-    """Mirror the upstream config directory (config.yaml's ``upstream:``,
-    kotekan's ``config/chord/`` by default) into the library, as one set.
-
-    The listing is classified against the mirror directory by git blob
-    sha (``Upstream.plan``), only new and changed files are fetched, and
-    the fetched texts are validated together through every node that
-    renders or includes any of them before anything is written: a
-    refusal writes nothing.  A file the listing no longer has is removed
-    unless a node still renders or includes it -- then it is kept and
-    reported, so a rename upstream lands as an addition the operator
-    can switch the node to, and the next pull removes the old file.
-    Every write is on disk before the sync loop hears of any of them, so
-    no node re-renders a half-pulled set, and the nodes re-rendered are
-    put in maintenance first (those not already), so a pull never
-    restarts anything: the new set is desired state the sync loop pushes
-    when the operator lifts maintenance.  With *dry_run* the reply is
-    the plan and nothing is written or paused.  Audit-logged like a
-    library save.
-    """
-    upstream = current_app.config.get("upstream")
-    if upstream is None:
-        return {"error": "no upstream configured (upstream: in config.yaml)"}, 404
-    registry = _registry()
-    try:
-        commit = upstream.resolve_commit()
-        plan = upstream.plan(registry.configs_dir, upstream.listing(commit),
-                             commit)
-        texts = {rel: upstream.fetch_text(commit, plan.names[rel], plan.shas[rel])
-                 for rel in plan.fetch}
-    except UpstreamError as e:
-        return {"error": f"GitHub: {e}"}, 502
-    remove, kept = [], []
-    for rel in plan.remove:
-        direct, includers = registry.users_of(rel)
-        if direct or includers:
-            kept.append({"path": rel,
-                         "used_by": [n.key for n in direct + includers]})
-        else:
-            remove.append(rel)
-    affected, error = _check_library_saves(registry, texts)
-    if error:
-        return {"error": error, "commit": commit}, 409
-    to_pause = [registry.get_node(key) for key in affected
-                if not registry.get_node(key).maintenance]
-    changing = bool(texts or remove)
-    result = {
-        "status": ("planned" if dry_run
-                   else "pulled" if changing else "unchanged"),
-        "dry_run": dry_run,
-        "upstream": upstream.label,
-        "commit": commit,
-        "into": upstream.into,
-        "added": plan.add,
-        "changed": plan.change,
-        "removed": remove,
-        "kept": kept,
-        "skipped": [{"name": n, "reason": r} for n, r in plan.skipped],
-        "unchanged": len(plan.same),
-        "reloaded": affected,
-        "paused": [n.key for n in to_pause],
-    }
-    result["summary"] = _pull_summary(result)
-    if dry_run or not changing:
-        return result, 200
-    # Paused before the files land: the sync loop then re-renders them
-    # onto the new set but makes no REST write until maintenance lifts.
-    _set_flag(to_pause, "maintenance", True)
-    written = []
-    for rel in plan.fetch:
-        path = registry.configs_dir / rel
-        write_text_atomic(path, texts[rel])
-        written.append(path)
-    for rel in remove:
-        path = registry.configs_dir / rel
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        written.append(path)
-    logger.warning(
-        f"config library: pulled {upstream.label} @ {commit[:10]} into "
-        f"{upstream.into}/ by {user}: added {plan.add or 'none'}, changed "
-        f"{plan.change or 'none'}, removed {remove or 'none'}"
-        + (f", kept (in use) {[k['path'] for k in kept]}" if kept else "")
-        + f"; re-rendering {affected or 'no nodes'}"
-        + (f", paused {result['paused']}" if to_pause else ""))
-    orchestrator = _orchestrator()
-    for path in written:
-        orchestrator.file_written(path)
-    return result, 200
-
-
-def _pull_summary(result: dict) -> str:
-    """One line saying what a pull did (the flash; ``summary`` in the
-    JSON): the files by name under the mirror directory, the nodes
-    re-rendered and paused, then what was kept or skipped and why."""
-    into = result["into"] + "/"
-    where = f"{result['upstream']} @ {result['commit'][:10]}"
-
-    def names(rels):
-        return ", ".join(r.removeprefix(into) for r in rels)
-
-    parts = [f"{verb} {names(result[verb])}"
-             for verb in ("added", "changed", "removed") if result[verb]]
-    if not parts:
-        text = f"{into} is up to date with {where} ({result['unchanged']} files)"
-    else:
-        verb = "Would pull" if result["dry_run"] else "Pulled"
-        text = f"{verb} {where} into {into}: " + "; ".join(parts)
-        if result["reloaded"]:
-            dry = result["dry_run"]
-            nodes = ", ".join(result["reloaded"])
-            paused = result.get("paused") or []
-            if paused == result["reloaded"]:
-                text += ("; would re-render and pause " if dry
-                         else "; re-rendered and paused ") + nodes
-            elif paused:
-                already = [k for k in result["reloaded"] if k not in paused]
-                text += (f"; {'would re-render' if dry else 're-rendered'} {nodes}, "
-                         f"{'pausing' if dry else 'paused'} {', '.join(paused)} "
-                         f"({', '.join(already)} already in maintenance)")
-            else:
-                text += (f"; {'would re-render' if dry else 're-rendered'} {nodes} "
-                         "(already in maintenance)")
-            if not dry:
-                text += "; lift maintenance to restart them onto it"
-    if result["kept"]:
-        text += "; kept " + ", ".join(
-            f"{k['path']} (removed upstream, used by {', '.join(k['used_by'])})"
-            for k in result["kept"])
-    if result["skipped"]:
-        text += "; skipped " + ", ".join(
-            f"{s['name']} ({s['reason']})" for s in result["skipped"])
-    return text
-
-
-def _set_node_configs(nodes: list, config: str | None, user: str
-                      ) -> tuple[dict, int]:
-    """Point *nodes* at library file *config* (None: back to each node's
-    per-node file) by rewriting nodes.yaml and rebuilding the registry.
-
-    A registry rebuild is the mechanism, so this carries its cost: the
-    whole cluster lands in maintenance until the operator lifts it
-    (``Orchestrator.apply_nodes_update``).  The file must exist: the
-    selectors offer only existing files, and a node pointed at a missing
-    one would just sit on "No config file".
-    """
-    registry = _registry()
-    if config is not None:
-        try:
-            path = _library_path(registry, config)
-        except ValueError as e:
-            return {"error": str(e)}, 400
-        if not path.is_file():
-            return {"error": f"No such config file: {config}"}, 404
-    nodes_file = registry.configs_dir / "nodes.yaml"
-    try:
-        data = yaml.safe_load(nodes_file.read_text()) or {}
-    except (OSError, yaml.YAMLError) as e:
-        return {"error": f"nodes.yaml unreadable: {e}"}, 500
-    for node in nodes:
-        entry = ((data.get("groups") or {}).get(node.group) or {}).get(node.name)
-        if not isinstance(entry, dict):
-            return {"error": f"{node.key} is not in nodes.yaml"}, 409
-        if config is None:
-            entry.pop("config", None)
-        else:
-            entry["config"] = config
-    keys = [n.key for n in nodes]
-    logger.warning(
-        f"config selection by {user}: {keys} -> {config or 'per-node file'}; "
-        "registry rebuilt, cluster in maintenance")
-    _orchestrator().apply_nodes_update(data)
-    return {"status": "reloaded", "config": config, "nodes": keys,
-            "maintenance": True}, 200
-
-
 @bp.route("/configs")
 @login_required
 def configs_page():
     """The config library: every config file under configs_dir, with
     the nodes that render or include each."""
     registry = _registry()
-    files = [_library_entry(registry, rel) for rel in registry.config_files()]
+    files = [library.entry(registry, rel) for rel in registry.config_files()]
     return render_template("configs.html", files=files,
                            upstream=current_app.config.get("upstream"))
+
+
+def _library_pull(dry_run: bool) -> tuple[dict, int]:
+    """``library.pull`` with the app's upstream, by the request's user."""
+    return library.pull(_registry(), _orchestrator(), current_app.config.get("upstream"),
+                        dry_run, _audit_user())
 
 
 @bp.route("/configs/pull", methods=["POST"])
 @login_required
 def configs_pull():
     """The library page's "Pull <dir> from GitHub" button: mirror the
-    upstream config directory and say what changed (``_pull_library``)."""
+    upstream config directory and say what changed (``library.pull``)."""
     _check_csrf()
-    result, status = _pull_library(False, _audit_user())
+    result, status = _library_pull(dry_run=False)
     if status != 200:
         flash(f"Not pulled: {result['error']}", "error")
     else:
@@ -956,14 +653,14 @@ def config_new():
     registry = _registry()
     name = request.form.get("name", "").strip()
     try:
-        path = _library_path(registry, name)
+        path = library.file_path(registry, name)
     except ValueError as e:
         flash(f"Not created: {e}", "error")
         return redirect(url_for("web.configs_page"))
     if path.exists():
         flash(f"{name} already exists", "error")
     else:
-        _write_library_file(registry, name, "", _audit_user())
+        library.write_file(registry, _orchestrator(), name, "", _audit_user())
         flash(f"Created {name}", "success")
     return redirect(url_for("web.config_edit", name=name))
 
@@ -980,22 +677,22 @@ def config_edit(name):
     """
     registry = _registry()
     try:
-        path = _library_path(registry, name)
+        path = library.file_path(registry, name)
     except ValueError:
         abort(404)
     if not path.is_file():
         abort(404)
-    entry = _library_entry(registry, name)
+    entry = library.entry(registry, name)
     if request.method == "POST":
         _check_csrf()
         # Browsers submit textarea text with CRLF line endings.
         content = request.form.get("content", "").replace("\r\n", "\n")
-        affected, error = _check_library_save(registry, name, content)
+        affected, error = library.check_save(registry, name, content)
         if error:
             flash(f"Not saved: {error}", "error")
             return render_template("config_edit.html", entry=entry,
                                    content=content)
-        _write_library_file(registry, name, content, _audit_user())
+        library.write_file(registry, _orchestrator(), name, content, _audit_user())
         flash(f"Saved {name}"
               + (f"; re-rendered {', '.join(affected)}" if affected else ""),
               "success")
@@ -1013,7 +710,7 @@ def _toggle(node_key: str, flag: str, words: tuple[str, str]):
     node = _registry().get_node(node_key)
     if node is None:
         abort(404)
-    _set_flag([node], flag, not getattr(node, flag))
+    _orchestrator().set_flag([node], flag, not getattr(node, flag))
     if request.headers.get("HX-Request"):
         return render_template(f"_toggle_{flag}.html", node=node, key=node_key)
     flash(f"{node_key} {words[0] if getattr(node, flag) else words[1]}", "success")
@@ -1285,8 +982,8 @@ def _eigencal_gain_context() -> dict:
         "datasets": info["datasets"],
         "filename": archive.path.name if archive.path else None,
         "source": _first_scalar(attrs.get("source")),
-        "transit_fmt": _fmt_utc(transit) if isinstance(transit, (int, float)) else None,
-        "good_frac": _float_or_none(_first_scalar(attrs.get("good_frac"))),
+        "transit_fmt": fmt_utc(transit) if isinstance(transit, (int, float)) else None,
+        "good_frac": float_or_none(_first_scalar(attrs.get("good_frac"))),
     }
 
 
@@ -1428,7 +1125,7 @@ def _gain_context() -> dict:
     info = archive.to_dict()
     update_time = _first_scalar(info["scalars"].get("index_map/update_time"))
     info["update_id"] = _first_scalar(info["scalars"].get("update_id"))
-    info["update_fmt"] = (_fmt_utc(update_time)
+    info["update_fmt"] = (fmt_utc(update_time)
                           if isinstance(update_time, (int, float)) else None)
     return info
 
@@ -1447,15 +1144,8 @@ def partial_dashboard_table():
     return render_template("_dashboard_table.html", nodes=registry.nodes)
 
 
-@bp.app_template_filter("utc_minute")
-def _utc_minute(ts, short=False) -> str:
-    """An mtime as 'YYYY-MM-DD HH:MM' UTC (``short``: 'MM-DD HH:MM')."""
-    if not ts:
-        return "—"
-    return time.strftime("%m-%d %H:%M" if short else "%Y-%m-%d %H:%M", time.gmtime(ts))
-
-
 bp.add_app_template_filter(human_bytes, "filesize")
+bp.add_app_template_filter(utc_minute, "utc_minute")
 
 
 @bp.route("/files")
@@ -1892,466 +1582,12 @@ def partial_service_logs(name):
     )
 
 
-def _fmt_utc(ts) -> str | None:
-    if not ts:
-        return None
-    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
-
-
-#: PNGs the mapmaker job writes, by the name the page requests them under:
-#: the fold-in's sky and daily maps, the deconvolution's clean map and
-#: that map in context on the 408 MHz sky.
-MAPMAKER_IMAGES = {"sky": "sky.png", "daily": "daily.png", "clean": "clean.png",
-                   "sky-strip": "sky-strip.png", "daily-strip": "daily-strip.png",
-                   "clean-strip": "clean-strip.png", "context": "context.png"}
-
-
-def _mapmaker_clean_facts(root: Path) -> dict | None:
-    """What the deconvolution step (``clean.py``, its own timer) last did,
-    from its ``clean.json``: the CLEAN's numbers, the brightest components
-    and why it is degraded if it is.  None until it has run."""
-    facts = read_state_json(root / "clean.json")
-    if not isinstance(facts, dict) or not facts:
-        return None
-    comps = []
-    for c in (facts.get("components") or [])[:8]:
-        try:
-            comps.append({"ra_deg": float(c["ra_deg"]), "dec_deg": float(c["dec_deg"]),
-                          "flux": float(c["flux"])})
-        except (KeyError, TypeError, ValueError):
-            continue
-    beam = facts.get("beam_deg") if isinstance(facts.get("beam_deg"), list) else None
-
-    def num(key):
-        v = facts.get(key)
-        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
-
-    return {
-        "updated": _fmt_utc(facts.get("updated")),
-        "data_to": _fmt_utc(facts.get("map_data_time")),
-        "iterations": int(facts["iterations"]) if isinstance(facts.get("iterations"), int) else None,
-        "n_components": int(facts["n_components"]) if isinstance(facts.get("n_components"), int) else None,
-        "threshold": num("threshold"),
-        "sigma_before": num("sigma_before"),
-        "sigma_after": num("sigma_after"),
-        "run_seconds": num("run_seconds"),
-        "beam_deg": [float(beam[0]), float(beam[1])] if beam and len(beam) == 2 else None,
-        "components": comps,
-        "degraded": [str(d) for d in (facts.get("degraded") or [])][:5],
-    }
-
-
-def _mapmaker_detail(state: dict | None, run, svc) -> dict | None:
-    """The MAP page's facts from the job's per-run state file: what was
-    folded in, the calibration the maps rest on, and the images' mtimes
-    (so the page refetches a PNG exactly when a run replaced it)."""
-    if state is None:
-        return None
-    gains = state.get("gains") if isinstance(state.get("gains"), dict) else None
-    coverage = state.get("coverage") if isinstance(state.get("coverage"), dict) else {}
-    root = _state_root() / "mapmaker"
-    images = {key: _file_mtime(root / fname) for key, fname in MAPMAKER_IMAGES.items()}
-    rng = state.get("colour_range_mhz") or []
-    return {
-        "updated": _fmt_utc(state.get("updated")),
-        "clean": _mapmaker_clean_facts(root),
-        "pointing_dec_deg": state.get("pointing_dec_deg"),
-        "pointing_check": (state["pointing_check"]
-                           if isinstance(state.get("pointing_check"), dict) else None),
-        "colour_bins": int(state["colour_bins"]) if state.get("colour_bins") is not None else None,
-        "colour_range_mhz": (float(rng[0]), float(rng[1])) if len(rng) == 2 else None,
-        "stretch": state.get("stretch"),
-        "last_file_idx": state.get("last_file_idx"),
-        "last_sample": _fmt_utc(state.get("last_sample_time")),
-        "files_processed": state.get("files_processed"),
-        "files_imaged": state.get("files_imaged"),
-        "files_uncalibrated": state.get("files_uncalibrated"),
-        "backlog": state.get("backlog"),
-        "run_seconds": state.get("run_seconds"),
-        "n_samples_total": state.get("n_samples_total"),
-        "calibrator": state.get("calibrator"),
-        "cal_samples_pending": state.get("cal_samples_pending"),
-        "gains": {
-            "calibrator": gains.get("calibrator"),
-            "solved_at": _fmt_utc(gains.get("solved_at")),
-            "transit": _fmt_utc(gains.get("transit_time")),
-            "n_samples": gains.get("n_samples"),
-            "n_dead_products": gains.get("n_dead_products"),
-            "n_products": gains.get("n_products"),
-        } if gains else None,
-        "coverage": {k: v for k, v in coverage.items() if isinstance(v, dict)},
-        "degraded": [str(d) for d in (state.get("degraded") or [])][:10],
-        "skipped": [str(e) for e in (state.get("skipped") or [])][:10],
-        "skipped_total": len(state.get("skipped") or []),
-        "errors": [str(e) for e in (state.get("errors") or [])][:10],
-        "images": images,
-    }
-
-
-
-#: Elements per column of the bffs page's element grid: kotekan's
-#: element order runs down each column, so the 64-dish [P][D] axis is
-#: eight columns of X then eight of Y.
-ELEMENTS_PER_COLUMN = 8
-
-
-def _element_grid(labels: list[str], bad: set[str], sources: dict,
-                  per_column: int = ELEMENTS_PER_COLUMN,
-                  manual: set[str] | None = None) -> list[list[dict | None]]:
-    """The element axis as table rows, *per_column* elements to a column.
-
-    Column *c* holds elements ``c*per_column .. c*per_column+per_column-1``
-    top to bottom; row *r* is therefore every element whose index is
-    ``r`` modulo *per_column*.  Cells are ``{"label", "index", "bad",
-    "sources", "manual"}`` — ``manual`` says the label is in the override
-    file now, which can run ahead of ``bad`` (the job applies the file on
-    its next run); a ragged last column is padded with ``None``.  Empty
-    when there is no axis, so the template can fall back to the list.
-    """
-    manual = manual or set()
-    columns = [labels[i:i + per_column]
-               for i in range(0, len(labels), per_column)]
-    rows = []
-    for r in range(min(per_column, len(labels))):
-        rows.append([
-            {"label": col[r], "index": c * per_column + r,
-             "bad": col[r] in bad, "sources": sources.get(col[r], ""),
-             "manual": col[r] in manual}
-            if r < len(col) else None
-            for c, col in enumerate(columns)])
-    return rows
-
-
-def _bffs_manual_state(manual_file, run: dict | None) -> dict:
-    """What the page knows about manual flagging.
-
-    ``enabled`` is whether the grid may edit the override file
-    (``bffs.control``); ``labels`` is what that file lists now; ``error``
-    an unreadable file;
-    ``job_path`` the file the job's ``manual`` source reported reading
-    (from the run file) and ``mismatch`` whether that differs from ours —
-    a click would then write where the job never looks, so the grid says
-    so and the route refuses.
-    """
-    out = {"enabled": manual_file is not None, "path": str(manual_file) if manual_file else None,
-           "labels": set(), "error": None, "job_path": None, "mismatch": False}
-    if manual_file is None:
-        return out
-    try:
-        out["labels"] = read_manual_flags(manual_file) or set()
-    except ValueError as e:
-        out["error"] = str(e)
-    job_path = _job_manual_path(run)
-    out["job_path"] = job_path
-    if job_path is not None and not _same_path(job_path, manual_file):
-        out["mismatch"] = True
-    return out
-
-
-def _job_manual_path(run: dict | None) -> str | None:
-    """The override file the job's ``manual`` source read, per the run
-    file; ``""`` when the job ran with no manual source; ``None`` when
-    there is no run file to tell."""
-    if not isinstance(run, dict) or not isinstance(run.get("sources"), list):
-        return None
-    for src in run["sources"]:
-        if isinstance(src, dict) and src.get("kind") == "manual":
-            detail = src.get("detail") if isinstance(src.get("detail"), dict) else {}
-            return str(detail.get("path") or "")
-    return ""
-
-
-def _same_path(a, b) -> bool:
-    try:
-        return Path(str(a)).resolve() == Path(str(b)).resolve()
-    except OSError:
-        return str(a) == str(b)
-
-
-def _float_or_none(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _eigencal_detail(state: dict | None, run: dict | None, svc: dict) -> dict | None:
-    """The EIGENCAL page's summary from the job's two files and the
-    archives beside them.
-
-    ``run.json`` is written every run and says what the run did and why
-    (skipped: transit not complete / too old / daytime / already done;
-    degraded: no data or the quality gate; ok: archived or sent) with the
-    transit it considered and the next one -- the question "why has it
-    not produced anything?" answered without the journal.  ``state.json``
-    changes only when a solution is produced.  The archives are the
-    ``gain_*.h5`` files in the state directory, newest first.
-    """
-    archives = []
-    try:
-        files = sorted(svc["state_file"].parent.glob(EIGENCAL_ARCHIVE_GLOB),
-                       key=lambda f: f.stat().st_mtime, reverse=True)
-    except OSError:
-        files = []
-    for f in files[:10]:
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        archives.append({"name": f.name, "bytes": st.st_size,
-                         "mtime": st.st_mtime, "mtime_fmt": _fmt_utc(st.st_mtime)})
-    if state is None and run is None and not archives:
-        return None
-    out: dict = {"has_state": state is not None, "has_run": run is not None,
-                 "archives": archives}
-    if state is not None:
-        out.update({
-            "updated": _fmt_utc(state.get("updated")),
-            "transit_time": _fmt_utc(state.get("transit_time")),
-            "source": state.get("source"),
-            "good_frac": _float_or_none(state.get("good_frac")),
-            "n_calibrated": state.get("n_calibrated"),
-            "n_elements": state.get("n_elements"),
-            "sent": state.get("sent"),
-            "archive": (Path(str(state["archive"])).name
-                        if state.get("archive") else None),
-        })
-    if run is not None:
-        status = str(run.get("status") or "unknown")
-        out["run"] = {
-            "status": status,
-            "time": _float_or_none(run.get("time")),
-            "time_fmt": _fmt_utc(run.get("time")),
-            "reason": run.get("reason"),
-            "exit_code": run.get("exit_code"),
-            "source": run.get("source"),
-            "transit_tag": run.get("transit_tag"),
-            "transit_fmt": _fmt_utc(run.get("transit")),
-            "transit_complete_fmt": _fmt_utc(run.get("transit_complete")),
-            "eligible_until": _float_or_none(run.get("eligible_until")),
-            "eligible_until_fmt": _fmt_utc(run.get("eligible_until")),
-            "next_transit": _float_or_none(run.get("next_transit")),
-            "next_transit_fmt": _fmt_utc(run.get("next_transit")),
-            "sun_alt_deg": _float_or_none(run.get("sun_alt_deg")),
-            "archive_only": run.get("archive_only"),
-            "dry_run": run.get("dry_run"),
-            "good_frac": _float_or_none(run.get("good_frac")),
-        }
-    return out
-
-
-def _bffs_detail(state: dict | None, run: dict | None, svc: dict) -> dict | None:
-    """The BFFS page's summary from the job's two files.
-
-    The state file says what the flags *are* (bad list, element axis,
-    transitions; rewritten only when the list changes); the run file
-    says how the last run *measured* them (per-source status, what was
-    skipped or abstained and why; rewritten every run).  Either may be
-    missing; ``None`` only when both are.  The registry entry's manual
-    override file adds its current contents to the grid.
-    """
-    run_summary = _bffs_run_summary(run)
-    if state is None and run_summary is None:
-        return None
-    manual = _bffs_manual_state(svc["manual_file"], run)
-    has_state = state is not None
-    state = state or {}
-    history = [h for h in (state.get("history") or [])
-               if isinstance(h, dict)]
-    flagged_by = state.get("flagged_by") or {}
-    flag_reasons = state.get("flag_reasons")
-    flag_reasons = flag_reasons if isinstance(flag_reasons, dict) else {}
-
-    def attribution(label, kinds) -> str:
-        # which source(s) flagged the feed, each with the reason it gave
-        # where it gave one: "power: not in PDB table", "manual"
-        reasons = flag_reasons.get(label)
-        reasons = reasons if isinstance(reasons, dict) else {}
-        return ", ".join(f"{kind}: {reasons[kind]}" if reasons.get(kind) else str(kind)
-                         for kind in (kinds or []))
-
-    # absent for state files written before attribution existed
-    sources = ({str(label): attribution(str(label), kinds)
-                for label, kinds in flagged_by.items()}
-               if isinstance(flagged_by, dict) else {})
-    bad_inputs = [str(label) for label in (state.get("bad_inputs") or [])]
-    # the element axis the flags index, recorded by bffs since
-    # 2026-09; an older state file has none and the page shows the
-    # bad list alone
-    labels = [str(label) for label in (state.get("labels") or [])]
-    return {
-        "has_state": has_state,
-        "updated": _fmt_utc(state.get("updated")),
-        "update_id": state.get("update_id"),
-        "bad_inputs": bad_inputs,
-        "flagged_by": sources,
-        "n_elements": len(labels),
-        "element_rows": _element_grid(labels, set(bad_inputs), sources,
-                                      manual=manual["labels"]),
-        "manual": manual,
-        # pre-shape everything the template touches, so a malformed
-        # entry fails here (-> detail None) and not mid-render
-        "history": [{
-            "time_fmt": _fmt_utc(h.get("time")),
-            "became_bad": list(h.get("became_bad") or []),
-            "became_good": list(h.get("became_good") or []),
-            "n_bad": len(h.get("bad_inputs") or []),
-        } for h in reversed(history[-10:])],
-        "history_total": len(history),
-        "run": run_summary,
-    }
-
-
-def _opt_int(value):
-    return None if value is None else int(value)
-
-
-def _fmt_age(seconds) -> str:
-    s = float(seconds)
-    if s < 90:
-        return f"{s:.0f} s"
-    if s < 5400:
-        return f"{s / 60:.0f} min"
-    if s < 172800:
-        return f"{s / 3600:.1f} h"
-    return f"{s / 86400:.1f} d"
-
-
-def _bffs_run_summary(run) -> dict | None:
-    """The run file pre-shaped for the template, or ``None``.
-
-    Parsed under its own guard so a malformed run file costs only the
-    "last run" block, not the state summary beside it.
-    """
-    if not isinstance(run, dict):
-        return None
-    try:
-        sources = []
-        for src in run.get("sources") or []:
-            if not isinstance(src, dict):
-                continue
-            detail = src.get("detail") if isinstance(src.get("detail"), dict) else {}
-            kind = str(src.get("kind") or "?")
-            sources.append({
-                "kind": kind,
-                "status": str(src.get("status") or "unknown"),
-                "reason": str(src["reason"]) if src.get("reason") else None,
-                "n_flagged": _opt_int(src.get("n_flagged")),
-                "n_measured": _opt_int(src.get("n_measured")),
-                "summary": _bffs_source_summary(kind, detail),
-            })
-        age = run.get("kotekan_file_age_s")
-        return {
-            "time": float(run["time"]) if run.get("time") is not None else None,
-            "time_fmt": _fmt_utc(run.get("time")),
-            "status": str(run.get("status") or "unknown"),
-            "exit_code": _opt_int(run.get("exit_code")),
-            "degraded": [str(r) for r in (run.get("degraded") or [])],
-            "error": str(run["error"]) if run.get("error") else None,
-            "kotekan_file": (str(run["kotekan_file"])
-                             if run.get("kotekan_file") else None),
-            "kotekan_file_age": _fmt_age(age) if age is not None else None,
-            "kotekan_file_reason": (str(run["kotekan_file_reason"])
-                                    if run.get("kotekan_file_reason") else None),
-            "n_elements": _opt_int(run.get("n_elements")),
-            "n_bad": _opt_int(run.get("n_bad")),
-            "sent": run.get("sent"),
-            "sources": sources,
-        }
-    except (TypeError, ValueError, KeyError, AttributeError) as e:
-        logger.warning(f"bffs run file: unusable contents: {e}")
-        return None
-
-
-def _bffs_source_summary(kind: str, d: dict) -> str:
-    """One line from a source's free-form report detail, by source kind.
-
-    Every key is optional (older run files, future sources); anything
-    unrecognised falls back to ``key=value`` pairs.
-    """
-    parts: list[str] = []
-    if kind == "power-outlier":
-        if d.get("band_coverage") is not None:
-            parts.append(f"band coverage {float(d['band_coverage']):.0%}")
-        if d.get("rows") is not None:
-            rows = f"{int(d['rows'])} rows"
-            if d.get("tail_rows_skipped"):
-                rows += f" ({int(d['tail_rows_skipped'])} empty tail rows skipped)"
-            parts.append(rows)
-        if d.get("median_power") is not None:
-            parts.append(f"median power {float(d['median_power']):.4g}")
-        if d.get("n_in_file") is not None and d.get("n_not_in_file"):
-            n_in, n_out = int(d["n_in_file"]), int(d["n_not_in_file"])
-            parts.append(f"{n_in} of {n_in + n_out} elements in the file")
-        if d.get("n_excluded"):
-            types = d.get("exclude_types")
-            named = ", ".join(str(t) for t in types) if isinstance(types, list) else "type"
-            parts.append(f"{int(d['n_excluded'])} {named} elements not compared")
-        if d.get("file"):
-            parts.append(Path(str(d["file"])).name)
-    elif kind == "dish-type":
-        counts = d.get("type_counts")
-        if isinstance(counts, dict) and counts:
-            parts.append(" / ".join(f"{int(n)} {t}" for t, n in counts.items()))
-        bad = d.get("bad_types")
-        if isinstance(bad, list) and bad:
-            parts.append("bad: " + ", ".join(str(t) for t in bad))
-        if d.get("n_untyped"):
-            parts.append(f"{int(d['n_untyped'])} untyped (left good)")
-    elif kind == "rfi":
-        n = d.get("n_endpoints")
-        if n is not None:
-            used = int(n) - int(d.get("n_failed") or 0) - int(d.get("n_stale") or 0)
-            parts.append(f"{used} of {int(n)} /sk endpoints used")
-        if d.get("n_failed"):
-            parts.append(f"{int(d['n_failed'])} unreachable")
-        if d.get("n_stale"):
-            parts.append(f"{int(d['n_stale'])} stale")
-        skipped = [n for n in (d.get("skipped_nodes") or []) if isinstance(n, dict)]
-        if skipped:
-            parts.append("not polled: " + ", ".join(
-                f"{n.get('node')} ({n.get('status')})" for n in skipped))
-        bounds = d.get("sk_bounds")
-        if isinstance(bounds, list) and len(bounds) == 2:
-            parts.append(f"SK bounds {bounds[0]}–{bounds[1]}")
-    elif kind == "power":
-        if d.get("n_watched") is not None:
-            parts.append(f"{int(d['n_watched'])} feeds watched")
-        if d.get("n_unpowered") is not None:
-            parts.append(f"{int(d['n_unpowered'])} unpowered")
-        if d.get("n_unmapped"):
-            parts.append(f"{int(d['n_unmapped'])} not in the PDB table"
-                         + (" (flagged absent)" if d.get("unmapped_flagged")
-                            else " (left good)"))
-        if d.get("map_source"):
-            parts.append(f"map: {d['map_source']}")
-        if d.get("map_check") and d["map_check"] != "ok":
-            parts.append(str(d["map_check"]))
-    elif kind == "manual":
-        if d.get("n_listed") is not None:
-            parts.append(f"{int(d['n_listed'])} listed")
-        if d.get("exists") is False:
-            parts.append("override file absent")
-        if d.get("not_on_axis"):
-            parts.append("not on the axis: "
-                         + ", ".join(str(x) for x in d["not_on_axis"]))
-    elif kind == "fpga":
-        if d.get("n_watched") is not None:
-            parts.append(f"{int(d['n_watched'])} feeds watched")
-        if d.get("channels_sampled") is not None:
-            parts.append(f"{int(d['channels_sampled'])} channels sampled")
-    if not parts:
-        parts = [f"{k}={v}" for k, v in d.items()
-                 if isinstance(v, (str, int, float, bool))][:6]
-    return " · ".join(parts)
-
-
 def _choco_detail(state, run, svc) -> dict:
     """choco's own page: the live registry, no state file."""
     registry = _registry()
     counts = _node_counts(registry)
     return {
-        "started_at": _fmt_utc(_STARTED_AT),
+        "started_at": fmt_utc(_STARTED_AT),
         "nodes_total": counts["total"],
         "maintenance": counts["maintenance"],
         "started_desired": counts["started_desired"],
@@ -2360,74 +1596,8 @@ def _choco_detail(state, run, svc) -> dict:
     }
 
 
-def _eop_detail(state: dict | None, run, svc) -> dict | None:
-    """The span of the EOP table the job last broadcast."""
-    if state is None:
-        return None
-    table = state.get("earth_orientation_parameter_table") or []
-    stamps = sorted(e["t_inst_ns"] for e in table
-                    if isinstance(e, dict) and "t_inst_ns" in e)
-    if not stamps:
-        return None
-    # t_inst_ns is instrument time (frame0-anchored TAI ns), within
-    # leap-seconds of unix time — fine for a span display.
-    return {
-        "entries": len(table),
-        "first": _fmt_utc(stamps[0] / 1e9),
-        "last": _fmt_utc(stamps[-1] / 1e9),
-    }
-
-
-def _acqnotes_detail(state, run, svc) -> dict | None:
-    """What the notes job has measured (its index: {acq: measured at})
-    and what its last run did (the run record)."""
-    if not isinstance(state, dict) and not isinstance(run, dict):
-        return None
-    run = run if isinstance(run, dict) else {}
-    return {
-        "n_with_notes": len(state) if isinstance(state, dict) else 0,
-        "acquisitions": run.get("acquisitions"),
-        "backlog": run.get("backlog"),
-        "measured": [str(a) for a in (run.get("measured") or [])],
-        "written": [str(a) for a in (run.get("written") or [])],
-        "run_time": _fmt_utc(run.get("time")),
-        "run_status": run.get("status"),
-    }
-
-
-def _waterfall_detail(state: dict | None, run, svc) -> dict | None:
-    """The renderer's last run from its state file."""
-    if state is None:
-        return None
-    errors = [str(e) for e in (state.get("errors") or [])]
-    return {
-        "updated": _fmt_utc(state.get("updated")),
-        "roots": ", ".join(str(r) for r in (state.get("roots") or [])),
-        "waterfalls_dir": state.get("waterfalls_dir"),
-        "files_rendered": state.get("files_rendered"),
-        "acquisitions_touched": state.get("acquisitions_touched"),
-        "backlog": state.get("backlog"),
-        "run_seconds": state.get("run_seconds"),
-        "last_acquisition": state.get("last_acquisition"),
-        "last_file_idx": state.get("last_file_idx"),
-        "errors": errors[:10],
-        "errors_total": len(errors),
-    }
-
-
-#: Each service's summariser, ``f(state, run, svc)`` with the job's
-#: state and run files already read (None when missing); the page's
-#: ``_detail_<name>.html`` renders what it returns.  A service without
-#: one shows the common facts alone.
-_SERVICE_DETAILS = {
-    "choco": _choco_detail,
-    "eop": _eop_detail,
-    "bffs": _bffs_detail,
-    "eigencal": _eigencal_detail,
-    "mapmaker": _mapmaker_detail,
-    "acqnotes": _acqnotes_detail,
-    "waterfall": _waterfall_detail,
-}
+#: Each service's summariser (``jobdetail.JOB_DETAILS`` plus choco's own).
+_SERVICE_DETAILS = {"choco": _choco_detail, **JOB_DETAILS}
 
 
 def _service_detail(name: str, svc: dict) -> dict | None:
@@ -2520,7 +1690,7 @@ def partial_service_fpga():
 def _fpga_context(monitor) -> dict:
     """What the FPGA page and its status poll render from the monitor."""
     fpga = monitor.to_dict()
-    return {"fpga": fpga, "frame0_fmt": _fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+    return {"fpga": fpga, "frame0_fmt": fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
             "actions": monitor.actions, "now_ts": time.time()}
 
 
@@ -2789,12 +1959,12 @@ def bffs_manual_toggle():
             or label not in [str(x) for x in axis]):
         abort(400)
     run = read_state_json(svc.get("run_file"))
-    job_path = _job_manual_path(run)
+    job_path = job_manual_path(run)
     if job_path == "":
         return _bffs_manual_result(
             False, "the bffs job runs with no manual source; a flag written "
                    "here would never be read")
-    if job_path is not None and not _same_path(job_path, manual_file):
+    if job_path is not None and not same_path(job_path, manual_file):
         return _bffs_manual_result(
             False, f"choco edits {manual_file} but the bffs job's manual source "
                    f"reads {job_path}; drop the source's path: (or point it at "
@@ -3002,16 +2172,17 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
         value = data.get(attr)
         if not isinstance(value, bool):
             return {"error": f"{attr} must be a boolean"}, 400
-        _set_flag(nodes, attr, value)
+        _orchestrator().set_flag(nodes, attr, value)
         return {"status": "ok", **scope, attr: value}, 200
     elif action == "set_config":
         # Which library file the nodes render (null: their per-node
         # files).  Not a queue item: a nodes.yaml edit and registry
-        # rebuild, which pauses the cluster (see _set_node_configs).
+        # rebuild, which pauses the cluster (see library.set_node_configs).
         config = data.get("config")
         if config is not None and not isinstance(config, str):
             return {"error": "config must be a string or null"}, 400
-        body, status = _set_node_configs(nodes, config or None, _audit_user())
+        body, status = library.set_node_configs(_registry(), _orchestrator(), nodes,
+                                                config or None, _audit_user())
         return (body | scope if status == 200 else body), status
     else:
         return {"error": f"Unknown action '{action}'"}, 400
@@ -3305,7 +2476,7 @@ def api_configs():
     """The config library: every file under configs_dir with the nodes
     that render or include it (what /configs shows)."""
     registry = _registry()
-    return {"files": [_library_entry(registry, rel)
+    return {"files": [library.entry(registry, rel)
                       for rel in registry.config_files()]}
 
 
@@ -3315,12 +2486,12 @@ def api_config_get(name):
     """One library file's text, with its users."""
     registry = _registry()
     try:
-        path = _library_path(registry, name)
+        path = library.file_path(registry, name)
     except ValueError as e:
         return {"error": str(e)}, 400
     if not path.is_file():
         return {"error": f"No such config file: {name}"}, 404
-    return _library_entry(registry, name) | {"content": path.read_text()}
+    return library.entry(registry, name) | {"content": path.read_text()}
 
 
 @bp.route("/api/configs/<path:name>", methods=["PUT"])
@@ -3332,18 +2503,18 @@ def api_config_put(name):
     directory without a root shell (``choco config put``)."""
     registry = _registry()
     try:
-        _library_path(registry, name)
+        library.file_path(registry, name)
     except ValueError as e:
         return {"error": str(e)}, 400
     data = request.get_json(silent=True) or {}
     content = data.get("content")
     if not isinstance(content, str):
         return {"error": "'content' must be a string"}, 400
-    affected, error = _check_library_save(registry, name, content)
+    affected, error = library.check_save(registry, name, content)
     if error:
         return {"error": error}, 400
     created = not (registry.configs_dir / name).exists()
-    _write_library_file(registry, name, content, _audit_user())
+    library.write_file(registry, _orchestrator(), name, content, _audit_user())
     return {"status": "saved", "path": name, "created": created,
             "reloaded": affected}
 
@@ -3355,7 +2526,7 @@ def api_configs_pull():
     into the library and report what changed as JSON; ``{"dry_run":
     true}`` reports the plan and writes nothing."""
     data = request.get_json(silent=True) or {}
-    return _pull_library(bool(data.get("dry_run")), _audit_user())
+    return _library_pull(dry_run=bool(data.get("dry_run")))
 
 
 @bp.route("/api/pdb/map", methods=["GET"])

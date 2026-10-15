@@ -270,9 +270,9 @@ class TestServicePage:
         assert "d1, d9" not in body            # the list gave way to the grid
 
     def test_element_grid_runs_down_columns_of_eight(self):
-        from choco.web import _element_grid
+        from choco.jobdetail import element_grid
         labels = [f"e{i}" for i in range(20)]
-        rows = _element_grid(labels, {"e3", "e10"}, {"e3": "rfi"})
+        rows = element_grid(labels, {"e3", "e10"}, {"e3": "rfi"})
         assert len(rows) == 8
         # column c holds elements 8c..8c+7, so row 0 is 0, 8, 16
         assert [cell["label"] for cell in rows[0]] == ["e0", "e8", "e16"]
@@ -280,7 +280,7 @@ class TestServicePage:
         assert rows[3][0]["bad"] and rows[3][0]["sources"] == "rfi"
         assert rows[2][1]["bad"] and rows[2][1]["sources"] == ""
         assert rows[4][2] is None and rows[7][2] is None   # ragged last column
-        assert _element_grid([], set(), {}) == []
+        assert element_grid([], set(), {}) == []
 
     def test_eigencal_detail_from_state_file(self, client, app, tmp_path, jobs):
         login(client)
@@ -787,7 +787,7 @@ class TestBffsRunFile:
         assert nodes and all(n["status"] == "unknown" for n in nodes)
 
     def test_source_summary_lines(self):
-        from choco.web import _bffs_source_summary as line
+        from choco.jobdetail import bffs_source_summary as line
         assert line("power-outlier", {"band_coverage": 0.125, "rows": 16,
                                       "tail_rows_skipped": 4, "median_power": 1234.5678,
                                       "file": "/a/b/vis_0001.h5"}) == (
@@ -832,11 +832,11 @@ class TestBffsRunFile:
         assert line("power-outlier", {}) == ""
 
     def test_fmt_age(self):
-        from choco.web import _fmt_age
-        assert _fmt_age(30) == "30 s"
-        assert _fmt_age(600) == "10 min"
-        assert _fmt_age(7200) == "2.0 h"
-        assert _fmt_age(937000) == "10.8 d"
+        from choco.jobdetail import fmt_age
+        assert fmt_age(30) == "30 s"
+        assert fmt_age(600) == "10 min"
+        assert fmt_age(7200) == "2.0 h"
+        assert fmt_age(937000) == "10.8 d"
 
 
 class TestBffsManualFlags:

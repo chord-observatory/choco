@@ -465,6 +465,8 @@ choco/
 ├── app.py          # load_config, create_app, TLS, gevent server, `choco-server`
 ├── cli.py          # `choco`: stdlib client for the localhost JSON API
 ├── web.py          # Flask blueprint: all routes and partials
+├── library.py      # the config library: entries, the save check (every user re-rendered), writes, the upstream pull
+├── jobdetail.py    # what each job's page summarises from its files (JOB_DETAILS; no Flask)
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)

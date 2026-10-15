@@ -69,7 +69,7 @@ its *validated* name at that commit and checked against the listing's sha —
 the listing's ``download_url`` is never followed, and a name that is not a
 plain config file under the mirror directory (a directory, a symlink, a
 README) is skipped, reported, and never causes a removal.  The fetched texts
-are validated as one set (``web._check_library_saves``: every node that
+are validated as one set (``library.check_saves``: every node that
 renders or includes any of them is rendered with all of them overlaid, an
 includer's own new text included) because the files are only consistent
 together — the ``num_local_freq`` move was exactly a common.j2 that renders

@@ -39,7 +39,7 @@ engages cluster-wide maintenance mode).  In-process greenlets are reserved for
 cheap UI-facing monitoring (``FpgaMonitor``, ``PdbMonitor``).  A header badge
 + detail page costs one entry in ``web._JOBS`` (the strip and the landing
 table loop over the registry it builds) and, optionally, a summariser in
-``web._SERVICE_DETAILS`` with its ``_detail_<name>.html`` partial, which
+``jobdetail.JOB_DETAILS`` with its ``_detail_<name>.html`` partial, which
 ``_service_status.html`` includes by name.
 
 **State paths are a convention (2026-10).**  Until then every job had a
@@ -73,7 +73,7 @@ free-form ``detail`` — and the core adds ``skipped`` entries for sources it
 did not run and ``n_flagged`` for all.  ``n_measured`` is what tells "ran and
 flagged nothing" from "had nothing to measure"; a run in which every source
 is skipped or measured nothing still fails (``OSError``, exit 2) rather than
-pass as all-good.  The web side reads the file in ``web._bffs_run_summary``
+pass as all-good.  The web side reads the file in ``jobdetail._bffs_run_summary``
 (its own guard: a malformed run file costs only the last-run block) and in
 ``web._run_reasons`` for the badge tooltip and landing table, only when
 systemd's verdict is degraded or failed — the verdict stays systemd's; the
@@ -177,7 +177,7 @@ off-source floor, the dynamic-range gate's own number) with
 window exited "no N² data overlaps" and the page could only say *ok*,
 because exit 0 after a skipped transit and exit 0 after a sent solution are
 the same to systemd; the journal had the answer and needed sudo.
-``web._eigencal_detail`` reads both files plus the ``gain_*.h5`` list, and
+``jobdetail.eigencal_detail`` reads both files plus the ``gain_*.h5`` list, and
 ``fpga.FileArchive`` serves the newest archive to the shared plot panel
 (``/api/eigencal/gain-data``, the F-engine gains' protocol).
 

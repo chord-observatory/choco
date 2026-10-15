@@ -497,6 +497,15 @@ class Orchestrator:
             for node in self.registry.nodes.values():
                 self._enqueue(node, item)
 
+    def set_flag(self, nodes, attr: str, value: bool) -> None:
+        """Set a desired flag (``started`` / ``maintenance``) on *nodes* and
+        wake each node's worker with a POLL, so the change takes effect now
+        rather than at the node's next scheduled check (which for a
+        backed-off node is up to ``max_retry_interval`` away)."""
+        for node in nodes:
+            setattr(node, attr, value)
+            self.submit_node(node.key, ChangeItem(ChangeType.POLL))
+
     # --- Config-directory change detection ---
 
     def _config_file_mtimes(self) -> dict[Path, float]:
