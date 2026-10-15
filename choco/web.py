@@ -22,23 +22,23 @@ from flask_login import login_required, login_user, logout_user, current_user
 
 from . import acqtree, auth
 from .auth import save_user, localhost_or_login_required
-from .jobclient import (MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT,
-                        write_text_atomic)
+from .jobclient import (EIGENCAL_ARCHIVE_GLOB, MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME,
+                        STATE_ROOT, write_text_atomic)
 from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
                         run_blocking, timeline_rows)
 from . import dishlabels
-from .pdbmap import PdbMap, cross_check, kotekan_dish_labels, dish_layout, row_entries
+from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
+                     valid_channel_address)
 from .waterfalls import (
     IMAGE_RE as WF_IMAGE_RE, freq_ticks as wf_freq_ticks, open_stream,
     palette_gradient as wf_palette_gradient, parse_elements,
     time_ticks as wf_time_ticks, triangle as wf_triangle,
     value_ticks as wf_value_ticks,
 )
-from .services import (
-    job_status, job_logs, timer_status, read_state_json, render_dot_svg,
-    sanitize_pipeline_svg, EOP_STALE_AFTER_S, PIPELINE_LAYOUTS,
-    read_manual_flags, toggle_manual_flag,
-)
+from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json,
+                        timer_status)
+from .manualflags import read_manual_flags, toggle_manual_flag
+from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import NodeStatus, find_updatable_blocks, resolve_config_path
 from .sync import ChangeItem, ChangeType
 from .upstream import UpstreamError
@@ -1349,7 +1349,7 @@ def _eigencal_gain_context() -> dict:
     return {
         "available": True, "error": None,
         "datasets": info["datasets"],
-        "filename": archive._path.name if archive._path else None,
+        "filename": archive.path.name if archive.path else None,
         "source": _first_scalar(attrs.get("source")),
         "transit_fmt": _fmt_utc(transit) if isinstance(transit, (int, float)) else None,
         "good_frac": _float_or_none(_first_scalar(attrs.get("good_frac"))),
@@ -1386,7 +1386,7 @@ def api_eigencal_gain_data():
     length = min(length, _BUFFER_DATA_MAX_LEN)
     if not archive.refresh():
         return {"error": archive.error or "no gain solution archived yet"}, 404
-    frame_id = f"{archive._path.name}@{archive._mtime:.0f}" if archive._path else None
+    frame_id = f"{archive.path.name}@{archive.mtime:.0f}" if archive.path else None
     return _archive_data_response(archive, dataset, length, frame_id)
 
 
@@ -1402,7 +1402,7 @@ def eigencal_gain_file():
         return redirect(url_for("web.service_page", name="eigencal"))
     resp = Response(raw, mimetype="application/x-hdf5")
     resp.headers["Content-Disposition"] = \
-        f'attachment; filename="{archive._path.name}"'
+        f'attachment; filename="{archive.path.name}"'
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -2225,7 +2225,7 @@ def _eigencal_detail(state: dict | None, run: dict | None,
     """
     archives = []
     try:
-        files = sorted(state_dir.glob("gain_*.h5"),
+        files = sorted(state_dir.glob(EIGENCAL_ARCHIVE_GLOB),
                        key=lambda f: f.stat().st_mtime, reverse=True)
     except OSError:
         files = []
@@ -3022,7 +3022,7 @@ def pdb_control():
         on = request.form["state"] == "on"
     except (KeyError, ValueError):
         abort(400)
-    if chip not in ("A", "B") or not 0 <= channel < 8 or board < 0:
+    if not valid_channel_address(board, chip, channel):
         abort(400)
     logger.warning(
         f"pdb: bus {bus} board {board} chip {chip} ch{channel} -> "

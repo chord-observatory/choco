@@ -468,8 +468,15 @@ choco/
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
-├── services.py     # FpgaMonitor, GainArchive, PdbMonitor, job/systemd helpers, dot + SVG sanitizer
-├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check
+├── fpga.py         # FpgaMonitor (fpga_master poll + controls), GainArchive, FileArchive (h5read subprocess)
+├── powerdb.py      # PdbMonitor: power_db poll and the one read-modify-write-verify behind every power control
+├── pipeline_svg.py # dot layout presets, render_dot_svg, the SVG whitelist sanitizer
+├── jobstatus.py    # job_status / timer_status / job_logs / read_state_json (systemd + state files)
+├── manualflags.py  # the bffs manual override file, read and edited by one rule (shared with bffs)
+├── monitor.py      # PolledMonitor / HttpMonitor: the header strip's pollers' shared lifecycle
+├── http.py         # fetch(): the one HTTP request helper (retries, OSError) for state, fpga, powerdb, upstream
+├── hosttool.py     # run_tool(): systemctl / journalctl / dot, the one way
+├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check + power_db wire conventions (stdlib; shared with bffs)
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)

@@ -46,7 +46,7 @@ guessing.  **h5py runs in a subprocess** (``choco.h5read``, imported inside
 ``main()``): the import alone costs ~90 ms and the parse blocks, and this
 process is a gevent hub — the same reason the timer jobs are separate
 processes; the download is cooperative because ``monkey.patch_all()`` runs at
-startup, so only the parse needed isolating.  ``services.GainArchive`` caches
+startup, so only the parse needed isolating.  ``fpga.GainArchive`` caches
 the manifest and per-dataset bytes for 30 s behind a semaphore, so several
 viewers cost one download, and the panel polls at 30 s rather than 5 s and
 asks for the whole dataset since a byte prefix would cut the frequency axis in

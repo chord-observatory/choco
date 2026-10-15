@@ -16,7 +16,7 @@ parallel.)  The graph is fetched on demand, never on a timed poll: kotekan's
 ``dot`` subprocess here — but the labels embed live fullness (``3/24 (12.5%)``
 = full/total frames), so a refresh is a meaningful new snapshot, not a re-
 render.  ``Node.get_pipeline_dot`` is a plain GET (a read — allowed in
-maintenance mode); ``services.render_dot_svg`` shells out to the graphviz CLI
+maintenance mode); ``pipeline_svg.render_dot_svg`` shells out to the graphviz CLI
 (``dot -Tsvg``, the same host-tool-over-Python-dependency choice as the
 openssl TLS fallback; ``choco.sh install`` prints a note when ``dot`` is
 missing) and slices the output down to the ``<svg`` element since an XML
@@ -45,7 +45,7 @@ the way in — kotekan builds before the charset fix label the reply
 against choco and 404) and would fight the inline view's own click-to-plot
 handler.  The SVG is inlined so buffer nodes can be clicked, which means
 kotekan-supplied markup lands in the authenticated UI:
-``services.sanitize_pipeline_svg`` rebuilds the graphviz output through a
+``pipeline_svg.sanitize_pipeline_svg`` rebuilds the graphviz output through a
 whitelist RECONSTRUCTION (a new tree; only known-inert elements/attributes are
 copied, so script/handlers/foreignObject can't survive by omission).  An
 unlisted element is **unwrapped, not deleted** — left out of the output while
@@ -85,7 +85,7 @@ free).  Zooming sets an explicit px width on the svg and leaves fit/full mode
 — Fit/1:1 clear it — and the width is **re-applied on ``htmx:afterSwap``**,
 since a Refresh or layout change delivers a fresh SVG with no inline style and
 would otherwise snap a zoomed-in operator to the ~9700 px natural width.  A
-**layout preset selector** (``?layout=`` → ``services.PIPELINE_LAYOUTS``
+**layout preset selector** (``?layout=`` → ``pipeline_svg.PIPELINE_LAYOUTS``
 allowlist: **curves is the default** — mclimit/newrank tamed the spline
 spaghetti that originally motivated ortho, and curves lays out ~10% more
 compact; ortho / polyline stay as presets; all carry ``-Gmclimit=8

@@ -177,7 +177,7 @@ window exited "no N² data overlaps" and the page could only say *ok*,
 because exit 0 after a skipped transit and exit 0 after a sent solution are
 the same to systemd; the journal had the answer and needed sudo.
 ``web._eigencal_detail`` reads both files plus the ``gain_*.h5`` list, and
-``services.FileArchive`` serves the newest archive to the shared plot panel
+``fpga.FileArchive`` serves the newest archive to the shared plot panel
 (``/api/eigencal/gain-data``, the F-engine gains' protocol).
 
 ## acqnotes: notes written into the data (2026-10)

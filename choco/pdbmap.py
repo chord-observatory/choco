@@ -391,3 +391,42 @@ def cross_check(pdb_map: PdbMap, label_sets: dict) -> dict:
         "ok": bool(known) and not missing and not unknown
         and not duplicates,
     }
+
+
+# --- power_db's wire conventions -----------------------------------------
+#
+# Shared by choco's PDB monitor and bffs's power source: a channel is
+# addressed by (spi_bus, board, chip, channel), the chips of a bus form a
+# daisy chain, and /channel_states reports the chain as one flat byte list.
+
+def decode_out_bytes(raw) -> list[int]:
+    """Per-chip OUT bytes from one bus's raw ``/channel_states`` buffer.
+
+    Mirrors power_db's own daisy-chain decode (``spi_ops``): reverse the
+    flat byte list, then every even index is a chip's OUT byte -- chip
+    ``k`` of the chain, i.e. board ``k // 2``, chip ``'A'`` if ``k`` is
+    even else ``'B'`` (:func:`board_chip`).  Each OUT bit ``c`` (0..7) is
+    channel ``c``; 1 = powered.
+
+    Verified against the live controller (2026-07-17): writing
+    ``00000001`` to board 0 chip A moves exactly the last raw byte from
+    0 to 1, i.e. chip ``k``'s OUT byte is ``raw[2N-1-2k]``.
+    """
+    resp = list(raw)
+    resp.reverse()
+    return [resp[i] for i in range(0, len(resp), 2)]
+
+
+def chip_index(board: int, chip: str) -> int:
+    """Position of (board, chip) in the daisy chain."""
+    return board * 2 + (0 if chip == "A" else 1)
+
+
+def board_chip(chip_num: int) -> tuple[int, str]:
+    """The (board, chip) at daisy-chain position *chip_num*."""
+    return chip_num // 2, ("A" if chip_num % 2 == 0 else "B")
+
+
+def valid_channel_address(board, chip, channel) -> bool:
+    """Whether (board, chip, channel) can name a channel at all."""
+    return chip in ("A", "B") and 0 <= channel < 8 and board >= 0

@@ -67,7 +67,7 @@ class TestPipelinePage:
         assert 'hx-include="#pg-layout"' in body
 
     def test_partial_layout_presets_are_allowlisted(self, client):
-        from choco.services import PIPELINE_LAYOUTS
+        from choco.pipeline_svg import PIPELINE_LAYOUTS
         login(client)
         for requested, expected in (
             ("curves", PIPELINE_LAYOUTS["curves"]),

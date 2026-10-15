@@ -39,8 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-import requests
 
+from .http import fetch
 from .state import (
     CONFIG_SUFFIXES, PATH_PART_RE, list_config_files, resolve_config_path,
 )
@@ -172,12 +172,11 @@ class Upstream:
 
     # --- GitHub ---
 
-    def _get(self, url: str, *, accept: str) -> requests.Response:
+    def _get(self, url: str, *, accept: str) :
         try:
-            resp = requests.get(url, headers={**_HEADERS, "Accept": accept},
-                                timeout=self.timeout)
-        except (requests.RequestException, OSError) as e:
-            # OSError too: gevent can surface a bare ConnectionError.
+            resp = fetch("GET", url, headers={**_HEADERS, "Accept": accept},
+                         timeout=self.timeout, check=False)
+        except OSError as e:
             raise UpstreamError(f"{url}: {type(e).__name__}: {e}") from e
         if resp.status_code != 200:
             detail = ""

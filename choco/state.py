@@ -15,6 +15,7 @@ from jinja2 import meta as _jinja_meta
 import requests
 import yaml
 
+from .http import fetch
 from .jobclient import write_json_atomic, write_text_atomic
 
 logger = logging.getLogger(__name__)
@@ -592,26 +593,25 @@ class Node:
         blackhole case.
         """
         url = f"{self._base_url}/{path.lstrip('/')}"
-        for _attempt in range(retries + 1):
-            try:
-                resp = requests.request(method, url, timeout=self.timeout, **kwargs)
-                if resp.status_code in accept_statuses:
-                    return resp
-                resp.raise_for_status()
-                return resp
-            except (requests.ConnectionError, ConnectionError):
-                logger.debug(f"Connection failed: {url}")
-            except requests.Timeout:
-                logger.debug(f"Timeout: {url}")
-            except requests.HTTPError as e:
-                logger.warning(f"HTTP error from {url}: {e}")
-            except requests.RequestException as e:
-                # Catch-all for the rarer transport failures (chunked-encoding
-                # errors, protocol errors on a mid-body disconnect, ...) so
-                # they degrade like any other failed request instead of
-                # bubbling a 500 out of whatever route made the call.
-                logger.warning(f"Request failed: {url}: {e}")
+        try:
+            return fetch(method, url, timeout=self.timeout, retries=retries,
+                         retry_delay=0, accept_statuses=accept_statuses, **kwargs)
+        except requests.HTTPError as e:
+            logger.warning(f"HTTP error from {url}: {e}")
+        except OSError as e:
+            # Every transport failure, the rarer ones included, degrades
+            # like a down node instead of bubbling a 500 out of a route.
+            logger.debug(f"{url}: {type(e).__name__}: {e}")
         return None
+
+    @staticmethod
+    def _json_dict(resp) -> dict | None:
+        """A reply's JSON body when it is a mapping, else None."""
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
 
     def get_status(self) -> NodeStatus:
         """Probe kotekan: returns DOWN, IDLE, STARTED, or UNKNOWN."""
@@ -627,13 +627,10 @@ class Node:
     def get_config(self) -> dict | None:
         """Get the live config from kotekan.  Returns None if unreachable."""
         resp = self._request("GET", "/config")
-        if resp is None:
-            return None
-        try:
-            return resp.json()
-        except Exception:
+        data = self._json_dict(resp) if resp is not None else None
+        if resp is not None and data is None:
             logger.warning(f"Failed to parse config JSON from {self._base_url}")
-            return None
+        return data
 
     def push_updatable(self, path: str, values: dict) -> bool:
         """Push values to an updatable config endpoint on kotekan.
@@ -684,13 +681,7 @@ class Node:
         a subset of these fields.
         """
         resp = self._request("GET", "/version")
-        if resp is None:
-            return None
-        try:
-            data = resp.json()
-        except Exception:
-            return None
-        return data if isinstance(data, dict) else None
+        return self._json_dict(resp) if resp is not None else None
 
     def get_pipeline_dot(self) -> str | None:
         """Get the pipeline graph as graphviz dot text.
@@ -734,11 +725,7 @@ class Node:
             return None
         if resp.status_code == 404:
             return {}
-        try:
-            data = resp.json()
-        except Exception:
-            return None
-        return data if isinstance(data, dict) else None
+        return self._json_dict(resp)
 
     def get_buffer_frame(self, name: str, length: int | None = None) -> dict | None:
         """Peek the newest full frame of a buffer (``GET /buffer_frame?name=``).
@@ -776,11 +763,7 @@ class Node:
         if resp.status_code == 500:
             return {"error": f"kotekan could not serialise a frame of '{name}' "
                              "(internal error — often uninitialised frame metadata)"}
-        try:
-            data = resp.json()
-        except Exception:
-            return None
-        return data if isinstance(data, dict) else None
+        return self._json_dict(resp)
 
 
 class Registry:

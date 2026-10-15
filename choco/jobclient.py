@@ -86,6 +86,8 @@ STATE_ROOT = Path("/var/lib/choco")
 #: (rewritten every run, see :func:`write_run`).
 STATE_NAME = "state.json"
 RUN_NAME = "run.json"
+#: eigencal's archived solutions, beside its state.json (gain_<transit>_<source>.h5).
+EIGENCAL_ARCHIVE_GLOB = "gain_*.h5"
 
 #: The bffs manual override file: written by choco's BFFS page (the
 #: element grid) and read by the job's ``manual`` source, so the name is

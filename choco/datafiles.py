@@ -43,6 +43,8 @@ import yaml
 from gevent.lock import BoundedSemaphore
 from markupsafe import Markup, escape
 
+from .monitor import PolledMonitor
+
 logger = logging.getLogger(__name__)
 
 #: Files counted by the scan.
@@ -191,8 +193,9 @@ def probe_roots(paths) -> list[dict]:
     return [probe_root(p) for p in paths]
 
 
-class DataFileScan:
-    """The configured data roots, scanned on demand and cached.
+class DataFileScan(PolledMonitor):
+    """The configured data roots, scanned on demand and cached, and the
+    DATA badge's liveness probe of them, polled.
 
     ``roots`` is the explicit list from ``config.yaml`` (``vis_files.roots``);
     an empty list leaves the page saying it is unconfigured rather than
@@ -213,13 +216,10 @@ class DataFileScan:
         self._walks: dict = {}                  # root -> its unfinished walk
         # Badge state, kept by the health probe rather than the scan:
         # the strip polls every 30 s and must never walk the mount.
-        self.health: str = "unknown" if self.configured else "unconfigured"
+        super().__init__()
         self.root_status: list[dict] = []
-        self.last_checked: float | None = None
         self.last_ok: float | None = None
-        self.error: str | None = None
         self._probing = False
-        self._running = False
 
     @property
     def configured(self) -> bool:
@@ -298,16 +298,16 @@ class DataFileScan:
     # strip's cadence and only ever answers "is the filesystem there",
     # so it must cost one readdir per root, never a walk.
 
-    CHECK_INTERVAL_S = 30
+    INTERVAL_S = 30
     # A wedged NFS mount blocks in the kernel and cannot be interrupted,
     # so the probe runs in a thread and the *greenlet* gives up waiting.
     # The thread stays stuck until the mount recovers; ``_probing`` is
     # what keeps a stuck one from being joined by a new one every tick.
     CHECK_TIMEOUT_S = 10.0
 
-    def check_once(self) -> None:
+    def poll_once(self) -> None:
         """Probe every root and update the badge state."""
-        self.last_checked = time.time()
+        self.last_polled = time.time()
         if not self.configured:
             self.health = "unconfigured"
             self.error = None
@@ -342,7 +342,7 @@ class DataFileScan:
         if n_ok == len(statuses):
             self.health = "ok"
             self.error = None
-            self.last_ok = self.last_checked
+            self.last_ok = self.last_polled
         elif n_ok:
             # Some roots answered: the box is up, one mount is not.
             self.health = "degraded"
@@ -356,19 +356,6 @@ class DataFileScan:
     def _probe_done(self, _result) -> None:
         self._probing = False
 
-    def run(self) -> None:
-        """Probe forever on ``CHECK_INTERVAL_S``.  For gevent.spawn."""
-        self._running = True
-        while self._running:
-            try:
-                self.check_once()
-            except Exception:
-                logger.exception("DataFileScan.check_once raised")
-            gevent.sleep(self.CHECK_INTERVAL_S)
-
-    def stop(self) -> None:
-        self._running = False
-
     def to_dict(self) -> dict:
         """Badge-shaped health, matching the hardware monitors."""
         return {
@@ -378,7 +365,7 @@ class DataFileScan:
             "root_status": self.root_status,
             "n_roots": len(self.roots),
             "n_ok": sum(1 for s in self.root_status if s["ok"]),
-            "last_checked": self.last_checked,
+            "last_polled": self.last_polled,
             "last_seen": self.last_ok,
             "error": self.error,
         }

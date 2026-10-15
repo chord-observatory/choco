@@ -15,10 +15,11 @@ from flask import Flask
 
 from .auth import init_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
-from .jobclient import STATE_NAME, STATE_ROOT
+from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
 from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
-from .services import FpgaMonitor, GainArchive, PdbMonitor, FileArchive, newest_file
+from .fpga import FileArchive, FpgaMonitor, GainArchive, newest_file
+from .powerdb import PdbMonitor
 from .state import Registry
 from .sync import Orchestrator
 from .upstream import DEFAULTS as _UPSTREAM_DEFAULTS, Upstream
@@ -307,7 +308,7 @@ def create_app(
     # directory on demand; the path is looked up at each refresh so a
     # state_dir set later (tests) and a new solution both take effect.
     app.config["eigencal_archive"] = FileArchive(
-        lambda: newest_file(Path(app.config["state_dir"]) / "eigencal", "gain_*.h5"))
+        lambda: newest_file(Path(app.config["state_dir"]) / "eigencal", EIGENCAL_ARCHIVE_GLOB))
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)

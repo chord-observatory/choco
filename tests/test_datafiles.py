@@ -381,13 +381,13 @@ class TestHealth:
     def test_unconfigured(self):
         scan = DataFileScan([])
         assert scan.health == "unconfigured"
-        scan.check_once()
+        scan.poll_once()
         assert scan.health == "unconfigured"
         assert scan.to_dict()["health"] == "unconfigured"
 
     def test_all_roots_up_is_ok(self, roots):
         scan = DataFileScan(roots)
-        scan.check_once()
+        scan.poll_once()
         d = scan.to_dict()
         assert d["health"] == "ok"
         assert (d["n_ok"], d["n_roots"]) == (2, 2)
@@ -395,23 +395,23 @@ class TestHealth:
 
     def test_one_root_missing_is_degraded(self, roots, tmp_path):
         scan = DataFileScan([roots[0], tmp_path / "gone"])
-        scan.check_once()
+        scan.poll_once()
         assert scan.health == "degraded"
         assert "gone" in scan.error
 
     def test_all_roots_missing_is_down(self, tmp_path):
         scan = DataFileScan([tmp_path / "a", tmp_path / "b"])
-        scan.check_once()
+        scan.poll_once()
         assert scan.health == "down"
         assert scan.to_dict()["n_ok"] == 0
 
     def test_recovers(self, tmp_path):
         root = tmp_path / "later"
         scan = DataFileScan([root])
-        scan.check_once()
+        scan.poll_once()
         assert scan.health == "down"
         root.mkdir()
-        scan.check_once()
+        scan.poll_once()
         assert scan.health == "ok"
 
     def test_stuck_probe_reads_as_down(self, roots, monkeypatch):
@@ -422,7 +422,7 @@ class TestHealth:
         monkeypatch.setattr(df, "probe_roots",
                             lambda paths: (time.sleep(2), [])[1])
         t = time.time()
-        scan.check_once()
+        scan.poll_once()
         assert scan.health == "down"
         assert "not responding" in scan.error
         assert time.time() - t < 1.5      # gave up, did not wait it out
@@ -433,9 +433,9 @@ class TestHealth:
         scan.CHECK_TIMEOUT_S = 0.2
         monkeypatch.setattr(df, "probe_roots",
                             lambda paths: (time.sleep(2), [])[1])
-        scan.check_once()
+        scan.poll_once()
         t = time.time()
-        scan.check_once()             # the thread is still stuck
+        scan.poll_once()             # the thread is still stuck
         assert scan.health == "down"
         assert time.time() - t < 0.1  # answered immediately, no new wait
 
@@ -468,7 +468,7 @@ class TestDataBadge:
         app = _app(configs_dir, [tmp_path / "gone"])
         client = app.test_client()
         login(client)
-        app.config["datafile_scan"].check_once()
+        app.config["datafile_scan"].poll_once()
         body = _strip(client)
         assert "DATA" in body and 'class="tag tag-bad"' in body    # monitor_tone('down')
         assert "down" in body
@@ -489,14 +489,14 @@ class TestDataBadge:
         app = _app(configs_dir, roots)
         client = app.test_client()
         login(client)
-        app.config["datafile_scan"].check_once()
+        app.config["datafile_scan"].poll_once()
         data = json.loads(client.get("/api/status").get_data())
         assert data["services"]["data"] == "ok"
 
     def test_metrics_exposes_data_states(self, configs_dir, roots):
         app = _app(configs_dir, roots)
         client = app.test_client()
-        app.config["datafile_scan"].check_once()
+        app.config["datafile_scan"].poll_once()
         body = client.get("/metrics").get_data(as_text=True)
         assert 'choco_service_state{service="data",state="ok"} 1' in body
         assert 'choco_service_state{service="data",state="down"} 0' in body

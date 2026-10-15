@@ -53,8 +53,15 @@ choco/
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
-├── services.py     # FpgaMonitor, GainArchive, PdbMonitor, job/systemd helpers, dot + SVG sanitizer
-├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check
+├── fpga.py         # FpgaMonitor (fpga_master poll + controls), GainArchive, FileArchive (h5read subprocess)
+├── powerdb.py      # PdbMonitor: power_db poll and the one read-modify-write-verify behind every power control
+├── pipeline_svg.py # dot layout presets, render_dot_svg, the SVG whitelist sanitizer
+├── jobstatus.py    # job_status / timer_status / job_logs / read_state_json (systemd + state files)
+├── manualflags.py  # the bffs manual override file, read and edited by one rule (shared with bffs)
+├── monitor.py      # PolledMonitor / HttpMonitor: the header strip's pollers' shared lifecycle
+├── http.py         # fetch(): the one HTTP request helper (retries, OSError) for state, fpga, powerdb, upstream
+├── hosttool.py     # run_tool(): systemctl / journalctl / dot, the one way
+├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check + power_db wire conventions (stdlib; shared with bffs)
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
@@ -142,7 +149,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **Never hand a caller's string to a tool or a path**
 - Journal units come from `web._service_registry()`; dot layout presets from
-  `services.PIPELINE_LAYOUTS`; a config path from nodes.yaml or a URL goes
+  `pipeline_svg.PIPELINE_LAYOUTS`; a config path from nodes.yaml or a URL goes
   through `state.resolve_config_path` (relative, plain components, config
   suffix, inside the configs directory); buffer names must match `_BUFFER_NAME_RE`;
   gain dataset names are checked against the manifest; waterfall path parts
@@ -157,7 +164,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   the listing's `download_url`.
   Extend the allowlist, never bypass it.
 - kotekan-supplied markup reaches the DOM only through
-  `services.sanitize_pipeline_svg` (whitelist reconstruction; unknown
+  `pipeline_svg.sanitize_pipeline_svg` (whitelist reconstruction; unknown
   elements are unwrapped, never copied).  Plot panel DOM is built with
   `createElement`/`textContent`, never `innerHTML`.
 
@@ -219,7 +226,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Blocking filesystem work on NFS (`datafiles.py`, `waterfalls.py`) runs in
   gevent's threadpool with a timeout; a wedged mount must never block the hub.
 - Host tools over Python dependencies: `openssl` for the self-signed cert,
-  `dot` for graphs, `systemctl`/`journalctl` for job status.  Before adding a
+  `dot` for graphs, `systemctl`/`journalctl` for job status, all run through
+  `hosttool.run_tool`; every HTTP request the web process makes goes through
+  `http.fetch`.  Before adding a
   dependency, check for a stdlib or existing-dep answer
   ([dependencies.md](docs/design/dependencies.md)).  Production installs are
   pinned and hash-locked; run `./choco.sh lock` after touching
@@ -252,7 +261,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   jobclient's too (`Degraded`, `failure`, `setup_logging`, `single_run`,
   `refuse_retired`, `atomic_output`, `write_run`, `push_updatable`): a job
   uses it rather than writing its own, and every unit runs its script
-  through `jobs/run-job.sh`.
+  through `jobs/run-job.sh`.  bffs also shares `choco.pdbmap` (power_db's
+  wire conventions) and `choco.manualflags` (the override file) with the
+  web process; neither imports anything the jobs' venv lacks.
 - A bffs source that cannot measure a feed leaves it good and reports
   `degraded`; "no data" is never turned into "bad" (power-outlier abstains
   below `min_coverage`, rfi skips down nodes and stale gauges).  Absence from

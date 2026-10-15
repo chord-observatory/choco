@@ -32,6 +32,8 @@ import json
 import logging
 import urllib.request
 
+from choco.pdbmap import board_chip, decode_out_bytes
+
 from .common import choco_pdb_map, load_map, project, report
 
 log = logging.getLogger("bffs.power")
@@ -146,20 +148,11 @@ def _log_check(check: dict, errors: list) -> None:
 
 
 def decode_channel_states(raw: list[int], spi_bus: int) -> dict[Channel, bool]:
-    """Decode one bus's raw ``/channel_states`` buffer to per-channel power.
-
-    Mirrors power_db's own daisy-chain decode (spi_ops._write_and_verify_all):
-    reverse the flat byte list, then every even index is a chip's ``OUT`` byte,
-    with chip_num = i//2, board = chip_num//2, chip 'A' if chip_num even else 'B'.
-    Each ``OUT`` bit c (0..7) is channel c; 1 = powered.
-    """
-    resp = list(raw)
-    resp.reverse()
+    """Decode one bus's raw ``/channel_states`` buffer to per-channel power
+    (``choco.pdbmap`` holds power_db's wire conventions, shared with choco)."""
     out: dict[Channel, bool] = {}
-    for i in range(0, len(resp), 2):
-        chip_num = i // 2
-        board, chip = chip_num // 2, ("A" if chip_num % 2 == 0 else "B")
-        out_byte = resp[i]
+    for chip_num, out_byte in enumerate(decode_out_bytes(raw)):
+        board, chip = board_chip(chip_num)
         for ch in range(8):
             out[(spi_bus, board, chip, ch)] = bool(out_byte & (1 << ch))
     return out

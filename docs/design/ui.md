@@ -36,7 +36,7 @@ renderer and the acquisition notes riding in the DATA row) with the detail the
 strip only carries in a tooltip: monitor host:port and error, job unit and
 failure result, a one-line state-file summary (``web._service_detail`` — the
 same tolerant summariser the service pages use, so corrupt state degrades to
-no summary), and the timer's next run (``services.timer_status``, systemd's
+no summary), and the timer's next run (``jobstatus.timer_status``, systemd's
 own strings, displayed never parsed).  The table is htmx-refreshed every 30 s
 via ``/partials/landing-services`` — the cadence of the strip whose data it
 mirrors; each refresh costs four ``systemctl show`` and four state-file reads,
@@ -55,14 +55,16 @@ not the landing page.
 
 ## Service status strip
 
-``choco/services.py`` holds two small hardware monitors (and
-``datafiles.DataFileScan`` supplies a third badge, DATA — see the data-file
-bullet) — ``FpgaMonitor`` (HTTP poll of fpga_master's ``/status`` + ``/get-
-frame0-time`` every 30s on its own gevent greenlet; also records the daemon's
-``state`` / ``start_result``) and ``PdbMonitor`` (same shape; polls power_db's
-``/status`` + ``/channel_states`` and decodes per-channel power via
-``decode_out_bytes``, the same daisy-chain convention as
-``jobs/bffs/sources/power.py``, verified against the live controller) — and a
+Three small monitors feed the strip, all ``monitor.PolledMonitor`` subclasses
+(one greenlet each, a 30 s interval, ``poll_if_stale`` for a page being
+watched; 2026-10, until then each carried its own copy of that loop):
+``fpga.FpgaMonitor`` (HTTP poll of fpga_master's ``/status`` + ``/get-
+frame0-time``; also records the daemon's ``state`` / ``start_result``),
+``powerdb.PdbMonitor`` (same shape; polls power_db's ``/status`` +
+``/channel_states`` and decodes per-channel power via
+``pdbmap.decode_out_bytes``, the daisy-chain convention bffs's power source
+shares, verified against the live controller) and ``datafiles.DataFileScan``
+(the DATA badge — see the data-file bullet) — and ``jobstatus`` supplies a
 generic on-demand ``job_status(service_unit, state_file, stale_after_s)``
 helper for the oneshot jobs (EOP, bffs, eigencal).  ``job_status`` combines
 two cheap signals without parsing any timestamps: ``systemctl show``'s
@@ -75,7 +77,7 @@ human).  A run in progress (``ActiveState`` ``activating``) carries no verdict
 at all — systemd resets ``Result`` and ``ExecMainStatus`` and blanks
 ``ExecMainExitTimestamp`` the moment a run starts, verified against a unit
 that had just failed — so ``job_status`` remembers each unit's last completed
-snapshot (``services._LAST_COMPLETED``, process-local, rebuilt by the 5 s
+snapshot (``jobstatus._LAST_COMPLETED``, process-local, rebuilt by the 5 s
 poll) and reports that, flagged ``running`` for the tooltip, instead of
 dropping to grey for the length of every run (bffs runs ~6-20 s of every 30 s,
 the waterfall ~50 s of every 2 min); a fresh process shows ``running`` until
@@ -141,9 +143,9 @@ the scan: its status block, then the state file and journal from
 ``_service_tail.html``, the partial ``service.html`` ends with too) and
 ``/service/<name>`` redirects there, ``?lines=`` and all.  A job page
 (``service.html``) shows common unit facts (``job_status`` detail plus the
-timer's next/last run via ``services.timer_status`` — systemd's own timestamp
+timer's next/last run via ``jobstatus.timer_status`` — systemd's own timestamp
 strings, displayed never parsed), a per-service summary read from the job's
-JSON state file (``services.read_state_json``: bffs element grid — every
+JSON state file (``jobstatus.read_state_json``: bffs element grid — every
 element of the recorded axis, eight to a column in kotekan's order, good/bad
 with the flagging source on hover, ``web._element_grid``; the bad list alone
 for a state file that predates the axis — + recent transitions, EOP table
@@ -175,7 +177,7 @@ answered on the page.  Below the facts a **Latest solution** card, loaded
 on its own like the FPGA gains card, puts the newest archive's datasets
 (``gain`` complex with the plotter's abs/arg selector, ``weight``,
 ``chisq_per_dof``, ``lam_peak``, ``dyn_rng``) in the shared plot panel via
-``services.FileArchive`` and ``/api/eigencal/gain-data``, with a full-screen
+``fpga.FileArchive`` and ``/api/eigencal/gain-data``, with a full-screen
 page and a download link.
 
 **Who is here (2026-10).**  ``web._note_presence`` records every
@@ -210,7 +212,7 @@ false, every cell of the element grid is a one-button form posting to
 ``POST /service/bffs/manual`` (login + CSRF, like the PDB toggles; one
 ``logger.warning`` audit line naming the operator), which adds the label to
 ``manual_overrides.yaml`` in the job's state directory — the file the job's
-``manual`` source reads by default — or removes it (``services.toggle_manual_flag``:
+``manual`` source reads by default — or removes it (``manualflags.toggle_manual_flag``:
 other keys kept, comments not, temp-file-and-rename so the job never reads
 a torn file).  The label is accepted only if it is on the element axis the
 state file records — the allowlist for this write, so nothing a browser
