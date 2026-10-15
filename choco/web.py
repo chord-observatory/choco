@@ -13,6 +13,7 @@ from urllib.parse import quote
 import gevent
 import jinja2
 import yaml
+from markupsafe import Markup
 
 from flask import (
     Blueprint, Response, render_template, request, redirect, url_for, flash,
@@ -1626,123 +1627,128 @@ def waterfall_view(root, acq, name):
     return render_template("waterfall_view.html", **context)
 
 
-def _service_registry() -> dict[str, dict]:
-    """Everything the services strip and /service/<name> pages know.
-
-    Keyed by page slug.  ``unit`` doubles as the allowlist for the
-    journal viewer: only these units can be read through the web UI.
-    Jobs follow the choco-<name>.service / choco-<name>.timer naming,
-    so the timer unit is derived from the service unit.
-    """
-    eop_cfg = current_app.config.get("eop_cfg") or {}
-    bffs_cfg = current_app.config.get("bffs_cfg") or {}
-    eigencal_cfg = current_app.config.get("eigencal_cfg") or {}
-    waterfall_cfg = current_app.config.get("waterfall_cfg") or {}
-    skymap_cfg = current_app.config.get("skymap_cfg") or {}
-    mapmaker_cfg = current_app.config.get("mapmaker_cfg") or {}
-    acqnotes_cfg = current_app.config.get("acqnotes_cfg") or {}
-
-    # Every file read back from a job sits under <state_dir>/<job>/, the
-    # layout systemd's StateDirectory=choco/<job> gives the jobs; the
-    # names are the jobs' conventions, not settings.
-    root = _state_root()
+#: The jobs the services strip and the landing table show, in badge
+#: order; ``label`` is the badge text.  ``unit`` is the service unit
+#: unless ``<name>_cfg.service_unit`` says otherwise; the timer is the
+#: same name with ``.timer``.  ``state``, ``run`` and ``manual`` name the
+#: files read back from ``<state_dir>/<name>/``, the layout systemd's
+#: ``StateDirectory=choco/<name>`` gives the jobs: conventions, not
+#: settings.  ``mtime_label`` says what the state file's mtime means on
+#: the page; only a job that rewrites its state file on every successful
+#: run gets a ``stale_after_s``.  ``page`` is where a folded job is
+#: shown (see ``_service_registry``); ``description`` heads the page.
+_JOBS: dict[str, dict] = {
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
-    eop_state = root / "eop" / STATE_NAME
-    bffs_state = root / "bffs" / STATE_NAME
-    # bffs also rewrites a run file on *every* run — what each source
-    # measured, what it abstained from and why the exit status was what
-    # it was.
-    bffs_run = root / "bffs" / RUN_NAME
-    # The manual override file the job's ``manual`` source reads; with
-    # it the element grid toggles manual flags.  ``bffs.control: false``
-    # makes the grid read-only (the same switch the PDB page has).
-    bffs_manual = (root / "bffs" / MANUAL_OVERRIDES_NAME
-                   if bffs_cfg.get("control", True) else None)
+    "eop": {
+        "label": "EOP", "unit": "choco-eop-broadcast.service",
+        "state": STATE_NAME, "stale_after_s": EOP_STALE_AFTER_S, "mtime_label": "last run",
+        "description": "Earth-orientation-parameter broadcast — merges IERS data and "
+                       "pushes the EOP table to kotekan daily.",
+    },
+    # bffs rewrites its state file only when the bad-feed list changes,
+    # so no staleness threshold: the mtime is "last change".  It also
+    # rewrites a run file on *every* run -- what each source measured,
+    # what it abstained from and why the exit status was what it was --
+    # and its ``manual`` source reads the override file the element grid
+    # toggles flags in (``bffs.control: false`` makes the grid
+    # read-only, the switch the PDB page has).
+    "bffs": {
+        "label": "BFFS", "unit": "choco-bffs-flag.service",
+        "state": STATE_NAME, "run": RUN_NAME, "manual": MANUAL_OVERRIDES_NAME,
+        "mtime_label": "last change",
+        "description": "Feed flagging — combines per-feed health sources and pushes the "
+                       "bad-input list to kotekan on change.",
+    },
+    # eigencal rewrites its state file once per processed transit;
+    # transits skipped for daytime are silent by design, so an old
+    # mtime is informational, not a health downgrade.
+    "eigencal": {
+        "label": "EIGENCAL", "unit": "choco-eigencal.service",
+        "state": STATE_NAME, "run": RUN_NAME, "mtime_label": "last calibration",
+        "description": "Point-source gain calibration — fits per-input complex gains once "
+                       "per calibrator transit, at night.",
+    },
+    # waterfall rewrites its state file on every run, but a run with
+    # nothing to render is the normal case between acquisitions, so the
+    # mtime is "last run" and never a health downgrade.  The renderer
+    # reads the mounts the DATA badge probes, so the two share one badge
+    # and one page: /files shows the mounts' scan with the renderer's
+    # status below it.
+    "waterfall": {
+        "label": "WF", "unit": "choco-waterfall.service",
+        "state": STATE_NAME, "mtime_label": "last run", "page": "/files",
+    },
+    # skymap keeps no state file: the image is the record and its title
+    # carries the render time, so the badge is systemd only.
+    "skymap": {
+        "label": "SKYMAP", "unit": "choco-skymap.service", "mtime_label": "last render",
+        "description": Markup(
+            "Current-sky strip plot — renders the beam's drift-scan strip with the Sun, "
+            "Moon and pointing every 5 minutes, in a day and a night palette. "
+            '<a href="/">Shown on the landing page</a>.'),
+    },
+    # mapmaker rewrites its state file on every run; a run with nothing
+    # new to fold in is the normal case between files, so the mtime is
+    # "last run" and never a health downgrade.
+    "mapmaker": {
+        "label": "MAP", "unit": "choco-mapmaker.service",
+        "state": STATE_NAME, "mtime_label": "last run",
+        "description": Markup(
+            "Drift-scan sky maps — folds each new N&sup2; file into a sky map of every "
+            "pass and a map of the last sidereal day, frequency as hue from red to violet, "
+            "calibrated on the brightest source transiting the beam. "
+            '<a href="/files">The data it reads</a>.'),
+    },
+    # acqnotes rewrites its index only when it measures an acquisition,
+    # so the mtime is "last measurement"; between acquisitions an hourly
+    # run that finds nothing new is normal.  It writes the notes /files
+    # shows, so it is folded into DATA like the waterfall.
+    "acqnotes": {
+        "label": "NOTES", "unit": "choco-acqnotes.service",
+        "state": "index.json", "run": RUN_NAME, "mtime_label": "last measurement",
+        "page": "/files",
+    },
+}
 
-    def job(label: str, unit: str, state_file, stale_after_s=None,
-            mtime_label="last run", run_file=None, manual_file=None,
-            page=None) -> dict:
-        return {
+
+def _service_registry() -> dict[str, dict]:
+    """Everything the services strip and /service/<name> pages know:
+    choco itself, then ``_JOBS`` with their files placed under the state
+    directory and their units as configured.  Keyed by page slug;
+    ``unit`` doubles as the allowlist for the journal viewer: only these
+    units can be read through the web UI.
+
+    ``page`` says where a job's status is shown.  None: its own
+    /service/<name> page, a badge in the strip and a row in the landing
+    table.  A path: the job is folded into that page's badge and row
+    (the waterfall into DATA) and /service/<name> redirects there; it
+    keeps its entry for the journal viewer, the status partial,
+    /api/status and /metrics, which report it on its own.
+    """
+    root = _state_root()
+    registry = {"choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
+                          "timer": None, "state_file": None, "stale_after_s": None,
+                          "mtime_label": None, "run_file": None, "manual_file": None,
+                          "page": None, "description": "The config orchestrator itself."}}
+    for name, job in _JOBS.items():
+        cfg = current_app.config.get(f"{name}_cfg") or {}
+        unit = cfg.get("service_unit") or job["unit"]
+        files = {key: root / name / job[key] for key in ("state", "run", "manual") if key in job}
+        registry[name] = {
             "kind": "job",
-            "label": label,
+            "label": job["label"],
             "unit": unit,
             "timer": unit.replace(".service", ".timer"),
-            "state_file": state_file,
-            "stale_after_s": stale_after_s,
-            "mtime_label": mtime_label,
-            "run_file": run_file,
-            "manual_file": manual_file,
-            # Where the job's status is shown.  None: its own
-            # /service/<name> page, a badge in the strip and a row in the
-            # landing table.  A path: the job is folded into that page's
-            # badge and row (the waterfall into DATA) and /service/<name>
-            # redirects there; it keeps its registry entry for the
-            # journal viewer, the status partial, /api/status and
-            # /metrics, which report it on its own.
-            "page": page,
+            "state_file": files.get("state"),
+            "stale_after_s": job.get("stale_after_s"),
+            "mtime_label": job["mtime_label"],
+            "run_file": files.get("run"),
+            "manual_file": files.get("manual") if cfg.get("control", True) else None,
+            "page": job.get("page"),
+            "description": job.get("description"),
         }
-
-    # Dict order is the order of the strip's job badges and the landing
-    # table's rows; ``label`` is the badge text.
-    return {
-        "choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
-                  "timer": None, "state_file": None, "stale_after_s": None,
-                  "mtime_label": None, "run_file": None, "manual_file": None,
-                  "page": None},
-        "eop": job("EOP",
-                   eop_cfg.get("service_unit") or "choco-eop-broadcast.service",
-                   eop_state, EOP_STALE_AFTER_S, "last run"),
-        # bffs rewrites its state file only when the bad-feed list
-        # changes, so no staleness threshold — the mtime is "last change".
-        "bffs": job("BFFS",
-                    bffs_cfg.get("service_unit") or "choco-bffs-flag.service",
-                    bffs_state, None, "last change", run_file=bffs_run,
-                    manual_file=bffs_manual),
-        # eigencal rewrites its state file once per processed transit;
-        # transits skipped for daytime are silent by design, so an old
-        # mtime is informational, not a health downgrade.
-        "eigencal": job("EIGENCAL",
-                        eigencal_cfg.get("service_unit")
-                        or "choco-eigencal.service",
-                        root / "eigencal" / STATE_NAME,
-                        None, "last calibration",
-                        run_file=root / "eigencal" / RUN_NAME),
-        # waterfall rewrites its state file on every run, but a run with
-        # nothing to render is the normal case between acquisitions, so
-        # the mtime is "last run" and never a health downgrade.  The
-        # renderer reads the mounts the DATA badge probes, so the two
-        # share one badge and one page: /files shows the mounts' scan
-        # with the renderer's status below it.
-        "waterfall": job("WF",
-                         waterfall_cfg.get("service_unit")
-                         or "choco-waterfall.service",
-                         root / "waterfall" / STATE_NAME,
-                         None, "last run", page="/files"),
-        # skymap keeps no state file: the image is the record and its
-        # title carries the render time, so the badge is systemd only.
-        "skymap": job("SKYMAP",
-                      skymap_cfg.get("service_unit") or "choco-skymap.service",
-                      None, None, "last render"),
-        # mapmaker rewrites its state file on every run; a run with
-        # nothing new to fold in is the normal case between files, so the
-        # mtime is "last run" and never a health downgrade.
-        "mapmaker": job("MAP",
-                        mapmaker_cfg.get("service_unit") or "choco-mapmaker.service",
-                        root / "mapmaker" / STATE_NAME,
-                        None, "last run"),
-        # acqnotes rewrites its index only when it measures an
-        # acquisition, so the mtime is "last measurement"; between
-        # acquisitions an hourly run that finds nothing new is normal.
-        # It writes the notes /files shows, so it is folded into DATA
-        # like the waterfall.
-        "acqnotes": job("NOTES",
-                        acqnotes_cfg.get("service_unit") or "choco-acqnotes.service",
-                        root / "acqnotes" / "index.json",
-                        None, "last measurement",
-                        run_file=root / "acqnotes" / RUN_NAME, page="/files"),
-    }
-
+    return registry
 
 def _services_health(registry: dict | None = None) -> dict:
     """Health snapshots for the hardware monitors and the oneshot jobs.
@@ -1935,10 +1941,12 @@ def _mapmaker_clean_facts(root: Path) -> dict | None:
     }
 
 
-def _mapmaker_detail(state: dict) -> dict:
+def _mapmaker_detail(state: dict | None, run, svc) -> dict | None:
     """The MAP page's facts from the job's per-run state file: what was
     folded in, the calibration the maps rest on, and the images' mtimes
     (so the page refetches a PNG exactly when a run replaced it)."""
+    if state is None:
+        return None
     gains = state.get("gains") if isinstance(state.get("gains"), dict) else None
     coverage = state.get("coverage") if isinstance(state.get("coverage"), dict) else {}
     root = _state_root() / "mapmaker"
@@ -1979,22 +1987,6 @@ def _mapmaker_detail(state: dict) -> dict:
         "images": images,
     }
 
-
-def _service_detail(name: str, svc: dict) -> dict | None:
-    """Per-service extras for the /service/<name> page.
-
-    Jobs are summarized from their JSON state file (missing or invalid
-    state -> None, and the page shows only the common facts); choco is
-    summarized from the live registry.  A state file with unexpected
-    contents must degrade to "no summary", never break the page.
-    """
-    try:
-        return _service_detail_inner(name, svc)
-    except (TypeError, ValueError, KeyError, AttributeError,
-            IndexError) as e:
-        logger.warning(f"service detail for {name}: "
-                       f"unusable state file contents: {e}")
-        return None
 
 
 #: Elements per column of the bffs page's element grid: kotekan's
@@ -2083,10 +2075,9 @@ def _float_or_none(value):
         return None
 
 
-def _eigencal_detail(state: dict | None, run: dict | None,
-                     state_dir: Path) -> dict | None:
-    """The EIGENCAL page's summary from the job's two files and its
-    archive directory.
+def _eigencal_detail(state: dict | None, run: dict | None, svc: dict) -> dict | None:
+    """The EIGENCAL page's summary from the job's two files and the
+    archives beside them.
 
     ``run.json`` is written every run and says what the run did and why
     (skipped: transit not complete / too old / daytime / already done;
@@ -2098,7 +2089,7 @@ def _eigencal_detail(state: dict | None, run: dict | None,
     """
     archives = []
     try:
-        files = sorted(state_dir.glob(EIGENCAL_ARCHIVE_GLOB),
+        files = sorted(svc["state_file"].parent.glob(EIGENCAL_ARCHIVE_GLOB),
                        key=lambda f: f.stat().st_mtime, reverse=True)
     except OSError:
         files = []
@@ -2129,8 +2120,6 @@ def _eigencal_detail(state: dict | None, run: dict | None,
         status = str(run.get("status") or "unknown")
         out["run"] = {
             "status": status,
-            "tone": {"ok": "ok", "skipped": "off", "degraded": "warn",
-                     "failed": "bad"}.get(status, "off"),
             "time": _float_or_none(run.get("time")),
             "time_fmt": _fmt_utc(run.get("time")),
             "reason": run.get("reason"),
@@ -2151,21 +2140,20 @@ def _eigencal_detail(state: dict | None, run: dict | None,
     return out
 
 
-def _bffs_detail(state: dict | None, run: dict | None,
-                 manual_file=None) -> dict | None:
+def _bffs_detail(state: dict | None, run: dict | None, svc: dict) -> dict | None:
     """The BFFS page's summary from the job's two files.
 
     The state file says what the flags *are* (bad list, element axis,
     transitions; rewritten only when the list changes); the run file
     says how the last run *measured* them (per-source status, what was
     skipped or abstained and why; rewritten every run).  Either may be
-    missing; ``None`` only when both are.  *manual_file* adds the manual
-    override file's current contents to the grid.
+    missing; ``None`` only when both are.  The registry entry's manual
+    override file adds its current contents to the grid.
     """
     run_summary = _bffs_run_summary(run)
     if state is None and run_summary is None:
         return None
-    manual = _bffs_manual_state(manual_file, run)
+    manual = _bffs_manual_state(svc["manual_file"], run)
     has_state = state is not None
     state = state or {}
     history = [h for h in (state.get("history") or [])
@@ -2358,80 +2346,108 @@ def _bffs_source_summary(kind: str, d: dict) -> str:
     return " · ".join(parts)
 
 
-def _service_detail_inner(name: str, svc: dict) -> dict | None:
-    if name == "choco":
-        registry = _registry()
-        counts = _node_counts(registry)
-        return {
-            "started_at": _fmt_utc(_STARTED_AT),
-            "nodes_total": counts["total"],
-            "maintenance": counts["maintenance"],
-            "started_desired": counts["started_desired"],
-            "queued": sum(n.queue_depth for n in registry.nodes.values()),
-            "configs_dir": str(current_app.config.get("configs_dir")),
-        }
+def _choco_detail(state, run, svc) -> dict:
+    """choco's own page: the live registry, no state file."""
+    registry = _registry()
+    counts = _node_counts(registry)
+    return {
+        "started_at": _fmt_utc(_STARTED_AT),
+        "nodes_total": counts["total"],
+        "maintenance": counts["maintenance"],
+        "started_desired": counts["started_desired"],
+        "queued": sum(n.queue_depth for n in registry.nodes.values()),
+        "configs_dir": str(current_app.config.get("configs_dir")),
+    }
 
-    state = read_state_json(svc.get("state_file"))
-    if name == "bffs":
-        return _bffs_detail(state, read_state_json(svc.get("run_file")),
-                            svc.get("manual_file"))
-    if name == "eigencal":
-        return _eigencal_detail(state, read_state_json(svc.get("run_file")),
-                                _state_root() / "eigencal")
+
+def _eop_detail(state: dict | None, run, svc) -> dict | None:
+    """The span of the EOP table the job last broadcast."""
     if state is None:
         return None
+    table = state.get("earth_orientation_parameter_table") or []
+    stamps = sorted(e["t_inst_ns"] for e in table
+                    if isinstance(e, dict) and "t_inst_ns" in e)
+    if not stamps:
+        return None
+    # t_inst_ns is instrument time (frame0-anchored TAI ns), within
+    # leap-seconds of unix time — fine for a span display.
+    return {
+        "entries": len(table),
+        "first": _fmt_utc(stamps[0] / 1e9),
+        "last": _fmt_utc(stamps[-1] / 1e9),
+    }
 
-    if name == "eop":
-        table = state.get("earth_orientation_parameter_table") or []
-        stamps = sorted(e["t_inst_ns"] for e in table
-                        if isinstance(e, dict) and "t_inst_ns" in e)
-        if not stamps:
-            return None
-        # t_inst_ns is instrument time (frame0-anchored TAI ns), within
-        # leap-seconds of unix time — fine for a span display.
-        return {
-            "entries": len(table),
-            "first": _fmt_utc(stamps[0] / 1e9),
-            "last": _fmt_utc(stamps[-1] / 1e9),
-        }
 
-    if name == "mapmaker":
-        return _mapmaker_detail(state)
+def _acqnotes_detail(state, run, svc) -> dict | None:
+    """What the notes job has measured (its index: {acq: measured at})
+    and what its last run did (the run record)."""
+    if not isinstance(state, dict) and not isinstance(run, dict):
+        return None
+    run = run if isinstance(run, dict) else {}
+    return {
+        "n_with_notes": len(state) if isinstance(state, dict) else 0,
+        "acquisitions": run.get("acquisitions"),
+        "backlog": run.get("backlog"),
+        "measured": [str(a) for a in (run.get("measured") or [])],
+        "written": [str(a) for a in (run.get("written") or [])],
+        "run_time": _fmt_utc(run.get("time")),
+        "run_status": run.get("status"),
+    }
 
-    if name == "acqnotes":
-        # state is index.json ({acq: what it was measured at}); the run
-        # record says what the last run did
-        run = read_state_json(svc.get("run_file"))
-        if not isinstance(state, dict) and not isinstance(run, dict):
-            return None
-        run = run if isinstance(run, dict) else {}
-        return {
-            "n_with_notes": len(state) if isinstance(state, dict) else 0,
-            "acquisitions": run.get("acquisitions"),
-            "backlog": run.get("backlog"),
-            "measured": [str(a) for a in (run.get("measured") or [])],
-            "written": [str(a) for a in (run.get("written") or [])],
-            "run_time": _fmt_utc(run.get("time")),
-            "run_status": run.get("status"),
-        }
 
-    if name == "waterfall":
-        errors = [str(e) for e in (state.get("errors") or [])]
-        return {
-            "updated": _fmt_utc(state.get("updated")),
-            "roots": ", ".join(str(r) for r in (state.get("roots") or [])),
-            "waterfalls_dir": state.get("waterfalls_dir"),
-            "files_rendered": state.get("files_rendered"),
-            "acquisitions_touched": state.get("acquisitions_touched"),
-            "backlog": state.get("backlog"),
-            "run_seconds": state.get("run_seconds"),
-            "last_acquisition": state.get("last_acquisition"),
-            "last_file_idx": state.get("last_file_idx"),
-            "errors": errors[:10],
-            "errors_total": len(errors),
-        }
+def _waterfall_detail(state: dict | None, run, svc) -> dict | None:
+    """The renderer's last run from its state file."""
+    if state is None:
+        return None
+    errors = [str(e) for e in (state.get("errors") or [])]
+    return {
+        "updated": _fmt_utc(state.get("updated")),
+        "roots": ", ".join(str(r) for r in (state.get("roots") or [])),
+        "waterfalls_dir": state.get("waterfalls_dir"),
+        "files_rendered": state.get("files_rendered"),
+        "acquisitions_touched": state.get("acquisitions_touched"),
+        "backlog": state.get("backlog"),
+        "run_seconds": state.get("run_seconds"),
+        "last_acquisition": state.get("last_acquisition"),
+        "last_file_idx": state.get("last_file_idx"),
+        "errors": errors[:10],
+        "errors_total": len(errors),
+    }
 
-    return None
+
+#: Each service's summariser, ``f(state, run, svc)`` with the job's
+#: state and run files already read (None when missing); the page's
+#: ``_detail_<name>.html`` renders what it returns.  A service without
+#: one shows the common facts alone.
+_SERVICE_DETAILS = {
+    "choco": _choco_detail,
+    "eop": _eop_detail,
+    "bffs": _bffs_detail,
+    "eigencal": _eigencal_detail,
+    "mapmaker": _mapmaker_detail,
+    "acqnotes": _acqnotes_detail,
+    "waterfall": _waterfall_detail,
+}
+
+
+def _service_detail(name: str, svc: dict) -> dict | None:
+    """Per-service extras for the /service/<name> page.
+
+    Jobs are summarized from their JSON state file (missing or invalid
+    state -> None, and the page shows only the common facts); choco is
+    summarized from the live registry.  A state file with unexpected
+    contents must degrade to "no summary", never break the page.
+    """
+    summarize = _SERVICE_DETAILS.get(name)
+    if summarize is None:
+        return None
+    try:
+        return summarize(read_state_json(svc["state_file"]), read_state_json(svc["run_file"]), svc)
+    except (TypeError, ValueError, KeyError, AttributeError,
+            IndexError) as e:
+        logger.warning(f"service detail for {name}: "
+                       f"unusable state file contents: {e}")
+        return None
 
 
 @bp.route("/service/<name>")

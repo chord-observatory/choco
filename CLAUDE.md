@@ -250,8 +250,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   input was unavailable; retries self-heal; badge yellow), **1** failed
   (config error or bug; badge red).  Inside `main`: `OSError` and
   `Degraded` → 2, `ValueError`/`yaml.YAMLError` → 1 (`jobclient.failure`).
-- A new badge costs one entry in `web._service_registry()` plus, optionally,
-  a summary branch in `web._service_detail`.  A job shown on another page
+- A new badge costs one entry in `web._JOBS` plus, optionally, a summariser
+  in `web._SERVICE_DETAILS` with its `_detail_<name>.html`.  A job shown on another page
   sets the entry's `page` instead (the waterfall and acqnotes on `/files`,
   folded into the DATA tag): no badge or landing row of its own and `/service/<name>`
   redirects, but `/api/status` and `/metrics` still report it by name.

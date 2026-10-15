@@ -1,0 +1,11 @@
+{# The notes job's summary on /files (web._acqnotes_detail). #}
+<dl>
+    <dt>Notes</dt>
+    <dd>{{ detail.n_with_notes }}{% if detail.acquisitions is not none %} of {{ detail.acquisitions }}{% endif %} acquisitions measured{% if detail.backlog %}, {{ detail.backlog }} waiting{% endif %}</dd>
+    {% if detail.run_time %}
+    <dt>Last run</dt>
+    <dd>{{ detail.run_time }} &middot;
+        {% if detail.measured %}measured {% for a in detail.measured %}<code>{{ a }}</code>{{ ", " if not loop.last }}{% endfor %}{% else %}nothing new to measure{% endif %}
+        &middot; {% if detail.written %}wrote {{ detail.written | length }} note{{ 's' if detail.written | length != 1 }}{% else %}no note changed{% endif %}</dd>
+    {% endif %}
+</dl>

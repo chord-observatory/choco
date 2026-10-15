@@ -69,6 +69,16 @@
 {%- else -%}bad
 {%- endif -%}
 {%- endmacro %}
+{# A job run's own verdict (its run file's status): ok; skipped (nothing
+   to do: no transit, daytime, already done) is a quiet off, not a
+   warning; degraded warn; failed bad; anything else off. #}
+{% macro run_tone(status) -%}
+{%- if status == 'ok' -%}ok
+{%- elif status == 'degraded' -%}warn
+{%- elif status == 'failed' -%}bad
+{%- else -%}off
+{%- endif -%}
+{%- endmacro %}
 {# bffs source statuses (from the job's run file): ok; degraded (ran,
    abstained or lost coverage) and skipped (not run: no N² file) warn;
    unknown off; anything else bad. #}

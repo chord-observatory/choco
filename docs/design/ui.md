@@ -149,7 +149,9 @@ JSON state file (``jobstatus.read_state_json``: bffs element grid — every
 element of the recorded axis, eight to a column in kotekan's order, good/bad
 with the flagging source on hover, ``web._element_grid``; the bad list alone
 for a state file that predates the axis — + recent transitions, EOP table
-span, eigencal last transit; assembled in ``web._service_detail``), a collapsed ``<details>`` dump of the **raw** state-
+span, eigencal last transit; one summariser per service in
+``web._SERVICE_DETAILS``, one ``_detail_<name>.html`` each, both behind
+``web._service_detail``), a collapsed ``<details>`` dump of the **raw** state-
 file JSON (pretty-printed once at page-load, kept out of the 5 s status poll
 so a large EOP table isn't re-sent), and an htmx-refreshed journal viewer
 (``job_logs``, one ``journalctl -u`` subprocess; ``?lines=`` clamped to

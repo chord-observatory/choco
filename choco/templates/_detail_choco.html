@@ -1,0 +1,8 @@
+{# The CHOCO page's summary: the live registry (web._choco_detail). #}
+<dl class="service-facts">
+    <dt>Started</dt><dd>{{ detail.started_at }}</dd>
+    <dt>Nodes</dt>
+    <dd>{{ detail.nodes_total }} registered — {{ detail.started_desired }} desired started, {{ detail.maintenance }} in maintenance</dd>
+    <dt>Change queue</dt><dd>{{ detail.queued }} item{{ '' if detail.queued == 1 else 's' }} pending</dd>
+    <dt>Configs</dt><dd><code>{{ detail.configs_dir }}</code></dd>
+</dl>

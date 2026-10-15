@@ -37,9 +37,10 @@ is writing) that would stall the gevent hub, and keeping them out of the choco
 process means job deploys/crashes don't restart choco (a choco restart re-
 engages cluster-wide maintenance mode).  In-process greenlets are reserved for
 cheap UI-facing monitoring (``FpgaMonitor``, ``PdbMonitor``).  A header badge
-+ detail page costs one entry in ``web._service_registry()``, one pill in
-``_services_status.html``, and (optionally) a state-file summary branch in
-``web._service_detail``.
++ detail page costs one entry in ``web._JOBS`` (the strip and the landing
+table loop over the registry it builds) and, optionally, a summariser in
+``web._SERVICE_DETAILS`` with its ``_detail_<name>.html`` partial, which
+``_service_status.html`` includes by name.
 
 **State paths are a convention (2026-10).**  Until then every job had a
 ``state_file`` (or ``state.path``, ``archive_dir``, ``lock_file``,
