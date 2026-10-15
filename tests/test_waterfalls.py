@@ -10,6 +10,7 @@ import json
 import os
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
 import yaml
@@ -275,11 +276,20 @@ class TestConfig:
         cfg.write_text(yaml.safe_dump({
             "configs_dir": str(tmp_path),
             "server": {"secret_key": "k" * 32},  # a placeholder key is refused at load
-            "waterfall": {"images_dir": str(images), "ttl": 5},
+            "waterfall": {"ttl": 5},
         }))
-        loaded = load_config(cfg)
-        assert loaded["waterfall"]["images_dir"] == str(images)
-        assert loaded["waterfall"]["ttl"] == 5
+        assert load_config(cfg)["waterfall"]["ttl"] == 5
+
+    def test_images_dir_is_refused(self, tmp_path, images):
+        """The tree's location is the job's (waterfall.yaml), read back
+        from its state.json: a second copy in config.yaml only drifted."""
+        from choco.app import load_config
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "configs_dir": str(tmp_path), "server": {"secret_key": "k" * 32},
+            "waterfall": {"images_dir": str(images)}}))
+        with pytest.raises(ValueError, match="waterfall job's state.json"):
+            load_config(cfg)
 
     def test_missing_waterfall_block_defaults_to_empty(self, tmp_path):
         from choco.app import load_config
@@ -300,11 +310,19 @@ def _app(tmp_path, images):
     # and its last component is the name the image tree is keyed by
     config["vis_files"] = {"roots": [str(tmp_path / "data" / "subset")],
                            "ttl": 30}
-    config["waterfall"] = {"images_dir": str(images), "ttl": 0}
+    config["waterfall"] = {"ttl": 0}
     app = create_app(configs_dir=tmp_path / "configs", config=config)
     app.config["TESTING"] = True
     app.config["state_dir"] = tmp_path / "state"   # never the host's /var/lib/choco
+    _job_says_tree_is(app, images)
     return app
+
+
+def _job_says_tree_is(app, images):
+    """The waterfall job's state.json, naming its waterfalls_dir."""
+    d = Path(app.config["state_dir"]) / "waterfall"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "state.json").write_text(json.dumps({"waterfalls_dir": str(images)}))
 
 
 @pytest.fixture
@@ -378,6 +396,19 @@ class TestRoutes:
             body = c.get("/partials/files").data.decode()
         assert "acq_unrendered" in body
         assert "/files/subset/acq_unrendered/triangle" not in body
+
+    def test_the_tree_follows_the_job_state_file(self, tmp_path, images):
+        """Nothing until the job has run; then wherever it says it writes,
+        re-read when its state file changes; a relative path is ignored."""
+        state = tmp_path / "state.json"
+        st = WaterfallStore(state_file=lambda: state)
+        assert st.images_dir is None and not st.configured
+        state.write_text(json.dumps({"waterfalls_dir": str(images)}))
+        assert st.images_dir == images
+        state.write_text(json.dumps({"waterfalls_dir": "relative/tree", "pad": 1}))
+        assert st.images_dir is None
+        state.write_text(json.dumps({"waterfalls_dir": str(tmp_path / "moved")}))
+        assert st.images_dir == tmp_path / "moved"
 
     def test_routes_are_inert_without_an_images_dir(self, tmp_path):
         from choco.app import _DEFAULT_CONFIG
@@ -535,10 +566,11 @@ class TestRootKeying:
         config = dict(_DEFAULT_CONFIG)
         config["vis_files"] = {"roots": [str(tmp_path / "cs00" / "subset"),
                                          str(tmp_path / "cs01" / "subset")], "ttl": 30}
-        config["waterfall"] = {"images_dir": str(images), "ttl": 0}
+        config["waterfall"] = {"ttl": 0}
         app = create_app(configs_dir=tmp_path / "configs", config=config)
         app.config["TESTING"] = True
         app.config["state_dir"] = tmp_path / "state"
+        _job_says_tree_is(app, images)
         with app.test_client() as c:
             login(c)
             body = c.get("/partials/files").data.decode()

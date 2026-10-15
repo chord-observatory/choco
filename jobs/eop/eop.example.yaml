@@ -8,7 +8,7 @@ choco_url: https://localhost:5000
 
 # The F-engine master: frame0 (the instrument's time zero) is read from it.
 fpga_master:
-  host: chive.site.chord-observatory.ca
+  host: crs-control.site.chord-observatory.ca
   port: 54321
 
 intervals_before: 2               # Days of past entries (older stored entries are truncated on merge)

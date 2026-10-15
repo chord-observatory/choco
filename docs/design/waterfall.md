@@ -81,7 +81,10 @@ per acquisition; 100 elements = 358 MB per source file and ~157 GB per
 observing day), which is why ``waterfall.py`` visits acquisitions **newest
 first** under a per-run budget: a full backfill is ~24 h and must never starve
 the live acquisition.  On choco's side ``waterfalls.py`` is **read-only** and
-hub-safe — the summary sweep, each index read and every open and chunk of a
+hub-safe, and finds the tree where the job says it writes it: the
+``waterfalls_dir`` it records in its ``state.json`` every run (2026-10; until
+then config.yaml carried a second copy, ``waterfall.images_dir``, that had to
+be kept in step and is now refused).  The summary sweep, each index read and every open and chunk of a
 streamed image go through ``datafiles.run_blocking`` (threadpool, timeout),
 for the same reason ``datafiles.py`` does, and the reads are
 cached on a TTL and on mtime respectively.  Every path component from the URL

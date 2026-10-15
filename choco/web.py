@@ -1451,7 +1451,7 @@ def partial_fpga_gains():
 @bp.route("/service/fpga/gain.h5")
 @login_required
 def fpga_gain_file():
-    """The gain archive itself, proxied so the browser needs no chive route."""
+    """The gain archive itself, proxied so the browser needs no route to fpga_master."""
     archive = current_app.config.get("gain_archive")
     if archive is None or not archive.configured:
         abort(404)

@@ -22,7 +22,7 @@ instances on the CHORD telescope cluster.  It replaces the older **coco**
 Kotekan is deployed by Ansible; choco only monitors and pushes config through
 kotekan's REST API (port 12048: `/status`, `/config`, `/start`, `/kill`,
 updatable endpoints).  choco also fronts **fpga_master** (F-engine,
-chive:54321) and **power_db** (PDB power boards, a Pi on port 5000), and hosts
+crs-control:54321) and **power_db** (PDB power boards, a Pi on port 5000), and hosts
 a family of timer-driven **jobs**.
 
 ## Build & Run
@@ -315,7 +315,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **Retired config keys are refused, not read.** `load_config` raises on
 `sync.num_workers`, a `psu:` block, `eop.fpga_master_*`, the eop job's own
-settings (now `/etc/choco/eop.yaml`), the search-bind LDAP keys and every
+settings (now `/etc/choco/eop.yaml`), `waterfall.images_dir` (choco reads
+the tree from the job's `state.json`), the search-bind LDAP keys and every
 per-job state path (`*.state_file`, `bffs.run_file`/`manual_file`,
 `skymap.image_file`/`night_image_file`), naming the replacement.  Do not add
 a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.

@@ -43,7 +43,7 @@ class TestFpgaGains:
     }
 
     def _configure(self, app, payload=b"\x01\x02\x03\x04"):
-        """A gain archive with its cache pre-filled — no chive, no h5py."""
+        """A gain archive with its cache pre-filled — no fpga_master, no h5py."""
         archive = app.config["gain_archive"]
         archive.base_url = "http://fpga.example:54321"
         archive._manifest = self.MANIFEST

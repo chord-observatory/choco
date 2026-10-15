@@ -94,7 +94,7 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 | `sync` | `poll_interval`, `restart_timeout`, `max_concurrent_pushes`, `max_retry_interval` |
 | `fpga_master`, `pdb` | the two hardware monitors: host, port, timeout, `control`; `pdb.map_file`, `pdb.kotekan_group` |
 | `state_dir` | where the jobs keep state (`/var/lib/choco`, systemd's `StateDirectory`); choco reads each job's files there by name |
-| `eop`, `bffs`, `eigencal`, `waterfall` | each job's `service_unit` for its badge; EOP's table window and endpoint; `bffs.control` (clickable element grid); `waterfall.images_dir` and `timezone` |
+| `eop`, `bffs`, `eigencal`, `waterfall` | optional: each job's `service_unit` for its badge; `bffs.control` (clickable element grid); `waterfall.ttl` and `timezone`.  Every default is the shipped value, so the blocks can be left out |
 | `skymap` | the sky-map job's `service_unit`; its PNGs are read from `<state_dir>/skymap/` |
 | `mapmaker` | the drift-scan map job's `service_unit`; its state and PNGs are read from `<state_dir>/mapmaker/` |
 | `vis_files` | the data roots `/files` scans |
@@ -443,7 +443,7 @@ sudo journalctl -u choco-eigencal -f          # per-run logs
 
 ## Visibility waterfalls and the data-file page
 
-`/files` lists every acquisition under the configured data roots with its file count, size and newest mtime, and a **Waterfalls** column linking to a per-acquisition contact sheet. The images are rendered by the [waterfall job](jobs/waterfall/) (`choco-waterfall.timer`, every 2 minutes): one append-only PNG per correlation product, grown as kotekan's files land, never recomputed. Its config is `/etc/choco/waterfall.yaml`; choco's `waterfall.images_dir` must match the job's `waterfalls_dir`. See [jobs/waterfall/README.md](jobs/waterfall/README.md).
+`/files` lists every acquisition under the configured data roots with its file count, size and newest mtime, and a **Waterfalls** column linking to a per-acquisition contact sheet. The images are rendered by the [waterfall job](jobs/waterfall/) (`choco-waterfall.timer`, every 2 minutes): one append-only PNG per correlation product, grown as kotekan's files land, never recomputed. Its config is `/etc/choco/waterfall.yaml`; choco finds the image tree from the `waterfalls_dir` the job records in its `state.json`. See [jobs/waterfall/README.md](jobs/waterfall/README.md).
 
 ## Sky map
 

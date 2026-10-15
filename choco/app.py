@@ -15,7 +15,7 @@ from flask import Flask
 
 from .auth import init_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
-from .jobclient import STATE_ROOT
+from .jobclient import STATE_NAME, STATE_ROOT
 from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .services import FpgaMonitor, GainArchive, PdbMonitor, FileArchive, newest_file
@@ -105,6 +105,9 @@ _RETIRED_KEYS = (
     (("bffs", "manual_file"), _STATE_FIX),
     (("eigencal", "state_file"), _STATE_FIX),
     (("waterfall", "state_file"), _STATE_FIX),
+    (("waterfall", "images_dir"), "remove it: choco reads the tree's location from the "
+                                  "waterfall job's state.json (waterfalls_dir in "
+                                  "/etc/choco/waterfall.yaml)"),
     (("skymap", "image_file"), _STATE_FIX + "; the job writes skymap/skymap.png"),
     (("skymap", "night_image_file"), _STATE_FIX + "; the job writes skymap/skymap-night.png"),
     (("mapmaker", "state_file"), _STATE_FIX),
@@ -317,11 +320,12 @@ def create_app(
     app.config["acqnotes_cfg"] = config.get("acqnotes") or {}
     waterfall_cfg = config.get("waterfall") or {}
     app.config["waterfall_cfg"] = waterfall_cfg
-    # Read-only view of the tree jobs/waterfall writes.  No greenlet: the
-    # images are read on demand from the /files page, not polled.
+    # Read-only view of the tree jobs/waterfall writes, found where the job
+    # says it writes it (its state.json).  No greenlet: the images are read
+    # on demand from the /files page, not polled.
     app.config["waterfall_store"] = WaterfallStore(
-        waterfall_cfg.get("images_dir"),
         ttl_s=float(waterfall_cfg.get("ttl") or WaterfallStore.DEFAULT_TTL_S),
+        state_file=lambda: Path(app.config["state_dir"]) / "waterfall" / STATE_NAME,
     )
     app.config["datafile_scan"] = datafile_scan
     app.config["configs_dir"] = configs_dir

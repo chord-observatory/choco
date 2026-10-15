@@ -451,8 +451,16 @@ class WaterfallStore:
 
     DEFAULT_TTL_S = DEFAULT_TTL_S
 
-    def __init__(self, images_dir=None, ttl_s: float = DEFAULT_TTL_S):
-        self.images_dir = Path(images_dir) if images_dir else None
+    def __init__(self, images_dir=None, ttl_s: float = DEFAULT_TTL_S, *,
+                 state_file=None):
+        """*images_dir* fixes the tree.  Without it, *state_file* (a callable
+        giving the waterfall job's state.json, looked up per call so a
+        state_dir set later takes effect) is read for the ``waterfalls_dir``
+        the job records every run: waterfall.yaml is the one place the
+        tree's location is set."""
+        self._images_dir = Path(images_dir) if images_dir else None
+        self._state_file = state_file
+        self._located: tuple = (None, None)       # (state file stamp, tree)
         self.ttl_s = float(ttl_s)
         self._summaries: dict = {}
         self._swept_at = 0.0
@@ -462,6 +470,33 @@ class WaterfallStore:
         # N concurrent page loads must cost one walk of the mount, not N,
         # and the threadpool they would each occupy is shared.
         self._lock = BoundedSemaphore()
+
+    @property
+    def images_dir(self) -> Path | None:
+        """The image tree, or None before the job has said where it is.
+
+        Read from the job's state file (local disk, so no threadpool) and
+        re-read only when its stamp moves.  The path is the job's word,
+        not the caller's; every component joined under it is still
+        matched against the writer's patterns.
+        """
+        if self._images_dir is not None or self._state_file is None:
+            return self._images_dir
+        path = self._state_file()
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        stamp = (st.st_mtime_ns, st.st_size)
+        if stamp != self._located[0]:
+            try:
+                state = json.loads(Path(path).read_text())
+            except (OSError, ValueError):
+                state = None
+            tree = state.get("waterfalls_dir") if isinstance(state, dict) else None
+            tree = Path(tree) if isinstance(tree, str) and os.path.isabs(tree) else None
+            self._located = (stamp, tree)
+        return self._located[1]
 
     @property
     def configured(self) -> bool:
