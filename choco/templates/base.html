@@ -53,15 +53,10 @@
     </nav>
 
     <main class="container">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-        {% for category, message in messages %}
-        <div class="flash flash-{{ category }}" role="alert">
-            <span>{{ message }}</span>
-            <button class="flash-dismiss" title="Dismiss"
-                    onclick="this.closest('.flash').remove()">&times;</button>
-        </div>
+        {% from "_service_macros.html" import flash %}
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+        {{ flash(category, message) }}
         {% endfor %}
-        {% endwith %}
 
         {% block content %}{% endblock %}
     </main>

@@ -3,6 +3,37 @@
    30 s htmx poll on #landing-services. #}
 {% from "_service_macros.html" import monitor_tone, monitor_label, job_tone, job_label, data_tone, data_word, since, tag %}
 {% set now = now_ts %}
+{% macro seen(m) -%}
+{%- if m.last_seen %}seen {{ since(m.last_seen, now) }}{% else %}<span class="muted">never seen</span>{% endif -%}
+{%- endmacro %}
+{# What went wrong with a job's last run, as error lines: a result other
+   than success, systemd unreachable, the run file's reasons.  word names
+   the job where the row covers several (DATA). #}
+{% macro job_problems(job, word='') -%}
+{%- if job.result and job.result != 'success' %}
+<br><small class="err">{% if word %}{{ word }} {% endif %}result: {{ job.result }}{% if job.exit_status %} (exit {{ job.exit_status }}){% endif %}</small>
+{%- endif %}
+{%- if not job.systemd %}<br><small class="err">systemd not reachable</small>{% endif %}
+{%- for r in job.reasons or [] %}
+<br><small class="err">{{ r }}</small>
+{%- endfor %}
+{%- endmacro %}
+{# A hardware monitor's row; the caller adds the one fact of its own. #}
+{% macro monitor_row(label, href, name, m, hint) %}
+        <tr>
+            <td class="svc"><a href="{{ href }}"><strong>{{ label }}</strong></a></td>
+            <td>{{ tag(monitor_tone(m.health), monitor_label(m.health)) }}</td>
+            <td>
+                {% if m.configured %}
+                {{ name }} at {{ m.host }}:{{ m.port }}{{ caller() }}
+                {% if m.error %}<br><small class="err">{{ m.error }}</small>{% endif %}
+                {% else %}
+                <small>set <code>{{ hint }}</code> in config.yaml</small>
+                {% endif %}
+            </td>
+            <td>{{ seen(m) }}</td>
+        </tr>
+{%- endmacro %}
 <table class="services">
     <thead>
         <tr>
@@ -40,36 +71,14 @@
         </tr>
         {% endif %}
         {% if services.fpga %}{% set fpga = services.fpga %}
-        <tr>
-            <td class="svc"><a href="/service/fpga"><strong>FPGA</strong></a></td>
-            <td>{{ tag(monitor_tone(fpga.health), monitor_label(fpga.health)) }}</td>
-            <td>
-                {% if fpga.configured %}
-                fpga_master at {{ fpga.host }}:{{ fpga.port }}
+        {% call monitor_row('FPGA', '/service/fpga', 'fpga_master', fpga, 'fpga_master.host/port') %}
                 {% if fpga.state %} &middot; state: {{ fpga.state }}{% endif %}
-                {% if fpga.error %}<br><small class="err">{{ fpga.error }}</small>{% endif %}
-                {% else %}
-                <small>set <code>fpga_master.host/port</code> in config.yaml</small>
-                {% endif %}
-            </td>
-            <td>{% if fpga.last_seen %}seen {{ since(fpga.last_seen, now) }}{% else %}<span class="muted">never seen</span>{% endif %}</td>
-        </tr>
+        {%- endcall %}
         {% endif %}
         {% if services.pdb %}{% set pdb = services.pdb %}
-        <tr>
-            <td class="svc"><a href="/service/pdb"><strong>PDB</strong></a></td>
-            <td>{{ tag(monitor_tone(pdb.health), monitor_label(pdb.health)) }}</td>
-            <td>
-                {% if pdb.configured %}
-                power_db at {{ pdb.host }}:{{ pdb.port }}
+        {% call monitor_row('PDB', '/service/pdb', 'power_db', pdb, 'pdb.host/port') %}
                 {% if pdb.n_channels %} &middot; {{ pdb.n_on }} / {{ pdb.n_channels }} channels on{% endif %}
-                {% if pdb.error %}<br><small class="err">{{ pdb.error }}</small>{% endif %}
-                {% else %}
-                <small>set <code>pdb.host/port</code> in config.yaml</small>
-                {% endif %}
-            </td>
-            <td>{% if pdb.last_seen %}seen {{ since(pdb.last_seen, now) }}{% else %}<span class="muted">never seen</span>{% endif %}</td>
-        </tr>
+        {%- endcall %}
         {% endif %}
         {# DATA: the mounts and the jobs that read them (waterfalls,
            acquisition notes), one row like the strip's one tag (see
@@ -94,27 +103,16 @@
                 {% if wf %}
                 {% if data %}<br>{% endif %}waterfalls:
                 {% if d %}last run {{ d.files_rendered or 0 }} file{{ 's' if d.files_rendered != 1 }} rendered{% if d.backlog %}, backlog {{ d.backlog }}{% endif %}{% else %}{{ job_label(wf.health, wf.running) }}{% endif %}
-                {% if wf.result and wf.result != 'success' %}
-                <br><small class="err">waterfall result: {{ wf.result }}{% if wf.exit_status %} (exit {{ wf.exit_status }}){% endif %}</small>
-                {% endif %}
-                {% if not wf.systemd %}<br><small class="err">systemd not reachable</small>{% endif %}
-                {% for r in wf.reasons or [] %}
-                <br><small class="err">{{ r }}</small>
-                {% endfor %}
+                {{ job_problems(wf, 'waterfall') }}
                 {% endif %}
                 {% if notes %}{% set nd = details.get('acqnotes') %}
                 {% if data or wf %}<br>{% endif %}notes:
                 {% if nd and nd.acquisitions is not none %}{{ nd.n_with_notes }} / {{ nd.acquisitions }} acquisitions{% if nd.backlog %}, {{ nd.backlog }} to measure{% endif %}{% else %}{{ job_label(notes.health, notes.running) }}{% endif %}
-                {% if notes.result and notes.result != 'success' %}
-                <br><small class="err">notes result: {{ notes.result }}{% if notes.exit_status %} (exit {{ notes.exit_status }}){% endif %}</small>
-                {% endif %}
-                {% for r in notes.reasons or [] %}
-                <br><small class="err">{{ r }}</small>
-                {% endfor %}
+                {{ job_problems(notes, 'notes') }}
                 {% endif %}
             </td>
             <td>
-                {% if data %}{% if data.last_seen %}seen {{ since(data.last_seen, now) }}{% else %}<span class="muted">never seen</span>{% endif %}{% endif %}
+                {% if data %}{{ seen(data) }}{% endif %}
                 {% if wf %}{% if data %}<br>{% endif %}{{ svc.waterfall.mtime_label }} {{ since(wf.state_mtime, now) }}
                 {% if timer and timer.next_elapse %}<br><small class="muted">next {{ timer.next_elapse }}</small>{% endif %}{% endif %}
                 {% if notes and notes.state_mtime %}{% if data or wf %}<br>{% endif %}notes: {{ svc.acqnotes.mtime_label }} {{ since(notes.state_mtime, now) }}{% endif %}
@@ -139,13 +137,7 @@
                 {% elif name == 'eigencal' and d %}
                 last transit {{ d.transit_time or '?' }}{% if d.source %} ({{ d.source }}){% endif %}{% if d.sent is not none %}, {{ 'sent' if d.sent else 'not sent' }}{% endif %}
                 {% endif %}
-                {% if job.result and job.result != 'success' %}
-                <br><small class="err">result: {{ job.result }}{% if job.exit_status %} (exit {{ job.exit_status }}){% endif %}</small>
-                {% endif %}
-                {% if not job.systemd %}<br><small class="err">systemd not reachable</small>{% endif %}
-                {% for r in job.reasons or [] %}
-                <br><small class="err">{{ r }}</small>
-                {% endfor %}
+                {{ job_problems(job) }}
             </td>
             <td>
                 {% if s.state_file %}{{ s.mtime_label }} {{ since(job.state_mtime, now) }}{% endif %}

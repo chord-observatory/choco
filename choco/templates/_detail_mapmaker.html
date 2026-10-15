@@ -1,5 +1,6 @@
-{# The MAP page's summary (web._mapmaker_detail): the maps, then the
+{# The MAP page's summary (jobdetail.mapmaker_detail): the maps, then the
    calibration, the last run and the deconvolution. #}
+{% from "_service_macros.html" import truncated %}
 {% set img = detail.images %}
 {% if img.clean %}
 <figure class="mapmaker-map">
@@ -71,5 +72,5 @@
 {% if detail.skipped %}
 <p class="note"><strong>Skipped:</strong></p>
 <ul class="note">{% for e in detail.skipped %}<li><code>{{ e }}</code></li>{% endfor %}</ul>
-{% if detail.skipped_total > detail.skipped | length %}<p class="note"><em>{{ detail.skipped_total }} in total; showing the first {{ detail.skipped | length }}.</em></p>{% endif %}
+{{ truncated(detail.skipped_total, detail.skipped | length) }}
 {% endif %}

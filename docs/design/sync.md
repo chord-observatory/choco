@@ -216,7 +216,8 @@ config-file writes are unaffected — the rule is "no REST writes", and
 in ``web.py`` (per-node ``/nodes/toggle-maintenance/<key>``, group
 ``/nodes/set-maintenance-group/<group>/<on|off>``, all ``/nodes/set-
 maintenance-all/<on|off>``, JSON API ``set_maintenance``) and templates
-``_toggle_maintenance.html`` / ``_toggle_maintenance_all.html``. The
+``_toggle_maintenance.html`` and the ``maint_ctl`` macro in
+``_service_macros.html``. The
 orange/blue colour pair distinguishes it from the green/yellow started toggle,
 and the per-node slider is mirrored relative to the started toggle
 (maintenance = thumb on the *left*, normal = thumb on the *right*) so "thumb-

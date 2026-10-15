@@ -1,29 +1,11 @@
 {# The polled facts of the node page: everything the worker writes.
    dt/dd pairs for the surrounding dl.node-facts (see edit.html). #}
-{% from "_service_macros.html" import node_tone, node_wants, tag %}
+{% from "_service_macros.html" import node_status, node_version %}
 {% set v = node.version_info or {} %}
 <dt>Status</dt>
-<dd>
-    {{ tag(node_tone(node.status.value), node.status.value, extra='status-' ~ node.status.value) }}
-    {% set wants = node_wants(node) %}{% if wants %} <small class="muted wants">{{ wants }}</small>{% endif %}
-    {% if node.error %} <small class="muted">{{ node.error }}</small>{% endif %}
-    {% if node.load_error and node.load_error != node.error %}
-    <br><small class="muted">{{ node.load_error }}</small>
-    {% endif %}
-</dd>
+<dd>{{ node_status(node) }}</dd>
 <dt>Version</dt>
-<dd>
-    {% if v.get("cmake_build_settings") or v.get("available_stages") %}
-    {% set pop_id = "ver-pop-edit-" ~ (node.key|replace('/', '-')) %}
-    <button type="button" class="version-trigger" popovertarget="{{ pop_id }}"
-            title="Show build details">{{ node.version or "—" }}</button>
-    <div id="{{ pop_id }}" popover class="version-popover" hx-preserve="true">
-        {% with v=v %}{% include "_version_popover.html" %}{% endwith %}
-    </div>
-    {% else %}
-    {{ node.version or "—" }}
-    {% endif %}
-</dd>
+<dd>{{ node_version(node, "ver-pop-edit-" ~ (node.key|replace('/', '-'))) }}</dd>
 {% if v.get("branch") %}
 <dt>Branch</dt><dd><code>{{ v["branch"] }}</code></dd>
 {% endif %}

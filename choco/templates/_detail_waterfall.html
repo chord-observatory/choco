@@ -1,4 +1,5 @@
-{# The renderer's summary on /files (web._waterfall_detail). #}
+{# The renderer's summary on /files (jobdetail.waterfall_detail). #}
+{% from "_service_macros.html" import truncated %}
 <dl class="service-facts">
     <dt>Backlog</dt>
     <dd>{% if detail.backlog %}{{ detail.backlog }} file{{ '' if detail.backlog == 1 else 's' }} waiting{% else %}up to date{% endif %}</dd>
@@ -25,7 +26,5 @@
 <ul class="note">
     {% for e in detail.errors %}<li><code>{{ e }}</code></li>{% endfor %}
 </ul>
-{% if detail.errors_total > detail.errors | length %}
-<p class="note"><em>{{ detail.errors_total }} in total; showing the first {{ detail.errors | length }}.</em></p>
-{% endif %}
+{{ truncated(detail.errors_total, detail.errors | length) }}
 {% endif %}

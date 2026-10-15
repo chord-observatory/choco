@@ -4,17 +4,33 @@
    and aria-label, so the strip's layout never shifts with the state.
    Only the tint appears when the state is not ok, so the eye lands on
    what needs attention. #}
+{# The tooltip lines every job shares: the last result, the run file's
+   reasons, a run in flight, systemd unreachable. #}
+{% macro job_tip_tail(job) -%}
+{{- ('\nresult: ' ~ job.result if job.result else '')
+    ~ ('\nwhy: ' ~ (job.reasons | join('\nwhy: ')) if job.reasons else '')
+    ~ ('\na run is in progress; showing the last completed one' if job.running else '')
+    ~ ('' if job.systemd else '\nsystemd not reachable') -}}
+{%- endmacro %}
 {% macro job_tag(label, name, job, mtime_label) -%}
 {% set tip = label ~ ' job (' ~ job.unit ~ ')'
              ~ '\nhealth: ' ~ job.health
              ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
-             ~ ('\nresult: ' ~ job.result if job.result else '')
-             ~ ('\nwhy: ' ~ (job.reasons | join('\nwhy: ')) if job.reasons else '')
-             ~ ('\na run is in progress; showing the last completed one' if job.running else '')
-             ~ ('' if job.systemd else '\nsystemd not reachable')
+             ~ job_tip_tail(job)
              ~ '\n\nclick for details' %}
 {{ tag(job_tone(job.health, job.running), job_label(job.health, job.running),
        label=label, href='/service/' ~ name, title=tip, quiet=true) }}
+{%- endmacro %}
+{# A hardware monitor's badge: where it is, its health, one line of its
+   own (extra), when it was last seen and its error. #}
+{% macro monitor_tag(label, name, m, extra, href) -%}
+{% set tip = name ~ ' at ' ~ (m.host or '?') ~ ':' ~ (m.port or '?')
+             ~ '\nhealth: ' ~ m.health
+             ~ extra
+             ~ ('\nlast seen: ' ~ since(m.last_seen, now) if m.last_seen else '')
+             ~ ('\nerror: ' ~ m.error if m.error else '')
+             ~ '\n\nclick for details' %}
+{{ tag(monitor_tone(m.health), monitor_label(m.health), label=label, href=href, title=tip, quiet=true) }}
 {%- endmacro %}
 {% if nodes %}
 {% set tip = 'kotekan nodes (' ~ nodes.total ~ ')'
@@ -26,22 +42,10 @@
 {{ tag(monitor_tone(nodes.health), nodes.label, label='NODES', href='/nodes', title=tip, quiet=true) }}
 {% endif %}
 {% if fpga %}
-{% set tip = 'fpga_master at ' ~ (fpga.host or '?') ~ ':' ~ (fpga.port or '?')
-             ~ '\nhealth: ' ~ fpga.health
-             ~ ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else '')
-             ~ ('\nlast seen: ' ~ since(fpga.last_seen, now) if fpga.last_seen else '')
-             ~ ('\nerror: ' ~ fpga.error if fpga.error else '')
-             ~ '\n\nclick for details' %}
-{{ tag(monitor_tone(fpga.health), monitor_label(fpga.health), label='FPGA', href='/service/fpga', title=tip, quiet=true) }}
+{{ monitor_tag('FPGA', 'fpga_master', fpga, ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else ''), '/service/fpga') }}
 {% endif %}
 {% if pdb %}
-{% set tip = 'power_db at ' ~ (pdb.host or '?') ~ ':' ~ (pdb.port or '?')
-             ~ '\nhealth: ' ~ pdb.health
-             ~ ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else '')
-             ~ ('\nlast seen: ' ~ since(pdb.last_seen, now) if pdb.last_seen else '')
-             ~ ('\nerror: ' ~ pdb.error if pdb.error else '')
-             ~ '\n\nclick for details' %}
-{{ tag(monitor_tone(pdb.health), monitor_label(pdb.health), label='PDB', href='/service/pdb', title=tip, quiet=true) }}
+{{ monitor_tag('PDB', 'power_db', pdb, ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else ''), '/service/pdb') }}
 {% endif %}
 {# DATA is the mounts and the jobs that read them (the waterfall
    renderer, the acquisition notes), one tag (data_tone / data_word pick
@@ -53,10 +57,7 @@
 {%- if j -%}
 {{ '\n' ~ word ~ ' (' ~ j.unit ~ '): ' ~ job_label(j.health, j.running)
    ~ (" · " ~ svc[name].mtime_label ~ " " ~ since(j.state_mtime, now_ts) if j.state_mtime else "")
-   ~ ('\nresult: ' ~ j.result if j.result else '')
-   ~ ('\nwhy: ' ~ (j.reasons | join('\nwhy: ')) if j.reasons else '')
-   ~ ('\na run is in progress; showing the last completed one' if j.running else '')
-   ~ ('' if j.systemd else '\nsystemd not reachable') }}
+   ~ job_tip_tail(j) }}
 {%- endif -%}
 {%- endmacro %}
 {% set tip = 'Data-file roots' ~ (' (' ~ data.n_roots ~ ')' if data else '') ~ ', the waterfall renderer and the acquisition notes'

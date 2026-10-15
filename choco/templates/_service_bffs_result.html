@@ -5,11 +5,6 @@
    scrolls; the outcome rides along as an out-of-band swap into
    #service-flash, which sits outside the polled region and therefore
    survives the next 5 s refresh instead of blinking away. #}
-<div id="service-flash" hx-swap-oob="true">
-    <div class="flash flash-{{ 'success' if ok else 'error' }}" role="alert">
-        <span>BFFS: {{ message }}</span>
-        <button class="flash-dismiss" title="Dismiss"
-                onclick="this.closest('.flash').remove()">&times;</button>
-    </div>
-</div>
+{% from "_service_macros.html" import flash %}
+<div id="service-flash" hx-swap-oob="true">{{ flash('success' if ok else 'error', 'BFFS: ' ~ message) }}</div>
 {% include "_service_status.html" %}

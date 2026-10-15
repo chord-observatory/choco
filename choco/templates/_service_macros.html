@@ -1,5 +1,7 @@
-{# Shared macros for the services strip, the landing table and the
-   /service/<name> pages.
+{# Shared macros: the status tones and tag of the services strip, the
+   landing table and the /service/<name> pages, then the page chrome
+   several pages repeat (flash box, truncated-list note, node status and
+   version, the dashboard's bulk controls, the gain-archive plot panel).
 
    Colour is a *tone*, never a hex value: ok / bad / warn / info / maint /
    off.  The *_tone macros map each subsystem's health strings onto those
@@ -141,4 +143,142 @@
 {%- set hush = quiet and tone in ('ok', 'info', 'off') -%}
 {%- set el = 'a' if href else 'span' -%}
 <{{ el }}{% if href %} href="{{ href }}"{% endif %} class="tag tag-{{ tone }}{% if hush %} quiet{% endif %}{% if extra %} {{ extra }}{% endif %}"{% if label %} aria-label="{{ label }}: {{ word }}"{% endif %}{% if title %} title="{{ title }}"{% endif %}><span class="dot"></span>{% if label %}<strong>{{ label }}</strong>{% endif %}{% if not quiet %}<span class="word">{{ word }}</span>{% endif %}</{{ el }}>
+{%- endmacro %}
+
+{# ---- page chrome ----------------------------------------------------- #}
+
+{# A flash box: the page's own (base.html) and the out-of-band reply to an
+   htmx control (the bffs grid, the PDB toggles). #}
+{% macro flash(category, text) -%}
+<div class="flash flash-{{ category }}" role="alert">
+    <span>{{ text }}</span>
+    <button class="flash-dismiss" title="Dismiss"
+            onclick="this.closest('.flash').remove()">&times;</button>
+</div>
+{%- endmacro %}
+{# "N in total; showing the first M" under a truncated list, nothing when
+   the list is complete.  tight pulls the note up under a figure. #}
+{% macro truncated(total, shown, what='', which='first', tight=false) -%}
+{%- if total > shown %}<p class="note"{% if tight %} style="margin-top: -1em;"{% endif %}><em>{{ total }}{% if what %} {{ what }}{% endif %} in total; showing the {{ which }} {{ shown }}.</em></p>{% endif -%}
+{%- endmacro %}
+{# A node's status as the dashboard cell and the node page show it: the
+   tag, what the operator wants when that differs, the worker's error and
+   the config's load error (when it is not the same message). #}
+{% macro node_status(node) -%}
+{{ tag(node_tone(node.status.value), node.status.value, extra='status-' ~ node.status.value) }}
+{%- set wants = node_wants(node) %}{% if wants %} <small class="muted wants">{{ wants }}</small>{% endif %}
+{%- if node.error %}<br><small class="muted">{{ node.error }}</small>{% endif %}
+{%- if node.load_error and node.load_error != node.error %}<br><small class="muted">{{ node.load_error }}</small>{% endif %}
+{%- endmacro %}
+{# What kotekan reported about its build (the /version reply). #}
+{% macro version_popover(v) -%}
+<dl class="version-meta">
+    <dt>Version</dt><dd><code>{{ v.get("kotekan_version") or "—" }}</code></dd>
+    {% if v.get("branch") %}
+    <dt>Branch</dt><dd><code>{{ v["branch"] }}</code></dd>
+    {% endif %}
+    {% if v.get("git_commit_hash") %}
+    <dt>Commit</dt><dd><code title="{{ v['git_commit_hash'] }}">{{ v["git_commit_hash"][:10] }}</code></dd>
+    {% endif %}
+</dl>
+{% if v.get("cmake_build_settings") %}
+<p class="popover-section"><strong>CMake build settings</strong></p>
+<dl class="build-settings">
+    {% for k, val in v["cmake_build_settings"].items() %}
+    <dt><code>{{ k }}</code></dt><dd><code>{{ val }}</code></dd>
+    {% endfor %}
+</dl>
+{% endif %}
+{% if v.get("available_stages") %}
+<p class="popover-section"><strong>Available stages</strong> ({{ v["available_stages"]|length }})</p>
+<div class="stage-list">{{ v["available_stages"]|join(", ") }}</div>
+{% endif %}
+{%- endmacro %}
+{# kotekan's version string, and when it reported anything more, the
+   build details in a popover the string opens (see .version-trigger).
+   pop_id must be unique on the page. #}
+{% macro node_version(node, pop_id) -%}
+{%- set v = node.version_info or {} -%}
+{%- if v -%}
+<button type="button" class="version-trigger" popovertarget="{{ pop_id }}"
+        title="Show build details">{{ node.version or "—" }}</button>
+<div id="{{ pop_id }}" popover class="version-popover" hx-preserve="true">{{ version_popover(v) }}</div>
+{%- else -%}
+{{ node.version or "—" }}
+{%- endif -%}
+{%- endmacro %}
+{# The dashboard's bulk controls for one desired flag: ▼ / ▲ post the
+   flag's two actions for every node, or for group's, and morph the
+   table.  down and up are (tone, action word, title with %s for the
+   scope).  Imported with context: the buttons carry the CSRF token. #}
+{% macro group_ctl(label, base, group, down, up) -%}
+{%- set url = base ~ ('-group/' ~ group if group else '-all') -%}
+{%- set scope = '"' ~ group ~ '"' if group else 'all' -%}
+<span class="group-ctl" hx-ext="morph">
+    <span class="group-ctl-label">{{ label }}</span>
+    {%- for tone, action, title in (down, up) %}
+    <button class="group-btn tone-{{ tone }}" title="{{ title | format(scope) }}"
+            hx-post="{{ url }}/{{ action }}" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>{% if loop.first %}&#x25BC;{% else %}&#x25B2;{% endif %}</button>
+    {%- endfor %}
+</span>
+{%- endmacro %}
+{# ▼ sets the nodes idle (grey, the switch's idle colour), ▲ sets them
+   started (green). #}
+{% macro start_ctl(group=none) -%}
+{{ group_ctl('start', '/nodes/set-started', group,
+             ('off', 'stop', 'Set %s nodes to idle'), ('ok', 'start', 'Set %s nodes to started')) }}
+{%- endmacro %}
+{# ▼ puts the nodes into maintenance (amber, the switch's maintenance
+   colour), ▲ takes them out (blue, the switch's normal colour). #}
+{% macro maint_ctl(group=none) -%}
+{{ group_ctl('maint', '/nodes/set-maintenance', group,
+             ('maint', 'on', 'Put %s nodes in maintenance (choco will not push)'),
+             ('info', 'off', 'Take %s nodes out of maintenance (choco will push)')) }}
+{%- endmacro %}
+{# The live-plot panel for an HDF5 gain archive (the F-engine's digital
+   gains, eigencal's solution): a dataset picker, the full-screen and
+   download links, and the shared plot (bufferplot.js, loaded by the
+   page) opened on the service's gain-data API.  The ids carry the
+   service name so two panels could share a page. #}
+{% macro gain_panel(service, datasets, poll_ms, fetch_bytes) -%}
+{%- set sel_id = service ~ '-gain-dataset' %}
+    <div class="action-row">
+        <label>
+            dataset
+            <select id="{{ sel_id }}">
+                {% for d in datasets %}
+                <option value="{{ d.name }}">{{ d.name }} ({{ d.dimnames|join("×") }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <a id="{{ sel_id }}-fullscreen" role="button" class="secondary outline btn-inline"
+           href="/service/{{ service }}/plot?dataset={{ datasets[0].name if datasets }}">full screen ⤢</a>
+        <a role="button" class="secondary outline btn-inline"
+           href="/service/{{ service }}/gain.h5">download .h5</a>
+    </div>
+    {# The same panel the pipeline page opens; only the source differs. #}
+    <div id="buffer-plot"></div>
+    <script>
+        (function () {
+            var sel = document.getElementById("{{ sel_id }}");
+            var link = document.getElementById("{{ sel_id }}-fullscreen");
+            var box = document.getElementById("buffer-plot");
+            if (!sel || !box || !window.chocoPlot) return;
+            function show() {
+                var name = sel.value;
+                var q = encodeURIComponent(name);
+                link.setAttribute("href", "/service/{{ service }}/plot?dataset=" + q);
+                window.chocoPlot.open(
+                    window.chocoPlot.urlSource(
+                        "/api/{{ service }}/gain-data?dataset=" + q,
+                        "{{ service }}-gain|" + name, name,
+                        { page: "/service/{{ service }}/plot?dataset=" + q,
+                          pollMs: {{ poll_ms }}, defaultFetch: {{ fetch_bytes }} }),
+                    { container: box, noScroll: true });
+            }
+            sel.addEventListener("change", show);
+            show();
+        })();
+    </script>
 {%- endmacro %}

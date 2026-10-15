@@ -1,4 +1,4 @@
-{% from "_service_macros.html" import node_tone, node_wants, tag %}
+{% from "_service_macros.html" import maint_ctl, node_status, node_version, start_ctl with context %}
 {% if not nodes %}
 <p>No nodes configured yet. <a href="/nodes/edit">Edit nodes</a> to add kotekan instances.</p>
 {% else %}
@@ -10,8 +10,8 @@
 <div class="group-bar">
     <h3>group <code>{{ group }}</code>{% if one_file %} <small class="muted">renders <code>{{ files[0] }}</code></small>{% endif %}</h3>
     <div class="group-controls">
-        {% with group=group %}{% include "_toggle_maintenance_all.html" %}{% endwith %}
-        {% with group=group %}{% include "_toggle_started_all.html" %}{% endwith %}
+        {{ maint_ctl(group) }}
+        {{ start_ctl(group) }}
     </div>
 </div>
 <table style="margin-top: 0.25em;">
@@ -33,27 +33,8 @@
             <td>{{ node.name }}</td>
             <td>{% include "_toggle_maintenance.html" %}</td>
             <td>{% include "_toggle_started.html" %}</td>
-            <td>
-                {{ tag(node_tone(node.status.value), node.status.value, extra='status-' ~ node.status.value) }}
-                {% set wants = node_wants(node) %}{% if wants %} <small class="muted wants">{{ wants }}</small>{% endif %}
-                {% if node.error %}<br><small class="muted">{{ node.error }}</small>{% endif %}
-                {% if node.load_error and node.load_error != node.error %}
-                <br><small class="muted">{{ node.load_error }}</small>
-                {% endif %}
-            </td>
-            <td>
-                {% if node.version_info %}
-                {# The version string is the build-details trigger; see .version-trigger. #}
-                {% set pop_id = "ver-pop-" ~ node.group ~ "-" ~ node.name %}
-                <button type="button" class="version-trigger" popovertarget="{{ pop_id }}"
-                        title="Show build details">{{ node.version or "—" }}</button>
-                <div id="{{ pop_id }}" popover class="version-popover" hx-preserve="true">
-                    {% with v=node.version_info %}{% include "_version_popover.html" %}{% endwith %}
-                </div>
-                {% else %}
-                {{ node.version or "—" }}
-                {% endif %}
-            </td>
+            <td>{{ node_status(node) }}</td>
+            <td>{{ node_version(node, "ver-pop-" ~ node.group ~ "-" ~ node.name) }}</td>
             {% if not one_file %}<td><code>{{ node.config_filename }}</code></td>{% endif %}
             <td style="white-space: nowrap;">
                 <a href="/pipeline/{{ key }}" role="button" class="secondary outline btn-sm"

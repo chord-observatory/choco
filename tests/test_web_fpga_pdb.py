@@ -121,7 +121,7 @@ class TestFpgaGains:
         body = client.get("/partials/fpga-gains").data.decode()
         assert "Digital gains" in body
         assert "digitalgain_20260808T053625.917371Z" in body
-        assert 'id="gain-dataset"' in body
+        assert 'id="fpga-gain-dataset"' in body
         assert "gain_coeff" in body and "gain_exp" in body
         assert "1599.8" in body                       # the frequency span
         assert "/service/fpga/gain.h5" in body        # download link

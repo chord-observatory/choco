@@ -1,7 +1,7 @@
-{# The BFFS page's summary (web._bffs_detail): the bad list and its
+{# The BFFS page's summary (jobdetail.bffs_detail): the bad list and its
    attribution, the last run per source, the element grid (manual
    flags toggle here) and recent transitions. #}
-{% from "_service_macros.html" import source_tone, since, tag %}
+{% from "_service_macros.html" import source_tone, since, tag, truncated %}
 <dl class="service-facts">
     {% if detail.has_state %}
     <dt>Bad feeds</dt>
@@ -117,7 +117,5 @@
     </tbody>
 </table>
 </figure>
-{% if detail.history_total > detail.history | length %}
-<p class="note" style="margin-top: -1em;"><em>{{ detail.history_total }} transitions in total; showing the last {{ detail.history | length }}.</em></p>
-{% endif %}
+{{ truncated(detail.history_total, detail.history | length, 'transitions', which='last', tight=true) }}
 {% endif %}

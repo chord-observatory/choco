@@ -2,11 +2,12 @@
 {% block title %}Nodes — CHOCO{% endblock %}
 
 {% block content %}
+{% from "_service_macros.html" import maint_ctl, start_ctl with context %}
 <div class="page-head">
     <h2>Nodes</h2>
     <div class="page-actions">
-        {% include "_toggle_maintenance_all.html" %}
-        {% include "_toggle_started_all.html" %}
+        {{ maint_ctl() }}
+        {{ start_ctl() }}
         <a href="/nodes/edit" role="button" class="secondary outline btn-sm"
            title="Edit nodes.yaml: groups, hosts, ports and which config file each node renders">Edit nodes</a>
         <a href="/configs" role="button" class="secondary outline btn-sm"
