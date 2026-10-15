@@ -258,6 +258,8 @@ def _landing_context() -> dict:
     return {
         "services": services,
         "svc": svc_registry,
+        "folds": {host: [[n, services[n]] for n in names]
+                  for host, names in _folded(svc_registry).items()},
         "timers": timers,
         "details": details,
         "choco": _service_detail("choco", svc_registry["choco"]),
@@ -1326,7 +1328,9 @@ def waterfall_view(root, acq, name):
 #: settings.  ``mtime_label`` says what the state file's mtime means on
 #: the page; only a job that rewrites its state file on every successful
 #: run gets a ``stale_after_s``.  ``page`` is where a folded job is
-#: shown (see ``_service_registry``); ``description`` heads the page.
+#: shown (see ``_service_registry``) and ``card`` a partial that page
+#: loads above the job's status block; ``description`` heads the page,
+#: or the folded job's section.
 _JOBS: dict[str, dict] = {
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
@@ -1370,13 +1374,16 @@ _JOBS: dict[str, dict] = {
         "state": STATE_NAME, "mtime_label": "last run", "page": "/files",
     },
     # skymap keeps no state file: the image is the record and its title
-    # carries the render time, so the badge is systemd only.
+    # carries the render time, so the badge is systemd only.  The strip
+    # plot ends the MAP page, so the job is folded into MAP the way the
+    # waterfall is into DATA.
     "skymap": {
         "label": "SKYMAP", "unit": "choco-skymap.service", "mtime_label": "last render",
+        "page": "/service/mapmaker", "card": "/partials/skymap",
         "description": Markup(
             "Current-sky strip plot — renders the beam's drift-scan strip with the Sun, "
-            "Moon and pointing every 5 minutes, in a day and a night palette. "
-            '<a href="/">Shown on the landing page</a>.'),
+            "Moon and pointing every 5 minutes, in a day and a night palette; "
+            '<a href="/">also on the landing page</a>.'),
     },
     # mapmaker rewrites its state file on every run; a run with nothing
     # new to fold in is the normal case between files, so the mtime is
@@ -1385,10 +1392,10 @@ _JOBS: dict[str, dict] = {
         "label": "MAP", "unit": "choco-mapmaker.service",
         "state": STATE_NAME, "mtime_label": "last run",
         "description": Markup(
-            "Drift-scan sky maps — folds each new N&sup2; file into a sky map of every "
-            "pass and a map of the last sidereal day, frequency as hue from red to violet, "
-            "calibrated on the brightest source transiting the beam. "
-            '<a href="/files">The data it reads</a>.'),
+            "Drift-scan sky maps — folds each new N&sup2; file into a map of every pass, "
+            "shown deconvolved in context on the 408 MHz sky, and a map of the last "
+            "sidereal day, frequency as hue from red to violet, calibrated on the "
+            'brightest source transiting the beam. <a href="/files">The data it reads</a>.'),
     },
     # acqnotes rewrites its index only when it measures an acquisition,
     # so the mtime is "last measurement"; between acquisitions an hourly
@@ -1412,9 +1419,9 @@ def _service_registry() -> dict[str, dict]:
     ``page`` says where a job's status is shown.  None: its own
     /service/<name> page, a badge in the strip and a row in the landing
     table.  A path: the job is folded into that page's badge and row
-    (the waterfall into DATA) and /service/<name> redirects there; it
-    keeps its entry for the journal viewer, the status partial,
-    /api/status and /metrics, which report it on its own.
+    (the waterfall into DATA, the skymap into MAP) and /service/<name>
+    redirects there; it keeps its entry for the journal viewer, the
+    status partial, /api/status and /metrics, which report it on its own.
     """
     root = _state_root()
     registry = {"choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
@@ -1436,9 +1443,23 @@ def _service_registry() -> dict[str, dict]:
             "run_file": files.get("run"),
             "manual_file": files.get("manual") if cfg.get("control", True) else None,
             "page": job.get("page"),
+            "card": job.get("card"),
             "description": job.get("description"),
         }
     return registry
+
+
+def _folded(registry: dict) -> dict[str, list[str]]:
+    """The jobs shown on another job's page, by host slug: every entry
+    whose ``page`` is ``/service/<host>`` (the skymap on the MAP page).
+    Its state rides in the host's badge and landing row, the way the
+    waterfall's rides in DATA, and its status block ends the host's page."""
+    folded: dict[str, list[str]] = {}
+    for name, svc in registry.items():
+        host = (svc.get("page") or "").removeprefix("/service/")
+        if svc.get("page") and host in registry:
+            folded.setdefault(host, []).append(name)
+    return folded
 
 def _services_health(registry: dict | None = None) -> dict:
     """Health snapshots for the hardware monitors and the oneshot jobs.
@@ -1541,8 +1562,8 @@ def _nodes_health() -> dict:
 @login_required
 def partial_services():
     """Render the NODES + monitor (FPGA, PDB, DATA) + job (EOP, bffs,
-    eigencal, skymap) strip.  DATA covers the mounts and the waterfall
-    renderer that reads them (``services["waterfall"]``)."""
+    eigencal, MAP) strip.  DATA covers the mounts and the jobs that read
+    them; MAP carries the skymap (``_folded``)."""
     registry = _service_registry()
     services = _services_health(registry)
     return render_template(
@@ -1553,6 +1574,8 @@ def partial_services():
         data=services["data"],
         services=services,
         svc=registry,
+        folds={host: [[n, services[n]] for n in names]
+               for host, names in _folded(registry).items()},
         now_ts=time.time(),
     )
 
@@ -1639,16 +1662,21 @@ def service_page(name):
             "service_pdb.html", **context,
             check=_pdb_cross_check(context["pdb_map"]),
         )
-    svc = _service_registry().get(name)
+    registry = _service_registry()
+    svc = registry.get(name)
     if svc is None:
         abort(404)
     if svc.get("page"):
-        # Folded into another page's badge (the waterfall into DATA):
-        # old links land there, ``?lines=`` and all.
+        # Folded into another page's badge (the waterfall into DATA, the
+        # skymap into MAP): old links land there, ``?lines=`` and all.
         query = request.query_string.decode()
         return redirect(svc["page"] + ("?" + query if query else ""))
+    # The jobs folded into this page end it, each with its own status
+    # block and journal (service.html).
+    folded = {other: _service_page_context(other, registry[other])
+              for other in _folded(registry).get(name, [])}
     return render_template(
-        "service.html", name=name, nlines=_journal_lines_arg(),
+        "service.html", name=name, nlines=_journal_lines_arg(), folded=folded,
         **_service_page_context(name, svc))
 
 

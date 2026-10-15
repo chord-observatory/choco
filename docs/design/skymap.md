@@ -3,6 +3,12 @@
 Design rationale moved out of CLAUDE.md (2026-09).  Historical: the
 measurements and dates are from when each part was built.
 
+Shown on the landing page (``/partials/skymap``, every 5 min) and, since
+2026-10, at the foot of the MAP page: the job is folded into the MAP badge
+and page (``page: /service/mapmaker`` and ``card: /partials/skymap`` in
+``web._JOBS``) the way the waterfall is folded into DATA, so
+``/service/skymap`` redirects there.
+
 ## Sky-map strip plot
 
 ``jobs/skymap/`` renders a Mollweide all-sky view (equatorial grid in galactic

@@ -21,13 +21,15 @@ class TestLandingPage:
         login(client)
         body = client.get("/").data.decode()
         # One row per badge: choco itself, the cluster, and the jobs.
-        for label in ("CHOCO", "NODES", "DATA", "EOP", "BFFS", "EIGENCAL", "SKYMAP", "MAP"):
+        for label in ("CHOCO", "NODES", "DATA", "EOP", "BFFS", "EIGENCAL", "MAP"):
             assert label in body
         assert "/service/mapmaker" in body
         # The waterfall renderer rides in the DATA row (one badge, one
-        # page), never a row of its own.
+        # page), never a row of its own; the skymap in the MAP row.
         assert "waterfalls:" in body
         assert ">WF<" not in body and "/service/waterfall" not in body
+        assert "skymap:" in body
+        assert ">SKYMAP<" not in body and "/service/skymap" not in body
         # The nodes row summarizes the registry (3 seeded nodes).
         assert "3 nodes" in body
         # The door to node management, now that the dashboard left /.
@@ -458,6 +460,29 @@ class TestServicesPartial:
         assert m, body
         assert (m.group(1), m.group(2)) == ("bad", "notes failed")
         assert "notes (choco-acqnotes.service): failed" in m.group(3)
+
+    def test_map_badge_carries_the_skymap_job(self, client, app):
+        # The skymap rides in MAP the same way: a failed render turns the
+        # tag red with its own word, the tooltip names both jobs, and the
+        # skymap has no badge of its own.
+        login(client)
+
+        def status(unit, **kw):
+            health = "failed" if unit == "choco-skymap.service" else "ok"
+            return dict(_JOB_STUB, health=health, unit=unit)
+        with patch("choco.web.job_status", side_effect=status):
+            body = client.get("/partials/services").data.decode()
+        m = re.search(r'<a href="/service/mapmaker" class="tag tag-([a-z]+)[^"]*" aria-label="MAP: ([^"]*)"'
+                      r'[^>]*title="([^"]*)"', body)
+        assert m, body
+        assert (m.group(1), m.group(2)) == ("bad", "skymap failed")
+        assert "MAP job (choco-mapmaker.service)" in m.group(3)
+        assert "skymap (choco-skymap.service): failed" in m.group(3)
+        assert ">SKYMAP<" not in body and "/service/skymap" not in body
+        # the host's own state, unprefixed, when it is the worse of the two
+        with patch("choco.web.job_status", return_value=dict(_JOB_STUB, health="degraded")):
+            body = client.get("/partials/services").data.decode()
+        assert 'aria-label="MAP: degraded"' in body
         assert ">NOTES<" not in body and "/service/acqnotes" not in body
 
     def test_nodes_badge_tinted_but_wordless_when_not_ok(self, client, app, jobs):

@@ -70,13 +70,31 @@ class TestServicePage:
         resp = client.get("/service/not-a-service")
         assert resp.status_code == 404
 
-    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
-                                  "skymap", "mapmaker"])
+    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal", "mapmaker"])
     def test_job_pages_render(self, client, name, jobs):
         login(client)
         resp = client.get(f"/service/{name}")
         assert resp.status_code == 200
         assert name.upper() in resp.data.decode()
+
+    def test_skymap_rides_on_the_map_page(self, client):
+        """The skymap job is folded into MAP: its old page redirects there,
+        and the MAP page ends with its card, status block and journal."""
+        login(client)
+        resp = client.get("/service/skymap?lines=500")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/service/mapmaker?lines=500")
+        stub = dict(_JOB_STUB, unit="choco-skymap.service")
+        with patch("choco.web.job_status", return_value=stub), \
+             patch("choco.web.timer_status", return_value=None):
+            body = client.get("/service/mapmaker?lines=500").data.decode()
+        assert "SKYMAP" in body and "choco-skymap.service" in body
+        assert 'hx-get="/partials/skymap"' in body               # the strip plot itself
+        assert "/partials/service-status/skymap" in body
+        assert "/partials/service-logs/skymap?lines=500" in body
+        assert 'id="skymap-journal"' in body and 'id="journal"' in body
+        assert 'href="/service/mapmaker?lines=100#skymap"' in body
+        assert "/service/skymap" not in body
 
     def test_waterfall_page_is_the_files_page(self, client):
         # The renderer is folded into DATA: its old page redirects to
@@ -357,9 +375,11 @@ class TestServicePage:
         assert "backlog 12" in body and "file 4233700" in body
         assert "sky: 1234 bins" in body
         assert "16 colour bins, 300–1500 MHz" in body and "equalize stretch" in body
-        assert "/service/mapmaker/sky.png?v=" in body       # rendered image, with its mtime
+        # the page shows the deconvolved map in context and the daily map;
+        # the raw sky map is not shown, only noted until its first CLEAN
+        assert "/service/mapmaker/sky.png" not in body
+        assert "waiting for its first deconvolution" in body
         assert "/service/mapmaker/daily.png" not in body    # not rendered yet
-        assert "/service/mapmaker/clean.png" not in body    # the deconvolution has not run
         assert "Deconvolution" not in body
         assert "no bin_ERA_deg" in body
         # the image routes: allowlisted names, login, 404 until rendered
@@ -379,7 +399,7 @@ class TestServicePage:
         (job_dir(app, "mapmaker") / "clean.json").write_text(json.dumps(clean))
         (job_dir(app, "mapmaker") / "clean.png").write_bytes(png)
         body = client.get("/service/mapmaker").data.decode()
-        assert "/service/mapmaker/clean.png?v=" in body and "deconvolved" in body
+        assert "/service/mapmaker/clean.png" not in body     # served, not shown
         assert "10604 CLEAN iterations, 2683 component pixels in 44s" in body
         assert "residual 8.7e-05 of the calibrator (was 1.4e-04)" in body
         assert "299.75&deg; +40.80&deg; (0.910)" in body and "305.38&deg;" in body
@@ -388,6 +408,11 @@ class TestServicePage:
         # its context image on the 408 MHz sky, once that has rendered too
         assert "/service/mapmaker/context.png" not in body
         assert client.get("/service/mapmaker/context.png").status_code == 404
+        (job_dir(app, "mapmaker") / "context.png").write_bytes(png)
+        body = client.get("/service/mapmaker").data.decode()
+        assert "/service/mapmaker/context.png?v=" in body and "deconvolved" in body
+        assert "waiting for its first deconvolution" not in body
+        assert client.get("/service/mapmaker/context.png").status_code == 200
         (job_dir(app, "mapmaker") / "context.png").write_bytes(png)
         body = client.get("/service/mapmaker").data.decode()
         assert "/service/mapmaker/context.png?v=" in body and "408 MHz" in body

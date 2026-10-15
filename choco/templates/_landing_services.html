@@ -124,9 +124,13 @@
         {% set job = services[name] %}
         {% set d = details.get(name) %}
         {% set timer = timers.get(name) %}
+        {# The jobs folded into this one's page (the skymap in MAP) ride
+           in its tag and row like the waterfall in DATA. #}
+        {% set parts = folds.get(name, []) %}
+        {% set jobs = [['', job]] + parts %}
         <tr>
             <td class="svc"><a href="/service/{{ name }}"><strong>{{ label }}</strong></a></td>
-            <td>{{ tag(job_tone(job.health, job.running), job_label(job.health, job.running)) }}</td>
+            <td>{{ tag(data_tone(none, jobs), data_word(none, jobs)) }}</td>
             {# The unit name lives on the service page and in the strip's
                tooltip; here only what changed matters. #}
             <td>
@@ -138,11 +142,18 @@
                 last transit {{ d.transit_time or '?' }}{% if d.source %} ({{ d.source }}){% endif %}{% if d.sent is not none %}, {{ 'sent' if d.sent else 'not sent' }}{% endif %}
                 {% endif %}
                 {{ job_problems(job) }}
+                {% for word, j in parts %}
+                <br>{{ word }}: {{ job_label(j.health, j.running) }}{{ job_problems(j, word) }}
+                {% endfor %}
             </td>
             <td>
                 {% if s.state_file %}{{ s.mtime_label }} {{ since(job.state_mtime, now) }}{% endif %}
                 {% if timer and timer.next_elapse %}{% if s.state_file %}<br>{% endif %}<small class="muted">next {{ timer.next_elapse }}</small>{% endif %}
-                {% if not s.state_file and not (timer and timer.next_elapse) %}<span class="muted">&mdash;</span>{% endif %}
+                {% if not s.state_file and not (timer and timer.next_elapse) and not parts %}<span class="muted">&mdash;</span>{% endif %}
+                {% for word, j in parts %}{% set t = timers.get(word) %}
+                {% if svc[word].state_file %}<br>{{ word }}: {{ svc[word].mtime_label }} {{ since(j.state_mtime, now) }}{% endif %}
+                {% if t and t.next_elapse %}<br><small class="muted">{{ word }} next {{ t.next_elapse }}</small>{% endif %}
+                {% endfor %}
             </td>
         </tr>
         {% endfor %}

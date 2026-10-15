@@ -268,7 +268,9 @@ Cyg X and per-antenna gains from eigencal are the known next steps.
 ## Context image (2026-10-08)
 
 `context.png`, drawn by the deconvolution step after `clean.png`, puts the
-strip in its sky.  The backdrop is the 408 MHz all-sky map (the skymap's
+strip in its sky; since 2026-10 it and `daily.png` are the only images the
+MAP page shows (`sky.png` and `clean.png` stay on disk and at their routes),
+and the skymap job's strip plot and status end the page (`web._folded`).  The backdrop is the 408 MHz all-sky map (the skymap's
 backdrop, read through `choco.healpix`) on an RA × Dec grid at 0.25°.  RA
 runs 360 → 0 like the strips, and Dec covers −40° to +90°, everything that
 rises at DRAO.  It uses inferno on log T_b and is not faded.  The deconvolved

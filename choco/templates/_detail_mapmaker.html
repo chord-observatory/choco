@@ -1,24 +1,18 @@
 {# The MAP page's summary (jobdetail.mapmaker_detail): the maps, then the
    calibration, the last run and the deconvolution. #}
 {% from "_service_macros.html" import truncated %}
+{# Two images: the sky map of every pass, deconvolved and in context, and
+   the last day.  sky.png and clean.png stay on disk and at their routes
+   (MAPMAKER_IMAGES) but are not shown: the context image is the same
+   map with its surroundings. #}
 {% set img = detail.images %}
-{% if img.clean %}
-<figure class="mapmaker-map">
-    <img src="/service/mapmaker/clean.png?v={{ img.clean }}" alt="Sky map, deconvolved" style="width: 100%;">
-    <figcaption>Sky map, deconvolved: the two-row array's Dec ridge (half the baselines carry no Dec information) is removed by CLEAN against the dirty beam the map was made with, and the components are restored with one beam for every colour bin. Hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white. <a href="/service/mapmaker/clean-strip.png?v={{ img['clean-strip'] }}">Pixels only</a>.</figcaption>
-</figure>
-{% endif %}
 {% if img.context %}
 <figure class="mapmaker-map">
-    <img src="/service/mapmaker/context.png?v={{ img.context }}" alt="Sky map in context on the 408 MHz sky" style="width: 100%;">
-    <figcaption>The deconvolved strip in context: the 408 MHz all-sky map (Haslam et al. 1982, destriped by Remazeilles et al. 2015; log scale) over every declination that rises, with the strip pasted into its band where it has data.</figcaption>
+    <img src="/service/mapmaker/context.png?v={{ img.context }}" alt="Sky map, deconvolved, in context on the 408 MHz sky" style="width: 100%;">
+    <figcaption>Sky map of every pass with the Sun away from the beam, deconvolved (the two-row array's Dec ridge removed by CLEAN against the dirty beam the map was made with, the components restored with one beam per colour bin) and pasted into its band on the 408 MHz all-sky map (Haslam et al. 1982, destriped by Remazeilles et al. 2015; log scale) over every declination that rises. Hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white. <a href="/service/mapmaker/clean-strip.png?v={{ img['clean-strip'] }}">Pixels only</a>.</figcaption>
 </figure>
-{% endif %}
-{% if img.sky %}
-<figure class="mapmaker-map">
-    <img src="/service/mapmaker/sky.png?v={{ img.sky }}" alt="Sky map, all passes" style="width: 100%;">
-    <figcaption>{% if img.clean %}The same map before deconvolution: every pass{% else %}Sky map, every pass{% endif %} with the Sun away from the beam{% if not img.clean %}; hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white{% endif %}. <a href="/service/mapmaker/sky-strip.png?v={{ img['sky-strip'] }}">Pixels only</a>.</figcaption>
-</figure>
+{% elif img.sky %}
+<p class="note">The sky map is waiting for its first deconvolution (<code>choco-mapmaker-clean</code>, every 15 minutes).</p>
 {% endif %}
 {% if img.daily %}
 <figure class="mapmaker-map">

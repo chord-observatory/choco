@@ -12,14 +12,28 @@
     ~ ('\na run is in progress; showing the last completed one' if job.running else '')
     ~ ('' if job.systemd else '\nsystemd not reachable') -}}
 {%- endmacro %}
-{% macro job_tag(label, name, job, mtime_label) -%}
-{% set tip = label ~ ' job (' ~ job.unit ~ ')'
-             ~ '\nhealth: ' ~ job.health
-             ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
-             ~ job_tip_tail(job)
-             ~ '\n\nclick for details' %}
-{{ tag(job_tone(job.health, job.running), job_label(job.health, job.running),
-       label=label, href='/service/' ~ name, title=tip, quiet=true) }}
+{# One folded job's tooltip lines: "<word> (<unit>): <state> · <mtime>"
+   and the shared tail. #}
+{% macro job_tip(word, name, j) -%}
+{%- if j -%}
+{{ '\n' ~ word ~ ' (' ~ j.unit ~ '): ' ~ job_label(j.health, j.running)
+   ~ (" · " ~ svc[name].mtime_label ~ " " ~ since(j.state_mtime, now_ts) if j.state_mtime else "")
+   ~ job_tip_tail(j) }}
+{%- endif -%}
+{%- endmacro %}
+{# A job's badge.  With parts, the [name, snapshot] pairs of the jobs
+   folded into its page (the skymap in MAP), the tag shows the worst of
+   them, a part's state prefixed with its name, and the tooltip lists
+   each. #}
+{% macro job_tag(label, name, job, mtime_label, parts=[]) -%}
+{% set ns = namespace(tip=label ~ ' job (' ~ job.unit ~ ')'
+                          ~ '\nhealth: ' ~ job.health
+                          ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
+                          ~ job_tip_tail(job)) %}
+{% for word, j in parts %}{% set ns.tip = ns.tip ~ job_tip(word, word, j) %}{% endfor %}
+{% set jobs = [['', job]] + parts %}
+{{ tag(data_tone(none, jobs), data_word(none, jobs),
+       label=label, href='/service/' ~ name, title=ns.tip ~ '\n\nclick for details', quiet=true) }}
 {%- endmacro %}
 {# A hardware monitor's badge: where it is, its health, one line of its
    own (extra), when it was last seen and its error. #}
@@ -53,13 +67,6 @@
    entries name this page). #}
 {% set wf = services.waterfall %}{% set notes = services.acqnotes %}
 {% if data or wf or notes %}
-{% macro job_tip(word, name, j) -%}
-{%- if j -%}
-{{ '\n' ~ word ~ ' (' ~ j.unit ~ '): ' ~ job_label(j.health, j.running)
-   ~ (" · " ~ svc[name].mtime_label ~ " " ~ since(j.state_mtime, now_ts) if j.state_mtime else "")
-   ~ job_tip_tail(j) }}
-{%- endif -%}
-{%- endmacro %}
 {% set tip = 'Data-file roots' ~ (' (' ~ data.n_roots ~ ')' if data else '') ~ ', the waterfall renderer and the acquisition notes'
              ~ (('\nmounts: ' ~ data.health
                  ~ (' · reachable ' ~ data.n_ok ~ ' / ' ~ data.n_roots if data.n_roots else '')
@@ -72,5 +79,5 @@
 {{ tag(data_tone(data, data_jobs), data_word(data, data_jobs), label='DATA', href='/files', title=tip, quiet=true) }}
 {% endif %}
 {% for name, s in svc.items() if s.kind == 'job' and not s.page %}
-{{ job_tag(s.label, name, services[name], s.mtime_label) }}
+{{ job_tag(s.label, name, services[name], s.mtime_label, folds.get(name, [])) }}
 {% endfor %}

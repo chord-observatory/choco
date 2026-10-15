@@ -255,7 +255,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - A new badge costs one entry in `web._JOBS` plus, optionally, a summariser
   in `jobdetail.JOB_DETAILS` with its `_detail_<name>.html`.  A job shown on another page
   sets the entry's `page` instead (the waterfall and acqnotes on `/files`,
-  folded into the DATA tag): no badge or landing row of its own and `/service/<name>`
+  folded into the DATA tag; the skymap on `/service/mapmaker`, folded into
+  MAP): no badge or landing row of its own and `/service/<name>`
   redirects, but `/api/status` and `/metrics` still report it by name.
 - Jobs reach choco through `choco.jobclient` and derive feed labels through
   `choco.dishlabels`; both are stdlib-only so the jobs' venv is the only

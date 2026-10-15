@@ -36,6 +36,34 @@
 {% endif %}
 
 {% include "_service_tail.html" %}
+
+{# The jobs folded into this page (web._folded; the skymap on MAP): each
+   its card, status block and journal, the way /files carries the
+   waterfall.  The lines picker reloads this page at the section. #}
+{% set host = name %}
+{% for fname, f in folded.items() %}
+<section id="{{ fname }}">
+<div class="section-head">
+    <h3>{{ f.svc.label }}</h3>
+    {{ tag(job_tone(f.job.health, f.job.running), job_label(f.job.health, f.job.running)) }}
+</div>
+{% if f.svc.description %}<p class="note">{{ f.svc.description }}</p>{% endif %}
+{% if f.svc.card %}
+<div id="{{ fname }}-card" hx-get="{{ f.svc.card }}" hx-trigger="load, every 300s" hx-swap="innerHTML"></div>
+{% endif %}
+<div id="{{ fname }}-status"
+     hx-get="/partials/service-status/{{ fname }}"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML">
+{% with name=fname, job=f.job, svc=f.svc, timer=f.timer, detail=f.detail, now_ts=f.now_ts %}
+{% include "_service_status.html" %}
+{% endwith %}
+</div>
+{% with name=fname, job=f.job, state_json=f.state_json, lines_href='/service/' ~ host, lines_anchor='#' ~ fname, journal_id=fname ~ '-journal' %}
+{% include "_service_tail.html" %}
+{% endwith %}
+</section>
+{% endfor %}
 {% if name == 'bffs' %}
 <script>
     // Confirmation gate for manual-flag toggles, hooked into htmx's own

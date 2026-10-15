@@ -31,8 +31,9 @@ name.  The dashboard table itself only names each node's file: a per-row
 editor button made the page too busy, and the header button is one click
 away.  The landing table's NODES row links the library beside the dashboard.
 ``landing.html`` renders one table row per header badge (CHOCO itself plus
-NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / SKYMAP / MAP, the waterfall
-renderer and the acquisition notes riding in the DATA row) with the detail the
+NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / MAP, the waterfall
+renderer and the acquisition notes riding in the DATA row and the skymap in
+the MAP row) with the detail the
 strip only carries in a tooltip: monitor host:port and error, job unit and
 failure result, a one-line state-file summary (``web._service_detail`` — the
 same tolerant summariser the service pages use, so corrupt state degrades to
@@ -136,10 +137,12 @@ the notes job behind healthy mounts and a healthy renderer.
 
 each badge links to a ``/service/<name>`` detail page, all keyed off the
 ``web._service_registry()`` allowlist (``choco`` / ``eop`` / ``bffs`` /
-``eigencal`` / ``skymap`` / ``mapmaker``, plus the monitor pages ``fpga`` / ``pdb``) — page
+``eigencal`` / ``mapmaker``, plus the monitor pages ``fpga`` / ``pdb``) — page
 slugs are looked up there, never passed to journalctl raw.  An entry with a
 ``page`` is shown on that page instead (the waterfall on ``/files``, below
-the scan: its status block, then the state file and journal from
+the scan, and since 2026-10 the skymap at the foot of the MAP page, its
+card above its status block — ``web._folded`` lists such jobs by host and
+``service.html`` renders each as a section — : its status block, then the state file and journal from
 ``_service_tail.html``, the partial ``service.html`` ends with too) and
 ``/service/<name>`` redirects there, ``?lines=`` and all.  A job page
 (``service.html``) shows common unit facts (``job_status`` detail plus the
@@ -328,7 +331,8 @@ picker, the files page's root headers) puts the rule on the row instead
 via ``.section-head``, and the dashboard's tinted ``.group-bar`` keeps its
 own treatment because it carries the group controls.
 
-**Night sky map in the dark.**  The landing card's ``<img>`` carries
+**Night sky map in the dark.**  The sky-map card's ``<img>`` (on the
+landing page and the MAP page) carries
 ``data-day-src`` and, once a night render exists, ``data-night-src``;
 ``base.html``'s theme script swaps ``src`` to match the theme on load, on
 toggle and after every htmx swap (the card is replaced every five
