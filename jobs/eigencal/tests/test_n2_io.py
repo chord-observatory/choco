@@ -1,4 +1,4 @@
-"""Tests for the N² reader against tiny synthetic files in both layouts."""
+"""Tests for the N² reader against tiny synthetic files in kotekan's layout."""
 
 import h5py
 import numpy as np
@@ -41,7 +41,8 @@ def _vis_values(a, b):
 
 @pytest.fixture
 def chord_file(tmp_path):
-    """CHORD hdf5N2Write flavour: per-element labels, vis[freq, prod, time]."""
+    """hdf5N2Write's layout: per-element labels, vis[freq, prod, time],
+    time_center_t_inst_ns, flags[freq, element, time]."""
     a, b = _prods(NFEED)
     path = tmp_path / "chord.h5"
     with h5py.File(path, "w") as f:
@@ -56,16 +57,17 @@ def chord_file(tmp_path):
         freq["centre"] = [400.0, 500.0, 600.0]
         freq["width"] = 100.0
         im.create_dataset("freq", data=freq)
-        t = np.zeros(NTIME, dtype=[("fpga_count", "<u8"), ("ctime", "<f8")])
-        t["ctime"] = 1000.0 + 10.0 * np.arange(NTIME)
-        im.create_dataset("time", data=t)
-        im.create_dataset("prod", data=np.stack([a, b], axis=-1))
+        f.create_dataset("time_center_t_inst_ns",
+                         data=(1005 + 10 * np.arange(NTIME, dtype=np.int64)) * 1_000_000_000)
+        prod = np.zeros(a.size, dtype=[("input_a", "<u2"), ("input_b", "<u2")])
+        prod["input_a"], prod["input_b"] = a, b
+        im.create_dataset("prod", data=prod)
         f.create_dataset("vis", data=_vis_values(a, b))
         fa = np.ones((NFREQ, NTIME), dtype=np.int64)
         fa[1, 2] = 0                              # one dead (freq, time) cell
         f.create_dataset("frames_added", data=fa)
-        flags = np.ones(NFEED, dtype=np.float32)
-        flags[3] = 0.0                            # kotekan flagged feed 3
+        flags = np.ones((NFREQ, NFEED, NTIME), dtype=np.float32)
+        flags[:, 3, :] = 0.0                      # kotekan flagged feed 3
         f.create_dataset("flags", data=flags)
     return path
 
@@ -92,21 +94,19 @@ def chime_file(tmp_path):
 
 def test_read_meta_chord(chord_file):
     m = n2_io.read_meta(chord_file)
-    assert not m.time_first
     assert list(m.labels) == ELEMENT_LABELS
     assert np.allclose(m.freq_mhz, [400.0, 500.0, 600.0])
     assert np.allclose(m.freq_width_mhz, 100.0)
-    assert np.allclose(m.time, 1005.0 + 10.0 * np.arange(NTIME))  # centred
+    assert np.allclose(m.time, 1005.0 + 10.0 * np.arange(NTIME))
     assert m.prod_a.size == NFEED * (NFEED + 1) // 2
 
 
 @pytest.fixture
 def live_chord_file(tmp_path, chord_file):
-    """The layout kotekan actually writes (checked 2026-09-13): no
-    index_map/time; root-level time_center_t_inst_ns holds int64 unix ns
-    at the integration *centre*."""
+    """Times as a live file has them (checked 2026-09-13): int64 unix ns
+    at the integration *centre*, with a sub-second part."""
     with h5py.File(chord_file, "r+") as f:
-        del f["index_map"]["time"]
+        del f["time_center_t_inst_ns"]
         centres_ns = (1_789_279_147_885_186_870
                       + np.arange(NTIME, dtype=np.int64) * 9_982_443_520)
         f.create_dataset("time_center_t_inst_ns", data=centres_ns)
@@ -175,7 +175,7 @@ def test_geometry_length_mismatch_is_refused(chord_file):
 
 def test_file_without_any_time_axis_is_refused(chord_file):
     with h5py.File(chord_file, "r+") as f:
-        del f["index_map"]["time"]
+        del f["time_center_t_inst_ns"]
     with pytest.raises(OSError, match="no time axis"):
         n2_io.read_meta(chord_file)
 
@@ -222,7 +222,6 @@ def test_read_valid_and_flags(chord_file):
     assert valid.shape == (NTIME, NFREQ)
     assert not valid[2, 1] and valid.sum() == NTIME * NFREQ - 1
 
-    # A static (nfeed,) flag vector is broadcast over time and frequency.
     flags = n2_io.read_input_flags(m, time_sel, slice(0, NFREQ))
     assert flags.shape == (NTIME, NFREQ, NFEED)
     assert not flags[:, :, 3].any() and flags[:, :, :3].all()

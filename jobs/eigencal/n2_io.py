@@ -1,15 +1,13 @@
 """n2_io — read kotekan N² output for transit calibration.
 
-Read-only access to the same hdf5N2Write files bffs reads (the label
-reading follows ``jobs/bffs/kotekan_io.py``), but eigencal needs the full
+Read-only access to the same hdf5N2Write files bffs reads, through the
+same axis readers (``choco.n2file``), but eigencal needs the full
 cross-correlation products over a time window, not just the newest
-autocorrelation rows.  Both visibility layouts are decoded — CHIME-style
-``vis[time, freq, prod]`` and CHORD hdf5N2Write ``vis[freq, prod, time]``
-with compound freq, ``frames_added[freq, time]`` validity, root-level
-``flags`` (kotekan's per-input flag state) and ``vis_weight``.  The time
-axis is ``index_map/time`` (CHIME-style, integration starts) or CHORD's
-root-level ``time_center_t_inst_ns`` (integration centres, unix ns); see
-``_time_centres``.
+autocorrelation rows.  The layout is the one kotekan writes:
+``vis[freq, prod, time]``, ``frames_added[freq, time]`` validity,
+root-level ``flags[freq, element, time]`` (kotekan's per-input flag
+state) and the root-level ``time_center_t_inst_ns`` time axis
+(integration centres, unix ns); see ``_time_centres``.
 
 Per-element geometry — polarisation, kotekan ``DishType`` and position
 (``feed_positions_m``, grid frame, with ``grid_orientation`` to rotate it
@@ -20,9 +18,9 @@ The label axis is the *element* axis, read from kotekan's per-element
 ``index_map/label`` (chord.2021.10+988, acquisitions from 2026-09-11 on:
 one entry per element, ``A1p1`` … ``A1p2`` … up to kotekan PR #1695 and
 ``A01X`` … ``A01Y`` … from then on) and spelled in choco's names
-(``A1X`` … ``A1Y`` …) by ``choco.dishlabels.file_element_labels``.
-Any other label layout — CHIME-style ``index_map/input``, a per-dish
-table, pre-2026-08 per-element labels — is refused.
+(``A1X`` … ``A1Y`` …) by ``choco.n2file.element_labels``.  Any other
+label layout — CHIME-style ``index_map/input``, a per-dish table,
+pre-2026-08 per-element labels — is refused.
 """
 
 from __future__ import annotations
@@ -33,12 +31,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-try:
-    # Registers HDF5 compression plugins with libhdf5 on import — kotekan
-    # writes vis/vis_weight bitshuffle-compressed (filter 32008).
-    import hdf5plugin  # noqa: F401
-except ImportError:  # uncompressed files remain readable without it
-    pass
+from choco import n2file
 
 
 # kotekan's DishType (lib/utils/CHORDTelescope.hpp), as hdf5N2Write records
@@ -48,43 +41,17 @@ except ImportError:  # uncompressed files remain readable without it
 DISH_FAKE, DISH_ARRAY, DISH_RFI = -1, 0, 1
 
 
-def input_labels(f: h5py.File) -> np.ndarray:
-    """The file's ``index_map/label`` entries as str (see bffs/kotekan_io)."""
-    arr = f["index_map"]["label"][()]
-    return np.array([s.decode("utf-8", "replace") if isinstance(s, bytes) else str(s)
-                     for s in arr])
-
-
-# The label layout lives in choco.dishlabels, shared with bffs, waterfall
-# and choco's own PDB cross-check.
-from choco.dishlabels import file_element_labels  # noqa: E402
-
-
 def element_labels(f: h5py.File) -> np.ndarray:
-    """The element-axis labels of *f* in choco's names (``A1X``).
-
-    Only kotekan's per-element layout (chord.2021.10+988, 2026-09-11 on)
-    is accepted: ``index_map/label`` names every element of the file's
-    own axis as dish label + ``p1``/``p2`` (or + ``X``/``Y`` since
-    PR #1695), cross-checked against ``index_map/pol`` and
-    ``num_elements``.  Anything else — CHIME-style
-    ``index_map/input``, a per-dish table, pre-2026-08 per-element
-    labels — is refused with ``OSError`` so the run reports degraded
-    (exit 2) rather than select feeds against a guessed axis.
+    """The element-axis labels of *f* in choco's names (``A1X``), read by
+    :func:`choco.n2file.element_labels`.  Any other layout raises
+    ``OSError``, so the run reports degraded (exit 2) rather than select
+    feeds against a guessed axis.
     """
-    im = f["index_map"]
-    if "input" in im or "label" not in im:
-        raise OSError(
-            "N2 file has no per-element label table (index_map/label): a "
-            "CHIME-style or pre-2026-08 file — refusing to guess its element axis")
-    num_elements = int(f.attrs.get("num_elements", 0) or 0) or None
-    pol = im["pol"][()] if "pol" in im else None
     try:
-        return np.array(file_element_labels(input_labels(f), num_elements, pol))
+        return np.array(n2file.element_labels(f))
     except ValueError as e:
-        raise OSError(
-            "N2 file is not in kotekan's per-element label layout "
-            f"(chord.2021.10+988, 2026-09-11 on): {e}") from e
+        raise OSError(f"N2 file is not in kotekan's per-element label layout "
+                      f"(chord.2021.10+988, 2026-09-11 on): {e}") from e
 
 
 @dataclass(frozen=True)
@@ -98,7 +65,6 @@ class N2Meta:
     time: np.ndarray         # (ntime,) unix, integration centres
     prod_a: np.ndarray       # (nprod,) input index of each product
     prod_b: np.ndarray
-    time_first: bool         # True: vis[time, freq, prod]; False: vis[freq, prod, time]
     # Per-element geometry, None when the file does not carry it (see
     # _feed_geometry): kotekan polarisation index, DishType, position in
     # the telescope's grid frame, and the grid frame's orientation.
@@ -172,27 +138,14 @@ def enu_positions_m(meta: "N2Meta") -> np.ndarray:
 def _time_centres(f: h5py.File) -> np.ndarray:
     """The file's time axis as unix seconds at each integration's centre.
 
-    CHORD hdf5N2Write files (verified against a live file, 2026-09-13)
-    carry no ``index_map/time``: the time axis is the root-level
+    hdf5N2Write files (verified against a live file, 2026-09-13) carry no
+    ``index_map/time``: the time axis is the root-level
     ``time_center_t_inst_ns`` (int64 unix ns), already the integration
     centre — its first value is ``frame0_unix_ns`` + ``fpga_start_tick``
-    ticks + half a ``frame_length_fpga_ticks`` frame.  CHIME-style files
-    have ``index_map/time`` — compound ``(fpga_count, ctime)`` or plain
-    unix floats — stamped at the integration *start*, shifted here to
-    centres by half the median cadence.  A file with neither is refused
-    with ``OSError`` (degraded, not failed): an unknown writer layout,
-    like an unknown label layout, is not something to guess at.
+    ticks + half a ``frame_length_fpga_ticks`` frame.  A file without it
+    is refused with ``OSError`` (degraded, not failed): an unknown writer
+    layout, like an unknown label layout, is not something to guess at.
     """
-    im = f["index_map"]
-    if "time" in im:
-        t = im["time"][()]
-        if t.dtype.names:
-            t = np.asarray(t["ctime"], dtype=np.float64)
-        else:
-            t = np.asarray(t, dtype=np.float64)
-        if t.size > 1:
-            t = t + 0.5 * np.median(np.abs(np.diff(t)))
-        return t
     if "time_center_t_inst_ns" in f:
         ns = np.asarray(f["time_center_t_inst_ns"][()], dtype=np.int64).reshape(-1)
         # Split whole seconds from the remainder so float64 keeps the
@@ -200,40 +153,20 @@ def _time_centres(f: h5py.File) -> np.ndarray:
         return (ns // 1_000_000_000).astype(np.float64) \
             + (ns % 1_000_000_000).astype(np.float64) / 1e9
     raise OSError(
-        "N2 file has no time axis (neither index_map/time nor "
-        "time_center_t_inst_ns) — unknown writer layout, refusing to guess")
+        "N2 file has no time axis (time_center_t_inst_ns) — unknown writer "
+        "layout, refusing to guess")
 
 
 def read_meta(path: str | Path) -> N2Meta:
     with h5py.File(path, "r") as f:
         labels = element_labels(f)
-
-        freq = f["index_map"]["freq"][()]
-        if freq.dtype.names:  # kotekan freq_ctype: (centre MHz, width MHz)
-            width = np.asarray(freq["width"], dtype=np.float64).reshape(-1)
-            freq = np.asarray(freq["centre"], dtype=np.float64).reshape(-1)
-        else:
-            freq = np.asarray(freq, dtype=np.float64).reshape(-1)
-            width = np.full_like(freq, np.median(np.abs(np.diff(freq))) if freq.size > 1 else 1.0)
-
+        freq, width = n2file.freq_axis(f)
+        a, b = n2file.prod_axis(f)
         t = _time_centres(f)
-
-        prod = f["index_map"]["prod"][()]
-        if prod.dtype.names:
-            a = np.asarray(prod[prod.dtype.names[0]], dtype=np.int64)
-            b = np.asarray(prod[prod.dtype.names[1]], dtype=np.int64)
-        else:
-            prod = np.asarray(prod)
-            a, b = prod[:, 0].astype(np.int64), prod[:, 1].astype(np.int64)
-
-        vis = f["vis"]
-        time_first = vis.shape[1:] == (freq.size, a.size)
-
         pol, dish_type, position_m, grid_orientation = _feed_geometry(f, labels.size)
-
     return N2Meta(path=str(path), labels=labels, freq_mhz=freq,
                   freq_width_mhz=width, time=t, prod_a=a, prod_b=b,
-                  time_first=time_first, pol=pol, dish_type=dish_type,
+                  pol=pol, dish_type=dish_type,
                   position_m=position_m, grid_orientation=grid_orientation)
 
 
@@ -247,21 +180,15 @@ def read_products(meta: N2Meta, prod_idx: np.ndarray, time_sel: np.ndarray,
     t0, t1 = int(time_sel[0]), int(time_sel[-1]) + 1
     trel = time_sel - t0
     with h5py.File(meta.path, "r") as f:
-        vis = f["vis"]
-        if meta.time_first:                      # vis[time, freq, prod]
-            out = vis[t0:t1, freq_slice, prod_idx]
-            out = out[trel]
-        else:                                    # vis[freq, prod, time]
-            out = vis[freq_slice, prod_idx, t0:t1]        # (nf, np, nt)
-            out = np.moveaxis(out, -1, 0)[trel]           # (nt, nf, np)
-    return np.ascontiguousarray(out)
+        out = f["vis"][freq_slice, prod_idx, t0:t1]       # vis[freq, prod, time]
+    return np.ascontiguousarray(np.moveaxis(out, -1, 0)[trel])   # (nt, nf, np)
 
 
 def read_valid(meta: N2Meta, time_sel: np.ndarray, freq_slice: slice) -> np.ndarray:
     """(nt, nf) bool — which (time, freq) cells actually contain data."""
     nf = len(range(*freq_slice.indices(meta.freq_mhz.size)))
     with h5py.File(meta.path, "r") as f:
-        if "frames_added" in f:                  # CHORD: frames_added[freq, time]
+        if "frames_added" in f:                  # frames_added[freq, time]
             fa = f["frames_added"][freq_slice, :][:, time_sel]
             return (np.asarray(fa) > 0).T
     return np.ones((time_sel.size, nf), dtype=bool)
@@ -272,15 +199,14 @@ def read_input_flags(meta: N2Meta, time_sel: np.ndarray,
     """(nt, nf, nfeed) bool — kotekan's per-input flag state (True = good).
 
     The root-level ``flags`` dataset is kotekan's own per-input flag state
-    (what bffs & friends fed it).  Live CHORD files (checked 2026-10-04)
-    write ``flags[freq, element, time]`` as 0/1 float32: an element in
+    (what bffs & friends fed it).  Live files (checked 2026-10-04) write
+    ``flags[freq, element, time]`` as 0/1 float32: an element in
     kotekan's bad-input list is 0 at every frequency from the moment the
     list reached the node, and every element is 0 in a (freq, time) cell
     that holds no data (the cells ``frames_added`` leaves at zero) — so
     the flags are read per frequency, like ``read_valid``, and applied
-    cell by cell.  The older shape conventions — a static (nfeed,) vector
-    and a per-time (ntime, nfeed) table — are broadcast over frequency;
-    anything else is treated as all-good.  ``time_sel`` is sorted.
+    cell by cell.  A file without them, or of another shape, is all-good.
+    ``time_sel`` is sorted.
     """
     nfeed = meta.labels.size
     nf = len(range(*freq_slice.indices(meta.freq_mhz.size)))
@@ -296,12 +222,6 @@ def read_input_flags(meta: N2Meta, time_sel: np.ndarray,
             t0, t1 = int(time_sel[0]), int(time_sel[-1]) + 1
             arr = flags[freq_slice, :nfeed, t0:t1][..., time_sel - t0]  # (nf, nfeed, nt)
             return np.ascontiguousarray(np.moveaxis(arr, -1, 0) > 0)
-        arr = flags[()]
-    if arr.ndim == 1 and arr.shape[0] >= nfeed:
-        return np.broadcast_to(arr[:nfeed] > 0, (nt, nf, nfeed)).copy()
-    if arr.ndim == 2 and arr.shape[-1] >= nfeed and arr.shape[0] >= time_sel.max() + 1:
-        return np.broadcast_to((arr[time_sel, :nfeed] > 0)[:, None, :],
-                               (nt, nf, nfeed)).copy()
     return ones
 
 

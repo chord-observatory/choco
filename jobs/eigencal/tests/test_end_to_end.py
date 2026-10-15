@@ -137,14 +137,15 @@ def _make_file(cfg, eph, transit, tmp_path, rng):
         freq = np.zeros(len(FREQ_MHZ), dtype=[("centre", "<f8"), ("width", "<f8")])
         freq["centre"], freq["width"] = FREQ_MHZ, 20.0
         im.create_dataset("freq", data=freq)
-        t = np.zeros(nt, dtype=[("fpga_count", "<u8"), ("ctime", "<f8")])
-        t["ctime"] = times - 0.5 * TSTEP                  # file stamps starts
-        im.create_dataset("time", data=t)
-        im.create_dataset("prod", data=np.stack([a, b], axis=-1).astype(np.uint16))
+        # integration centres, unix ns, as hdf5N2Write writes them
+        f.create_dataset("time_center_t_inst_ns", data=np.round(times * 1e9).astype(np.int64))
+        prod = np.zeros(a.size, dtype=[("input_a", "<u2"), ("input_b", "<u2")])
+        prod["input_a"], prod["input_b"] = a, b
+        im.create_dataset("prod", data=prod)
         f.create_dataset("vis", data=vis.astype(np.complex64).transpose(1, 2, 0))
         f.create_dataset("frames_added", data=np.ones((len(FREQ_MHZ), nt), np.int64))
-        flags = np.ones(NFEED, dtype=np.float32)
-        flags[FLAGGED_FEED] = 0.0
+        flags = np.ones((len(FREQ_MHZ), NFEED, nt), dtype=np.float32)
+        flags[:, FLAGGED_FEED, :] = 0.0
         f.create_dataset("flags", data=flags)
     return gain_in
 

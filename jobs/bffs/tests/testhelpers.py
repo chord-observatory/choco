@@ -32,49 +32,18 @@ def _write_labels(im, labels, pol):
 
 
 def write_normalized(path, labels, freq, auto, weight=None):
-    """`auto`-layout file over one polarization of the given dishes.
+    """A kotekan file over one polarization of the given dishes, its
+    autocorrelations *auto* (ntime, nfreq, nfeed) and their *weight*.
 
     *labels* are bare dish labels; the file names each as its pol-0
-    element (``f0`` -> ``f0p1``), which reads back as ``f0X``.
+    element (``f0`` -> ``f0p1``), which reads back as ``f0X``.  The
+    layout is :func:`write_chord_n2`'s, the one kotekan writes.
     """
-    table, pol = element_table(labels, len(labels))
-    with h5py.File(path, "w") as f:
-        f.attrs["num_elements"] = len(labels)
-        im = f.create_group("index_map")
-        _write_labels(im, table, pol)
-        im.create_dataset("freq", data=np.asarray(freq, dtype="f4"))
-        f.create_dataset("auto", data=np.asarray(auto, dtype="f4"))
-        if weight is not None:
-            f.create_dataset("weight", data=np.asarray(weight, dtype="f4"))
-
-
-def write_visibility(path, labels, freq, power):
-    """Time-first visibility file (vis[time, freq, prod]) over one
-    polarization — the same label convention as :func:`write_normalized`.
-    power: (ntime, nfreq, nfeed) diagonal values.
-    """
-    nfeed = len(labels)
-    pairs = [(i, j) for i in range(nfeed) for j in range(i, nfeed)]
-    ntime, nfreq, _ = power.shape
-    vis = np.zeros((ntime, nfreq, len(pairs)), dtype="c8")
-    for k, (i, j) in enumerate(pairs):
-        if i == j:
-            vis[:, :, k] = power[:, :, i]
-    table, pol = element_table(labels, nfeed)
-    with h5py.File(path, "w") as f:
-        f.attrs["num_elements"] = nfeed
-        im = f.create_group("index_map")
-        _write_labels(im, table, pol)
-        im.create_dataset("freq", data=np.asarray(freq, dtype="f4"))
-        prod = np.zeros(len(pairs), dtype=[("input_a", "i4"), ("input_b", "i4")])
-        prod["input_a"] = [p[0] for p in pairs]
-        prod["input_b"] = [p[1] for p in pairs]
-        im.create_dataset("prod", data=prod)
-        f.create_dataset("vis", data=vis)
+    write_chord_n2(path, labels, freq, auto, num_elements=len(labels), weight=weight)
 
 
 def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=None,
-                   products=None, element_labels=None):
+                   products=None, element_labels=None, weight=None):
     """CHORD hdf5N2Write layout: ``vis[freq, prod, time]``, per-element
     ``index_map/label`` + ``index_map/pol``, compound freq (centre, width),
     ``vis_weight`` at the root, ``frames_added``, and the ``num_elements``
@@ -88,7 +57,8 @@ def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=No
     input_b)`` pairs) overrides the dense upper triangle — the subset
     product list a ``DishInputs``-layout file has.  ``element_labels``
     writes a label table verbatim, with no ``pol`` index, for the tests
-    that check other layouts are refused.
+    that check other layouts are refused.  ``weight`` (shaped like
+    *power*) sets the autocorrelations' ``vis_weight``; the rest are 1.
     """
     nfeed = len(labels)
     num_elements = num_elements or 2 * nfeed
@@ -96,9 +66,12 @@ def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=No
     pairs = (list(products) if products is not None else
              [(i, j) for i in range(num_elements) for j in range(i, num_elements)])
     vis = np.zeros((nfreq, len(pairs), ntime), dtype="c8")
+    vis_weight = np.ones(vis.shape, dtype="f4")
     for k, (i, j) in enumerate(pairs):
         if i == j and i < ndata:
             vis[:, k, :] = power[:, :, i].T
+            if weight is not None:
+                vis_weight[:, k, :] = np.asarray(weight)[:, :, i].T
     if element_labels is None:
         table, pol = element_table(labels, num_elements)
     else:
@@ -115,10 +88,9 @@ def write_chord_n2(path, labels, freq, power, num_elements=None, frames_added=No
         prod["input_b"] = [p[1] for p in pairs]
         im.create_dataset("prod", data=prod)
         f.create_dataset("vis", data=vis)
-        f.create_dataset("vis_weight", data=np.ones(vis.shape, dtype="f4"))
-        # Real CHORD files carry a root-level `flags` DATASET (freq, input,
-        # time) — unlike CHIME, where /flags is a group.  Present here so
-        # the reader's group-vs-dataset detection is exercised.
+        f.create_dataset("vis_weight", data=vis_weight)
+        # kotekan's own per-input flag state, (freq, input, time): present
+        # as in real files, and never read by bffs.
         f.create_dataset("flags", data=np.ones((nfreq, num_elements, ntime), dtype="f4"))
         f.create_dataset("frames_added", data=(np.ones((nfreq, ntime), dtype="u1")
                                                if frames_added is None else frames_added))

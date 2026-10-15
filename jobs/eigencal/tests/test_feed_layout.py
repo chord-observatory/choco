@@ -15,7 +15,7 @@ POS = np.array([[0.0, 0.0, 0.0], [6.3, 0.0, 0.0], [12.6, 17.0, 0.0], [44.1, 59.5
 def _meta(**over):
     fields = dict(path="x.h5", labels=LABELS, freq_mhz=np.array([400.0]),
                   freq_width_mhz=np.array([1.0]), time=np.array([0.0]),
-                  prod_a=np.array([0]), prod_b=np.array([0]), time_first=False,
+                  prod_a=np.array([0]), prod_b=np.array([0]),
                   pol=POL, dish_type=TYPE, position_m=POS, grid_orientation=None)
     fields.update(over)
     return n2_io.N2Meta(**fields)

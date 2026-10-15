@@ -60,6 +60,7 @@ choco/
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
 ├── dishlabels.py   # dish_inputs table + per-element label layout (stdlib; shared with the jobs)
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
+├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
 ├── auth.py         # Flask-Login + direct LDAP bind, localhost bypass decorator
 ├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
@@ -209,7 +210,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   are sized to it.  Titles are "Page — CHOCO"; deep pages carry a crumb.
 
 **Process hygiene**
-- The web process never imports numpy, h5py, astropy or matplotlib.  HDF5 is
+- The web process never imports numpy, h5py, astropy or matplotlib (nor
+  `choco.n2file` / `choco.healpix`; `tests/test_n2file.py` checks).  HDF5 is
   read by `choco.h5read` as a subprocess; the scientific stack lives in the
   `[jobs]` extra.
 - Blocking filesystem work on NFS (`datafiles.py`, `waterfalls.py`) runs in
@@ -279,7 +281,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   own axis, compact `DishInputs` frames included, plus `index_map/pol`.  Two
   spellings are on disk — `B4p1`/`B4p2` (+988 to PR #1695) and `A01X`/`A01Y`
   (PR #1695, 2026-09-22; in the data from 2026-10-01) — and both are read.
-  Every reader goes through `dishlabels.file_element_labels` (`p1`→X,
+  Every reader goes through `n2file.element_labels`, which applies
+  `dishlabels.file_element_labels` (`p1`→X,
   `p2`→Y, count and `pol` cross-checked; the X/Y spelling only when
   `index_map/pol` is present, since by text alone it is the pre-2026-08
   layout) and refuses any other file layout: no expansion of per-dish

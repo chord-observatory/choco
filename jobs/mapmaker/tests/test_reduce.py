@@ -25,7 +25,6 @@ def test_names_carry_index_and_time():
 def test_read_axes(vis_file):
     ax = R.read_axes(vis_file)
     assert ax.file_idx == 42 and ax.n_time == 20 and ax.n_freq == 128
-    assert ax.labels[:2] == ["A01X", "A02X"] and ax.labels[5] == "A01Y"
     assert ax.lat_deg == pytest.approx(49.3208, abs=1e-3)
     assert np.all(np.diff(ax.t_unix) > 9.9) and np.all(np.diff(ax.era_deg) > 0)
     assert ax.feed_pos.shape == (10, 3)

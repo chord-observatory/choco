@@ -13,57 +13,21 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-try:
-    # Registers HDF5 compression plugins with libhdf5 on import — kotekan
-    # writes vis/vis_weight bitshuffle-compressed (filter 32008).
-    import hdf5plugin  # noqa: F401
-except ImportError:  # uncompressed files remain readable without it
-    pass
-
-
-def input_labels(f: h5py.File) -> np.ndarray:
-    """The file's ``index_map/label`` entries as str, in element order.
-
-    kotekan writes them as variable-length UTF-8, which h5py yields as
-    bytes.  Raises ``KeyError`` when the file has no label table.
-    """
-    arr = f["index_map"]["label"][()]
-    return np.array([s.decode("utf-8", "replace") if isinstance(s, bytes) else str(s)
-                     for s in arr])
-
-
-# -- element axis: the label layout lives in choco.dishlabels (shared with
-# eigencal, waterfall and choco's PDB cross-check).
-from choco.dishlabels import file_element_labels  # noqa: E402
+from choco import n2file
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
-    """The element-axis labels of *f* in choco's names (``B4X``).
-
-    Only the per-element layout kotekan writes since chord.2021.10+988
-    (acquisitions from 2026-09-11 on) is accepted: ``index_map/label``
-    names every element of the file's own axis as dish label +
-    ``p1``/``p2`` (or + ``X``/``Y`` since kotekan PR #1695), cross-checked
-    against ``index_map/pol`` and the ``num_elements`` attribute
-    (:func:`choco.dishlabels.file_element_labels`).
-    Anything else — a CHIME-style ``index_map/input`` map, a per-dish
-    table, pre-2026-08 ``A1X`` labels — is refused with ``OSError`` so
-    the job reports degraded (exit 2) rather than flag against a guessed
-    axis, and heals once files from the current writer land.
+    """The element-axis labels of *f* in choco's names (``B4X``), read by
+    :func:`choco.n2file.element_labels`.  Any other layout raises
+    ``OSError``, so the job reports degraded (exit 2) rather than flag
+    against a guessed axis, and heals once files from the current writer
+    land.
     """
-    im = f["index_map"]
-    if "input" in im or "label" not in im:
-        raise OSError(
-            "N2 file has no per-element label table (index_map/label): a "
-            "CHIME-style or pre-2026-08 file — refusing to guess its element axis")
-    num_elements = int(f.attrs.get("num_elements", 0) or 0) or None
-    pol = im["pol"][()] if "pol" in im else None
     try:
-        return np.array(file_element_labels(input_labels(f), num_elements, pol))
+        return np.array(n2file.element_labels(f))
     except ValueError as e:
-        raise OSError(
-            "N2 file is not in kotekan's per-element label layout "
-            f"(chord.2021.10+988, 2026-09-11 on): {e}") from e
+        raise OSError(f"N2 file is not in kotekan's per-element label layout "
+                      f"(chord.2021.10+988, 2026-09-11 on): {e}") from e
 
 
 def read_labels(path: str | Path) -> np.ndarray:
@@ -106,8 +70,8 @@ class Frame:
     # sources project their verdicts onto it by label, never by position.
     labels: np.ndarray | None = None
     # (nfeed,) bool: which feeds the file's product list carries an
-    # autocorrelation for.  None means all of them (the `auto` layout,
-    # and dense-triangle files).  A subset layout (kotekan's DishInputs)
+    # autocorrelation for.  None means all of them (test frames).  A
+    # subset layout (kotekan's DishInputs)
     # only correlates the wired elements — the rest have no data *by
     # construction*, which is different from a wired feed gone silent,
     # and sources must not read the gap as "dead".
@@ -130,67 +94,41 @@ class Frame:
 def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
     """Read the most recent ``chunk`` time rows of kotekan N² output as a Frame.
 
-    Accepts an ``auto[time, freq, feed]`` dataset (per-feed power, ready to
-    use) or kotekan's visibility products, whose autocorrelation diagonal is
-    extracted — laid out either ``vis[time, freq, prod]`` (CHIME-style) or
-    ``vis[freq, prod, time]`` (CHORD hdf5N2Write; told apart by matching the
-    axes against the index map). The feed axis is the element axis
-    (:func:`element_labels`, one label per element); products beyond it
-    are dropped.
+    The autocorrelation diagonal (``input_a == input_b``) is extracted from
+    ``vis[freq, prod, time]``, weighted by the root-level ``vis_weight``.
+    The feed axis is the element axis (:func:`element_labels`, one label
+    per element); products beyond it are dropped.  The root-level
+    ``flags`` dataset is kotekan's own per-input flag state, downstream of
+    this job's flagging, and deliberately unused (see the README appendix
+    on the latch problem).
 
-    In the CHORD layout the window ends at the newest row with any
-    frame (``frames_added[freq, time] > 0``), not at the file's last
-    row: a stopped acquisition leaves a tail of empty rows, and judging
-    feeds on those would read every feed as dead.  ``Frame.tail_skipped``
-    says how many were passed over.  Returns ``None`` if the file is
-    missing, has no time rows, or (CHORD) no row holds a frame.
+    The window ends at the newest row with any frame
+    (``frames_added[freq, time] > 0``), not at the file's last row: a
+    stopped acquisition leaves a tail of empty rows, and judging feeds on
+    those would read every feed as dead.  ``Frame.tail_skipped`` says how
+    many were passed over.  Returns ``None`` if the file is missing, has
+    no time rows, or no row holds a frame.
     """
     if not Path(path).exists():
         return None
     with h5py.File(path, "r") as f:
         labels = element_labels(f)
-        freq = f["index_map"]["freq"][()]
-        if freq.dtype.names:  # kotekan freq_ctype: (centre MHz, width MHz)
-            freq = freq["centre"]
-        freq = np.asarray(freq, dtype=np.float32).reshape(-1)
+        freq = n2file.freq_axis(f)[0].astype(np.float32)
+        a, b = n2file.prod_axis(f)
         nfeed, nfreq = labels.shape[0], freq.shape[0]
-
-        if "auto" in f:  # the `auto` layout: per-feed power, ready to use
-            ntime = f["auto"].shape[0]
-            if ntime == 0:
-                return None
-            lo = max(0, ntime - int(chunk))
-            nrows = ntime - lo
-            auto = np.asarray(f["auto"][lo:ntime], dtype=np.float32)
-            weight = (np.asarray(f["weight"][lo:ntime], dtype=np.float32)
-                      if "weight" in f else np.ones_like(auto))
-            valid = (np.asarray(f["valid"][lo:ntime], dtype=bool)
-                     if "valid" in f else np.ones((nrows, nfreq), dtype=bool))
-            return Frame(auto=auto, weight=weight, valid=valid, freq=freq,
-                         labels=labels, file_ntime=ntime)
-
-        # visibility products: the autocorrelation diagonal (input_a == input_b)
-        # of the labelled feeds
-        prod = f["index_map"]["prod"][()]
-        if prod.dtype.names:
-            a, b = np.asarray(prod[prod.dtype.names[0]]), np.asarray(prod[prod.dtype.names[1]])
-        else:
-            prod = np.asarray(prod)
-            a, b = prod[:, 0], prod[:, 1]
         diag = np.nonzero((a == b) & (a < nfeed))[0]
         feed_idx = a[diag]
 
         vis = f["vis"]
-        time_first = vis.shape[1:] == (nfreq, len(a))  # vis[time, freq, prod]
-        ntime = vis.shape[0] if time_first else vis.shape[2]
+        ntime = vis.shape[2]
         if ntime == 0:
             return None
-        # frames_added[freq, time] (CHORD) tracks which (f, t) cells have
-        # data.  It is small (nfreq x ntime counters), so read it whole
-        # and end the window at the newest row that holds any frame.
+        # frames_added[freq, time] tracks which (f, t) cells have data.
+        # It is small (nfreq x ntime counters), so read it whole and end
+        # the window at the newest row that holds any frame.
         frames_added = None
         hi = ntime
-        if not time_first and "frames_added" in f:
+        if "frames_added" in f:
             frames_added = np.asarray(f["frames_added"][()])
             filled = np.flatnonzero(frames_added.sum(axis=0) > 0)
             if filled.size == 0:
@@ -200,29 +138,12 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         lo = max(0, hi - int(chunk))
         nrows = hi - lo
 
-        # CHIME keeps weights in a /flags GROUP; CHORD files instead have a
-        # root-level `flags` DATASET (kotekan's own per-input flag state —
-        # downstream of our flagging, so deliberately unused; see the README
-        # appendix on the latch problem) plus `vis_weight` at the root.  The
-        # isinstance check matters: `"x" in <Dataset>` iterates the data.
-        weight_ds = None
-        flags = f.get("flags")
-        if isinstance(flags, h5py.Group) and "vis_weight" in flags:  # CHIME
-            weight_ds = flags["vis_weight"]
-        elif "vis_weight" in f:  # CHORD: at the root
-            weight_ds = f["vis_weight"]
-
-        if time_first:
-            power = np.real(np.asarray(vis[lo:hi])[..., diag]).astype(np.float32)
-            wdiag = (np.asarray(weight_ds[lo:hi], dtype=np.float32)[..., diag]
-                     if weight_ds is not None else None)
-            valid = np.ones((nrows, nfreq), dtype=bool)
-        else:  # vis[freq, prod, time] -> (time, freq, prod)
-            power = np.real(vis[:, diag, lo:hi]).astype(np.float32).transpose(2, 0, 1)
-            wdiag = (np.asarray(weight_ds[:, diag, lo:hi], dtype=np.float32).transpose(2, 0, 1)
-                     if weight_ds is not None else None)
-            valid = (frames_added[:, lo:hi].T > 0 if frames_added is not None
-                     else np.ones((nrows, nfreq), dtype=bool))
+        # vis[freq, prod, time] -> (time, freq, prod)
+        power = np.real(vis[:, diag, lo:hi]).astype(np.float32).transpose(2, 0, 1)
+        wdiag = (np.asarray(f["vis_weight"][:, diag, lo:hi], dtype=np.float32).transpose(2, 0, 1)
+                 if "vis_weight" in f else None)
+        valid = (frames_added[:, lo:hi].T > 0 if frames_added is not None
+                 else np.ones((nrows, nfreq), dtype=bool))
 
         auto = np.zeros((nrows, nfreq, nfeed), dtype=np.float32)
         auto[..., feed_idx] = power

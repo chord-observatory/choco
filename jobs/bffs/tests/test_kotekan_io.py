@@ -5,15 +5,7 @@ import numpy as np
 import pytest
 
 import kotekan_io
-from testhelpers import write_chord_n2, write_normalized, write_visibility
-
-
-def test_input_labels_reads_the_per_element_table(tmp_path):
-    path = tmp_path / "n2.h5"
-    write_normalized(path, ["f0", "f1", "f2"], [400.0], np.ones((1, 1, 3), "f4"))
-    with h5py.File(path, "r") as f:
-        labels = kotekan_io.input_labels(f)
-    assert list(labels) == ["f0p1", "f1p1", "f2p1"]
+from testhelpers import write_chord_n2, write_normalized
 
 
 def test_read_labels_spells_p_suffixes_as_xy(tmp_path):
@@ -30,15 +22,6 @@ def test_read_autocorr_normalized(tmp_path):
     frame = kotekan_io.read_autocorr(path)
     assert (frame.nfeed, frame.ntime) == (3, 2)
     assert frame.auto[0, 0, 1] == 99.0
-
-
-def test_read_autocorr_visibility_diagonal(tmp_path):
-    path = tmp_path / "vis.h5"
-    power = np.ones((1, 2, 4), "f4") * 5.0
-    power[..., 3] = 50.0
-    write_visibility(path, ["a", "b", "c", "d"], np.linspace(400, 800, 2), power)
-    frame = kotekan_io.read_autocorr(path)
-    np.testing.assert_allclose(frame.auto[0, 0], [5, 5, 5, 50])
 
 
 def test_read_autocorr_carries_the_file_axis(tmp_path):
@@ -105,7 +88,7 @@ def test_read_labels_per_element_pd_order(tmp_path):
     write_chord_n2(path, ["A1", "B1"], [400.0], np.ones((1, 1, 4), "f4"),
                    num_elements=4)
     with h5py.File(path, "r") as f:
-        assert list(kotekan_io.input_labels(f)) == ["A1p1", "B1p1", "A1p2", "B1p2"]
+        assert [x.decode() for x in f["index_map/label"][()]] == ["A1p1", "B1p1", "A1p2", "B1p2"]
     assert list(kotekan_io.read_labels(path)) == ["A1X", "B1X", "A1Y", "B1Y"]
 
 

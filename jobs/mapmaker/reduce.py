@@ -17,7 +17,6 @@ MHz, so averaging first would cancel the signal.
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,11 +25,7 @@ import h5py
 import hdf5plugin  # noqa: F401  -- registers the bitshuffle filter
 import numpy as np
 
-from choco.dishlabels import file_element_labels
-
 from imaging import ERA_DEG_PER_DAY, CalAccumulator, apply_gains, beam_fwhm_deg, beam_sq
-
-log = logging.getLogger("mapmaker.reduce")
 
 #: kotekan names a completed file ``vis_<abs_file_idx>_<YYYYMMDD>T_<HHMMSS>_<ns>.h5``.
 NAME_RE = re.compile(r"^vis_0*(\d+)_(\d{8})T_(\d{6})_(\d+)\.h5$")
@@ -66,7 +61,6 @@ class FileAxes:
     n_prod: int
     n_time: int
     n_elements: int
-    labels: list
     types: np.ndarray        # (n_el,)
     pols: np.ndarray         # (n_el,)
     input_a: np.ndarray      # (n_prod,)
@@ -105,14 +99,6 @@ def read_axes(path: str) -> FileAxes:
         types = im["type"][:].astype(int)
         pols = im["pol"][:].astype(int)
         n_el = int(attrs.get("num_elements", len(types)))
-        raw = []
-        if "label" in im:
-            raw = [b.decode() if isinstance(b, bytes) else str(b) for b in im["label"][:]]
-        try:
-            labels = file_element_labels(raw, n_el, pols) if raw else []
-        except ValueError as exc:
-            log.warning("%s: %s; using element indices", base, exc)
-            labels = []
         era = f["bin_ERA_deg"][:].astype(float)
         t0 = time_from_name(base)
         if t0 is None or not np.all(np.isfinite(era)):
@@ -122,7 +108,7 @@ def read_axes(path: str) -> FileAxes:
         return FileAxes(
             path=path, file_idx=idx,
             n_freq=vis.shape[0], n_prod=vis.shape[1], n_time=vis.shape[2],
-            n_elements=n_el, labels=labels, types=types, pols=pols,
+            n_elements=n_el, types=types, pols=pols,
             input_a=prod["input_a"].astype(int), input_b=prod["input_b"].astype(int),
             freq_mhz=im["freq"]["centre"][:].astype(float),
             feed_pos=np.asarray(attrs["feed_positions_m"], dtype=float),

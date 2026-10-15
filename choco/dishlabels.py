@@ -147,9 +147,11 @@ def file_element_labels(labels, num_elements: int | None = None,
     suffix with no *pol* at all: by text alone that is the pre-2026-08
     per-element layout, whose element order was wrong, and only
     ``index_map/pol`` (written since +988) tells the two apart.  Nothing
-    is guessed: a wrong name on an element is worse than none.
+    is guessed: a wrong name on an element is worse than none.  Entries
+    may be bytes, as h5py yields kotekan's variable-length strings.
     """
-    labels = [str(label) for label in labels]
+    labels = [label.decode("utf-8", "replace") if isinstance(label, bytes) else str(label)
+              for label in labels]
     if num_elements is not None and len(labels) != int(num_elements):
         raise ValueError(
             f"index_map/label has {len(labels)} entries for {int(num_elements)} "

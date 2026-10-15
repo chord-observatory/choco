@@ -156,3 +156,8 @@ class TestConnectedElements:
         assert out == list(range(16)) + list(range(56, 64)) \
             + list(range(64, 80)) + list(range(120, 128))
 
+
+
+def test_file_labels_may_be_bytes():
+    """h5py yields kotekan's variable-length strings as bytes."""
+    assert dl.file_element_labels([b"B4p1", b"B4p2"], 2, [0, 1]) == ["B4X", "B4Y"]

@@ -38,28 +38,29 @@ import wfpng
 
 log = logging.getLogger("waterfall.reduce")
 
-from choco.dishlabels import file_element_labels  # noqa: E402
+from choco import n2file  # noqa: E402
 
 
-def _element_labels(labels: list, n_elements: int, pol=None) -> list:
+def _element_labels(f) -> list:
     """One label per element of *this file's* axis; doubtful layouts get none.
 
     kotekan (chord.2021.10+988, acquisitions from 2026-09-11 on) writes
     ``index_map/label`` per element — a full frame's 128 or a compact
     ``DishInputs`` frame's 48, spelled dish label + ``p1``/``p2`` up to
     PR #1695 and dish label + ``X``/``Y`` from then on (2026-10-01 in the
-    data) — and ``file_element_labels`` turns either into choco's
+    data) — and ``n2file.element_labels`` turns either into choco's
     ``B4X``/``B4Y`` after checking the count against ``num_elements`` and
     the suffix against ``index_map/pol``.  Any other layout (a per-dish
     table, a table wider than the axis, pre-2026-08 ``A1X`` labels with
     no ``pol`` to vouch for them) is stored as *no* labels rather than
     expanded or guessed: the viewer already falls back to element
-    indices, and a wrong name on an axis is worse than none.
+    indices, and a wrong name on an axis is worse than none.  A file
+    with no label table at all (older acquisitions) says nothing.
     """
-    if not labels:
+    if "index_map/label" not in f:
         return []
     try:
-        return file_element_labels(labels, n_elements or None, pol)
+        return n2file.element_labels(f)
     except ValueError as exc:
         log.warning("%s; storing element indices instead of labels", exc)
         return []
@@ -109,11 +110,6 @@ def read_axes(path) -> Axes:
         prod = f["index_map/prod"][:]
         vis = f["vis"]
         attrs = f.attrs
-        labels = []
-        if "index_map/label" in f:
-            labels = [b.decode() if isinstance(b, bytes) else str(b)
-                      for b in f["index_map/label"][:]]
-        pol = f["index_map/pol"][:] if "index_map/pol" in f else None
         times = f["time_center_ut1_ns"][:] if "time_center_ut1_ns" in f else None
         n_elements = int(attrs.get("num_elements", 0))
         return Axes(
@@ -125,7 +121,7 @@ def read_axes(path) -> Axes:
             input_a=prod["input_a"].astype(int),
             input_b=prod["input_b"].astype(int),
             freq_mhz=f["index_map/freq"]["centre"][:].astype(float),
-            labels=_element_labels(labels, n_elements, pol),
+            labels=_element_labels(f),
             times_ns=times,
         )
 
