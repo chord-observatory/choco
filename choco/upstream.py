@@ -42,7 +42,7 @@ from urllib.parse import quote
 import requests
 
 from .state import (
-    _CONFIG_SUFFIXES, _PATH_PART_RE, list_config_files, resolve_config_path,
+    CONFIG_SUFFIXES, PATH_PART_RE, list_config_files, resolve_config_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ def _plain_dir(value, key: str) -> str:
     nothing hidden, no ``..``), as *key* of the upstream block."""
     text = str(value or "").strip("/")
     parts = text.split("/") if text else []
-    if not parts or any(not _PATH_PART_RE.fullmatch(p) for p in parts):
+    if not parts or any(not PATH_PART_RE.fullmatch(p) for p in parts):
         raise ValueError(
             f"{key} must be a relative directory of plain names, not {value!r}")
     return "/".join(parts)
@@ -117,10 +117,6 @@ class Plan:
         """The files whose text is needed: new and changed."""
         return self.add + self.change
 
-    @property
-    def in_sync(self) -> bool:
-        return not (self.add or self.change or self.remove)
-
 
 @dataclass(frozen=True)
 class Upstream:
@@ -132,8 +128,6 @@ class Upstream:
     path: str
     into: str
     timeout: float = 20.0
-    api_url: str = API_URL
-    raw_url: str = RAW_URL
 
     @classmethod
     def from_config(cls, cfg) -> Upstream | None:
@@ -206,7 +200,7 @@ class Upstream:
     def resolve_commit(self) -> str:
         """The commit *ref* names right now (a branch tip, a tag, or the
         sha itself), so the listing and every fetch read one tree."""
-        url = (f"{self.api_url}/repos/{self.repo}/commits/"
+        url = (f"{API_URL}/repos/{self.repo}/commits/"
                f"{quote(self.ref, safe='')}")
         data = self._api(url)
         sha = data.get("sha") if isinstance(data, dict) else None
@@ -216,7 +210,7 @@ class Upstream:
 
     def listing(self, commit: str) -> list[dict]:
         """The entries of *path* at *commit*: name, type, sha, size."""
-        url = (f"{self.api_url}/repos/{self.repo}/contents/"
+        url = (f"{API_URL}/repos/{self.repo}/contents/"
                f"{quote(self.path, safe='/')}?ref={commit}")
         data = self._api(url)
         if isinstance(data, dict):
@@ -229,7 +223,7 @@ class Upstream:
         """The text of *name* at *commit*, fetched by the name (already
         validated by :meth:`plan`) and checked against the listing's
         blob *sha*; refused if it does not match or is not UTF-8."""
-        url = (f"{self.raw_url}/{self.repo}/{commit}/"
+        url = (f"{RAW_URL}/{self.repo}/{commit}/"
                f"{quote(self.path, safe='/')}/{quote(name, safe='')}")
         data = self._get(url, accept="text/plain").content
         if len(data) > MAX_FILE_BYTES:
@@ -270,7 +264,7 @@ class Upstream:
                 continue
             rel = f"{self.into}/{name}"
             seen.add(rel)
-            if not name.endswith(_CONFIG_SUFFIXES):
+            if not name.endswith(CONFIG_SUFFIXES):
                 skipped.append((name, "not a config file"))
                 continue
             try:

@@ -20,7 +20,9 @@ from .jobclient import write_json_atomic, write_text_atomic
 logger = logging.getLogger(__name__)
 
 # Config file extensions (order matters: later wins if both exist for same key)
-_CONFIG_SUFFIXES = (".yaml", ".yml", ".j2")
+CONFIG_SUFFIXES = (".yaml", ".yml", ".j2")
+#: Where the updatable overrides live: ``<configs_dir>/.updatable/<group>/<node>.json``.
+UPDATABLE_DIR = ".updatable"
 
 _UPDATABLE_MARKER = "kotekan_update_endpoint"
 
@@ -42,7 +44,7 @@ def _yaml_load(stream):
 # One component of a config path: a plain file or directory name.  No
 # leading dot, so neither ``..`` nor anything hidden (the ``.updatable/``
 # store) can be named.
-_PATH_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
+PATH_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
 
 
 def resolve_config_path(configs_dir: Path, rel: str) -> Path:
@@ -65,12 +67,12 @@ def resolve_config_path(configs_dir: Path, rel: str) -> Path:
         raise ValueError(
             f"config path {rel!r} must be relative to the configs directory")
     parts = rel.split("/")
-    if any(not _PATH_PART_RE.fullmatch(part) for part in parts):
+    if any(not PATH_PART_RE.fullmatch(part) for part in parts):
         raise ValueError(
             f"config path {rel!r} has an empty, hidden or '..' component")
-    if not rel.endswith(_CONFIG_SUFFIXES):
+    if not rel.endswith(CONFIG_SUFFIXES):
         raise ValueError(
-            f"config path {rel!r} must end in {' / '.join(_CONFIG_SUFFIXES)}")
+            f"config path {rel!r} must end in {' / '.join(CONFIG_SUFFIXES)}")
     if parts == ["nodes.yaml"]:
         raise ValueError("nodes.yaml is the node registry, not a config")
     root = Path(configs_dir).resolve()
@@ -93,7 +95,7 @@ def list_config_files(configs_dir: Path) -> list[str]:
         return []
     out = []
     for path in root.rglob("*"):
-        if path.suffix not in _CONFIG_SUFFIXES or not path.is_file():
+        if path.suffix not in CONFIG_SUFFIXES or not path.is_file():
             continue
         rel = path.relative_to(root)
         if any(part.startswith(".") for part in rel.parts):
@@ -179,7 +181,7 @@ class NodeStatus(Enum):
     UNKNOWN = "unknown"
     DOWN = "down"       # Unreachable
     IDLE = "idle"       # Reachable but kotekan not running (ready for /start)
-    STARTED = "started" # Running with correct config
+    STARTED = "started" # kotekan running (whatever config; drift is checked separately)
     SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
 
@@ -229,8 +231,8 @@ class Node:
         self.port = port
         self.timeout = timeout
         self.started = started
-        # Maintenance mode: when True, push_updatable() and start() are
-        # no-ops.  Ephemeral, never persisted to nodes.yaml.  The
+        # Maintenance mode: when True, push_updatable(), start() and kill()
+        # are no-ops.  Ephemeral, never persisted to nodes.yaml.  The
         # ``Registry`` always constructs nodes with ``maintenance=True``
         # for production so a freshly-started choco never pushes before
         # the operator has reviewed the cluster state; the default here
@@ -265,7 +267,6 @@ class Node:
         self.status: NodeStatus = NodeStatus.UNKNOWN
         self.last_seen: float | None = None
         self.error: str | None = None
-        self.version: str | None = None
         self.version_info: dict | None = None
 
         # Per-file config-load errors; combined into `load_error` for
@@ -280,6 +281,18 @@ class Node:
     @property
     def key(self) -> str:
         return f"{self.group}/{self.name}"
+
+    @property
+    def version(self) -> str | None:
+        """kotekan's version string, from the last ``/version`` probe."""
+        return (self.version_info or {}).get("kotekan_version")
+
+    @property
+    def updatable_path(self) -> Path | None:
+        """This node's updatable store on disk, or None without a configs dir."""
+        if self.configs_dir is None:
+            return None
+        return self.configs_dir / UPDATABLE_DIR / self.group / f"{self.name}.json"
 
     @property
     def last_seen_ago(self) -> str | None:
@@ -455,7 +468,7 @@ class Node:
             candidates = [self.configs_dir / self._config_file]
         else:
             candidates = [self.configs_dir / self.group / f"{self.name}{s}"
-                          for s in _CONFIG_SUFFIXES]
+                          for s in CONFIG_SUFFIXES]
         for path in candidates:
             if path.exists():
                 if self._config_file is None:
@@ -486,11 +499,8 @@ class Node:
         service can keep running.
         """
         self._updatable_load_error = None
-        if self.configs_dir is None:
-            self.updatable_config = None
-            return
-        path = self.configs_dir / ".updatable" / self.group / f"{self.name}.json"
-        if not path.exists():
+        path = self.updatable_path
+        if path is None or not path.exists():
             self.updatable_config = None
             return
         try:
@@ -533,8 +543,7 @@ class Node:
         through it is a deliberate overwrite.  We log a WARNING with
         the path on this branch so the journal records what was lost.
         """
-        path = (self.configs_dir / ".updatable" / self.group
-                / f"{self.name}.json") if self.configs_dir else None
+        path = self.updatable_path
         if self._updatable_load_error and path is not None:
             logger.warning(
                 f"Overwriting previously-unreadable updatable file {path} "
@@ -666,11 +675,6 @@ class Node:
             return False
         return self._request("GET", "/kill") is not None
 
-    def get_version(self) -> str | None:
-        """Get the kotekan version string."""
-        info = self.get_version_info()
-        return info.get("kotekan_version") if info else None
-
     def get_version_info(self) -> dict | None:
         """Get the full kotekan version info dict.
 
@@ -793,7 +797,7 @@ class Registry:
         self.nodes: dict[str, Node] = {}
         self.reload()
 
-    def _load_vars(self) -> dict:
+    def load_vars(self) -> dict:
         vars_file = self.configs_dir / "vars.yaml"
         if not vars_file.exists():
             return {}
@@ -836,7 +840,7 @@ class Registry:
             logger.error(f"{nodes_file}: 'groups' is not a mapping; registry empty")
             self.nodes.clear()
             return
-        template_vars = self._load_vars()
+        template_vars = self.load_vars()
 
         # A hand edit can leave any level the wrong shape; such an entry
         # is skipped and logged, never allowed to abort the rebuild (the

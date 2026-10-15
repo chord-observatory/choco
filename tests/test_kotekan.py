@@ -85,11 +85,6 @@ class TestLifecycle:
         assert json.loads(responses.calls[0].request.body) == {"config": "data"}
 
     @responses.activate
-    def test_version(self, node):
-        responses.get(f"{BASE}/version", json={"kotekan_version": "2024.11"})
-        assert node.get_version() == "2024.11"
-
-    @responses.activate
     def test_version_info_full(self, node):
         payload = {
             "kotekan_version": "2024.11",
@@ -100,13 +95,11 @@ class TestLifecycle:
         }
         responses.get(f"{BASE}/version", json=payload)
         assert node.get_version_info() == payload
-        assert node.get_version() == "2024.11"
 
     @responses.activate
     def test_version_info_unreachable(self, node):
         responses.get(f"{BASE}/version", body=ConnectionError())
         assert node.get_version_info() is None
-        assert node.get_version() is None
 
     @responses.activate
     def test_version_info_missing_fields(self, node):

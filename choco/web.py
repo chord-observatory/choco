@@ -546,7 +546,7 @@ def node_plot_page(node_key):
         flash("Invalid buffer name", "error")
         return redirect(url_for("web.node_pipeline_page", node_key=node_key))
     return render_template(
-        "plot.html", node=node, node_key=node_key, title=buffer_name,
+        "plot.html", node_key=node_key, title=buffer_name,
         subtitle=node.key,
         source_url="/api/node-buffer-data/" + node_key
                    + "?buffer=" + quote(buffer_name, safe=""),
@@ -2937,7 +2937,7 @@ def bffs_manual_toggle():
         return _bffs_manual_result(False, f"could not write {manual_file}: {e}")
     logger.warning(
         f"bffs manual flag: {label} -> {'bad' if flagged else 'good'} "
-        f"requested by {getattr(current_user, 'username', '?')} ({manual_file})")
+        f"requested by {_audit_user()} ({manual_file})")
     return _bffs_manual_result(
         True, f"{label} {'flagged' if flagged else 'unflagged'} manually; "
               f"the job applies it on its next run")
@@ -2960,7 +2960,7 @@ def fpga_control(action):
     fpga_cfg = current_app.config.get("fpga_cfg") or {}
     if monitor is None or not fpga_cfg.get("control", True):
         abort(403)
-    user = getattr(current_user, "username", "?")
+    user = _audit_user()
     logger.warning(f"fpga_master {action} requested by {user}")
     if action == "start":
         ok, message = monitor.start_master()
@@ -3027,7 +3027,7 @@ def pdb_control():
     logger.warning(
         f"pdb: bus {bus} board {board} chip {chip} ch{channel} -> "
         f"{'on' if on else 'off'} requested by "
-        f"{getattr(current_user, 'username', '?')}")
+        f"{_audit_user()}")
     ok, message = monitor.set_channel(bus, board, chip, channel, on)
     return _pdb_result(ok, message)
 
@@ -3060,7 +3060,7 @@ def pdb_control_group():
              + (f" chip {chip}" if chip else ""))
     logger.warning(
         f"pdb: {scope} -> all {'on' if on else 'off'} requested by "
-        f"{getattr(current_user, 'username', '?')}")
+        f"{_audit_user()}")
     ok, message = monitor.set_group(bus, on, board=board, chip=chip)
     return _pdb_result(ok, message)
 
@@ -3096,7 +3096,7 @@ def pdb_control_row():
     logger.warning(
         f"pdb: {scope} -> all {'on' if on else 'off'} "
         f"({len(entries)} channels) requested by "
-        f"{getattr(current_user, 'username', '?')}")
+        f"{_audit_user()}")
     ok, message = monitor.set_channels([e.address for e in entries], on, scope)
     return _pdb_result(ok, message)
 

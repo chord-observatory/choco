@@ -138,8 +138,6 @@
                 {{ d.bad_inputs | length }} feed{{ 's' if d.bad_inputs | length != 1 }} flagged
                 {% elif name == 'eigencal' and d %}
                 last transit {{ d.transit_time or '?' }}{% if d.source %} ({{ d.source }}){% endif %}{% if d.sent is not none %}, {{ 'sent' if d.sent else 'not sent' }}{% endif %}
-                {% elif name == 'waterfall' and d %}
-                last run: {{ d.files_rendered or 0 }} file{{ 's' if d.files_rendered != 1 }} rendered{% if d.backlog %}, backlog {{ d.backlog }}{% endif %}
                 {% endif %}
                 {% if job.result and job.result != 'success' %}
                 <br><small class="err">result: {{ job.result }}{% if job.exit_status %} (exit {{ job.exit_status }}){% endif %}</small>

@@ -103,14 +103,13 @@ class TestPlan:
         assert plan.skipped == []
         assert plan.names["chord/added.yaml"] == "added.yaml"
         assert plan.shas["chord/changed.j2"] == git_blob_sha(b"new: 1\n")
-        assert not plan.in_sync
 
     def test_in_sync_when_nothing_differs(self, configs):
         up = Upstream.from_config(None)
         entries = [_entry("same.j2", b"a: 1\n"), _entry("changed.j2", b"old: 1\n"),
                    _entry("extra.j2", b"gone: 1\n"), _entry("link.j2", b"link: 1\n")]
         plan = up.plan(configs, entries, COMMIT)
-        assert plan.in_sync and plan.fetch == [] and plan.remove == []
+        assert plan.fetch == [] and plan.remove == [] and plan.skipped == []
 
     def test_odd_entries_are_skipped_and_never_cause_a_removal(self, configs):
         up = Upstream.from_config(None)

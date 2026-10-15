@@ -22,11 +22,9 @@ class User(UserMixin):
     """Authenticated user backed by LDAP, or -- ``trusted=True`` -- the
     synthetic user a ``server.trusted_hosts`` peer is logged in as."""
 
-    def __init__(self, dn: str, username: str, data: dict | None = None,
-                 *, trusted: bool = False):
+    def __init__(self, dn: str, username: str, *, trusted: bool = False):
         self.dn = dn
         self.username = username
-        self.data = data or {}
         self.trusted = trusted
 
     def get_id(self) -> str:
@@ -36,9 +34,9 @@ class User(UserMixin):
         return f"User({self.username})"
 
 
-def save_user(dn: str, username: str, data: dict | None = None) -> User:
+def save_user(dn: str, username: str) -> User:
     """Create or update a user in the in-memory store."""
-    user = User(dn, username, data)
+    user = User(dn, username)
     _users[dn] = user
     return user
 

@@ -439,13 +439,6 @@ class TestHealth:
         assert scan.health == "down"
         assert time.time() - t < 0.1  # answered immediately, no new wait
 
-    def test_check_if_stale_skips_fresh(self, roots):
-        scan = DataFileScan(roots)
-        scan.check_once()
-        first = scan.last_checked
-        scan.check_if_stale(max_age_s=1000)
-        assert scan.last_checked == first
-
 
 # The DATA badge also carries the waterfall renderer (the job that reads
 # these mounts; tests/test_web_pages.py covers that half), so the renderer's

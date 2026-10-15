@@ -30,7 +30,7 @@ def client(app):
 
 class TestUser:
     def test_user_properties(self):
-        user = User("cn=test,dc=example", "test", {"email": "test@example.com"})
+        user = User("cn=test,dc=example", "test")
         assert user.username == "test"
         assert user.dn == "cn=test,dc=example"
         assert user.get_id() == "cn=test,dc=example"
@@ -42,10 +42,10 @@ class TestUser:
         assert user.username == "test"
 
     def test_save_user_overwrites(self):
-        save_user("cn=test,dc=example", "test", {"v": 1})
-        user2 = save_user("cn=test,dc=example", "test", {"v": 2})
+        save_user("cn=test,dc=example", "test")
+        user2 = save_user("cn=test,dc=example", "renamed")
         assert _users["cn=test,dc=example"] is user2
-        assert user2.data == {"v": 2}
+        assert user2.username == "renamed"
 
 
 class TestUnauthenticatedAccess:

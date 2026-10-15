@@ -4,7 +4,6 @@
    channels down in that row's reading order.  A slot whose board did not
    report is drawn empty so the columns stay where the hardware is. #}
 {% from "_pdb_macros.html" import chan, bulk with context %}
-{% from "_service_macros.html" import since %}
 {% for bus in buses %}
 <div class="section-head">
     <h3>SPI bus {{ bus.bus }} — {{ bus.n_boards }} boards</h3>

@@ -93,32 +93,6 @@ class TestSubmissions:
         assert item.endpoint == "updatable_config/gains"
         assert item.values == {"start_time": 100}
 
-    def test_submit_group(self, orchestrator):
-        orchestrator.submit_group(
-            "cx",
-            ChangeItem(
-                type=ChangeType.BASE_CONFIG,
-                config_content="num_elements: 512\n",
-            ),
-        )
-
-        cx1 = orchestrator.registry.get_node("cx/cx1")
-        cx2 = orchestrator.registry.get_node("cx/cx2")
-        recv1 = orchestrator.registry.get_node("recv/recv1")
-        for node in (cx1, cx2):
-            item = node.queue_pop()
-            assert item.type == ChangeType.BASE_CONFIG
-            assert item.config_content == "num_elements: 512\n"
-        assert recv1.queue_empty
-
-    def test_submit_group_nonexistent(self, orchestrator):
-        orchestrator.submit_group(
-            "nonexistent",
-            ChangeItem(type=ChangeType.POLL),
-        )
-        for node in orchestrator.registry.nodes.values():
-            assert node.queue_empty
-
     def test_submit_all(self, orchestrator):
         orchestrator.submit_all(
             ChangeItem(type=ChangeType.POLL),
@@ -458,7 +432,8 @@ class TestDownNodeFlagFanout:
         cx2.get_version_info = MagicMock(return_value={})
         cx2.push_updatable = MagicMock(return_value=True)
 
-        orchestrator.submit_group("cx", _flag_item(["f9"]))
+        for node in orchestrator.registry.in_group("cx"):
+            orchestrator.submit_node(node.key, _flag_item(["f9"]))
         NodeWorker(cx1, orchestrator).process()
         NodeWorker(cx2, orchestrator).process()
 
@@ -1072,7 +1047,7 @@ class TestNodeWorker:
             for n in nodes
         ]
         gevent.joinall(greenlets, timeout=5)
-        assert all(g.value is True for g in greenlets)
+        assert all(n.status == NodeStatus.STARTED for n in nodes)
         assert peak["max"] == 1
 
 
@@ -1093,8 +1068,8 @@ class TestRestartWait:
         sleeps = []
         monkeypatch.setattr("choco.sync.gevent.sleep", lambda s: sleeps.append(s))
 
-        assert NodeWorker(node, orchestrator)._push_config({"cfg": 1}) is True
-        assert sleeps == [0.5]
+        NodeWorker(node, orchestrator)._push_config({"cfg": 1})
+        assert node.status == NodeStatus.STARTED and sleeps == [0.5]
 
 
 class TestSharedConfigScan:

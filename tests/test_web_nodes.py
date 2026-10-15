@@ -571,7 +571,7 @@ class TestNodeStatusPartial:
         login(client)
         node = app.config["registry"].get_node("cx/cx1")
         node.status = NodeStatus.STARTED
-        node.version = "2026.09"
+        node.version_info = {"kotekan_version": "2026.09"}
         with patch.object(Node, "get_status") as probe:
             resp = client.get("/nodes/partials/node-status/cx/cx1")
         assert resp.status_code == 200

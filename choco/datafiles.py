@@ -356,14 +356,6 @@ class DataFileScan:
     def _probe_done(self, _result) -> None:
         self._probing = False
 
-    def check_if_stale(self, max_age_s: float = 10.0) -> None:
-        """Probe now if the last probe is older than ``max_age_s``."""
-        if not self.configured:
-            return
-        if (self.last_checked is None
-                or time.time() - self.last_checked > max_age_s):
-            self.check_once()
-
     def run(self) -> None:
         """Probe forever on ``CHECK_INTERVAL_S``.  For gevent.spawn."""
         self._running = True

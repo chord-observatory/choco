@@ -40,7 +40,8 @@ from gevent.lock import BoundedSemaphore
 from .state import (
     Node, Registry, NodeStatus,
     strip_updatable_values, find_updatable_blocks,
-    _CONFIG_SUFFIXES,
+    CONFIG_SUFFIXES,
+    UPDATABLE_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -286,7 +287,6 @@ class NodeWorker:
 
         node.last_seen = time.time()
         node.version_info = node.get_version_info()
-        node.version = (node.version_info or {}).get("kotekan_version")
 
         # If the node's desired state is not started, ensure kotekan is not running.
         if not node.started:
@@ -347,8 +347,9 @@ class NodeWorker:
             node.status = NodeStatus.STARTED
             self._sync_updatable(actual)
 
-    def _push_config(self, desired: dict) -> bool:
-        """Kill -> wait for idle -> start with *desired* config.
+    def _push_config(self, desired: dict) -> None:
+        """Kill -> wait for idle -> start with *desired* config; the
+        outcome is on ``node.status`` / ``node.error``.
 
         *desired* should already include updatable overrides (as returned
         by ``Node.desired_config``).
@@ -368,7 +369,7 @@ class NodeWorker:
                 logger.warning(f"Cannot push config to {key}: kotekan down")
                 node.status = probe
                 node.error = "Unreachable"
-                return False
+                return
 
             if probe != NodeStatus.IDLE:
                 logger.info(f"Sending /kill to {key}")
@@ -391,12 +392,11 @@ class NodeWorker:
                     node.status = probe
                     node.error = (f"Status is {probe.value}, "
                                   f"failed to push config")
-                    return False
+                    return
                 self.set_phase(WorkerPhase.PUSHING)
 
             logger.info(f"Sending config to {key} via /start")
-            success = node.start(desired)
-            if success:
+            if node.start(desired):
                 logger.info(f"Successfully pushed config to {key}")
                 node.status = NodeStatus.STARTED
                 node.error = None
@@ -404,7 +404,6 @@ class NodeWorker:
                 logger.error(f"Failed to push config to {key}")
                 node.status = NodeStatus.UNKNOWN
                 node.error = "Failed to push config via /start"
-            return success
 
     def _sync_updatable(self, live_config: dict):
         """Push stored updatable values that differ from the live config."""
@@ -492,12 +491,6 @@ class Orchestrator:
             else:
                 logger.warning(f"No node for key {key}")
 
-    def submit_group(self, group: str, item: ChangeItem):
-        """Submit one change to every node in *group*."""
-        with self._submit_lock:
-            for node in self.registry.in_group(group):
-                self._enqueue(node, item)
-
     def submit_all(self, item: ChangeItem):
         """Submit one change to every registered node."""
         with self._submit_lock:
@@ -518,8 +511,8 @@ class Orchestrator:
         if not root.is_dir():
             return mtimes
         for path in root.rglob("*"):
-            if not (path.suffix in _CONFIG_SUFFIXES
-                    or (path.suffix == ".json" and ".updatable" in path.parts)):
+            if not (path.suffix in CONFIG_SUFFIXES
+                    or (path.suffix == ".json" and UPDATABLE_DIR in path.parts)):
                 continue
             try:
                 if path.is_file():
@@ -583,7 +576,7 @@ class Orchestrator:
 
         # vars.yaml affects all nodes — reload template vars and re-render.
         if p.name == "vars.yaml":
-            template_vars = self.registry._load_vars()
+            template_vars = self.registry.load_vars()
             for node in self.registry.nodes.values():
                 node.template_vars = template_vars
                 node.load_config()
@@ -597,8 +590,8 @@ class Orchestrator:
         rel_str = rel.as_posix()
 
         # The updatable store is per node: <.updatable>/<group>/<name>.json.
-        if rel_str.startswith(".updatable/"):
-            node_key = str(Path(rel_str.removeprefix(".updatable/")).with_suffix(""))
+        if rel_str.startswith(UPDATABLE_DIR + "/"):
+            node_key = str(Path(rel_str.removeprefix(UPDATABLE_DIR + "/")).with_suffix(""))
             node = self.registry.get_node(node_key)
             if node is None:
                 return

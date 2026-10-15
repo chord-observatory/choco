@@ -332,7 +332,7 @@ class GainArchive:
         return (self._fetched_at is None
                 or time.time() - self._fetched_at > self.ttl_s)
 
-    def refresh(self, force: bool = False) -> bool:
+    def refresh(self) -> bool:
         """Re-download and re-read if the cache is stale.  True on success.
 
         Serialised: with several viewers on the page, concurrent misses
@@ -343,7 +343,7 @@ class GainArchive:
             self.error = "fpga_master.host / port not set"
             return False
         with self._lock:
-            if not force and not self._stale() and self._manifest is not None:
+            if not self._stale() and self._manifest is not None:
                 return True
             try:
                 self._load()
@@ -468,7 +468,7 @@ class FileArchive(GainArchive):
     def configured(self) -> bool:
         return True
 
-    def refresh(self, force: bool = False) -> bool:
+    def refresh(self) -> bool:
         with self._lock:
             try:
                 path = self._path_fn()
@@ -478,7 +478,7 @@ class FileArchive(GainArchive):
                     return False
                 path = Path(path)
                 mtime = path.stat().st_mtime
-                if (not force and self._manifest is not None
+                if (self._manifest is not None
                         and self._path == path and self._mtime == mtime):
                     return True
                 manifest = json.loads(_h5read("manifest", str(path)).decode())
