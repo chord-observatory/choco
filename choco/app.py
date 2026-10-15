@@ -23,6 +23,7 @@ from .powerdb import PdbMonitor
 from .state import Registry
 from .sync import Orchestrator
 from .upstream import DEFAULTS as _UPSTREAM_DEFAULTS, Upstream
+from .web import _JOBS, bp
 
 logger = logging.getLogger(__name__)
 
@@ -193,25 +194,18 @@ def load_config(path: str | Path) -> dict:
     if not Path(state_dir).is_absolute():
         raise ValueError(f"state_dir must be an absolute path, not {state_dir!r}")
     config["state_dir"] = state_dir
-    config["kotekan"] = {**_DEFAULT_CONFIG["kotekan"], **(raw.get("kotekan") or {})}
-    config["sync"] = {**_DEFAULT_CONFIG["sync"], **(raw.get("sync") or {})}
-    upstream_raw = raw.get("upstream")
-    if upstream_raw is not None and not isinstance(upstream_raw, dict):
-        raise ValueError(
-            "upstream must be a mapping (enabled: false turns the pull off)")
-    config["upstream"] = {**_DEFAULT_CONFIG["upstream"], **(upstream_raw or {})}
+    # Every other block is the file's mapping over the block's defaults
+    # (most have none); an absent block is empty, a scalar where a
+    # mapping belongs is a startup error, never an empty block.
+    for key, defaults in _DEFAULT_CONFIG.items():
+        if key == "server" or not isinstance(defaults, dict):
+            continue
+        block = raw.get(key)
+        if block is not None and not isinstance(block, dict):
+            hint = " (enabled: false turns the pull off)" if key == "upstream" else ""
+            raise ValueError(f"{key} must be a mapping{hint}")
+        config[key] = {**defaults, **(block or {})}
     Upstream.from_config(config["upstream"])  # a bad block is a startup error
-    config["fpga_master"] = raw.get("fpga_master") or {}
-    config["eop"] = raw.get("eop") or {}
-    config["pdb"] = raw.get("pdb") or {}
-    config["bffs"] = raw.get("bffs") or {}
-    config["eigencal"] = raw.get("eigencal") or {}
-    config["waterfall"] = raw.get("waterfall") or {}
-    config["skymap"] = raw.get("skymap") or {}
-    config["mapmaker"] = raw.get("mapmaker") or {}
-    config["acqnotes"] = raw.get("acqnotes") or {}
-    config["vis_files"] = raw.get("vis_files") or {}
-    config["ldap"] = raw.get("ldap") or {}
     return config
 
 
@@ -313,19 +307,14 @@ def create_app(
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)
     app.config["state_dir"] = Path(config.get("state_dir") or _DEFAULT_CONFIG["state_dir"])
-    app.config["eop_cfg"] = config.get("eop") or {}
-    app.config["bffs_cfg"] = config.get("bffs") or {}
-    app.config["eigencal_cfg"] = config.get("eigencal") or {}
-    app.config["skymap_cfg"] = config.get("skymap") or {}
-    app.config["mapmaker_cfg"] = config.get("mapmaker") or {}
-    app.config["acqnotes_cfg"] = config.get("acqnotes") or {}
-    waterfall_cfg = config.get("waterfall") or {}
-    app.config["waterfall_cfg"] = waterfall_cfg
+    # Each job's block, as the registry and its page read it.
+    for name in _JOBS:
+        app.config[f"{name}_cfg"] = config.get(name) or {}
     # Read-only view of the tree jobs/waterfall writes, found where the job
     # says it writes it (its state.json).  No greenlet: the images are read
     # on demand from the /files page, not polled.
     app.config["waterfall_store"] = WaterfallStore(
-        ttl_s=float(waterfall_cfg.get("ttl") or WaterfallStore.DEFAULT_TTL_S),
+        ttl_s=float(app.config["waterfall_cfg"].get("ttl") or WaterfallStore.DEFAULT_TTL_S),
         state_file=lambda: Path(app.config["state_dir"]) / "waterfall" / STATE_NAME,
     )
     app.config["datafile_scan"] = datafile_scan
@@ -335,8 +324,6 @@ def create_app(
     # Initialize authentication
     init_auth(app, config)
 
-    # Register routes
-    from .web import bp
     app.register_blueprint(bp)
 
     # Start background sync loop immediately (not deferred to first request)

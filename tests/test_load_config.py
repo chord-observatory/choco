@@ -100,3 +100,18 @@ class TestUpstream:
     def test_malformed_block_is_refused(self, tmp_path, extra, message):
         with pytest.raises(ValueError, match=message):
             _load(tmp_path, extra)
+
+
+class TestBlocks:
+    @pytest.mark.parametrize("extra", ["eop: false\n", "bffs: yes\n", "pdb: chive\n",
+                                       "vis_files: /data\n"])
+    def test_scalar_block_is_refused(self, tmp_path, extra):
+        """A block must be a mapping or absent: a scalar is a typo that
+        would otherwise be read as an empty block."""
+        with pytest.raises(ValueError, match="must be a mapping"):
+            _load(tmp_path, extra)
+
+    def test_absent_blocks_are_empty(self, tmp_path):
+        cfg = _load(tmp_path, "")
+        assert cfg["eop"] == {} and cfg["ldap"] == {} and cfg["vis_files"] == {}
+        assert cfg["sync"]["poll_interval"] == 5
