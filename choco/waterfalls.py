@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 from gevent.lock import BoundedSemaphore
 
-from .acqtree import IMAGE_RE, SHARD_RE, shard_name  # noqa: F401 (re-exported)
+from .acqtree import IMAGE_RE, SHARD_RE, product_name, shard_name  # noqa: F401 (re-exported)
 from .datafiles import run_blocking
 
 logger = logging.getLogger(__name__)
@@ -692,3 +692,72 @@ def parse_elements(raw: str | None) -> list[int] | None:
         if part.isdigit():
             out.append(int(part))
     return out or None
+
+
+def rendered_index(store, force: bool = False) -> dict:
+    """What has been rendered, keyed the way the /files table looks it up.
+
+    The scan knows a root by its path, the image tree by its last
+    component (the name the job writes under), so each summary is filed
+    under ``<root name>/<acq>`` and, where the job recorded the
+    acquisition's source path, ``<source path>/<acq>`` too, so two roots
+    sharing a basename cannot collide.
+    """
+    rendered: dict = {}
+    for (root_name, acq), summary in store.summaries(force=force).items():
+        summary = {**summary, "root": root_name, "acq": acq}
+        rendered.setdefault(f"{root_name}/{acq}", summary)
+        if summary.get("source_path"):
+            rendered[f"{summary['source_path'].rstrip('/')}/{acq}"] = summary
+    return rendered
+
+
+def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
+    """What the viewer page draws around one full-resolution image, or
+    None when *name* is not a rendered ``wf_`` product of the acquisition.
+
+    The axes live here, at display time, and never in the PNG: the image
+    is append-only data, and pixels spent on labels could not be revised
+    when the acquisition grows.  Time comes from times.bin, frequency
+    from freq.npy, and the |V| colorbar from the palette inside the PNG
+    itself plus the frozen lo/hi in the index — each read hub-safe and
+    each degrading to a plainer page rather than a 500 when missing.
+    """
+    m = IMAGE_RE.match(name or "")
+    if not m or not name.startswith("wf_"):
+        return None
+    index = store.index(root, acq)
+    if index is None:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    prod = next((p for p in index.get("products") or []
+                 if isinstance(p, dict) and p.get("name") == product_name(a, b)), None)
+    if prod is None or not prod.get("rows"):
+        return None
+    shard = shard_name(a)
+    n_freq = int(index.get("n_freq") or 0)
+    labels = index.get("labels") or []
+
+    def label(e: int) -> str:
+        return labels[e] if e < len(labels) else str(e)
+
+    head = store.image_head(root, acq, shard, name)
+    pal = head["palette"] if head else None
+    # The tick fractions must describe the pixels the browser shows: on a
+    # live acquisition the served PNG can be an append ahead of the
+    # index's committed row count, so its own IHDR height wins.
+    rows = int(head["height"]) if head and head.get("height") else int(prod["rows"])
+    # The image renders at page width, so its on-screen height scales
+    # with rows/width — a squat early-acquisition image has room for a
+    # handful of time labels where a night-long one fits dozens.
+    time_target = max(3, min(40, round(43 * rows / max(n_freq, 1))))
+    return {
+        "root": root, "acq": acq, "shard": shard, "name": name,
+        "a": a, "b": b, "label_a": label(a), "label_b": label(b),
+        "rows": rows, "n_freq": n_freq,
+        "freq_axis": freq_ticks(store.freq_axis(root, acq), n_freq),
+        "time_axis": time_ticks(store.times(root, acq), rows, target=time_target, tz=tz),
+        "value_ticks": value_ticks(prod.get("lo"), prod.get("hi")),
+        "gradient": palette_gradient(pal),
+        "n_files": len(index.get("files") or []),
+    }

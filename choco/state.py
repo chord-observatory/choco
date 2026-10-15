@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 CONFIG_SUFFIXES = (".yaml", ".yml", ".j2")
 #: Where the updatable overrides live: ``<configs_dir>/.updatable/<group>/<node>.json``.
 UPDATABLE_DIR = ".updatable"
+#: kotekan's REST port, the one nodes.yaml may leave out.
+DEFAULT_PORT = 12048
 
 _UPDATABLE_MARKER = "kotekan_update_endpoint"
 
@@ -219,7 +221,7 @@ class Node:
     """
 
     def __init__(self, name: str, group: str, host: str,
-                 port: int = 12048, timeout: int = 10, *,
+                 port: int = DEFAULT_PORT, timeout: int = 10, *,
                  started: bool = False,
                  maintenance: bool = False,
                  configs_dir: Path | None = None,
@@ -287,6 +289,13 @@ class Node:
     def version(self) -> str | None:
         """kotekan's version string, from the last ``/version`` probe."""
         return (self.version_info or {}).get("kotekan_version")
+
+    @property
+    def config_problem(self) -> str | None:
+        """Why there is no desired config to push, or None when there is."""
+        if self.desired_config is not None:
+            return None
+        return self.load_error or f"No config file ({self.config_filename})"
 
     @property
     def updatable_path(self) -> Path | None:
@@ -841,7 +850,7 @@ class Registry:
                     logger.error(f"{nodes_file}: node {key!r} is not a mapping; skipped")
                     continue
                 host = node_info.get("host", node_name)
-                port = node_info.get("port", 12048)
+                port = node_info.get("port", DEFAULT_PORT)
                 started = node_info.get("started", False)
                 config = node_info.get("config")
                 node = Node(
@@ -885,6 +894,71 @@ class Registry:
                      if path in n.dependencies and n.config_abspath != path]
         return direct, includers
 
+    def affected_by(self, rel: str) -> list[Node]:
+        """The nodes a change to library file *rel* re-renders: every node
+        for vars.yaml (the shared template context), else the file's
+        direct users and includers (:meth:`users_of`)."""
+        if rel == "vars.yaml":
+            return list(self.nodes.values())
+        direct, includers = self.users_of(rel)
+        return direct + includers
+
     def in_group(self, group: str) -> list[Node]:
         """The nodes of *group* in registry order; empty for an unknown group."""
         return [n for n in self.nodes.values() if n.group == group]
+
+
+def validate_nodes_payload(payload, configs_dir: Path) -> dict:
+    """The nodes.yaml data a registry edit asks for, checked.
+
+    *payload* is the editor's JSON: ``{"groups": {name: [{"name", "host",
+    "port"?, "config"?}, ...]}}``.  Returns the mapping to write
+    (``{"groups": {group: {node: {"host", "port", "config"?}}}}``) or
+    raises ``ValueError`` naming the first problem.  A node's optional
+    ``config`` is validated as a path (so a bad value is refused here,
+    not joined to anything later); its existence is the node's own "No
+    config file" error if it is missing.
+    """
+    groups_in = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(groups_in, dict):
+        raise ValueError("'groups' must be an object")
+    new_data: dict = {"groups": {}}
+    seen_keys: set[str] = set()
+    for group_name, items in groups_in.items():
+        if not isinstance(group_name, str):
+            raise ValueError("Group name must be a string")
+        group_name = group_name.strip()
+        if not group_name or "/" in group_name or group_name.startswith("."):
+            raise ValueError(f"Invalid group name {group_name!r}")
+        if not isinstance(items, list):
+            raise ValueError(f"Group {group_name!r} must be a list")
+        if group_name in new_data["groups"]:
+            raise ValueError(f"Duplicate group {group_name!r}")
+        members: dict = {}
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError(f"Entry in {group_name!r} must be an object")
+            name = str(item.get("name", "")).strip()
+            host = str(item.get("host", "")).strip()
+            if not name or "/" in name or name.startswith("."):
+                raise ValueError(f"Invalid node name {name!r} in {group_name!r}")
+            if not host:
+                raise ValueError(f"Node {group_name}/{name} missing host")
+            try:
+                port = int(item.get("port", DEFAULT_PORT))
+            except (TypeError, ValueError):
+                raise ValueError(f"Node {group_name}/{name} invalid port") from None
+            key = f"{group_name}/{name}"
+            if key in seen_keys:
+                raise ValueError(f"Duplicate node {key!r}")
+            seen_keys.add(key)
+            members[name] = {"host": host, "port": port}
+            config = str(item.get("config") or "").strip()
+            if config:
+                try:
+                    resolve_config_path(configs_dir, config)
+                except ValueError as e:
+                    raise ValueError(f"Node {key}: {e}") from None
+                members[name]["config"] = config
+        new_data["groups"][group_name] = members
+    return new_data

@@ -20,7 +20,7 @@ from flask import (
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
-from . import acqtree, auth
+from . import auth
 from .auth import save_user, localhost_or_login_required
 from .jobclient import (EIGENCAL_ARCHIVE_GLOB, MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME,
                         STATE_ROOT, write_text_atomic)
@@ -29,17 +29,13 @@ from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
 from . import dishlabels
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
-from .waterfalls import (
-    IMAGE_RE as WF_IMAGE_RE, freq_ticks as wf_freq_ticks, open_stream,
-    palette_gradient as wf_palette_gradient, parse_elements,
-    time_ticks as wf_time_ticks, triangle as wf_triangle,
-    value_ticks as wf_value_ticks,
-)
+from .waterfalls import (open_stream, parse_elements, rendered_index, triangle as wf_triangle,
+                         view_context as wf_view_context)
 from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json,
                         timer_status)
 from .manualflags import read_manual_flags, toggle_manual_flag
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
-from .state import NodeStatus, find_updatable_blocks, resolve_config_path
+from .state import NodeStatus, find_updatable_blocks, resolve_config_path, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
 from .upstream import UpstreamError
 
@@ -323,10 +319,19 @@ def _file_mtime(path: Path | None) -> int | None:
         return None
 
 
-def _send_skymap(path: Path | None):
+def _send_png(path: Path | None):
+    """A job's PNG as it stands, revalidated on every request."""
     if path is None or not path.is_file():
         abort(404)
     return send_file(path, mimetype="image/png", conditional=True, max_age=0)
+
+
+def _component(key: str):
+    """The app's *key* -- a monitor, an archive, the scan, the store --
+    when it is there and configured, else None: one test per route, not
+    two."""
+    obj = current_app.config.get(key)
+    return obj if obj is not None and obj.configured else None
 
 
 @bp.route("/skymap.png")
@@ -340,7 +345,7 @@ def skymap_png():
     ``max_age=0`` make the browser revalidate each time and get a 304
     until the 5-minute job rewrites the file.
     """
-    return _send_skymap(_skymap_file())
+    return _send_png(_skymap_file())
 
 
 @bp.route("/skymap-night.png")
@@ -350,7 +355,7 @@ def skymap_night_png():
     /skymap.png and carrying the same single cluster fact; 404 until
     the job has rendered it (``night: true`` in skymap.yaml).
     """
-    return _send_skymap(_skymap_file(night=True))
+    return _send_png(_skymap_file(night=True))
 
 
 @bp.route("/service/mapmaker/<name>.png")
@@ -362,7 +367,7 @@ def mapmaker_png(name):
     fname = MAPMAKER_IMAGES.get(name)
     if fname is None:
         abort(404)
-    return _send_skymap(_state_root() / "mapmaker" / fname)
+    return _send_png(_state_root() / "mapmaker" / fname)
 
 
 @bp.route("/partials/skymap")
@@ -416,11 +421,10 @@ def node_edit(node_key):
             # form post.  The path is validated before it is read.
             rel = request.form.get("config", "")
             try:
-                resolve_config_path(registry.configs_dir, rel)
+                path = _library_path(registry, rel)
             except ValueError as e:
                 flash(f"One-off not started: {e}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
-            path = registry.configs_dir / rel
             if not path.is_file():
                 flash(f"One-off not started: no such config file {rel}", "error")
                 return redirect(url_for("web.node_edit", node_key=node_key))
@@ -614,58 +618,11 @@ def nodes_save():
     """Validate the posted JSON structure, save nodes.yaml, and reload."""
     _check_csrf_header()
 
-    payload = request.get_json(silent=True) or {}
-    groups_in = payload.get("groups")
-    if not isinstance(groups_in, dict):
-        return {"error": "'groups' must be an object"}, 400
-
-    new_data: dict = {"groups": {}}
-    seen_keys: set[str] = set()
-
-    for group_name, items in groups_in.items():
-        if not isinstance(group_name, str):
-            return {"error": "Group name must be a string"}, 400
-        group_name = group_name.strip()
-        if not group_name or "/" in group_name or group_name.startswith("."):
-            return {"error": f"Invalid group name {group_name!r}"}, 400
-        if not isinstance(items, list):
-            return {"error": f"Group {group_name!r} must be a list"}, 400
-        if group_name in new_data["groups"]:
-            return {"error": f"Duplicate group {group_name!r}"}, 400
-
-        members: dict = {}
-        for item in items:
-            if not isinstance(item, dict):
-                return {"error": f"Entry in {group_name!r} must be an object"}, 400
-            name = str(item.get("name", "")).strip()
-            host = str(item.get("host", "")).strip()
-            if not name or "/" in name or name.startswith("."):
-                return {"error": f"Invalid node name {name!r} in {group_name!r}"}, 400
-            if not host:
-                return {"error": f"Node {group_name}/{name} missing host"}, 400
-            try:
-                port = int(item.get("port", 12048))
-            except (TypeError, ValueError):
-                return {"error": f"Node {group_name}/{name} invalid port"}, 400
-            key = f"{group_name}/{name}"
-            if key in seen_keys:
-                return {"error": f"Duplicate node {key!r}"}, 400
-            seen_keys.add(key)
-            members[name] = {"host": host, "port": port}
-            # Optional library file; blank means the per-node file.
-            # Validated as a path here (so a bad value is refused, not
-            # joined to anything later); existence is the node's own
-            # "No config file" error if it is missing.
-            config = str(item.get("config") or "").strip()
-            if config:
-                try:
-                    resolve_config_path(_registry().configs_dir, config)
-                except ValueError as e:
-                    return {"error": f"Node {key}: {e}"}, 400
-                members[name]["config"] = config
-
-        new_data["groups"][group_name] = members
-
+    try:
+        new_data = validate_nodes_payload(request.get_json(silent=True) or {},
+                                          _registry().configs_dir)
+    except ValueError as e:
+        return {"error": str(e)}, 400
     try:
         _orchestrator().apply_nodes_update(new_data)
     except Exception as e:
@@ -678,6 +635,16 @@ def nodes_save():
 
 
 # --- Config library: the files under configs_dir, and which node uses which ---
+
+def _library_path(registry, rel: str) -> Path:
+    """``configs_dir / rel`` once *rel* passes ``resolve_config_path``
+    (``ValueError`` otherwise).  The plain join, deliberately: ``users_of``,
+    ``Node.config_abspath`` and ``Orchestrator.file_written`` compare plain
+    joins too, so a resolved path would not match them under a symlinked
+    configs directory."""
+    resolve_config_path(registry.configs_dir, rel)
+    return registry.configs_dir / rel
+
 
 def _library_entry(registry, rel: str) -> dict:
     """One row of the config library: *rel*'s size and mtime plus the
@@ -719,7 +686,7 @@ def _check_library_save(registry, rel: str, content: str
             return [], f"Invalid YAML: {e}"
         if data is not None and not isinstance(data, dict):
             return [], "vars.yaml must be a YAML mapping"
-        return list(registry.nodes), None
+        return [n.key for n in registry.affected_by(rel)], None
     return _check_library_saves(registry, {rel: content})
 
 
@@ -738,15 +705,10 @@ def _check_library_saves(registry, texts: dict[str, str]
     affected: dict[str, None] = {}
     for rel, content in texts.items():
         direct, includers = registry.users_of(rel)
-        for node in direct:
-            try:
-                node.render(content, overlay=overlay)
-            except Exception as e:
-                return [], f"{node.key} would not render: {e}"
-            affected[node.key] = None
-        for node in includers:
-            # The includer's own file may be in the set: render its new text.
-            base = overlay.get(node.config_abspath, node.base_content)
+        for node in direct + includers:
+            # a direct user renders the new text; an includer its own
+            # file, which may itself be in the set
+            base = content if node in direct else overlay.get(node.config_abspath, node.base_content)
             if base is None:
                 continue
             try:
@@ -774,11 +736,7 @@ def _write_library_file(registry, rel: str, content: str, user: str
     path = registry.configs_dir / rel
     created = not path.exists()
     write_text_atomic(path, content)
-    if rel == "vars.yaml":
-        affected = list(registry.nodes)
-    else:
-        direct, includers = registry.users_of(rel)
-        affected = [n.key for n in direct + includers]
+    affected = [n.key for n in registry.affected_by(rel)]
     logger.warning(
         f"config library: {rel} {'created' if created else 'replaced'} by "
         f"{user}, {len(content)} bytes; re-rendering {affected or 'no nodes'}")
@@ -937,10 +895,10 @@ def _set_node_configs(nodes: list, config: str | None, user: str
     registry = _registry()
     if config is not None:
         try:
-            resolve_config_path(registry.configs_dir, config)
+            path = _library_path(registry, config)
         except ValueError as e:
             return {"error": str(e)}, 400
-        if not (registry.configs_dir / config).is_file():
+        if not path.is_file():
             return {"error": f"No such config file: {config}"}, 404
     nodes_file = registry.configs_dir / "nodes.yaml"
     try:
@@ -997,11 +955,11 @@ def config_new():
     registry = _registry()
     name = request.form.get("name", "").strip()
     try:
-        resolve_config_path(registry.configs_dir, name)
+        path = _library_path(registry, name)
     except ValueError as e:
         flash(f"Not created: {e}", "error")
         return redirect(url_for("web.configs_page"))
-    if (registry.configs_dir / name).exists():
+    if path.exists():
         flash(f"{name} already exists", "error")
     else:
         _write_library_file(registry, name, "", _audit_user())
@@ -1021,10 +979,9 @@ def config_edit(name):
     """
     registry = _registry()
     try:
-        resolve_config_path(registry.configs_dir, name)
+        path = _library_path(registry, name)
     except ValueError:
         abort(404)
-    path = registry.configs_dir / name
     if not path.is_file():
         abort(404)
     entry = _library_entry(registry, name)
@@ -1048,84 +1005,60 @@ def config_edit(name):
 
 # --- htmx partial endpoints for live updates ---
 
-@bp.route("/nodes/toggle-started/<path:node_key>", methods=["POST"])
-@login_required
-def toggle_started(node_key):
-    """Toggle the started/idle desired state for a node."""
+def _toggle(node_key: str, flag: str, words: tuple[str, str]):
+    """Flip one node's desired *flag*.  htmx gets the switch back in
+    place; a plain form post a flash (*words* for on / off) and a redirect."""
     _check_csrf()
     node = _registry().get_node(node_key)
     if node is None:
         abort(404)
-    _set_flag([node], "started", not node.started)
+    _set_flag([node], flag, not getattr(node, flag))
     if request.headers.get("HX-Request"):
-        return render_template("_toggle_started.html", node=node, key=node_key)
-    flash(f"{node_key} {'started' if node.started else 'stopped'}", "success")
+        return render_template(f"_toggle_{flag}.html", node=node, key=node_key)
+    flash(f"{node_key} {words[0] if getattr(node, flag) else words[1]}", "success")
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
-@bp.route("/nodes/set-started-all/<action>", methods=["POST"])
-@login_required
-def set_started_all(action):
-    """Set all nodes to started or stopped."""
+def _bulk(flag: str, actions: dict, action: str, group: str | None):
+    """Set *flag* on every node, or on *group*'s, from the URL's action word."""
     _check_csrf()
-    if action not in _STARTED_ACTIONS:
+    if action not in actions:
         abort(400)
-    return _flag_response(list(_registry().nodes.values()), "started",
-                          _STARTED_ACTIONS[action])
+    registry = _registry()
+    nodes = registry.in_group(group) if group is not None else list(registry.nodes.values())
+    if group is not None and not nodes:
+        abort(404)
+    return _flag_response(nodes, flag, actions[action])
 
 
+@bp.route("/nodes/toggle-started/<path:node_key>", methods=["POST"])
+@login_required
+def toggle_started(node_key):
+    """Toggle the started/idle desired state for a node."""
+    return _toggle(node_key, "started", ("started", "stopped"))
+
+
+@bp.route("/nodes/set-started-all/<action>", methods=["POST"])
 @bp.route("/nodes/set-started-group/<group>/<action>", methods=["POST"])
 @login_required
-def set_started_group(group, action):
-    """Set every node in *group* to started or stopped."""
-    _check_csrf()
-    if action not in _STARTED_ACTIONS:
-        abort(400)
-    nodes = _registry().in_group(group)
-    if not nodes:
-        abort(404)
-    return _flag_response(nodes, "started", _STARTED_ACTIONS[action])
+def set_started(action, group=None):
+    """Set every node, or every node in *group*, to started or stopped."""
+    return _bulk("started", _STARTED_ACTIONS, action, group)
 
 
 @bp.route("/nodes/toggle-maintenance/<path:node_key>", methods=["POST"])
 @login_required
 def toggle_maintenance(node_key):
     """Toggle maintenance mode for a single node."""
-    _check_csrf()
-    node = _registry().get_node(node_key)
-    if node is None:
-        abort(404)
-    _set_flag([node], "maintenance", not node.maintenance)
-    if request.headers.get("HX-Request"):
-        return render_template("_toggle_maintenance.html",
-                               node=node, key=node_key)
-    flash(f"{node_key} maintenance "
-          f"{'on' if node.maintenance else 'off'}", "success")
-    return redirect(request.referrer or url_for("web.dashboard"))
+    return _toggle(node_key, "maintenance", ("maintenance on", "maintenance off"))
 
 
 @bp.route("/nodes/set-maintenance-all/<action>", methods=["POST"])
-@login_required
-def set_maintenance_all(action):
-    """Put every node into or out of maintenance mode."""
-    _check_csrf()
-    if action not in _MAINTENANCE_ACTIONS:
-        abort(400)
-    return _flag_response(list(_registry().nodes.values()), "maintenance",
-                          _MAINTENANCE_ACTIONS[action])
-
-
 @bp.route("/nodes/set-maintenance-group/<group>/<action>", methods=["POST"])
 @login_required
-def set_maintenance_group(group, action):
-    """Put every node in *group* into or out of maintenance mode."""
-    _check_csrf()
-    if action not in _MAINTENANCE_ACTIONS:
-        abort(400)
-    nodes = _registry().in_group(group)
-    if not nodes:
-        abort(404)
-    return _flag_response(nodes, "maintenance", _MAINTENANCE_ACTIONS[action])
+def set_maintenance(action, group=None):
+    """Put every node, or every node in *group*, into or out of maintenance."""
+    return _bulk("maintenance", _MAINTENANCE_ACTIONS, action, group)
 
 
 @bp.route("/nodes/partials/node-status/<path:node_key>")
@@ -1183,13 +1116,9 @@ def api_node_buffer_data(node_key):
     buffer_name = request.args.get("buffer", "")
     if not _BUFFER_NAME_RE.fullmatch(buffer_name):
         return {"error": "bad buffer name"}, 400
-    try:
-        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
-    except ValueError:
-        return {"error": "'len' must be a non-negative integer"}, 400
-    if length < 0:
-        return {"error": "'len' must be a non-negative integer"}, 400
-    length = min(length, _BUFFER_DATA_MAX_LEN)
+    length, error = _len_arg()
+    if error:
+        return error
 
     frame = node.get_buffer_frame(buffer_name, length=length)
     if frame is None:
@@ -1274,23 +1203,31 @@ def api_fpga_gain_data():
     staleness note reads as "the gains have not changed" rather than
     pretending to a liveness the file does not have.
     """
-    archive = current_app.config.get("gain_archive")
-    if archive is None or not archive.configured:
+    archive = _component("gain_archive")
+    if archive is None:
         return {"error": "fpga_master is not configured"}, 404
     dataset = request.args.get("dataset", "")
     if not _GAIN_DATASET_RE.fullmatch(dataset):
         return {"error": "bad dataset name"}, 400
-    try:
-        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
-    except ValueError:
-        return {"error": "'len' must be a non-negative integer"}, 400
-    if length < 0:
-        return {"error": "'len' must be a non-negative integer"}, 400
-    length = min(length, _BUFFER_DATA_MAX_LEN)
+    length, error = _len_arg()
+    if error:
+        return error
 
     info = archive.to_dict()
     update_id = _first_scalar(info["scalars"].get("update_id"))
     return _archive_data_response(archive, dataset, length, update_id)
+
+
+def _len_arg():
+    """The ``len`` query parameter of a data request, clamped to the cap,
+    with the error reply when it is not a non-negative integer."""
+    try:
+        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
+    except ValueError:
+        length = -1
+    if length < 0:
+        return None, ({"error": "'len' must be a non-negative integer"}, 400)
+    return min(length, _BUFFER_DATA_MAX_LEN), None
 
 
 def _archive_data_response(archive, dataset: str, length: int, frame_id):
@@ -1331,14 +1268,10 @@ def _archive_data_response(archive, dataset: str, length: int, frame_id):
 
 # --- eigencal's archived solution, the same way ------------------------------
 
-def _eigencal_archive():
-    return current_app.config.get("eigencal_archive")
-
-
 def _eigencal_gain_context() -> dict:
     """What the EIGENCAL page's solution card shows: the newest archive's
     datasets and headline attributes, or why there is nothing to show."""
-    archive = _eigencal_archive()
+    archive = _component("eigencal_archive")
     if archive is None:
         return {"available": False, "error": "no archive reader", "datasets": []}
     if not archive.refresh():
@@ -1371,19 +1304,15 @@ def api_eigencal_gain_data():
     """The newest eigencal solution's datasets, in the buffer-plot protocol
     (see api_fpga_gain_data).  The frame id is the file and its mtime, so
     the plotter's staleness note means "no new solution"."""
-    archive = _eigencal_archive()
+    archive = _component("eigencal_archive")
     if archive is None:
         return {"error": "no archive reader"}, 404
     dataset = request.args.get("dataset", "")
     if not _GAIN_DATASET_RE.fullmatch(dataset):
         return {"error": "bad dataset name"}, 400
-    try:
-        length = int(request.args.get("len", _BUFFER_DATA_DEFAULT_LEN))
-    except ValueError:
-        return {"error": "'len' must be a non-negative integer"}, 400
-    if length < 0:
-        return {"error": "'len' must be a non-negative integer"}, 400
-    length = min(length, _BUFFER_DATA_MAX_LEN)
+    length, error = _len_arg()
+    if error:
+        return error
     if not archive.refresh():
         return {"error": archive.error or "no gain solution archived yet"}, 404
     frame_id = f"{archive.path.name}@{archive.mtime:.0f}" if archive.path else None
@@ -1394,7 +1323,7 @@ def api_eigencal_gain_data():
 @login_required
 def eigencal_gain_file():
     """The newest archived solution itself."""
-    archive = _eigencal_archive()
+    archive = _component("eigencal_archive")
     raw = archive.file_bytes() if archive is not None else None
     if raw is None:
         flash(f"Gain solution unavailable: {archive.error if archive else 'no archive reader'}",
@@ -1443,8 +1372,8 @@ def partial_fpga_gains():
 @login_required
 def fpga_gain_file():
     """The gain archive itself, proxied so the browser needs no route to fpga_master."""
-    archive = current_app.config.get("gain_archive")
-    if archive is None or not archive.configured:
+    archive = _component("gain_archive")
+    if archive is None:
         abort(404)
     raw = archive.file_bytes()
     if raw is None:
@@ -1467,8 +1396,8 @@ def fpga_gain_plot_page():
     attributes on the container differ, which is the whole point of the
     plot panel taking a source rather than a node and a buffer.
     """
-    archive = current_app.config.get("gain_archive")
-    if archive is None or not archive.configured:
+    archive = _component("gain_archive")
+    if archive is None:
         abort(404)
     dataset = request.args.get("dataset", "")
     if not _GAIN_DATASET_RE.fullmatch(dataset):
@@ -1490,8 +1419,8 @@ def _gain_context() -> dict:
     pulls the file the first time.  A failure degrades to a note: the
     gains are an extra on this page, never the reason it loads.
     """
-    archive = current_app.config.get("gain_archive")
-    if archive is None or not archive.configured:
+    archive = _component("gain_archive")
+    if archive is None:
         return {"configured": False, "datasets": [], "attrs": {},
                 "index_map": {}, "error": None}
     archive.refresh()          # to_dict reports the cache; this fills it
@@ -1525,13 +1454,7 @@ def _utc_minute(ts, short=False) -> str:
     return time.strftime("%m-%d %H:%M" if short else "%Y-%m-%d %H:%M", time.gmtime(ts))
 
 
-@bp.app_template_filter("filesize")
-def _filesize(n) -> str:
-    return human_bytes(n)
-
-
-def _datafile_scan():
-    return current_app.config.get("datafile_scan")
+bp.add_app_template_filter(human_bytes, "filesize")
 
 
 @bp.route("/files")
@@ -1543,7 +1466,7 @@ def files_page():
     the FPGA gain card is: walking an NFS mount takes a few hundred ms,
     and the page has nothing to wait for it for.
     """
-    scan = _datafile_scan()
+    scan = current_app.config.get("datafile_scan")
     # The waterfall renderer lives on this page (see _service_registry),
     # so the title carries the joint DATA tag and the page ends with the
     # renderer's status, state file and journal.
@@ -1561,41 +1484,38 @@ def files_page():
     )
 
 
-def _waterfall_store():
-    return current_app.config.get("waterfall_store")
-
-
 @bp.route("/partials/files")
 @login_required
 def partial_files():
     """The scan table.  ``?refresh=1`` bypasses the cache."""
-    scan = _datafile_scan()
-    if scan is None or not scan.configured:
+    scan = _component("datafile_scan")
+    if scan is None:
         result = {"configured": False, "roots": []}
     else:
         result = scan.get(force=request.args.get("refresh") == "1")
 
-    # What has been rendered, keyed the way the template can look it up:
-    # the scan knows a root by its path, the image tree by its last
-    # component, which is the name jobs/waterfall writes under.
-    # Keyed by the acquisition's own source path where the job recorded
-    # one, so two roots sharing a basename cannot collide; the name-based
-    # key stays as a fallback for trees rendered before that was written.
-    store = _waterfall_store()
-    rendered = {}
-    if store is not None and store.configured:
-        for (root_name, acq), summary in store.summaries(
-                force=request.args.get("refresh") == "1").items():
-            summary = {**summary, "root": root_name, "acq": acq}
-            rendered.setdefault(f"{root_name}/{acq}", summary)
-            if summary.get("source_path"):
-                rendered[f"{summary['source_path'].rstrip('/')}/{acq}"] = summary
+    store = _component("waterfall_store")
+    rendered = (rendered_index(store, force=request.args.get("refresh") == "1")
+                if store is not None else {})
     return render_template("_files_table.html", scan=result,
                            rendered=rendered, now_ts=time.time())
 
 
 #: How long a notes read may block on NFS before the popover says so.
 NOTES_TIMEOUT_S = 5.0
+
+
+def _scan_root(root_idx: int) -> dict:
+    """The cached scan's row for root *root_idx*, else a 404.  The index
+    into the configured roots is the allowlist: the caller's string never
+    becomes a path."""
+    scan = _component("datafile_scan")
+    if scan is None:
+        abort(404)
+    roots = scan.get().get("roots") or []
+    if not 0 <= root_idx < len(roots):
+        abort(404)
+    return roots[root_idx]
 
 
 @bp.route("/files/notes/<int:root_idx>/<acq>")
@@ -1608,13 +1528,7 @@ def files_notes(root_idx, acq):
     string never becomes a path.  The read runs in the threadpool with a
     timeout, like every other NFS access from the web process.
     """
-    scan = _datafile_scan()
-    if scan is None or not scan.configured:
-        abort(404)
-    roots = scan.get().get("roots") or []
-    if not 0 <= root_idx < len(roots):
-        abort(404)
-    row = next((d for d in roots[root_idx]["dirs"]
+    row = next((d for d in _scan_root(root_idx)["dirs"]
                 if d["name"] == acq and d.get("notes")), None)
     if row is None:
         abort(404)
@@ -1632,27 +1546,23 @@ def files_timeline(root_idx):
     the acqnotes job renders the READMEs from), as a table for the root
     header's popover.  Same allowlist and threadpool read as the notes:
     an index into the configured roots whose cached scan saw the file."""
-    scan = _datafile_scan()
-    if scan is None or not scan.configured:
-        abort(404)
-    roots = scan.get().get("roots") or []
-    if not 0 <= root_idx < len(roots) or not roots[root_idx].get("timeline"):
+    root = _scan_root(root_idx)
+    if not root.get("timeline"):
         abort(404)
     try:
-        text = run_blocking(read_notes, roots[root_idx]["path"], TIMELINE_NAME,
-                            timeout=NOTES_TIMEOUT_S)
+        text = run_blocking(read_notes, root["path"], TIMELINE_NAME, timeout=NOTES_TIMEOUT_S)
         rows = timeline_rows(text)
     except (OSError, ValueError) as exc:
         return render_template("_files_timeline.html", error=str(exc))
-    return render_template("_files_timeline.html", rows=rows, path=roots[root_idx]["path"])
+    return render_template("_files_timeline.html", rows=rows, path=root["path"])
 
 
 @bp.route("/files/<root>/<acq>/triangle")
 @login_required
 def waterfall_triangle(root, acq):
     """The upper-triangle contact sheet for one acquisition."""
-    store = _waterfall_store()
-    if store is None or not store.configured:
+    store = _component("waterfall_store")
+    if store is None:
         abort(404)
     index = store.index(root, acq)
     if index is None:
@@ -1683,8 +1593,8 @@ def waterfall_image(root, acq, shard, name):
     neither the NFS open nor the reads may block the sync loop, and the
     response may not be buffered.
     """
-    store = _waterfall_store()
-    if store is None or not store.configured:
+    store = _component("waterfall_store")
+    if store is None:
         abort(404)
     resolved = store.image_file(root, acq, shard, name)
     if resolved is None:
@@ -1704,61 +1614,16 @@ def waterfall_image(root, acq, shard, name):
 @bp.route("/waterfall/<root>/<acq>/view/<name>")
 @login_required
 def waterfall_view(root, acq, name):
-    """One full-resolution image with its axes drawn around it.
-
-    The axes live here, at display time, and never in the PNG: the image
-    is append-only data, and pixels spent on labels could not be revised
-    when the acquisition grows.  Time comes from times.bin, frequency
-    from freq.npy, and the |V| colorbar from the palette inside the PNG
-    itself plus the frozen lo/hi in the index — each read hub-safe and
-    each degrading to a plainer page rather than a 500 when missing.
-    """
-    store = _waterfall_store()
-    if store is None or not store.configured:
+    """One full-resolution image with its axes drawn around it
+    (``waterfalls.view_context``)."""
+    store = _component("waterfall_store")
+    if store is None:
         abort(404)
-    m = WF_IMAGE_RE.match(name or "")
-    if not m or not name.startswith("wf_"):
+    context = wf_view_context(store, root, acq, name,
+                              tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
+    if context is None:
         abort(404)
-    index = store.index(root, acq)
-    if index is None:
-        abort(404)
-    a, b = int(m.group(1)), int(m.group(2))
-    prod = next((p for p in index.get("products") or []
-                 if isinstance(p, dict)
-                 and p.get("name") == acqtree.product_name(a, b)), None)
-    if prod is None or not prod.get("rows"):
-        abort(404)
-    shard = acqtree.shard_name(a)
-    n_freq = int(index.get("n_freq") or 0)
-
-    labels = index.get("labels") or []
-
-    def label(e: int) -> str:
-        return labels[e] if e < len(labels) else str(e)
-
-    head = store.image_head(root, acq, shard, name)
-    pal = head["palette"] if head else None
-    # The tick fractions must describe the pixels the browser shows: on a
-    # live acquisition the served PNG can be an append ahead of the
-    # index's committed row count, so its own IHDR height wins.
-    rows = int(head["height"]) if head and head.get("height") else int(prod["rows"])
-    # The image renders at page width, so its on-screen height scales
-    # with rows/width — a squat early-acquisition image has room for a
-    # handful of time labels where a night-long one fits dozens.
-    time_target = max(3, min(40, round(43 * rows / max(n_freq, 1))))
-    return render_template(
-        "waterfall_view.html",
-        root=root, acq=acq, shard=shard, name=name,
-        a=a, b=b, label_a=label(a), label_b=label(b),
-        rows=rows, n_freq=n_freq,
-        freq_axis=wf_freq_ticks(store.freq_axis(root, acq), n_freq),
-        time_axis=wf_time_ticks(
-            store.times(root, acq), rows, target=time_target,
-            tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone")),
-        value_ticks=wf_value_ticks(prod.get("lo"), prod.get("hi")),
-        gradient=wf_palette_gradient(pal),
-        n_files=len(index.get("files") or []),
-    )
+    return render_template("waterfall_view.html", **context)
 
 
 def _service_registry() -> dict[str, dict]:
@@ -1922,6 +1787,20 @@ def _run_reasons(run_file) -> list[str]:
     return out[:5]
 
 
+def _node_counts(registry) -> dict:
+    """Every roll-up's node numbers: the count per runtime status, the
+    total, and how many are desired started / in maintenance."""
+    counts = {s.value: 0 for s in NodeStatus}
+    for node in registry.nodes.values():
+        counts[node.status.value] += 1
+    return {
+        "total": len(registry.nodes),
+        "started_desired": sum(1 for n in registry.nodes.values() if n.started),
+        "maintenance": sum(1 for n in registry.nodes.values() if n.maintenance),
+        **counts,
+    }
+
+
 def _nodes_health() -> dict:
     """Cluster-level roll-up of per-node status for the NODES badge.
 
@@ -1931,21 +1810,15 @@ def _nodes_health() -> dict:
     yellow.  ``node.status`` is a plain attribute the sync loop keeps
     fresh, so this is an in-memory sweep, not a probe.
     """
-    registry = _registry()
-    counts = {s: 0 for s in NodeStatus}
-    for node in registry.nodes.values():
-        counts[node.status] += 1
-    total = len(registry.nodes)
-    started = counts[NodeStatus.STARTED]
-    idle = counts[NodeStatus.IDLE]
-    down = counts[NodeStatus.DOWN]
+    counts = _node_counts(_registry())
+    total, started, idle, down = counts["total"], counts["started"], counts["idle"], counts["down"]
     if total == 0:
         health, label = "unknown", "no nodes"
     elif started == total:
         health, label = "ok", "all up"
     elif down == total:
         health, label = "down", "all down"
-    elif counts[NodeStatus.UNKNOWN] == total:
+    elif counts["unknown"] == total:
         health, label = "unknown", "unknown"
     elif started:
         health, label = "degraded", f"{started}/{total} up"
@@ -1962,10 +1835,9 @@ def _nodes_health() -> dict:
         "started": started,
         "idle": idle,
         "down": down,
-        "unknown": counts[NodeStatus.UNKNOWN],
-        "syncing": counts[NodeStatus.SYNCING],
-        "maintenance": sum(
-            1 for n in registry.nodes.values() if n.maintenance),
+        "unknown": counts["unknown"],
+        "syncing": counts["syncing"],
+        "maintenance": counts["maintenance"],
     }
 
 
@@ -1989,11 +1861,12 @@ def partial_services():
     )
 
 
-def _journal_lines_arg(default: int = 100) -> int:
+def _journal_lines_arg() -> int:
+    """How many journal lines a page asked for (``?lines=``), 10 to 1000."""
     try:
-        nlines = int(request.args.get("lines", default))
+        nlines = int(request.args.get("lines", 100))
     except (TypeError, ValueError):
-        nlines = default
+        nlines = 100
     return max(10, min(nlines, 1000))
 
 
@@ -2049,7 +1922,7 @@ def _mapmaker_clean_facts(root: Path) -> dict | None:
 
     return {
         "updated": _fmt_utc(facts.get("updated")),
-        "data_to": _fmt_utc(facts.get("map_data_time")) if facts.get("map_data_time") else None,
+        "data_to": _fmt_utc(facts.get("map_data_time")),
         "iterations": int(facts["iterations"]) if isinstance(facts.get("iterations"), int) else None,
         "n_components": int(facts["n_components"]) if isinstance(facts.get("n_components"), int) else None,
         "threshold": num("threshold"),
@@ -2081,7 +1954,7 @@ def _mapmaker_detail(state: dict) -> dict:
         "colour_range_mhz": (float(rng[0]), float(rng[1])) if len(rng) == 2 else None,
         "stretch": state.get("stretch"),
         "last_file_idx": state.get("last_file_idx"),
-        "last_sample": _fmt_utc(state.get("last_sample_time")) if state.get("last_sample_time") else None,
+        "last_sample": _fmt_utc(state.get("last_sample_time")),
         "files_processed": state.get("files_processed"),
         "files_imaged": state.get("files_imaged"),
         "files_uncalibrated": state.get("files_uncalibrated"),
@@ -2092,8 +1965,8 @@ def _mapmaker_detail(state: dict) -> dict:
         "cal_samples_pending": state.get("cal_samples_pending"),
         "gains": {
             "calibrator": gains.get("calibrator"),
-            "solved_at": _fmt_utc(gains.get("solved_at")) if gains.get("solved_at") else None,
-            "transit": _fmt_utc(gains.get("transit_time")) if gains.get("transit_time") else None,
+            "solved_at": _fmt_utc(gains.get("solved_at")),
+            "transit": _fmt_utc(gains.get("transit_time")),
             "n_samples": gains.get("n_samples"),
             "n_dead_products": gains.get("n_dead_products"),
             "n_products": gains.get("n_products"),
@@ -2488,13 +2361,12 @@ def _bffs_source_summary(kind: str, d: dict) -> str:
 def _service_detail_inner(name: str, svc: dict) -> dict | None:
     if name == "choco":
         registry = _registry()
+        counts = _node_counts(registry)
         return {
             "started_at": _fmt_utc(_STARTED_AT),
-            "nodes_total": len(registry.nodes),
-            "maintenance": sum(
-                1 for n in registry.nodes.values() if n.maintenance),
-            "started_desired": sum(
-                1 for n in registry.nodes.values() if n.started),
+            "nodes_total": counts["total"],
+            "maintenance": counts["maintenance"],
+            "started_desired": counts["started_desired"],
             "queued": sum(n.queue_depth for n in registry.nodes.values()),
             "configs_dir": str(current_app.config.get("configs_dir")),
         }
@@ -2539,7 +2411,7 @@ def _service_detail_inner(name: str, svc: dict) -> dict | None:
             "backlog": run.get("backlog"),
             "measured": [str(a) for a in (run.get("measured") or [])],
             "written": [str(a) for a in (run.get("written") or [])],
-            "run_time": _fmt_utc(run.get("time")) if run.get("time") else None,
+            "run_time": _fmt_utc(run.get("time")),
             "run_status": run.get("status"),
         }
 
@@ -2570,15 +2442,9 @@ def service_page(name):
         monitor = current_app.config.get("fpga_monitor")
         if monitor is None:
             abort(404)
-        fpga = monitor.to_dict()
         fpga_cfg = current_app.config.get("fpga_cfg") or {}
-        return render_template(
-            "service_fpga.html", fpga=fpga,
-            frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
-            control=bool(fpga_cfg.get("control", True)),
-            actions=monitor.actions,
-            now_ts=time.time(),
-        )
+        return render_template("service_fpga.html", control=bool(fpga_cfg.get("control", True)),
+                               **_fpga_context(monitor))
     if name == "pdb":
         if current_app.config.get("pdb_monitor") is None:
             abort(404)
@@ -2632,13 +2498,14 @@ def partial_service_fpga():
     if monitor is None:
         abort(404)
     monitor.poll_if_stale(5)
+    return render_template("_service_fpga_status.html", **_fpga_context(monitor))
+
+
+def _fpga_context(monitor) -> dict:
+    """What the FPGA page and its status poll render from the monitor."""
     fpga = monitor.to_dict()
-    return render_template(
-        "_service_fpga_status.html", fpga=fpga,
-        frame0_fmt=_fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
-        actions=monitor.actions,
-        now_ts=time.time(),
-    )
+    return {"fpga": fpga, "frame0_fmt": _fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+            "actions": monitor.actions, "now_ts": time.time()}
 
 
 def _pdb_layout(present: set[int]) -> list[dict]:
@@ -2821,8 +2688,7 @@ def _pdb_cross_check(pdb_map: PdbMap) -> dict:
                            f"{type(e).__name__}: {e}"
         return result
     if desired is None:
-        result["reason"] = (sample.load_error
-                            or f"no config file ({sample.config_filename})")
+        result["reason"] = sample.config_problem
         return result
     try:
         labels = kotekan_dish_labels(desired)
@@ -2865,15 +2731,8 @@ def partial_service_status(name):
     svc = _service_registry().get(name)
     if svc is None:
         abort(404)
-    job = job_status(svc["unit"], state_file=svc["state_file"],
-                     stale_after_s=svc["stale_after_s"])
-    timer = timer_status(svc["timer"]) if svc["timer"] else None
-    return render_template(
-        "_service_status.html",
-        name=name, svc=svc, job=job, timer=timer,
-        detail=_service_detail(name, svc),
-        now_ts=time.time(),
-    )
+    return render_template("_service_status.html", name=name,
+                           **_service_page_context(name, svc))
 
 
 def _bffs_manual_result(ok: bool, message: str):
@@ -2882,13 +2741,8 @@ def _bffs_manual_result(ok: bool, message: str):
     out-of-band notice; a plain form POST gets flash-and-redirect."""
     if request.headers.get("HX-Request"):
         svc = _service_registry()["bffs"]
-        return render_template(
-            "_service_bffs_result.html", ok=ok, message=message,
-            name="bffs", svc=svc,
-            job=job_status(svc["unit"], state_file=svc["state_file"],
-                           stale_after_s=svc["stale_after_s"]),
-            timer=timer_status(svc["timer"]) if svc["timer"] else None,
-            detail=_service_detail("bffs", svc), now_ts=time.time())
+        return render_template("_service_bffs_result.html", ok=ok, message=message,
+                               name="bffs", **_service_page_context("bffs", svc))
     flash(f"BFFS: {message}", "success" if ok else "error")
     return redirect(url_for("web.service_page", name="bffs"))
 
@@ -3151,27 +3005,31 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
     return {"status": "queued", **scope, "action": action}, 200
 
 
+def _targets(group: str, node: str | None):
+    """The nodes a group or node route addresses and the scope its reply
+    names, or the error reply."""
+    registry = _registry()
+    if node is None:
+        nodes = registry.in_group(group)
+        if not nodes:
+            return None, None, ({"error": f"Group '{group}' not found"}, 404)
+        return nodes, {"group": group}, None
+    key = f"{group}/{node}"
+    obj = registry.get_node(key)
+    if obj is None:
+        return None, None, ({"error": f"Node '{key}' not found"}, 404)
+    return [obj], {"node": key}, None
+
+
 @bp.route("/update/<group>", methods=["POST"])
-@localhost_or_login_required
-def update_group(group):
-    """Queue a config change for all nodes in a group."""
-    nodes = _registry().in_group(group)
-    if not nodes:
-        return {"error": f"Group '{group}' not found"}, 404
-    data = request.get_json(silent=True) or {}
-    return _apply_update(nodes, data, {"group": group})
-
-
 @bp.route("/update/<group>/<node>", methods=["POST"])
 @localhost_or_login_required
-def update_node(group, node):
-    """Queue a config change for a single node."""
-    node_key = f"{group}/{node}"
-    node_obj = _registry().get_node(node_key)
-    if node_obj is None:
-        return {"error": f"Node '{node_key}' not found"}, 404
-    data = request.get_json(silent=True) or {}
-    return _apply_update([node_obj], data, {"node": node_key})
+def update(group, node=None):
+    """Queue a config change for every node in a group, or for one node."""
+    nodes, scope, error = _targets(group, node)
+    if error:
+        return error
+    return _apply_update(nodes, request.get_json(silent=True) or {}, scope)
 
 
 # --- One-off configs: start without recording ---
@@ -3259,27 +3117,16 @@ def _run_oneshot(nodes: list, content: str, user: str) -> tuple[dict, int]:
 
 
 @bp.route("/oneshot/<group>", methods=["POST"])
-@localhost_or_login_required
-def oneshot_group(group):
-    """Start a config on the group's paused, idle nodes without recording it."""
-    nodes = _registry().in_group(group)
-    if not nodes:
-        return {"error": f"Group '{group}' not found"}, 404
-    data = request.get_json(silent=True) or {}
-    return _run_oneshot(nodes, data.get("config_content", ""), _audit_user())
-
-
 @bp.route("/oneshot/<group>/<node>", methods=["POST"])
 @localhost_or_login_required
-def oneshot_node(group, node):
-    """Start a config on one paused, idle node without recording it."""
-    node_key = f"{group}/{node}"
-    node_obj = _registry().get_node(node_key)
-    if node_obj is None:
-        return {"error": f"Node '{node_key}' not found"}, 404
+def oneshot(group, node=None):
+    """Start a config on a group's paused, idle nodes, or on one such
+    node, without recording it."""
+    nodes, _scope, error = _targets(group, node)
+    if error:
+        return error
     data = request.get_json(silent=True) or {}
-    return _run_oneshot([node_obj], data.get("config_content", ""),
-                        _audit_user())
+    return _run_oneshot(nodes, data.get("config_content", ""), _audit_user())
 
 
 # --- JSON API endpoints for read-only status (localhost bypass) ---
@@ -3309,11 +3156,7 @@ def _status_summary() -> dict:
 
     Shared by /api/status (JSON) and /metrics (Prometheus text).
     """
-    registry = _registry()
     services = _services_health()
-    counts = {s.value: 0 for s in NodeStatus}
-    for node in registry.nodes.values():
-        counts[node.status.value] += 1
     return {
         "up": True,
         "started_at": _STARTED_AT,
@@ -3321,14 +3164,7 @@ def _status_summary() -> dict:
             name: (health or {}).get("health", "unknown")
             for name, health in services.items()
         },
-        "nodes": {
-            "total": len(registry.nodes),
-            "started_desired": sum(
-                1 for n in registry.nodes.values() if n.started),
-            "maintenance": sum(
-                1 for n in registry.nodes.values() if n.maintenance),
-            **counts,
-        },
+        "nodes": _node_counts(_registry()),
     }
 
 
@@ -3351,6 +3187,13 @@ _MONITOR_STATES = {
 }
 
 
+def _gauge(name: str, help_text: str, value=None) -> list[str]:
+    """One Prometheus gauge's lines: HELP, TYPE and, given, its value
+    (a labelled series appends its own lines)."""
+    lines = [f"# HELP {name} {help_text}", f"# TYPE {name} gauge"]
+    return lines + ([f"{name} {value}"] if value is not None else [])
+
+
 @bp.route("/metrics", methods=["GET"])
 def metrics():
     """Prometheus metrics.
@@ -3362,15 +3205,10 @@ def metrics():
     summary = _status_summary()
     nodes = summary["nodes"]
     lines = [
-        "# HELP choco_up 1 while choco is serving requests.",
-        "# TYPE choco_up gauge",
-        "choco_up 1",
-        "# HELP choco_start_time_seconds Unix time the choco process "
-        "started (a restart re-engages cluster-wide maintenance mode).",
-        "# TYPE choco_start_time_seconds gauge",
-        f"choco_start_time_seconds {_STARTED_AT:.3f}",
-        "# HELP choco_service_state Service health, one-hot per state.",
-        "# TYPE choco_service_state gauge",
+        *_gauge("choco_up", "1 while choco is serving requests.", 1),
+        *_gauge("choco_start_time_seconds", "Unix time the choco process started "
+                "(a restart re-engages cluster-wide maintenance mode).", f"{_STARTED_AT:.3f}"),
+        *_gauge("choco_service_state", "Service health, one-hot per state."),
     ]
     for name, health in summary["services"].items():
         states = _MONITOR_STATES.get(name, _JOB_STATES)
@@ -3379,23 +3217,16 @@ def metrics():
             lines.append(
                 f'choco_service_state{{service="{name}",state="{state}"}} '
                 f"{value}")
-    lines += [
-        "# HELP choco_nodes Node count by kotekan runtime status.",
-        "# TYPE choco_nodes gauge",
-    ]
+    lines += _gauge("choco_nodes", "Node count by kotekan runtime status.")
     for status in NodeStatus:
         lines.append(
             f'choco_nodes{{status="{status.value}"}} {nodes[status.value]}')
     lines += [
-        "# HELP choco_nodes_total Number of registered nodes.",
-        "# TYPE choco_nodes_total gauge",
-        f"choco_nodes_total {nodes['total']}",
-        "# HELP choco_nodes_started_desired Nodes whose desired state is started.",
-        "# TYPE choco_nodes_started_desired gauge",
-        f"choco_nodes_started_desired {nodes['started_desired']}",
-        "# HELP choco_nodes_maintenance Nodes currently in maintenance mode.",
-        "# TYPE choco_nodes_maintenance gauge",
-        f"choco_nodes_maintenance {nodes['maintenance']}",
+        *_gauge("choco_nodes_total", "Number of registered nodes.", nodes["total"]),
+        *_gauge("choco_nodes_started_desired", "Nodes whose desired state is started.",
+                nodes["started_desired"]),
+        *_gauge("choco_nodes_maintenance", "Nodes currently in maintenance mode.",
+                nodes["maintenance"]),
     ]
     return Response("\n".join(lines) + "\n",
                     mimetype="text/plain; version=0.0.4")
@@ -3409,12 +3240,7 @@ def api_nodes_status():
     orchestrator = _orchestrator()
     nodes = [_node_to_dict(n) | {"worker": orchestrator.worker_status(n.key)}
              for n in registry.nodes.values()]
-    summary = {s.value: 0 for s in NodeStatus}
-    summary["total"] = len(nodes)
-    summary["started_desired"] = sum(1 for n in registry.nodes.values() if n.started)
-    for n in nodes:
-        summary[n["status"]] += 1
-    return {"summary": summary, "nodes": nodes}
+    return {"summary": _node_counts(registry), "nodes": nodes}
 
 
 @bp.route("/api/nodes", methods=["GET"])
@@ -3438,42 +3264,23 @@ def api_nodes():
 
 
 @bp.route("/api/config/<group>", methods=["GET"])
-@localhost_or_login_required
-def api_group_config(group):
-    """A sample node's desired kotekan config for *group*, as JSON.
-
-    Group configs are broadcast together, so any member represents the
-    group.  Jobs use this to learn the element layout (``dish_inputs``)
-    that kotekan's bad-input mask is indexed against, without touching
-    data files.
-    """
-    registry = _registry()
-    sample = next(
-        (n for n in registry.nodes.values() if n.group == group), None
-    )
-    if sample is None:
-        return {"error": f"Group '{group}' not found"}, 404
-    desired = sample.desired_config
-    if desired is None:
-        return {"error": sample.load_error
-                or f"No config file ({sample.config_filename})"}, 503
-    return desired
-
-
 @bp.route("/api/config/<group>/<node>", methods=["GET"])
 @localhost_or_login_required
-def api_node_config(group, node):
-    """One node's desired kotekan config, as JSON: what its worker would
-    push.  The check that moving a node onto a library file changed
-    nothing is a diff of this before and after."""
-    node_obj = _registry().get_node(f"{group}/{node}")
-    if node_obj is None:
-        return {"error": f"Node '{group}/{node}' not found"}, 404
-    desired = node_obj.desired_config
-    if desired is None:
-        return {"error": node_obj.load_error
-                or f"No config file ({node_obj.config_filename})"}, 503
-    return desired
+def api_config(group, node=None):
+    """A node's desired kotekan config, as JSON: what its worker would
+    push.  For a group, its first member's: group configs are broadcast
+    together, so any member represents the group, and jobs use this to
+    learn the element layout (``dish_inputs``) that kotekan's bad-input
+    mask is indexed against, without touching data files.  The check
+    that moving a node onto a library file changed nothing is a diff of
+    this before and after."""
+    nodes, _scope, error = _targets(group, node)
+    if error:
+        return error
+    sample = nodes[0]
+    if sample.desired_config is None:
+        return {"error": sample.config_problem}, 503
+    return sample.desired_config
 
 
 @bp.route("/api/configs", methods=["GET"])
@@ -3492,10 +3299,9 @@ def api_config_get(name):
     """One library file's text, with its users."""
     registry = _registry()
     try:
-        resolve_config_path(registry.configs_dir, name)
+        path = _library_path(registry, name)
     except ValueError as e:
         return {"error": str(e)}, 400
-    path = registry.configs_dir / name
     if not path.is_file():
         return {"error": f"No such config file: {name}"}, 404
     return _library_entry(registry, name) | {"content": path.read_text()}
@@ -3510,7 +3316,7 @@ def api_config_put(name):
     directory without a root shell (``choco config put``)."""
     registry = _registry()
     try:
-        resolve_config_path(registry.configs_dir, name)
+        _library_path(registry, name)
     except ValueError as e:
         return {"error": str(e)}, 400
     data = request.get_json(silent=True) or {}
@@ -3566,7 +3372,7 @@ def api_files():
     Sizes are bytes and times are unix timestamps — the page's own
     formatting is display, not data.
     """
-    scan = _datafile_scan()
-    if scan is None or not scan.configured:
+    scan = _component("datafile_scan")
+    if scan is None:
         return {"configured": False, "roots": []}
     return scan.get(force=request.args.get("refresh") == "1")
