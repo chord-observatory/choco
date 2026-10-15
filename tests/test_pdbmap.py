@@ -140,24 +140,22 @@ class TestKotekanDishLabels:
     def test_placeholder_labels_dropped(self):
         config = {"dish_inputs": [
             {"dish_idx": 0, "label": "A1", "type": "ArrayDish"},
-            {"dish_idx": 1, "label": "Missing"},
+            {"dish_idx": 1, "label": "Missing", "type": "Missing"},
         ]}
         sets = kotekan_dish_labels(config)
         assert sets["known"] == {"A1X", "A1Y"}
 
-    def test_entries_without_a_dish_idx_still_count(self):
-        """Only the names matter; the element-axis position is bffs's problem."""
-        config = {"dish_inputs": [{"label": "A1", "type": "ArrayDish"}]}
-        assert kotekan_dish_labels(config)["live"] == {"A1X", "A1Y"}
+    def test_a_table_kotekan_would_refuse_is_refused(self):
+        """dishlabels.dish_table's rule: a row without dish_idx, type or
+        label, or not a mapping, voids the table, as it does for kotekan."""
+        for rows in ([{"label": "A1", "type": "ArrayDish"}],
+                     [{"dish_idx": 0, "label": "A1"}, "junk"]):
+            with pytest.raises(ValueError):
+                kotekan_dish_labels({"dish_inputs": rows})
 
     def test_no_table_is_none(self):
         assert kotekan_dish_labels({"a": 1}) is None
         assert kotekan_dish_labels(None) is None
-
-    def test_garbage_entries_tolerated(self):
-        config = {"dish_inputs": [{"dish_idx": "x", "label": "A1"}, "junk",
-                                  {"no_label": 1}]}
-        assert kotekan_dish_labels(config)["known"] == {"A1X", "A1Y"}
 
     def test_per_element_table_is_refused(self):
         """Pre-2026-08 tables carried a wrong element ordering.

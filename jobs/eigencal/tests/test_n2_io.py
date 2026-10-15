@@ -127,7 +127,7 @@ def test_read_meta_feed_geometry(chord_file):
     m = n2_io.read_meta(chord_file)
     assert m.pol.tolist() == FILE_POL
     assert m.dish_type.tolist() == FILE_TYPE
-    assert (m.dish_type == n2_io.DISH_ARRAY).tolist() == [True, False, True, False]
+    assert (m.dish_type == n2_io.TYPE_ARRAY).tolist() == [True, False, True, False]
     assert np.allclose(m.position_m, FILE_POS)
     assert np.allclose(m.grid_orientation, GRID_ORIENTATION)
 

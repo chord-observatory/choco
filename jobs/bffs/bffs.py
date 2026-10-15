@@ -53,7 +53,6 @@ import glob
 import json
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,9 +61,8 @@ import numpy as np
 import yaml
 
 import sources
-from choco.dishlabels import (PLACEHOLDER_LABEL, expand_dish_labels,
-                              find_dish_inputs, find_key,
-                              labels_are_per_element)
+from choco.acqtree import ACQ_NAME_RE
+from choco.dishlabels import dish_table, expand_dish_labels
 from choco.jobclient import (STATE_NAME, failure, job_state_dir, push_updatable,
                              refuse_retired, setup_logging, write_json_atomic, write_run)
 from kotekan_io import read_labels, uniquify_labels  # noqa: F401 (re-exported)
@@ -128,98 +126,28 @@ def load_config(path: str | Path, state_dir: str | Path | None = None) -> Config
 # -- feed labels ----------------------------------------------------------
 
 
-def _config_int(config, key, default=None):
-    """*key* as an int, *default* when absent; raises on an expression.
+def config_axis(config: dict) -> tuple[list[str], list[str]] | None:
+    """The flag axis a kotekan config defines: ``(labels, types)``, one
+    per element, or None when the config has no ``dish_inputs`` table.
 
-    kotekan evaluates arithmetic expressions in config values
-    (``num_elements: num_polarizations * 64``); choco and bffs do not.
-    A key that is present but not a plain integer sizes the flag axis
-    and cannot be guessed at.
+    Read by :func:`choco.dishlabels.dish_table`, placed as kotekan places
+    it: [P][D] — ``num_polarizations`` blocks of ``num_dishes``,
+    ``element = dish_idx + pol * num_dishes`` — each label the dish label
+    + X/Y and each dish's ``DishType`` name on both of its polarizations.
+    A table kotekan would refuse raises ``OSError``, and so does the
+    pre-2026-08 per-element layout: its element ordering was wrong, and
+    indexing kotekan's bad-input mask with it would flag the wrong feeds.
+    The run reports degraded (exit 2) and heals once the config is fixed,
+    with no job-side action needed.
     """
-    value = find_key(config, key)
-    if value is None:
-        return default
     try:
-        return int(value)
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"kotekan config {key} = {value!r} is not a plain integer "
-            f"(a kotekan expression?) — cannot size the element axis")
-
-
-def element_labels_from_config(config: dict) -> list[str] | None:
-    """Element labels from a kotekan config's per-dish ``dish_inputs`` table.
-
-    Only the 2026-08 per-dish layout is accepted: the table names each
-    dish once (``A1``) and the element axis is [P][D] —
-    ``num_polarizations`` blocks of ``num_dishes``, ``element = dish_idx
-    + pol * num_dishes`` — so per-element labels are derived as label +
-    X/Y.  A pre-2026-08 per-element table (labels like ``A1X``, see
-    ``dishlabels.labels_are_per_element``) is REFUSED: its element
-    ordering was wrong, and indexing kotekan's bad-input mask with it
-    would flag the wrong feeds.  Raises ``OSError`` so the run reports
-    degraded (exit 2) and heals once the config is migrated, with no
-    job-side action needed.
-    """
-    table = _per_dish_table(config)
+        table = dish_table(config)
+    except ValueError as e:
+        raise OSError(f"the kotekan config's dish_inputs cannot index flags: {e}") from e
     if table is None:
         return None
-    dish_labels, _types, npol = table
-    return list(expand_dish_labels(dish_labels, npol))
-
-
-#: kotekan's ``DishType`` names (lib/utils/CHORDTelescope.hpp): an
-#: unpopulated slot, a main-array dish, an RFI-monitor antenna.
-DISH_MISSING, DISH_ARRAY, DISH_RFI = "Missing", "ArrayDish", "RFIDish"
-
-
-def element_types_from_config(config: dict) -> list[str] | None:
-    """Each element's kotekan ``DishType`` name, on the same [P][D] axis
-    as :func:`element_labels_from_config` (a dish's type applies to both
-    of its polarizations).  A slot the table leaves out is ``Missing``,
-    like its label.  None when the config has no usable table.
-    """
-    table = _per_dish_table(config)
-    if table is None:
-        return None
-    _labels, dish_types, npol = table
-    return [dish_types[d] for _p in range(npol) for d in range(len(dish_types))]
-
-
-def _per_dish_table(config: dict) -> tuple[list[str], list[str], int] | None:
-    """``(dish labels, dish types, num_polarizations)`` from the config's
-    per-dish ``dish_inputs`` table, indexed by ``dish_idx`` over
-    ``num_dishes`` slots, or None without a table; the checks behind
-    :func:`element_labels_from_config`.
-    """
-    table = find_dish_inputs(config)
-    if not table or not all(isinstance(e, dict) for e in table):
-        return None
-    if labels_are_per_element(str(e.get("label", "")) for e in table):
-        raise OSError(
-            "the kotekan config still carries a pre-2026-08 per-element "
-            "dish_inputs table — its element ordering is untrustworthy; "
-            "refusing to flag until the config is migrated to the "
-            "per-dish layout")
-    by_idx, type_by_idx = {}, {}
-    for i, entry in enumerate(table):
-        idx = int(entry.get("dish_idx", i))
-        by_idx[idx] = str(entry.get("label", f"dish{idx}"))
-        type_by_idx[idx] = str(entry.get("type") or DISH_MISSING)
-    ndish = _config_int(config, "num_dishes")
-    if ndish is None:
-        ndish = max(by_idx) + 1
-        log.warning("kotekan config has no plain num_dishes; using the "
-                    "dish_inputs table's %d", ndish)
-    if max(by_idx) >= ndish:
-        raise ValueError(
-            f"dish_idx {max(by_idx)} in the kotekan config exceeds "
-            f"num_dishes ({ndish}) — refusing to flag with ambiguous "
-            f"indexing")
-    npol = _config_int(config, "num_polarizations", default=2)
-    return ([by_idx.get(i, PLACEHOLDER_LABEL) for i in range(ndish)],
-            [type_by_idx.get(i, DISH_MISSING) for i in range(ndish)],
-            npol)
+    dish_labels, dish_types, npol = table
+    return expand_dish_labels(dish_labels, npol), [t for _ in range(npol) for t in dish_types]
 
 
 def file_axis_mismatch(axis, file_labels) -> str | None:
@@ -247,10 +175,6 @@ def file_axis_mismatch(axis, file_labels) -> str | None:
             f"from before the running config?")
 
 
-#: kotekan names an acquisition directory for its start, ``acq_YYYYMMDD_...``.
-_ACQ_NAME_RE = re.compile(r"acq_\d{8}")
-
-
 def newest_file(pattern: str) -> str | None:
     """The most recently written match of *pattern*, or None.
 
@@ -271,7 +195,7 @@ def newest_file(pattern: str) -> str | None:
     for m in matches:
         by_dir.setdefault(os.path.dirname(m), []).append(m)
     if len(by_dir) > 1:
-        if all(_ACQ_NAME_RE.match(os.path.basename(d)) for d in by_dir):
+        if all(ACQ_NAME_RE.match(os.path.basename(d)) for d in by_dir):
             newest_dir = max(by_dir, key=os.path.basename)
         else:
             newest_dir = max(by_dir, key=os.path.getmtime)
@@ -363,10 +287,11 @@ def resolve_labels(config: Config, path: str | None) -> FlagAxis:
             log.warning("no kotekan config from choco: %s", e)
     file_labels = read_labels(path) if path else None
     if cfg is not None:
-        cfg_labels = element_labels_from_config(cfg)
-        if cfg_labels is not None:
+        from_config = config_axis(cfg)
+        if from_config is not None:
+            cfg_labels, cfg_types = from_config
             axis = uniquify_labels(cfg_labels)
-            types = dict(zip((str(l) for l in axis), element_types_from_config(cfg)))
+            types = dict(zip((str(l) for l in axis), cfg_types))
             mismatch = (file_axis_mismatch(axis, file_labels)
                         if file_labels is not None else None)
             if mismatch:

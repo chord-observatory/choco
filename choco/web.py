@@ -20,7 +20,7 @@ from flask import (
 )
 from flask_login import login_required, login_user, logout_user, current_user
 
-from . import auth
+from . import acqtree, auth
 from .auth import save_user, localhost_or_login_required
 from .jobclient import (MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT,
                         write_text_atomic)
@@ -1241,20 +1241,11 @@ def _fill_implicit_input_list(node, frame: dict) -> None:
     num_elements = desc.get("num_elements")
     if isinstance(num_elements, bool) or not isinstance(num_elements, int):
         return
-    config = node.desired_config
-    table = dishlabels.find_dish_inputs(config) if config else None
-    if not table:
-        return
-    npol = dishlabels.find_key(config, "num_polarizations")
-    ndish = dishlabels.find_key(config, "num_dishes")
-    if isinstance(ndish, bool) or not isinstance(ndish, int):
-        ndish = None                      # an expression: the table's own length
     try:
-        inputs = dishlabels.connected_elements(
-            table, 2 if npol is None else npol, num_dishes=ndish)
-    except (TypeError, ValueError):
+        inputs = dishlabels.connected_elements(node.desired_config)
+    except ValueError:                    # a table kotekan would refuse too
         return
-    if len(inputs) == num_elements:
+    if inputs is not None and len(inputs) == num_elements:
         desc["input_list"] = inputs
 
 
@@ -1734,10 +1725,10 @@ def waterfall_view(root, acq, name):
     a, b = int(m.group(1)), int(m.group(2))
     prod = next((p for p in index.get("products") or []
                  if isinstance(p, dict)
-                 and p.get("name") == f"e{a:04d}xe{b:04d}"), None)
+                 and p.get("name") == acqtree.product_name(a, b)), None)
     if prod is None or not prod.get("rows"):
         abort(404)
-    shard = f"e{a:04d}"
+    shard = acqtree.shard_name(a)
     n_freq = int(index.get("n_freq") or 0)
 
     labels = index.get("labels") or []

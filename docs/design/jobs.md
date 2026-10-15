@@ -142,8 +142,8 @@ first dry run flagged B04X, B04Y and RFIB1X, and left C–H good — the
 opposite of what an operator expects.  Two rules settle it, both reading
 the kotekan config's ``dish_inputs`` ``type`` (``Missing`` / ``ArrayDish``
 / ``RFIDish``, kotekan's ``DishType``), which the core now derives per
-element beside the labels (``bffs.element_types_from_config``,
-``FlagAxis.types``) and hands to every source as ``dish_types``.  (1) A new
+element beside the labels (``bffs.config_axis`` over
+``dishlabels.dish_table``, the one reader of that table; ``FlagAxis.types``) and hands to every source as ``dish_types``.  (1) A new
 ``dish-type`` source flags every element of a ``Missing`` dish, 80 of 128
 today: a slot with no dish behind it is bad by construction, and since the
 subset files do not carry those elements no data-driven source could ever

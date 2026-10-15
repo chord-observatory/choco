@@ -7,13 +7,10 @@ per-file datasets.
 import glob
 import json
 import os
-import re
 
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
-
-FNAME = re.compile(r"_(\d{8})T_(\d{6})_")
 
 
 def cfg_facts(raw):

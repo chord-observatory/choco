@@ -16,12 +16,6 @@ def vis_file(tmp_path):
     return str(p)
 
 
-def test_names_carry_index_and_time():
-    assert R.index_from_name("vis_0004233671_20261004T_030643_744722230.h5") == 4233671
-    assert R.time_from_name("vis_0004233671_20261004T_030643_744722230.h5") == pytest.approx(1791083203.7447, abs=1e-3)
-    assert R.index_from_name("notes.txt") is None and R.time_from_name("x.h5") is None
-
-
 def test_read_axes(vis_file):
     ax = R.read_axes(vis_file)
     assert ax.file_idx == 42 and ax.n_time == 20 and ax.n_freq == 128

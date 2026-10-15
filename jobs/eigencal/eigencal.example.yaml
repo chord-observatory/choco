@@ -13,9 +13,9 @@
 kotekan_file: /mnt/cs00/data/kotekan_vis_files/full/acq_*/*.h5
 max_files: 4
 
-observer:                        # telescope reference position (DRAO shown)
-  latitude_deg: 49.320
-  longitude_deg: -119.624
+observer:                        # telescope reference position; default: the site as kotekan records it
+  latitude_deg: 49.32075144444     # kotekan's itrs_lat_deg (choco.observatory)
+  longitude_deg: -119.62081125
   altitude_m: 545.0
 
 source:

@@ -34,6 +34,7 @@ import os
 
 import numpy as np
 
+from choco.dishlabels import DISH_RFI
 from kotekan_io import Frame, read_autocorr, uniquify_labels
 
 from .common import project, report
@@ -47,7 +48,7 @@ NEEDS_FILE = True
 _MAD_TO_SIGMA = 1.4826  # turns a median-absolute-deviation into a standard deviation
 _KEYS = ("freq_lo", "freq_hi", "nsigma", "abs_lo", "abs_hi", "min_valid_frac")
 #: Elements of these kotekan dish types are neither compared nor flagged.
-DEFAULT_EXCLUDE_TYPES = ("RFIDish",)
+DEFAULT_EXCLUDE_TYPES = (DISH_RFI,)
 #: Least fraction of the band's (time, freq) cells that must hold data
 #: before feeds are judged at all.  One X-engine node is 1/8 of the
 #: band, so a quarter still lets the source work with most of the

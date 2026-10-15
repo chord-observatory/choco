@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 
 from gevent.lock import BoundedSemaphore
 
+from .acqtree import IMAGE_RE, SHARD_RE, shard_name  # noqa: F401 (re-exported)
 from .datafiles import run_blocking
 
 logger = logging.getLogger(__name__)
@@ -42,10 +43,8 @@ logger = logging.getLogger(__name__)
 #: kotekan's own ``acq_<stamp>`` names and our own root names.
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
-#: The per-input shard directory and the images inside it, exactly as
-#: ``store.py`` writes them.
-SHARD_RE = re.compile(r"^e\d{4}$")
-IMAGE_RE = re.compile(r"^(?:wf|th)_e(\d{4})xe(\d{4})\.png$")
+# The per-input shard directory and the images inside it, exactly as the
+# job writes them: choco.acqtree, the one copy of the tree's names.
 
 DEFAULT_TTL_S = 30.0
 
@@ -667,7 +666,7 @@ def triangle(index: dict, elements=None) -> dict:
         # that does not exist if a product ever came back with a > b
         cells[(min(a, b), max(a, b))] = {
             "name": p.get("name"),
-            "shard": f"e{a:04d}",
+            "shard": shard_name(a),
             "rows": int(p.get("rows") or 0),
         }
     present = sorted({e for pair in cells for e in pair})

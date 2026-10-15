@@ -13,7 +13,6 @@ Joins three sources:
 """
 import collections
 import datetime
-import glob
 import json
 import os
 import re
@@ -22,11 +21,13 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from choco.observatory import SITE_LAT_DEG
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TIMELINE = os.path.join(HERE, "timeline.yaml")
 PACIFIC = ZoneInfo("America/Vancouver")
 UTC = datetime.timezone.utc
-LAT = 49.32075144444
+LAT = SITE_LAT_DEG
 BIN_S = 10.0  # one time bin of a file
 
 
@@ -526,7 +527,6 @@ def element_status(a):
 
 def verdict(a, st):
     notes = []
-    name = a["name"]
     if a["n_files"] == 0:
         return "Empty: kotekan restarted before it wrote a file."
     for e in a["timeline"]:

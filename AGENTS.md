@@ -9,4 +9,4 @@ one file per subsystem; start with the links at the end of CLAUDE.md.
 Keep CLAUDE.md to rules a future change would be wrong without; put the
 why in `docs/design/`.  `choco.sh` must stay in step with any change to
 install steps, dependencies or run commands, and `./choco.sh test` runs
-the main suite plus the four job suites.
+the main suite plus every job's own suite (`jobs/*/pytest.ini`).

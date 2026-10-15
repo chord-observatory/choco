@@ -39,6 +39,7 @@ import wfpng
 log = logging.getLogger("waterfall.reduce")
 
 from choco import n2file  # noqa: E402
+from choco.acqtree import product_name  # noqa: E402
 
 
 def _element_labels(f) -> list:
@@ -96,12 +97,8 @@ class Axes:
         return self.input_a == self.input_b
 
     def product_names(self) -> list[str]:
-        """Stable 4-digit names — the on-disk identity of each product.
-
-        Zero-padded so a lexical sort is a numeric sort and so the scheme
-        survives the jump to hundreds of elements without a rename.
-        """
-        return [f"e{a:04d}xe{b:04d}" for a, b in zip(self.input_a, self.input_b)]
+        """The on-disk identity of each product (``acqtree.product_name``)."""
+        return [product_name(a, b) for a, b in zip(self.input_a, self.input_b)]
 
 
 def read_axes(path) -> Axes:

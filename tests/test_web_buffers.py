@@ -252,10 +252,10 @@ class TestNodeBufferDataApi:
         assert data["frame_desc"]["value_type"] == "int32"
         assert data["frame_id"] == 7
 
-    DISH_TABLE = [{"label": "B4", "type": "ArrayDish"},
-                  {"label": "Missing", "type": "Missing"},
-                  {"label": "A1", "type": "ArrayDish"},
-                  {"label": "RFIA1", "type": "RFIDish"}]
+    DISH_TABLE = [{"dish_idx": 0, "label": "B4", "type": "ArrayDish"},
+                  {"dish_idx": 1, "label": "Missing", "type": "Missing"},
+                  {"dish_idx": 2, "label": "A1", "type": "ArrayDish"},
+                  {"dish_idx": 3, "label": "RFIA1", "type": "RFIDish"}]
 
     def _desc_reply(self, client, desc, config):
         frame = self.frame(frame_desc=desc)

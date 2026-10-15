@@ -24,10 +24,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .dishlabels import (
-    PLACEHOLDER_LABEL, expand_dish_labels, find_dish_inputs,
-    labels_are_per_element,
-)
+from .dishlabels import DISH_ARRAY, PLACEHOLDER_LABEL, dish_table, expand_dish_labels
 
 logger = logging.getLogger(__name__)
 
@@ -336,27 +333,23 @@ def kotekan_dish_labels(config) -> dict | None:
     problem, and bffs reads the table itself).
 
     Returns ``None`` when the config has no usable table.  Raises
-    ``ValueError`` for a pre-2026-08 per-element table (labels like
-    ``A1X``): its element ordering was wrong, so the check reports it
-    as unavailable with a migrate-this-config reason instead of
-    checking against untrustworthy data.
+    ``ValueError`` (:func:`choco.dishlabels.dish_table`) for a table
+    kotekan would refuse, and for a pre-2026-08 per-element table (labels
+    like ``A1X``): its element ordering was wrong, so the check reports
+    it as unavailable with the reason instead of checking against
+    untrustworthy data.
     """
-    entries = [(str(e.get("label", "")).strip(), str(e.get("type", "")).strip())
-               for e in (find_dish_inputs(config) or [])
-               if isinstance(e, dict)]
-    entries = [(label, typ) for label, typ in entries
+    table = dish_table(config)
+    if table is None:
+        return None
+    labels, kinds, npol = table
+    entries = [(label, kind) for label, kind in zip(labels, kinds)
                if label and label != PLACEHOLDER_LABEL]
     if not entries:
         return None
-    if labels_are_per_element(label for label, _ in entries):
-        raise ValueError(
-            "pre-2026-08 per-element dish_inputs table (labels like A1X) — "
-            "its element ordering is untrustworthy; migrate the config to "
-            "the per-dish layout")
-
     return {
-        "live": set(expand_dish_labels(l for l, typ in entries if typ == "ArrayDish")),
-        "known": set(expand_dish_labels(l for l, _ in entries)),
+        "live": set(expand_dish_labels((l for l, kind in entries if kind == DISH_ARRAY), npol)),
+        "known": set(expand_dish_labels((l for l, _ in entries), npol)),
     }
 
 

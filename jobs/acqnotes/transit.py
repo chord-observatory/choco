@@ -5,33 +5,29 @@ reads the autos of a few frequency bands around the transit and reports, per ele
 band: the fractional power bump at transit, its significance, and the hour angle of the
 peak (E-W beam centre).
 """
-import datetime
 import glob
-import json
 import os
-import re
 
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 from astropy import units as u
-from astropy.coordinates import EarthLocation, SkyCoord, get_sun, AltAz
+from astropy.coordinates import EarthLocation, get_sun
 from astropy.time import Time
 from astropy.utils import iers
 
+from choco.acqtree import file_time as file_start  # a file's first sample, from its name
+from choco.observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
+from choco.observatory import SOURCES as OBS_SOURCES
+
 iers.conf.auto_download = False
 
-LAT, LON = 49.32075144444, -119.62081125
-SITE = EarthLocation(lat=LAT * u.deg, lon=LON * u.deg, height=545 * u.m)
-SOURCES = {
-    "CygA": (299.868, 40.734),
-    "CasA": (350.858, 58.815),
-    "TauA": (83.633, 22.015),
-    "VirA": (187.706, 12.391),
-    "Sun": None,
-}
+LAT, LON = SITE_LAT_DEG, SITE_LON_DEG
+SITE = EarthLocation(lat=LAT * u.deg, lon=LON * u.deg, height=SITE_HEIGHT_M * u.m)
+# keyed as the acquisition metadata already stores them ("CygA")
+SOURCES = {name.replace(" ", ""): OBS_SOURCES[name]
+           for name in ("Cyg A", "Cas A", "Tau A", "Vir A")} | {"Sun": None}
 BANDS = [(440, 460), (600, 620), (1400, 1420)]
-FNAME = re.compile(r"vis_\d+_(\d{8})T_(\d{6})_\d+\.h5$")
 
 
 BIN_S = 10.0  # one time bin of a file (9.94-9.98 s)
@@ -42,12 +38,6 @@ def file_span(p):
     40 bins (400 s) from 2026-10-10."""
     with h5py.File(p, "r") as f:
         return f["vis"].shape[2] * BIN_S
-
-
-def file_start(p):
-    m = FNAME.search(p)
-    return datetime.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(
-        tzinfo=datetime.timezone.utc).timestamp()
 
 
 def src_radec(name, t_unix):

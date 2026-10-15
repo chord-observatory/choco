@@ -32,13 +32,13 @@ import h5py
 import numpy as np
 
 from choco import n2file
+from choco.dishlabels import DISH_ARRAY, DISH_MISSING, DISH_RFI, DISH_TYPE_CODES
 
-
-# kotekan's DishType (lib/utils/CHORDTelescope.hpp), as hdf5N2Write records
-# it per element in index_map/type.  Only array dishes carry sky signal
-# worth calibrating; Fake entries are unbuilt placeholders and RFIDish
-# entries are the RFI-monitor antennas outside the main array.
-DISH_FAKE, DISH_ARRAY, DISH_RFI = -1, 0, 1
+# kotekan's DishType codes, as hdf5N2Write records them per element in
+# index_map/type.  Only array dishes carry sky signal worth calibrating;
+# Missing entries are unbuilt placeholders and RFIDish entries the
+# RFI-monitor antennas outside the main array.
+TYPE_MISSING, TYPE_ARRAY, TYPE_RFI = (DISH_TYPE_CODES[k] for k in (DISH_MISSING, DISH_ARRAY, DISH_RFI))
 
 
 def element_labels(f: h5py.File) -> np.ndarray:
@@ -69,7 +69,7 @@ class N2Meta:
     # _feed_geometry): kotekan polarisation index, DishType, position in
     # the telescope's grid frame, and the grid frame's orientation.
     pol: np.ndarray | None = None              # (nfeed,) int
-    dish_type: np.ndarray | None = None        # (nfeed,) int, DISH_*
+    dish_type: np.ndarray | None = None        # (nfeed,) int, TYPE_*
     position_m: np.ndarray | None = None       # (nfeed, 3) grid-frame metres
     grid_orientation: np.ndarray | None = None  # (3, 3) R: v_grid = R . v_topo
 
@@ -79,7 +79,7 @@ def _feed_geometry(f: h5py.File, nfeed: int):
 
     kotekan's hdf5N2Write records, one entry per element of the file's own
     axis, ``index_map/pol`` and ``index_map/type`` (``DishType``, see
-    ``DISH_*``) and the ``feed_positions_m`` attribute: (nfeed, 3) metres
+    ``TYPE_*``) and the ``feed_positions_m`` attribute: (nfeed, 3) metres
     in the telescope's GRID frame, already dish pitch x grid index plus
     the per-dish ``feed_pos_disp_m`` displacement
     (``CHORDTelescope::station_id_to_feed_position_m``), so nothing needs

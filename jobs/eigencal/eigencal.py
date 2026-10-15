@@ -44,6 +44,8 @@ from astropy.time import Time
 
 import n2_io
 from choco.dishlabels import pol_suffix
+from choco.acqtree import ACQ_NAME_RE, file_index
+from choco.observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG, SOURCES
 from choco.jobclient import (STATE_NAME, atomic_output, failure, job_state_dir, push_updatable,
                              refuse_retired, setup_logging, write_json_atomic, write_run)
 from transit_fit import (fit_transits, fringestop_phase, interpolate_gaps,
@@ -60,12 +62,12 @@ SIDEREAL_RATE_DEG_S = 360.9856473 / 86400.0   # LST advance per UT second
 DEFAULTS = {
     "kotekan_file": None,          # N² output glob (newest matches win); required
     "max_files": 4,                # newest matches considered when assembling the window
-    "observer": {                  # DRAO; replace with the CHORD pad reference
-        "latitude_deg": 49.320, "longitude_deg": -119.624, "altitude_m": 545.0,
+    "observer": {                  # the site as kotekan records it (choco.observatory)
+        "latitude_deg": SITE_LAT_DEG, "longitude_deg": SITE_LON_DEG, "altitude_m": SITE_HEIGHT_M,
     },
     "source": {
         "name": "CYG_A",
-        "ra_deg": 299.86815, "dec_deg": 40.73392,   # J2000
+        "ra_deg": SOURCES["Cyg A"][0], "dec_deg": SOURCES["Cyg A"][1],   # J2000
         # log10(S/Jy) = sum_k c_k * log10(nu/GHz)**k
         # Perley & Butler (2017) Cyg A -- VERIFY before trusting the flux scale.
         "flux_log10_coeff": [3.3498, -1.0022, -0.2246, 0.0227, 0.0425],
@@ -281,14 +283,14 @@ def layout_from_file(meta, phase_reference):
         raise OSError(f"{meta.path} carries no feed geometry (index_map/pol, "
                       "index_map/type, feed_positions_m); set "
                       "telescope.feed_layout to a YAML layout instead")
-    is_array = meta.dish_type == n2_io.DISH_ARRAY
+    is_array = meta.dish_type == n2_io.TYPE_ARRAY
     pol_of = np.array([pol_suffix(int(p)) if ok else ""
                        for p, ok in zip(meta.pol, is_array)])
     log.info("feed layout from %s: %d array-dish elements to calibrate; "
              "%d placeholder and %d RFI-antenna elements excluded",
              os.path.basename(meta.path), int(is_array.sum()),
-             int((meta.dish_type == n2_io.DISH_FAKE).sum()),
-             int((meta.dish_type == n2_io.DISH_RFI).sum()))
+             int((meta.dish_type == n2_io.TYPE_MISSING).sum()),
+             int((meta.dish_type == n2_io.TYPE_RFI).sum()))
     dist = np.array(n2_io.enu_positions_m(meta)[:, :2], dtype=np.float64)  # (E, N)
     refs = {str(k): str(v) for k, v in (phase_reference or {}).items()}
     return _group_by_pol(meta.labels, pol_of, dist, refs, default_ref=True)
@@ -309,21 +311,34 @@ def feed_layout(tel_cfg, meta):
 # -- data collection ---------------------------------------------------------
 
 
-def collect_segments(cfg, t_lo, t_hi):
+def newest_files(cfg) -> list[str]:
+    """The ``kotekan_file`` matches, newest first, globbed once per run.
+
+    kotekan's own names order them with no stat at all: the acquisition
+    directory carries its start time and the file its index
+    (``choco.acqtree``) — over NFS, ~15,000 stats cost seconds.  Matches
+    named any other way are ordered by mtime.
+    """
+    matches = glob.glob(cfg["kotekan_file"])
+    if not matches:
+        raise FileNotFoundError(f"no kotekan file matches {cfg['kotekan_file']!r}")
+    keys = [(os.path.basename(os.path.dirname(p)), file_index(p)) for p in matches]
+    if all(ACQ_NAME_RE.match(acq) and idx is not None for acq, idx in keys):
+        return [p for _, p in sorted(zip(keys, matches), reverse=True)]
+    return sorted(matches, key=os.path.getmtime, reverse=True)
+
+
+def collect_segments(cfg, t_lo, t_hi, files=None):
     """Newest N² files whose time axes overlap [t_lo, t_hi].
 
+    *files* is :func:`newest_files`' list when the caller already has it.
     Returns ``(segments, times)``: a time-ordered list of
     ``(N2Meta, index array into that file's time axis)`` plus the
     concatenated timestamps.  All files must share the same label and
     frequency axes.
     """
-    matches = glob.glob(cfg["kotekan_file"])
-    if not matches:
-        raise FileNotFoundError(f"no kotekan file matches {cfg['kotekan_file']!r}")
-    newest_first = sorted(matches, key=os.path.getmtime, reverse=True)
-
     segments = []
-    for path in newest_first[: int(cfg["max_files"])]:
+    for path in (files or newest_files(cfg))[: int(cfg["max_files"])]:
         meta = n2_io.read_meta(path)
         if meta.time.size == 0 or meta.time.max() < t_lo or meta.time.min() > t_hi:
             continue
@@ -370,10 +385,8 @@ def process_transit(cfg, transit_unix, eph):
     beam_peak_ha = np.radians(tel["beam_peak_ha_deg"])
 
     # Probe the newest file for the axes, then size the selection windows.
-    matches = glob.glob(cfg["kotekan_file"])
-    if not matches:
-        raise FileNotFoundError(f"no kotekan file matches {cfg['kotekan_file']!r}")
-    probe = n2_io.read_meta(max(matches, key=os.path.getmtime))
+    files = newest_files(cfg)
+    probe = n2_io.read_meta(files[0])
     freq = probe.freq_mhz
     nfreq = freq.size
     sigma = beam_sigma_rad(freq, tel)
@@ -383,7 +396,7 @@ def process_transit(cfg, transit_unix, eph):
 
     t_lo = transit_unix + (beam_peak_ha - 2 * win_off) / omega
     t_hi = transit_unix + (beam_peak_ha + 2 * win_off) / omega
-    segments, times = collect_segments(cfg, t_lo, t_hi)
+    segments, times = collect_segments(cfg, t_lo, t_hi, files)
 
     ha_all = eph.hour_angle_rad(times, ra_app) - beam_peak_ha
     on = np.abs(ha_all) <= win_fit

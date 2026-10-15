@@ -9,9 +9,9 @@ the **current** positions of the Sun, the Moon and the beam itself (a
 labels for where the beam will point over the next 24 h).
 
 The pointing declination is read live from choco's ``/api/config``:
-``dish_coelev_deg`` in the rendered kotekan config plus DRAO's latitude
-is the beam declination (49.32° − 27.3° ≈ +22° = Tau A).  An explicit
-``dec`` in skymap.yaml overrides it.
+``dish_coelev_deg`` in the rendered kotekan config plus the site's latitude
+is the beam declination (49.32° − 8.6° ≈ +40.7°, Cyg A, since kotekan's
+October 2026 correction).  skymap.yaml's ``beams:`` can add fixed ones.
 
 Runs from choco-skymap.timer every 5 minutes and renders the same
 instant twice: a day image (white page, for the landing card) and a
@@ -47,6 +47,7 @@ import yaml
 from choco.dishlabels import find_key
 from choco.healpix import default_sky_map, load_healpix, log_stretch, sample_galactic
 from choco.jobclient import atomic_output, get_json, job_state_dir, refuse_retired
+from choco.observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG, SOURCES
 
 import matplotlib
 matplotlib.use("Agg")
@@ -92,10 +93,8 @@ DEFAULTS = {
     "timezone": "America/Vancouver",
 }
 
-# DRAO Penticton
-DRAO_LAT = 49.3214       # deg N
-DRAO_LON = -119.6243     # deg E (west negative)
-DRAO_ALT = 545           # m
+# The site and the major sources: choco.observatory, shared by the jobs.
+DRAO_LAT, DRAO_LON, DRAO_ALT = SITE_LAT_DEG, SITE_LON_DEG, SITE_HEIGHT_M
 
 # CHORD beam characteristics (6 m dishes, 300–1500 MHz)
 HPBW_300_MHZ = 11.5      # deg
@@ -106,13 +105,8 @@ BEAM_FILTER_DEG = 12.0   # only show sources within this Dec of beam centre
 # ============================================================================
 # SOURCE CATALOGS (verified J2000 positions from SIMBAD)
 # ============================================================================
-MAJOR_SOURCES = {
-    'Tau A':  ('05h34m31.94s', '+22d00m52.2s'),  # Crab Nebula SNR (M1)
-    'Cas A':  ('23h23m24.0s',  '+58d48m54s'),    # SNR
-    'Cyg A':  ('19h59m28.36s', '+40d44m02.1s'),  # 3C 405, radio galaxy
-    'Vir A':  ('12h30m49.42s', '+12d23m28.0s'),  # M87
-    'Sgr A*': ('17h45m40.04s', '-29d00m28.1s'),  # Galactic center BH
-}
+#: name -> (RA, Dec) in degrees, J2000: choco.observatory's table.
+MAJOR_SOURCES = SOURCES
 
 BRIGHT_SOURCES = {
     # name:      (RA,             Dec)            ~1.4 GHz flux, notes
@@ -227,8 +221,7 @@ def dec_from_coelev(coelev_deg):
     """Beam declination from kotekan's dish co-elevation.
 
     A meridian drift telescope at latitude φ tilted by the co-elevation
-    angle points at δ = φ + coelev (DRAO: 49.32° − 27.3° ≈ +22°, Tau A,
-    matching the config's own comment).
+    angle points at δ = φ + coelev (49.32° − 8.6° ≈ +40.7°, Cyg A).
     """
     return DRAO_LAT + float(coelev_deg)
 
@@ -237,23 +230,11 @@ def nearest_major_source(dec_deg, within_deg=1.5):
     """Name of the major source whose Dec is closest to *dec_deg*, if
     any lies within *within_deg* — purely a plot-title nicety."""
     best, best_off = None, within_deg
-    for name, (_, dec_str) in MAJOR_SOURCES.items():
-        d = _parse_dec_deg(dec_str)
+    for name, (_, d) in MAJOR_SOURCES.items():
         off = abs(d - dec_deg)
         if off <= best_off:
             best, best_off = name, off
     return best
-
-
-def _parse_dec_deg(dec_str):
-    """'+22d00m52.2s' -> degrees, without astropy (keeps helpers pure)."""
-    s = dec_str.strip()
-    sign = -1.0 if s.startswith('-') else 1.0
-    s = s.lstrip('+-')
-    d, rest = s.split('d')
-    m, rest = rest.split('m')
-    sec = rest.rstrip('s') or '0'
-    return sign * (float(d) + float(m) / 60 + float(sec) / 3600)
 
 
 def fetch_pointings(choco_url, group=None, timeout=15):
@@ -323,7 +304,7 @@ def parse_beams(entries):
         if name == POINTING:
             parsed.append((POINTING, None))
         elif name in MAJOR_SOURCES:
-            parsed.append((_parse_dec_deg(MAJOR_SOURCES[name][1]), name))
+            parsed.append((MAJOR_SOURCES[name][1], name))
         else:
             raise ValueError(
                 f"beams: unknown entry {entry!r} — use {POINTING!r}, a "
@@ -714,8 +695,8 @@ def _plot_skymap(cfg, beams, now, T, output, sky):
     # labels are placed — so an early label can never sit on a marker
     # whose turn had not come yet.
     majors = []
-    for name, (ra_str, dec_str) in MAJOR_SOURCES.items():
-        sc = SkyCoord(ra_str, dec_str, frame='icrs')
+    for name, (ra_deg, dec_deg) in MAJOR_SOURCES.items():
+        sc = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame='icrs')
         l, b = eq_to_gal(np.array([sc.ra.rad]), np.array([sc.dec.rad]))
         ax.plot(-l[0], b[0], marker='o', markerfacecolor='none',
                 markeredgecolor=T["major"], markersize=10, markeredgewidth=1.6,

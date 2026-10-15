@@ -393,3 +393,17 @@ def test_lock_makes_a_second_run_a_no_op(acquisition, tmp_path):
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert M.main(["-c", str(cfg), "--state-dir", str(sd)]) == 0
     assert not (sd / M.MAPS_FILE).exists()
+
+
+def test_stored_meta_reads_the_index_without_the_arrays(acquisition, tmp_path):
+    """A run lists its pending files from the saved meta alone; a changed
+    grid reads as nothing saved, as a full load would."""
+    root, _paths = acquisition
+    cfg = M.load_config(write_cfg(tmp_path / "m.yaml", root))
+    sd = tmp_path / "state"
+    sd.mkdir()
+    report = M.run(cfg, sd)
+    meta = M.Maps.stored_meta(sd / M.MAPS_FILE, M.grid_signature(cfg))
+    assert meta["last_file_idx"] == report["last_file_idx"]
+    assert M.Maps.stored_meta(sd / M.MAPS_FILE, M.grid_signature(dict(cfg, n_ra_bins=64))) == {}
+    assert M.Maps.stored_meta(sd / "absent.npz", M.grid_signature(cfg)) == {}

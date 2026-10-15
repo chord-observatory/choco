@@ -40,6 +40,7 @@ from pathlib import Path
 import numpy as np
 
 import wfpng
+from choco.acqtree import shard_name
 from choco.jobclient import atomic_output
 from reduce import Axes, thumb_rows
 
@@ -289,7 +290,7 @@ class AcquisitionStore:
     # --- paths ----------------------------------------------------------
 
     def product_dir(self, p: int) -> Path:
-        return self.path / f"e{self.index['products'][p]['a']:04d}"
+        return self.path / shard_name(self.index['products'][p]['a'])
 
     def image_path(self, p: int) -> Path:
         return self.product_dir(p) / f"wf_{self.index['products'][p]['name']}.png"

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import glob
 import json
 import logging
 import math
@@ -44,7 +43,10 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from choco.acqtree import file_index, list_acquisitions, normalize_roots
+from choco.acqtree import source_files as acqtree_source_files
 from choco.healpix import default_sky_map
+from choco.observatory import SOURCES
 from choco.jobclient import (STATE_NAME, Degraded, atomic_output, job_state_dir, refuse_retired,
                              setup_logging, single_run, write_json_atomic)
 
@@ -79,12 +81,8 @@ DEFAULTS = {
     "beam_fwhm_factor": 1.03,
     "footprint_fwhm": 1.2,
     "sun_exclusion_deg": 30.0,
-    "calibrators": [
-        {"name": "Cyg A", "ra_deg": 299.86815, "dec_deg": 40.73392},
-        {"name": "Cas A", "ra_deg": 350.86642, "dec_deg": 58.81178},
-        {"name": "Tau A", "ra_deg": 83.63308, "dec_deg": 22.01450},
-        {"name": "Vir A", "ra_deg": 187.70593, "dec_deg": 12.39112},
-    ],
+    "calibrators": [{"name": name, "ra_deg": SOURCES[name][0], "dec_deg": SOURCES[name][1]}
+                    for name in ("Cyg A", "Cas A", "Tau A", "Vir A")],
     "calibrator_max_offset_deg": 5.0,
     "calibration_window_deg": 3.0,
     "min_cal_samples": 60,
@@ -132,17 +130,7 @@ def load_config(path) -> dict:
         raise ValueError("; ".join(f"{k} retired: use {_RENAMED_KEYS[k]}" for k in renamed))
     cfg = dict(DEFAULTS)
     cfg.update(raw)
-    roots = cfg.get("roots") or []
-    if not roots:
-        raise ValueError("no roots configured; nothing to map")
-    norm = []
-    for r in roots:
-        if isinstance(r, str):
-            r = {"path": r, "name": Path(r).name}
-        if not r.get("path"):
-            raise ValueError(f"root {r!r} has no path")
-        norm.append({"path": str(r["path"]), "name": str(r.get("name") or Path(r["path"]).name)})
-    cfg["roots"] = norm
+    cfg["roots"] = normalize_roots(cfg.get("roots"))
     if cfg["pointing_dec_deg"] is None:
         raise ValueError("pointing_dec_deg is required: the declination the dishes point at")
     cfg["pointing_dec_deg"] = float(cfg["pointing_dec_deg"])
@@ -272,24 +260,10 @@ def pick_calibrator(cfg: dict) -> dict | None:
 
 # --- pending files ------------------------------------------------------------
 
-def list_acquisitions(root: str) -> list[str]:
-    """Acquisition directories, oldest first."""
-    try:
-        names = sorted(e for e in os.listdir(root)
-                       if e.startswith("acq_") and os.path.isdir(os.path.join(root, e)))
-    except OSError as e:
-        raise Degraded(f"data root {root} unavailable: {e}") from e
-    return names
-
-
 def source_files(acq_dir: str) -> list[tuple[int, str]]:
     """``(index, path)`` of the completed files in an acquisition, in order."""
-    out = []
-    for p in glob.glob(os.path.join(acq_dir, "vis_*.h5")):
-        idx = R.index_from_name(os.path.basename(p))
-        if idx is not None:
-            out.append((idx, p))
-    return sorted(out)
+    named = ((file_index(p), p) for p in acqtree_source_files(acq_dir))
+    return sorted((idx, p) for idx, p in named if idx is not None)
 
 
 def pending_files(cfg: dict, last_idx: int | None) -> tuple[list[tuple[int, str]], list[str]]:
@@ -354,10 +328,11 @@ class Maps:
             return m
         try:
             with np.load(path, allow_pickle=False) as z:
-                if not signature_matches(str(z["signature"]), signature) or z["sky_num"].shape != m.sky_num.shape:
+                sky_num = z["sky_num"]                 # each member access reads it again
+                if not signature_matches(str(z["signature"]), signature) or sky_num.shape != m.sky_num.shape:
                     log.warning("map grid or bands changed; starting the accumulators afresh")
                     return m
-                m.sky_num = z["sky_num"]
+                m.sky_num = sky_num
                 m.sky_exp = z["sky_exp"]
                 m.passes = I.PassSlots(z["pass_num"], z["pass_exp"], z["pass_idx"])
                 if "sky_blw" in z:
@@ -377,6 +352,23 @@ class Maps:
         m.n_samples = int(meta.get("n_samples", 0))
         m.n_sun_skipped = int(meta.get("n_sun_skipped", 0))
         return m
+
+    @staticmethod
+    def stored_meta(path, signature: str) -> dict:
+        """The saved maps' meta record (``last_file_idx`` …) without their
+        arrays, or {} when there are none for this *signature* — what a
+        run needs before it knows a file's geometry, at a fraction of a
+        full :meth:`load` (the arrays are hundreds of MB)."""
+        if not os.path.exists(path):
+            return {}
+        try:
+            with np.load(path, allow_pickle=False) as z:
+                if not signature_matches(str(z["signature"]), signature):
+                    return {}
+                return json.loads(str(z["meta"])) or {}
+        except (OSError, ValueError, KeyError) as e:
+            log.warning("could not read %s (%s)", path, e)
+            return {}
 
     def save(self, path) -> None:
         meta = json.dumps({"last_file_idx": self.last_file_idx,
@@ -675,13 +667,8 @@ class Run:
 def run(cfg: dict, state_dir: Path, budget: int | None = None) -> dict:
     t0 = time.perf_counter()
     r = Run(cfg, state_dir)
-    maps_meta_idx = None
     # the last folded index lives with the maps, so read it before listing
-    probe = Maps.load(state_dir / MAPS_FILE, I.Grid.build(cfg["n_ra_bins"], cfg["pointing_dec_deg"],
-                                                          cfg["dec_halfwidth_deg"], cfg["dec_step_deg"],
-                                                          0.0, 0.0),
-                      2, cfg["colour_bins"], grid_signature(cfg))
-    maps_meta_idx = probe.last_file_idx
+    maps_meta_idx = Maps.stored_meta(state_dir / MAPS_FILE, grid_signature(cfg)).get("last_file_idx")
     files, reasons = pending_files(cfg, maps_meta_idx)
     r.report["degraded"].extend(reasons)
     budget = cfg["max_files_per_run"] if budget is None else budget
@@ -712,8 +699,12 @@ def run(cfg: dict, state_dir: Path, budget: int | None = None) -> dict:
                 r.report["errors"].append(f"render: {e}")
     elif todo and last_idx is not None and last_idx != maps_meta_idx:
         # every file was unusable; remember where we got to without a grid
-        probe.last_file_idx = last_idx
-        probe.save(state_dir / MAPS_FILE)
+        stub = Maps.load(state_dir / MAPS_FILE, I.Grid.build(cfg["n_ra_bins"], cfg["pointing_dec_deg"],
+                                                             cfg["dec_halfwidth_deg"], cfg["dec_step_deg"],
+                                                             0.0, 0.0),
+                         2, cfg["colour_bins"], grid_signature(cfg))
+        stub.last_file_idx = last_idx
+        stub.save(state_dir / MAPS_FILE)
     if r.gains is None and r.calibrator is not None and r.report["files_processed"]:
         acc = r.calsum.n_samples if r.calsum is not None else 0
         r.report["degraded"].append(
@@ -771,14 +762,11 @@ def main(argv=None) -> int:
     budget = args.max_files
 
     if args.dry_run:
-        probe = Maps.load(state_dir / MAPS_FILE, I.Grid.build(cfg["n_ra_bins"], cfg["pointing_dec_deg"],
-                                                              cfg["dec_halfwidth_deg"], cfg["dec_step_deg"],
-                                                              0.0, 0.0),
-                          2, cfg["colour_bins"], grid_signature(cfg))
-        files, reasons = pending_files(cfg, probe.last_file_idx)
+        last_idx = Maps.stored_meta(state_dir / MAPS_FILE, grid_signature(cfg)).get("last_file_idx")
+        files, reasons = pending_files(cfg, last_idx)
         for reason in reasons:
             log.error("%s", reason)
-        print(f"{len(files)} files pending (last folded index {probe.last_file_idx})")
+        print(f"{len(files)} files pending (last folded index {last_idx})")
         for idx, p in files[:10]:
             print(f"  {idx} {p}")
         return 2 if reasons else 0

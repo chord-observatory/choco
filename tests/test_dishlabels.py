@@ -106,56 +106,71 @@ class TestFileElementLabels:
         assert dl.file_element_labels([], 0) == []
 
 
+def _config(rows, **top):
+    return {"telescope": {"dish_inputs": rows, **top}}
+
+
+def _row(idx, label, kind="ArrayDish"):
+    return {"dish_idx": idx, "label": label, "type": kind}
+
+
+class TestDishTable:
+    def test_rows_go_to_their_dish_idx_and_gaps_are_missing(self):
+        """Placed as CHORDTelescope places them: out of order and sparse
+        must not shift the axis."""
+        cfg = _config([_row(2, "A3"), _row(0, "R1", "RFIDish")], num_dishes=4)
+        assert dl.dish_table(cfg) == (["R1", "Missing", "A3", "Missing"],
+                                      ["RFIDish", "Missing", "ArrayDish", "Missing"], 2)
+
+    def test_without_num_dishes_the_table_sizes_itself(self):
+        cfg = _config([_row(2, "A3")], num_polarizations=1)
+        assert dl.dish_table(cfg) == (["Missing", "Missing", "A3"],
+                                      ["Missing", "Missing", "ArrayDish"], 1)
+
+    def test_no_table_is_none(self):
+        assert dl.dish_table({"a": 1}) is None and dl.dish_table(None) is None
+
+    @pytest.mark.parametrize("rows,top,match", [
+        (["A1"], {}, "not a mapping"),
+        ([{"dish_idx": 0, "label": "A1"}], {}, "lacks"),           # kotekan requires type
+        ([{"label": "A1", "type": "ArrayDish"}], {}, "lacks"),     # ... and dish_idx
+        ([_row(1, "A1"), _row(1, "A2")], {}, "duplicated"),
+        ([_row(-1, "A1")], {}, "negative"),
+        ([_row(4, "A1")], {"num_dishes": 4}, "past num_dishes"),
+        ([_row(0, "A1")], {"num_dishes": "2 * 32"}, "plain integer"),
+        ([_row(0, "A1X"), _row(1, "A1Y")], {}, "per-element"),
+    ])
+    def test_a_table_kotekan_would_refuse_raises(self, rows, top, match):
+        with pytest.raises(ValueError, match=match):
+            dl.dish_table(_config(rows, **top))
+
+
 class TestConnectedElements:
-    TABLE = [{"label": "B4", "type": "ArrayDish"},
-             {"label": "Missing", "type": "Missing"},
-             {"label": "A1", "type": "ArrayDish"},
-             {"label": "RFIA1", "type": "RFIDish"}]
+    TABLE = [_row(0, "B4"), _row(1, "Missing", "Missing"), _row(2, "A1"),
+             _row(3, "RFIA1", "RFIDish")]
 
-    def test_skips_missing_rows_in_pol_major_order(self):
+    def test_skips_missing_slots_in_pol_major_order(self):
         # Compact element c is fiducial element result[c]: X block first,
-        # then the Y block at + num_dishes, Missing rows dropped from both.
-        assert dl.connected_elements(self.TABLE) == [0, 2, 3, 4, 6, 7]
-
-    def test_only_an_explicit_missing_type_is_dropped(self):
-        table = [{"label": "A1"}, "A2", {"label": "A3", "type": "Missing"}]
-        assert dl.connected_elements(table, 1) == [0, 1]
+        # then the Y block at + num_dishes, Missing slots dropped from both.
+        assert dl.connected_elements(_config(self.TABLE)) == [0, 2, 3, 4, 6, 7]
 
     def test_polarization_count(self):
-        assert dl.connected_elements(self.TABLE, 1) == [0, 2, 3]
-        assert dl.connected_elements(self.TABLE, 3) == \
+        assert dl.connected_elements(_config(self.TABLE, num_polarizations=1)) == [0, 2, 3]
+        assert dl.connected_elements(_config(self.TABLE, num_polarizations=3)) == \
             [0, 2, 3, 4, 6, 7, 8, 10, 11]
-        with pytest.raises(ValueError):
-            dl.connected_elements(self.TABLE, 0)
 
-    def test_rows_go_to_their_dish_idx_like_kotekan(self):
-        """kotekan fills num_dishes slots by dish_idx; an unnamed slot is
-        Missing.  Out of order and sparse must not shift the axis."""
-        table = [{"label": "A2", "type": "ArrayDish", "dish_idx": 2},
-                 {"label": "A0", "type": "ArrayDish", "dish_idx": 0}]
-        assert dl.connected_elements(table, 1, num_dishes=4) == [0, 2]
-        assert dl.connected_elements(table, 2, num_dishes=4) == [0, 2, 4, 6]
-
-    @pytest.mark.parametrize("rows,ndish", [
-        ([{"dish_idx": 1}, {"dish_idx": 1}], 4),       # duplicate
-        ([{"dish_idx": 4}], 4),                        # out of range
-        ([{"dish_idx": -1}], 4),
-        ([{"dish_idx": 2}], None),                     # past the table's own length
-    ])
-    def test_a_table_kotekan_refuses_raises(self, rows, ndish):
-        with pytest.raises(ValueError):
-            dl.connected_elements(rows, 1, num_dishes=ndish)
+    def test_no_table_is_none(self):
+        assert dl.connected_elements({"a": 1}) is None
 
     def test_live_pathfinder_table(self):
-        # cx52, 2026-10: 16 ArrayDish + 8 RFIDish rows among 64, both
+        # cx52, 2026-10: 16 ArrayDish and 8 RFIDish rows in 64 slots, both
         # pols — the 48-element compact axis kotekan reports.
-        table = [{"type": "ArrayDish"}] * 16 + [{"type": "Missing"}] * 40 \
-            + [{"type": "RFIDish"}] * 8
-        out = dl.connected_elements(table)
+        rows = [_row(d, f"A{d}") for d in range(16)] + \
+            [_row(d, f"R{d}", "RFIDish") for d in range(56, 64)]
+        out = dl.connected_elements(_config(rows, num_dishes=64))
         assert len(out) == 48
         assert out == list(range(16)) + list(range(56, 64)) \
             + list(range(64, 80)) + list(range(120, 128))
-
 
 
 def test_file_labels_may_be_bytes():

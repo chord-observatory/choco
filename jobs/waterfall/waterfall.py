@@ -25,10 +25,8 @@ was unavailable — retries self-heal); 1 = config error or bug.
 from __future__ import annotations
 
 import argparse
-import glob
 import logging
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -36,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from choco.acqtree import file_index, list_acquisitions, normalize_roots, source_files
 from choco.jobclient import (STATE_NAME, Degraded, job_state_dir, refuse_retired,
                              setup_logging, single_run, write_json_atomic)
 
@@ -61,21 +60,6 @@ DEFAULTS = {
 _RETIRED_KEYS = ("state_file", "lock_file")
 
 
-#: kotekan names a completed file ``vis_<abs_file_idx>_<stamp>.h5``.  The
-#: index in the name is what lets an already-folded file be skipped
-#: without opening it — the archive is ~16,000 files and the timer runs
-#: every two minutes, so opening them all would mean a permanent load on
-#: the same NFS server kotekan is writing to, worst once there is nothing
-#: left to do.
-_NAME_INDEX_RE = re.compile(r"^vis_0*(\d+)_")
-
-
-def index_from_name(basename: str) -> int | None:
-    """The source index in a filename, or None if it is not named that way."""
-    m = _NAME_INDEX_RE.match(basename)
-    return int(m.group(1)) if m else None
-
-
 def load_config(path) -> dict:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
@@ -84,43 +68,10 @@ def load_config(path) -> dict:
     refuse_retired(raw, _RETIRED_KEYS, "waterfall", "state.json and waterfall.lock live")
     cfg = dict(DEFAULTS)
     cfg.update(raw)
-    roots = cfg.get("roots") or []
-    if not roots:
-        raise ValueError("no roots configured; nothing to render")
-    norm = []
-    for r in roots:
-        if isinstance(r, str):
-            r = {"path": r, "name": Path(r).name}
-        if not r.get("path"):
-            raise ValueError(f"root {r!r} has no path")
-        norm.append({"path": str(r["path"]),
-                     "name": str(r.get("name") or Path(r["path"]).name)})
-    cfg["roots"] = norm
+    cfg["roots"] = normalize_roots(cfg.get("roots"))
     cfg["level"] = int(cfg["level"])
     cfg["max_files_per_run"] = int(cfg["max_files_per_run"])
     return cfg
-
-
-def list_acquisitions(root: str) -> list[str]:
-    """Acquisition directories, newest first."""
-    try:
-        names = sorted((d for d in os.listdir(root)
-                        if d.startswith("acq_")
-                        and os.path.isdir(os.path.join(root, d))),
-                       reverse=True)
-    except OSError as e:
-        raise Degraded(f"{root}: {e}") from e
-    return names
-
-
-def source_files(acq_dir: str) -> list[str]:
-    """Completed files only — ``.partial`` is kotekan's staging area.
-
-    A plain ``*.h5`` glob already excludes it (it is a subdirectory, and
-    a dotted one), which is the same rule ``datafiles.py`` applies to the
-    file counts on choco's /files page.
-    """
-    return sorted(glob.glob(os.path.join(acq_dir, "*.h5")))
 
 
 #: Files sampled per run to find one that can set a new acquisition's scale.
@@ -144,7 +95,7 @@ def pending_candidates(store, files) -> list[tuple]:
         basename = os.path.basename(path)
         if basename in skipped:
             continue
-        named = index_from_name(basename)
+        named = file_index(basename)
         if named is not None and named in done:
             continue
         candidates.append((named, path, basename))
@@ -415,7 +366,7 @@ def run(cfg: dict, only_acq: str | None = None) -> dict:
 
     for root in cfg["roots"]:
         try:
-            acqs = list_acquisitions(root["path"])
+            acqs = list_acquisitions(root["path"], newest_first=True)
         except Degraded as e:
             report["errors"].append(str(e))
             report["degraded"] = True
@@ -485,7 +436,7 @@ def main(argv=None) -> int:
         total = 0
         for root in cfg["roots"]:
             try:
-                acqs = list_acquisitions(root["path"])
+                acqs = list_acquisitions(root["path"], newest_first=True)
             except Degraded as e:
                 log.error("%s", e)
                 return 2

@@ -324,3 +324,17 @@ def test_main_processes_and_archives_the_diagnostics(setup, tmp_path):
         assert [p.decode() for p in f["index_map/pol"][:]] == ["X", "Y"]
         assert np.isfinite(f["lam_peak"][:]).all()
         assert (f["dyn_rng"][:] > 1).all()      # the source stood above the floor
+
+
+def test_newest_files_go_by_kotekan_names_not_mtimes(tmp_path):
+    """An acquisition's start and a file's index order them; an old
+    directory touched since (acqnotes' README) must not come first."""
+    import os
+    old, new = tmp_path / "acq_20260422_000000_0", tmp_path / "acq_20261012_000000_0"
+    for d, idx in ((old, 5), (new, 7), (new, 8)):
+        d.mkdir(exist_ok=True)
+        (d / f"vis_{idx:010d}_20261012T_000000_000000000.h5").write_bytes(b"")
+    os.utime(old / "vis_0000000005_20261012T_000000_000000000.h5", (2e9, 2e9))
+    files = eigencal.newest_files({"kotekan_file": str(tmp_path / "acq_*" / "*.h5")})
+    assert [os.path.basename(p)[:14] for p in files] == ["vis_0000000008", "vis_0000000007",
+                                                         "vis_0000000005"]

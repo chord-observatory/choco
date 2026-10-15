@@ -17,40 +17,22 @@ MHz, so averaging first would cancel the signal.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import h5py
 import hdf5plugin  # noqa: F401  -- registers the bitshuffle filter
 import numpy as np
 
+from choco.acqtree import file_index, file_time
+from choco.dishlabels import DISH_ARRAY, DISH_TYPE_CODES
 from imaging import ERA_DEG_PER_DAY, CalAccumulator, apply_gains, beam_fwhm_deg, beam_sq
 
-#: kotekan names a completed file ``vis_<abs_file_idx>_<YYYYMMDD>T_<HHMMSS>_<ns>.h5``.
-NAME_RE = re.compile(r"^vis_0*(\d+)_(\d{8})T_(\d{6})_(\d+)\.h5$")
-
-#: ``index_map/type`` codes (kotekan ``DishType``).
-TYPE_ARRAY_DISH = 0
+#: kotekan's ``DishType`` code for a main-array dish, in ``index_map/type``.
+TYPE_ARRAY_DISH = DISH_TYPE_CODES[DISH_ARRAY]
 
 
 class Unusable(Exception):
     """A file this job cannot image (layout, geometry); skip it, don't retry."""
-
-
-def index_from_name(basename: str) -> int | None:
-    m = NAME_RE.match(basename)
-    return int(m.group(1)) if m else None
-
-
-def time_from_name(basename: str) -> float | None:
-    """Unix time of the file's first sample, from its name."""
-    m = NAME_RE.match(basename)
-    if not m:
-        return None
-    dt = datetime.strptime(m.group(2) + m.group(3), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-    frac = int(m.group(4)) * 1e-9 if len(m.group(4)) == 9 else 0.0
-    return dt.timestamp() + frac
 
 
 @dataclass
@@ -81,7 +63,7 @@ def read_axes(path: str) -> FileAxes:
     this job cannot use raises :class:`Unusable`."""
     import os
     base = os.path.basename(path)
-    idx = index_from_name(base)
+    idx = file_index(base)
     if idx is None:
         raise Unusable(f"{base}: not a kotekan vis file name")
     with h5py.File(path, "r") as f:
@@ -100,7 +82,7 @@ def read_axes(path: str) -> FileAxes:
         pols = im["pol"][:].astype(int)
         n_el = int(attrs.get("num_elements", len(types)))
         era = f["bin_ERA_deg"][:].astype(float)
-        t0 = time_from_name(base)
+        t0 = file_time(base)
         if t0 is None or not np.all(np.isfinite(era)):
             raise Unusable(f"{base}: no usable time axis")
         # sample times from the ERA increments (the name times the first)

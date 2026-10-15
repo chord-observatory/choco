@@ -88,35 +88,6 @@ def test_load_config_rejects_a_non_mapping(tmp_path):
         W.load_config(p)
 
 
-# --- discovery -----------------------------------------------------------
-
-def test_acquisitions_are_listed_newest_first(tree):
-    _, root = tree
-    acqs = W.list_acquisitions(str(root))
-    assert acqs[0].startswith("acq_20260202")
-    assert acqs[1].startswith("acq_20260101")
-
-
-def test_non_acquisition_directories_are_ignored(tree, tmp_path):
-    _, root = tree
-    (root / "scratch").mkdir()
-    (root / "notes.txt").write_text("x")
-    assert all(a.startswith("acq_") for a in W.list_acquisitions(str(root)))
-
-
-def test_missing_root_is_degraded(tmp_path):
-    with pytest.raises(W.Degraded):
-        W.list_acquisitions(str(tmp_path / "nope"))
-
-
-def test_partial_files_are_not_sources(tree):
-    _, root = tree
-    new = root / "acq_20260202_000000_000000000"
-    files = W.source_files(str(new))
-    assert len(files) == 1
-    assert ".partial" not in files[0]
-
-
 # --- running -------------------------------------------------------------
 
 def test_run_renders_every_pending_file(tree, tmp_path):
@@ -400,16 +371,6 @@ def test_state_dir_override(tree, tmp_path):
 # --- not reopening what is already done ----------------------------------
 
 class TestSkipsWork:
-    @pytest.mark.parametrize("name,want", [
-        ("vis_0004202414_20260723T_x.h5", 4202414),
-        ("vis_7_x.h5", 7),
-        ("vis_4214175.h5", None),          # no trailing separator
-        ("other.h5", None),
-        ("", None),
-    ])
-    def test_index_from_name(self, name, want):
-        assert W.index_from_name(name) == want
-
     def test_settled_files_are_not_opened_again(self, tree, tmp_path, monkeypatch):
         """The archive is ~16k files and the timer runs every 2 minutes."""
         _, root = tree

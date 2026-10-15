@@ -58,7 +58,9 @@ choco/
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
-├── dishlabels.py   # dish_inputs table + per-element label layout (stdlib; shared with the jobs)
+├── dishlabels.py   # dish_inputs table (dish_table, DishType) + per-element label layout (stdlib; shared with the jobs)
+├── acqtree.py      # the data trees and their names: acquisitions, vis files, waterfall shards (stdlib)
+├── observatory.py  # the site and the bright sources, once (stdlib; jobs only)
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
@@ -325,6 +327,14 @@ per-job state path (`*.state_file`, `bffs.run_file`/`manual_file`,
 a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
 `choco.sh install` loads the config under the new code before restarting
 anything, so a retired key stops the install, not the service.
+
+**Who each document is for.** `README.md` is for people who run and use
+choco: technical, professional English, close to ASD-STE100 without being
+bound by it.  Be concise and explain (one idea per sentence, the reason
+when it helps the reader act), and use the terms the README or choco
+already use (`base_config`, `desired_config`, the job, route and key
+names) rather than coin new ones.  This file holds the rules for agents;
+`docs/design/` holds the reasoning and the history.
 
 ## Design docs
 

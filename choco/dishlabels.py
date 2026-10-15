@@ -23,9 +23,10 @@ refused, never expanded or guessed.  The ``X``/``Y`` spelling is the
 pre-2026-08 spelling too, so it is accepted only when ``index_map/pol``
 — written since +988 — is there to vouch for it.
 
-A compact (``DishInputs``) frame's element axis is the table's *connected*
-dishes — every row whose ``type`` is not ``Missing`` — in that same [P][D]
-order; :func:`connected_elements` is the one copy of that rule.
+A config's per-dish table is read by :func:`dish_table` alone, placing
+rows as kotekan does; a compact (``DishInputs``) frame's element axis is
+its *connected* dishes — every slot whose type is not ``Missing`` — in
+that same [P][D] order (:func:`connected_elements`).
 """
 
 from __future__ import annotations
@@ -34,6 +35,13 @@ import re
 
 #: kotekan pads unpopulated dish_inputs slots with this label.
 PLACEHOLDER_LABEL = "Missing"
+
+#: kotekan's ``DishType`` (lib/utils/CHORDTelescope.hpp): the names a
+#: config's ``dish_inputs`` rows carry, and the codes hdf5N2Write writes per
+#: element in ``index_map/type``.  An unpopulated slot, a main-array dish,
+#: an RFI-monitor antenna.
+DISH_MISSING, DISH_ARRAY, DISH_RFI = "Missing", "ArrayDish", "RFIDish"
+DISH_TYPE_CODES = {DISH_MISSING: -1, DISH_ARRAY: 0, DISH_RFI: 1}
 
 #: A polarization marker in the label text (``A1X``, ``d0_pA``) means the
 #: pre-2026-08 per-element layout.  A bare dish label (``A1``,
@@ -93,6 +101,64 @@ def find_dish_inputs(config) -> list | None:
             if found is not None:
                 return found
     return None
+
+
+def config_int(config, key: str, default: int | None = None) -> int | None:
+    """*key* (anywhere in *config*) as an int, *default* when absent.
+
+    kotekan evaluates arithmetic in config values (``num_elements:
+    num_polarizations * 64``); choco does not, so a value that is present
+    but not a plain integer raises ``ValueError`` rather than be guessed.
+    """
+    value = find_key(config, key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"kotekan config {key} = {value!r} is not a plain integer "
+                         f"(a kotekan expression?)")
+    return value
+
+
+def dish_table(config) -> tuple[list[str], list[str], int] | None:
+    """``(dish labels, dish types, num_polarizations)`` from a rendered
+    config's per-dish ``dish_inputs`` table, or None without one.
+
+    Placed as ``CHORDTelescope`` places it: each row at its ``dish_idx``
+    in ``num_dishes`` slots (default: up to the highest index), and a slot
+    no row names is ``Missing``, labelled ``Missing``.  A table kotekan
+    would refuse is refused with ``ValueError``: a row that is not a
+    mapping or lacks ``dish_idx``, ``type`` or ``label``, an index that is
+    negative, duplicated or past ``num_dishes``, a ``num_dishes`` or
+    ``num_polarizations`` that is not a plain integer — and so is the
+    pre-2026-08 per-element layout, whose element order was wrong.
+    """
+    table = find_dish_inputs(config)
+    if not table:
+        return None
+    if not all(isinstance(row, dict) for row in table):
+        raise ValueError("a dish_inputs row is not a mapping")
+    if labels_are_per_element(str(row.get("label", "")) for row in table):
+        raise ValueError(
+            "pre-2026-08 per-element dish_inputs table (labels like A1X): its "
+            "element ordering is untrustworthy; migrate the config to the "
+            "per-dish layout")
+    ndish = config_int(config, "num_dishes")
+    slots: dict[int, tuple[str, str]] = {}
+    for row in table:
+        try:
+            idx, kind, label = int(row["dish_idx"]), str(row["type"]), str(row["label"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"dish_inputs row {row!r} lacks a usable {e}") from None
+        if idx < 0 or idx in slots or (ndish is not None and idx >= ndish):
+            raise ValueError(f"dish_idx {idx} ({label}) is negative, duplicated or "
+                             f"past num_dishes ({ndish})")
+        slots[idx] = (label, kind)
+    if ndish is None:
+        ndish = max(slots) + 1
+    npol = config_int(config, "num_polarizations", default=2)
+    empty = (PLACEHOLDER_LABEL, DISH_MISSING)
+    rows = [slots.get(d, empty) for d in range(ndish)]
+    return [label for label, _ in rows], [kind for _, kind in rows], npol
 
 
 def labels_are_per_element(labels) -> bool:
@@ -188,41 +254,26 @@ def file_element_labels(labels, num_elements: int | None = None,
     return out
 
 
-def connected_elements(dish_inputs, num_polarizations: int = 2,
-                       num_dishes: int | None = None) -> list[int]:
-    """Fiducial element indices of a compact ``DishInputs`` axis, in order.
+def connected_elements(config) -> list[int] | None:
+    """Fiducial element indices of a compact ``DishInputs`` axis, in order,
+    or None when *config* has no ``dish_inputs`` table.
 
     Mirrors ``CHORDTelescope::get_connected_elements`` (kotekan develop,
     PR #1658): walk the full [P][D] element axis and keep every element
-    whose dish ``type`` is not ``Missing``, so compact element *c* is
+    whose dish type is not ``Missing``, so compact element *c* is
     fiducial element ``result[c]``.  kotekan's ``DishInputs`` descriptor
     does not carry this list — the selection is implied by the
     ``dish_inputs`` table it was configured with, which is the table
-    choco pushed — so a consumer with that table derives it here.  The
-    caller must still check the length against the descriptor's
-    ``num_elements``: a disagreement means the rule has drifted, and a
-    wrong identity on an element is worse than none.
-
-    Rows are placed as kotekan places them: at their ``dish_idx`` (a row
-    without one at its list position) in ``num_dishes`` slots (default:
-    the table's length), and a slot no row names is ``Missing``.  A
-    duplicate, negative or out-of-range ``dish_idx`` raises
-    ``ValueError``, as kotekan refuses the table outright.
+    choco pushed — so a consumer with that table derives it here, from
+    :func:`dish_table` (which raises ``ValueError`` for a table kotekan
+    would refuse).  The caller must still check the length against the
+    descriptor's ``num_elements``: a disagreement means the rule has
+    drifted, and a wrong identity on an element is worse than none.
     """
-    npol = int(num_polarizations)
-    if npol < 1:
-        raise ValueError(f"num_polarizations must be positive, got {npol}")
-    ndish = len(dish_inputs) if num_dishes is None else int(num_dishes)
-    slots = {}
-    for pos, row in enumerate(dish_inputs):
-        idx = int(row.get("dish_idx", pos)) if isinstance(row, dict) else pos
-        if not 0 <= idx < ndish or idx in slots:
-            raise ValueError(f"dish_idx {idx} is duplicated or outside "
-                             f"0..{ndish - 1}")
-        slots[idx] = row
-    connected = [
-        dish for dish in range(ndish)
-        if dish in slots and not (isinstance(slots[dish], dict)
-                                  and str(slots[dish].get("type")) == PLACEHOLDER_LABEL)
-    ]
+    table = dish_table(config)
+    if table is None:
+        return None
+    _labels, kinds, npol = table
+    ndish = len(kinds)
+    connected = [dish for dish in range(ndish) if kinds[dish] != DISH_MISSING]
     return [dish + pol * ndish for pol in range(npol) for dish in connected]

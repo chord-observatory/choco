@@ -492,12 +492,8 @@ def test_per_element_config_table_is_refused():
     """Pre-2026-08 tables carried a wrong element ordering; flagging
     against one would flag the wrong feeds.  OSError -> exit 2: the
     badge reads degraded and heals when the config is migrated."""
-    try:
-        bffs.element_labels_from_config(_DISH_CONFIG)
-    except OSError as e:
-        assert "migrated" in str(e)
-        return
-    raise AssertionError("expected OSError for a per-element table")
+    with pytest.raises(OSError, match="migrate"):
+        bffs.config_axis(_DISH_CONFIG)
 
 
 # -- labels from a 2026-08 per-dish dish_inputs table ------------------------
@@ -520,7 +516,7 @@ _PER_DISH_LABELS = ["A1X", "MissingX", "A3X", "A1Y", "MissingY", "A3Y"]
 def test_element_labels_per_dish_expands_pol_blocks():
     # element = dish_idx + pol * num_dishes: the X block first, then Y,
     # placeholder dishes included in both.
-    assert bffs.element_labels_from_config(_PER_DISH_CONFIG) == _PER_DISH_LABELS
+    assert bffs.config_axis(_PER_DISH_CONFIG)[0] == _PER_DISH_LABELS
 
 
 def test_file_axis_identical_to_config_matches():
@@ -555,41 +551,29 @@ def test_file_axis_duplicate_labels_mismatch_on_a_subset():
 
 def test_element_types_follow_the_label_axis():
     # a dish's type on both of its polarizations; a slot the table skips
-    # is Missing, like its label; an entry without a type too
-    assert bffs.element_types_from_config(_PER_DISH_CONFIG) == [
+    # is Missing, like its label
+    assert bffs.config_axis(_PER_DISH_CONFIG)[1] == [
         "ArrayDish", "Missing", "ArrayDish", "ArrayDish", "Missing", "ArrayDish"]
-    cfg = {"num_dishes": 2, "telescope": {"dish_inputs": [
-        {"dish_idx": 0, "label": "A01"}, {"dish_idx": 1, "type": "RFIDish", "label": "R1"}]}}
-    assert bffs.element_types_from_config(cfg) == ["Missing", "RFIDish", "Missing", "RFIDish"]
-    assert bffs.element_types_from_config({}) is None
-
-
-def test_element_labels_per_dish_idx_beyond_num_dishes_refuses():
-    cfg = {"num_dishes": 2, "telescope": _PER_DISH_CONFIG["telescope"]}
-    try:
-        bffs.element_labels_from_config(cfg)
-    except ValueError as e:
-        assert "ambiguous" in str(e)
-        return
-    raise AssertionError("expected ValueError for dish_idx >= num_dishes")
+    assert bffs.config_axis({}) is None
 
 
 def test_element_labels_per_dish_num_dishes_fallback():
     # No num_dishes in the config: the table's own extent sizes the axis.
     cfg = {"telescope": _PER_DISH_CONFIG["telescope"]}
-    assert bffs.element_labels_from_config(cfg) == _PER_DISH_LABELS
+    assert bffs.config_axis(cfg)[0] == _PER_DISH_LABELS
 
 
-def test_element_labels_expression_num_dishes_refuses():
-    # kotekan evaluates expressions in config values; bffs must not guess.
-    cfg = {"num_dishes": "num_polarizations * 32",
-           "telescope": _PER_DISH_CONFIG["telescope"]}
-    try:
-        bffs.element_labels_from_config(cfg)
-    except ValueError as e:
-        assert "plain integer" in str(e)
-        return
-    raise AssertionError("expected ValueError for an expression num_dishes")
+@pytest.mark.parametrize("cfg,match", [
+    ({"num_dishes": 2, "telescope": _PER_DISH_CONFIG["telescope"]}, "past num_dishes"),
+    # kotekan evaluates expressions in config values; bffs must not guess
+    ({"num_dishes": "num_polarizations * 32", "telescope": _PER_DISH_CONFIG["telescope"]},
+     "plain integer"),
+    # kotekan requires every row's type
+    ({"telescope": {"dish_inputs": [{"dish_idx": 0, "label": "A01"}]}}, "lacks"),
+])
+def test_a_table_kotekan_would_refuse_is_degraded(cfg, match):
+    with pytest.raises(OSError, match=match):
+        bffs.config_axis(cfg)
 
 
 def test_per_dish_config_and_file_end_to_end(tmp_path, monkeypatch):
@@ -625,12 +609,8 @@ def test_per_element_choco_config_refuses_end_to_end(tmp_path, monkeypatch):
                      np.ones((1, 1, 4), "f4"))
     cfg = bffs.Config(kotekan_file=str(n2), url="https://localhost:5000",
                       group="cx")
-    try:
+    with pytest.raises(OSError, match="migrate"):
         bffs.combine_sources(cfg)
-    except OSError as e:
-        assert "migrated" in str(e)
-        return
-    raise AssertionError("expected OSError for a per-element table")
 
 
 def test_config_file_element_mismatch_skips_the_file(tmp_path, monkeypatch):

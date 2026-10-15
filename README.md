@@ -40,15 +40,14 @@ This installs choco as a system service with the following layout:
 | `/etc/choco/configs/` | Kotekan config files (nodes.yaml, group dirs, `.updatable/`) plus `pdb_map.csv` |
 
 The install script also:
-- Creates a local `.venv` in the repo directory (editable install, owned by invoking user) for development
 - Installs Python dependencies **pinned and hash-locked by `requirements.lock`** — pip runs with `--require-hashes`, and each pin lists the sha256 of every artifact PyPI serves for that version, so a deploy gets exactly the reviewed versions and refuses a substituted or tampered file even at the same version number (choco itself goes on top with `--no-deps`); regenerate the lock with `./choco.sh lock` after changing `pyproject.toml`, review the diff, and commit it. `./choco.sh audit` checks every pin (including pip itself, which is in the lock) against the latest PyPI releases and the OSV vulnerability database without changing anything — it exits non-zero if a pinned version has a known advisory, so it can run from cron or CI
 - Symlinks the `choco` command-line client (the venv's `choco` console script; see JSON API below) to `/usr/local/bin/choco`; the daemon's entry point is `choco-server`
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
 - Installs and enables a systemd service that starts on boot and restarts on failure
-- Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal, waterfall, skymap, mapmaker), enabling the services and starting the timers
-- Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`bffs.yaml`, `eigencal.yaml`, `waterfall.yaml`, `skymap.yaml`, `mapmaker.yaml`) from its example file; on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
+- Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal, waterfall, skymap, mapmaker, acqnotes), enabling the services and starting the timers; every unit runs its script through `jobs/run-job.sh`
+- Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`<job>.yaml`, from `jobs/<job>/<job>.example.yaml`; the first `eop.yaml` takes its values from the `eop:` block of an older `config.yaml`); on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
 
-Re-running `sudo ./choco.sh install` is safe — **it never overwrites a deployed `/etc/choco/config.yaml`**. On first install the config is seeded from the repo's local `config.yaml` (or the template) with `configs_dir` rewritten to `/etc/choco/configs`; on later installs, if the repo copy differs from what's deployed, the incoming version is staged as `/etc/choco/config.yaml.new` for manual merging and the deployed file is left alone. Kotekan configs prompt before overwriting; `configs/pdb_map.csv` — the master PDB channel map, which may be the only authoritative record of that wiring — is excluded from that overwrite entirely and gets the same seed-once-then-stage-a-`.new` treatment as `config.yaml`; iptables rules are deduplicated.
+Re-running `sudo ./choco.sh install` is safe — **it never overwrites a deployed `/etc/choco/config.yaml`**. Before it restarts anything, it loads that config with the new code. If the config has a key that the new version no longer accepts, the install stops and names the key, and the running choco is not touched. On first install the config is seeded from the repo's local `config.yaml` (or the template) with `configs_dir` rewritten to `/etc/choco/configs`; on later installs, if the repo copy differs from what's deployed, the incoming version is staged as `/etc/choco/config.yaml.new` for manual merging and the deployed file is left alone. Kotekan configs prompt before overwriting; `configs/pdb_map.csv` — the master PDB channel map, which may be the only authoritative record of that wiring — is excluded from that overwrite entirely and gets the same seed-once-then-stage-a-`.new` treatment as `config.yaml`; iptables rules are deduplicated.
 
 ### Service management
 
@@ -292,7 +291,7 @@ One-off configs go the same way: `POST /oneshot/<group>` or `POST /oneshot/<grou
 
 The config library is `GET /api/configs`, `GET`/`PUT /api/configs/<path>` and `POST /api/configs/pull` (the GitHub mirror; `{"dry_run": true}` only reports the plan) — `choco config ls|get|put|pull|use`.
 
-The `/update/*`, `/oneshot/*` and `/api/*` endpoints bypass auth when called from `localhost`, and the `choco` command wraps them — `choco/cli.py`, stdlib only, installed to `/usr/local/bin/choco` by `choco.sh install` (the daemon itself is `choco-server`):
+The `/update/*`, `/oneshot/*` and `/api/*` endpoints bypass auth when called from `localhost` (from anywhere else a write there needs a login, the CSRF token in `X-CSRF-Token`, and a JSON body), and the `choco` command wraps them — `choco/cli.py`, stdlib only, installed to `/usr/local/bin/choco` by `choco.sh install` (the daemon itself is `choco-server`):
 
 ```bash
 choco status                        # overall health
@@ -447,7 +446,7 @@ sudo journalctl -u choco-eigencal -f          # per-run logs
 
 ## Sky map
 
-The [mapmaker job](jobs/mapmaker/) (`choco-mapmaker.timer`, every 2 minutes) folds each new N² file into two drift-scan maps on a sidereal grid, 4096 bins of RA by a strip of Dec around the pointing, in log-spaced colour bins that cover the whole clean spectrum and are painted as hues from red (300 MHz) to violet (1500 MHz): a **sky map** of every pass (Sun excluded) and a **daily map** of the last sidereal day. It calibrates itself on the brightest source transiting the beam (Cyg A for the current pointing), so the maps are in units of that source's flux and colour is spectral index relative to it (white = Cyg A's spectrum); the stretch is arcsinh in those units by default. With two rows of dishes the Dec axis carries grating lobes per bin, tapered by the beam, that localise only in the sum over the spectrum; a second unit (`choco-mapmaker-clean.timer`, every 15 minutes) deconvolves the sky map with a joint-bin CLEAN against the dirty beam the map was made with and restores the components with one beam for every bin. The `/service/mapmaker` page shows the deconvolved map, both dirty images and the calibration, coverage, backlog and CLEAN facts; its config is `/etc/choco/mapmaker.yaml`. See [jobs/mapmaker/README.md](jobs/mapmaker/README.md).
+The [mapmaker job](jobs/mapmaker/) (`choco-mapmaker.timer`, every 2 minutes) folds each new N² file into two drift-scan maps on a sidereal grid, 4096 bins of RA by a strip of Dec around the pointing, in log-spaced colour bins that cover the whole clean spectrum and are painted as hues from red (300 MHz) to violet (1500 MHz): a **sky map** of every pass (Sun excluded) and a **daily map** of the last sidereal day. It calibrates itself on the brightest source transiting the beam (Cyg A for the current pointing), so the maps are in units of that source's flux and colour is spectral index relative to it (white = Cyg A's spectrum); the stretch is arcsinh in those units by default. With two rows of dishes the Dec axis carries grating lobes per bin, tapered by the beam, that localise only in the sum over the spectrum; a second unit (`choco-mapmaker-clean.timer`, every 15 minutes) deconvolves the sky map with a joint-bin CLEAN against the dirty beam the map was made with and restores the components with one beam for every bin. The `/service/mapmaker` page shows the deconvolved map, both dirty images and the calibration, coverage, backlog and CLEAN facts, and the pointing that kotekan reports next to the configured pointing (in warning colour when they differ by more than one Dec row); its config is `/etc/choco/mapmaker.yaml`. See [jobs/mapmaker/README.md](jobs/mapmaker/README.md).
 
 The [skymap job](jobs/skymap/) (`choco-skymap.timer`, every 5 minutes) renders a Mollweide all-sky view of the CHORD drift-scan strip with the current Sun, Moon and beam position, reading the pointing live from `/api/config/<group>`. Each run renders the same instant in two palettes: the day image is served unauthenticated at `/skymap.png` and shown on the landing page, and a dark-page night version at `/skymap-night.png` for wall displays. Its config is `/etc/choco/skymap.yaml`.
 
@@ -468,26 +467,34 @@ choco/
 ├── web.py          # Flask blueprint: all routes and partials
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
+├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
 ├── services.py     # FpgaMonitor, GainArchive, PdbMonitor, job/systemd helpers, dot + SVG sanitizer
 ├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check
-├── datafiles.py    # /files scan and the DATA badge probe
-├── waterfalls.py   # Read side of the waterfall image tree
-├── h5read.py       # h5py subprocess for the gain archive
+├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
+├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
+├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
+├── dishlabels.py   # dish_inputs table (dish_table, DishType) + per-element label layout (stdlib; shared with the jobs)
+├── acqtree.py      # the data trees and their names: acquisitions, vis files, waterfall shards (stdlib)
+├── observatory.py  # the site and the bright sources, once (stdlib; jobs only)
+├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
+├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
+├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
 ├── auth.py         # Flask-Login + direct LDAP bind, localhost bypass decorator
 ├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
-├── templates/      # Jinja2; _*.html are htmx partials
+├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
 jobs/               # One dir per job: systemd units, code, tests; run-job.sh runs any of them
 ├── choco.service   # Main service (Type=notify)
-├── eop/            # EOP table broadcast; eop_utils.py is vendored from kotekan
-├── bffs/           # Bad-feed flagging; sources/ = one module per signal
-├── eigencal/       # Point-source gain calibration
-├── waterfall/      # Append-only visibility waterfall PNGs
-├── skymap/         # Current-sky Mollweide plot
-└── mapmaker/       # Drift-scan sky maps, frequency as hue, and their CLEAN
-configs/            # nodes.yaml, vars.yaml, pdb_map.csv, <group>/<node>.yaml|.j2
+├── eop/            # EOP table broadcast (on choco start + daily); eop_utils.py is vendored
+├── bffs/           # Bad-feed flagging (30 s timer); sources/ = one module per signal
+├── eigencal/       # Point-source gain calibration (10 min timer, self-gating)
+├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
+├── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
+├── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
+└── acqnotes/       # Per-acquisition README + acq_info.yaml written into subset/ (hourly); timeline.yaml is curated history
+configs/            # nodes.yaml, vars.yaml, pdb_map.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
 tests/              # pytest; test_<module>.py per module, test_web_<area>.py for routes, test_route_auth.py sweeps every route's exposure
-docs/design/        # Design rationale, one file per subsystem
+docs/design/        # Design rationale, one file per subsystem (listed at the end of CLAUDE.md)
 ```
 
 `eop_utils.py` is vendored from [kotekan](https://github.com/kotekan/kotekan/) (`tools/earth_orientation/eop_utils.py`). It should not be modified in this repo.

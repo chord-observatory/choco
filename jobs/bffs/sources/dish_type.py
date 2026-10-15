@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from choco.dishlabels import DISH_MISSING
+
 from .common import report
 
 #: Flag these kotekan ``DishType`` names unless the config says otherwise.
-DEFAULT_BAD_TYPES = ("Missing",)
+DEFAULT_BAD_TYPES = (DISH_MISSING,)
 
 
 def mask(src: dict, labels: np.ndarray, kotekan_file: str):

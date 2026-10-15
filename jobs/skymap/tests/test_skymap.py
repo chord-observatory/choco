@@ -36,10 +36,6 @@ class TestPointingMath:
         # kotekan's corrected -8.6 (2026-10) points at Cyg A's +40.7.
         assert skymap.dec_from_coelev(-8.6) == pytest.approx(40.72, abs=0.01)
 
-    def test_parse_dec_deg(self):
-        assert skymap._parse_dec_deg('+22d00m52.2s') == pytest.approx(22.0145)
-        assert skymap._parse_dec_deg('-29d00m28.1s') == pytest.approx(-29.0078)
-
     def test_nearest_major_source(self):
         assert skymap.nearest_major_source(22.0) == 'Tau A'
         assert skymap.nearest_major_source(40.7) == 'Cyg A'
