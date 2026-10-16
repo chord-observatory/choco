@@ -48,6 +48,29 @@ class TestUser:
         assert user2.username == "renamed"
 
 
+class TestSession:
+    """The session is the signed cookie's ``_user_id``, looked up in the
+    in-memory store on each request."""
+
+    def test_unknown_id_is_nobody(self, client):
+        # a cookie from before a restart, or a trusted peer's synthetic
+        # user, names an id the store does not have: anonymous
+        with client.session_transaction() as sess:
+            sess["_user_id"] = "cn=gone,dc=example"
+        resp = client.get("/nodes", follow_redirects=False)
+        assert resp.status_code == 302 and "/login" in resp.headers["Location"]
+
+    def test_logout_forgets_the_id(self, client):
+        user = save_user("cn=test,dc=example", "testuser")
+        with client.session_transaction() as sess:
+            sess["_user_id"] = user.get_id()
+        assert client.get("/nodes").status_code == 200
+        client.get("/logout")
+        with client.session_transaction() as sess:
+            assert "_user_id" not in sess
+        assert client.get("/nodes", follow_redirects=False).status_code == 302
+
+
 class TestUnauthenticatedAccess:
     """The login page and its flow (every other route's redirect is swept
     in test_route_auth)."""
@@ -298,7 +321,7 @@ class TestAuthenticatedAccess:
         """Helper to simulate a logged-in user."""
         user = save_user("cn=test,dc=example", "testuser")
         with client.session_transaction() as sess:
-            # Flask-Login stores user_id in the session under _user_id
+            # the signed session carries the user's id (auth.login_user)
             sess["_user_id"] = user.get_id()
 
     def test_dashboard_accessible(self, client, app):

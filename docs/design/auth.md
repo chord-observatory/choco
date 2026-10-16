@@ -10,8 +10,14 @@ with defaults. No environment variables.
 
 ## LDAP-only auth (FreeIPA)
 
-all routes require login via Flask-Login; users authenticated against FreeIPA
-LDAP (no local fallback). No roles yet — all authenticated users have full
+all routes require login (``auth.login_required``); users authenticated against FreeIPA
+LDAP (no local fallback).  The session is Flask's signed cookie carrying the
+user's id under ``_user_id``, looked up in the in-memory ``auth._users`` on
+each request, so a restart logs everyone out and an unknown id loads as
+nobody; Flask-Login did this until 2026-10-16, when the ~40 lines choco used
+of it (``login_user`` / ``logout_user`` / ``current_user`` /
+``login_required`` and the unauthorized reply) came in-repo
+(dependencies.md). No roles yet — all authenticated users have full
 access. Authentication is a **direct bind** (``auth.LdapAuthenticator`` over
 ``choco.ldapbind``): the DN is strung together as
 ``<login_attr>=<user>,<user_dn>,<base_dn>`` (RDN-escaped) and bound with the
@@ -72,7 +78,8 @@ Location header as ``//host``.  Not done yet: rate limiting on ``/login``
 (FreeIPA's lockout policy is the defence today).  The 2026-09 audit
 kept both ldap3 and flask-login (every finding was configuration around
 them, none was in them); ldap3 went a month later for its maintenance, not
-a defect (above), and flask-login stays.
+a defect (above), and flask-login followed on 2026-10-16 for the same
+reason.
 
 ## Dev mode
 

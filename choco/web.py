@@ -17,10 +17,10 @@ from flask import (
     Blueprint, Response, render_template, request, redirect, url_for, flash,
     current_app, session, abort, send_file,
 )
-from flask_login import login_required, login_user, logout_user, current_user
 
 from . import auth, library
-from .auth import save_user, localhost_or_login_required
+from .auth import (current_user, localhost_or_login_required, login_required, login_user,
+                   logout_user, save_user)
 from .jobclient import MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT
 from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
                         run_blocking, timeline_rows, utc_minute)

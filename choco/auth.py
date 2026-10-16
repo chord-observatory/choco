@@ -1,4 +1,11 @@
-"""LDAP authentication for choco."""
+"""Login sessions and LDAP authentication for choco.
+
+A session is Flask's signed cookie carrying the user's id under
+``_user_id``; each request looks it up in the in-memory ``_users``
+(:func:`current_user`), so a restart logs everyone out and an id the
+store does not know -- a trusted peer's synthetic user, a stale cookie --
+loads as nobody.  Flask-Login did this until 2026-10 (dependencies.md).
+"""
 
 import hmac
 import ipaddress
@@ -7,8 +14,8 @@ import os
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
 
-from flask import Flask, Response, abort, current_app, request, session, url_for
-from flask_login import LoginManager, UserMixin, current_user, login_user
+from flask import Flask, Response, abort, current_app, g, request, session, url_for
+from werkzeug.local import LocalProxy
 
 from .ldapbind import LdapError, LdapServer, escape_rdn, simple_bind
 
@@ -18,9 +25,11 @@ logger = logging.getLogger(__name__)
 _users: dict[str, "User"] = {}
 
 
-class User(UserMixin):
+class User:
     """Authenticated user backed by LDAP, or -- ``trusted=True`` -- the
     synthetic user a ``server.trusted_hosts`` peer is logged in as."""
+
+    is_authenticated = True
 
     def __init__(self, dn: str, username: str, *, trusted: bool = False):
         self.dn = dn
@@ -34,11 +43,88 @@ class User(UserMixin):
         return f"User({self.username})"
 
 
+class _Anonymous:
+    """Nobody: what ``current_user`` is before login."""
+
+    is_authenticated = False
+    trusted = False
+    username = None
+    dn = None
+
+
+ANONYMOUS = _Anonymous()
+
+
 def save_user(dn: str, username: str) -> User:
     """Create or update a user in the in-memory store."""
     user = User(dn, username)
     _users[dn] = user
     return user
+
+
+def login_user(user: User) -> None:
+    """Start *user*'s session: the id goes into the signed cookie, and the
+    user is current for the rest of this request."""
+    session["_user_id"] = user.get_id()
+    g.user = user
+
+
+def logout_user() -> None:
+    session.pop("_user_id", None)
+    g.user = ANONYMOUS
+
+
+def _current_user():
+    if "user" not in g:
+        user_id = session.get("_user_id")
+        g.user = (_users.get(user_id) if user_id else None) or ANONYMOUS
+    return g.user
+
+
+#: The request's user (``User`` or ``ANONYMOUS``), resolved once per
+#: request from the session; a template global too (``init_auth``).
+current_user = LocalProxy(_current_user)
+
+
+def unauthorized() -> Response:
+    """The reply to a request that needs a login: redirect to the login
+    page, carrying the attempted URL as ?next= so a successful login
+    returns there (the login view validates it as a same-site path).
+
+    For htmx requests, HX-Redirect makes the browser do a full-page
+    navigation instead of swapping login HTML into a partial — and the
+    place to return to is the *page* the user was on (HX-Current-URL),
+    not the polled partial that happened to hit the 302.  Only the
+    header's path+query are kept, so it cannot smuggle in another host.
+    A plain POST (an expired session's toggle) gets no next: replaying it
+    as a GET after login would just 405.
+    """
+    next_path = None
+    if request.headers.get("HX-Request"):
+        current = urlsplit(request.headers.get("HX-Current-URL", ""))
+        if current.path.startswith("/"):
+            next_path = current.path + (
+                f"?{current.query}" if current.query else "")
+    elif request.method == "GET":
+        query = request.query_string.decode()
+        next_path = request.path + (f"?{query}" if query else "")
+
+    login_url = url_for("web.login")
+    if next_path and next_path != "/" and not next_path.startswith("//"):
+        login_url += "?" + urlencode({"next": next_path})
+    if request.headers.get("HX-Request"):
+        return Response(status=200, headers={"HX-Redirect": login_url})
+    return Response(status=302, headers={"Location": login_url})
+
+
+def login_required(f):
+    """Route decorator: the request's user must be logged in."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return unauthorized()
+        return f(*args, **kwargs)
+    return decorated
 
 
 def parse_trusted_hosts(raw) -> list[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, str]]:
@@ -208,7 +294,7 @@ def localhost_or_login_required(f):
         if is_loopback(request.remote_addr):
             return f(*args, **kwargs)
         if not current_user.is_authenticated:
-            return current_app.login_manager.unauthorized()
+            return unauthorized()
         if request.method in _WRITES:
             require_csrf_token(request.headers.get("X-CSRF-Token", ""))
             if not request.is_json:
@@ -218,51 +304,10 @@ def localhost_or_login_required(f):
 
 
 def init_auth(app: Flask, config: dict):
-    """Initialize Flask-Login and the LDAP authenticator on the app.
-
-    LDAP settings are read from config["ldap"].
+    """Set up the login session, dev / trusted-host logins and the LDAP
+    authenticator on the app.  LDAP settings are read from config["ldap"].
     """
-    # Flask-Login setup
-    login_manager = LoginManager()
-    login_manager.login_view = "web.login"
-    login_manager.login_message = "Please log in to access choco."
-    login_manager.init_app(app)
-
-    @login_manager.user_loader
-    def load_user(user_id):
-        return _users.get(user_id)
-
-    @login_manager.unauthorized_handler
-    def unauthorized():
-        """Redirect to login, carrying the attempted URL as ?next= so a
-        successful login returns there (the login view validates it as
-        a same-site path).
-
-        For htmx requests, HX-Redirect makes the browser do a full-page
-        navigation instead of swapping login HTML into a partial — and
-        the place to return to is the *page* the user was on
-        (HX-Current-URL), not the polled partial that happened to hit
-        the 302.  Only the header's path+query are kept, so it cannot
-        smuggle in another host.  A plain POST (an expired session's
-        toggle) gets no next: replaying it as a GET after login would
-        just 405.
-        """
-        next_path = None
-        if request.headers.get("HX-Request"):
-            current = urlsplit(request.headers.get("HX-Current-URL", ""))
-            if current.path.startswith("/"):
-                next_path = current.path + (
-                    f"?{current.query}" if current.query else "")
-        elif request.method == "GET":
-            query = request.query_string.decode()
-            next_path = request.path + (f"?{query}" if query else "")
-
-        login_url = url_for("web.login")
-        if next_path and next_path != "/" and not next_path.startswith("//"):
-            login_url += "?" + urlencode({"next": next_path})
-        if request.headers.get("HX-Request"):
-            return Response(status=200, headers={"HX-Redirect": login_url})
-        return Response(status=302, headers={"Location": login_url})
+    app.jinja_env.globals["current_user"] = current_user
 
     # Dev mode: log every request in as a synthetic user, so a developer
     # with no FreeIPA reachable still gets the whole UI.  Guarded by
