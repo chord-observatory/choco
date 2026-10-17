@@ -119,6 +119,10 @@ sources:
   #   #   - http://cx27.site.chord-observatory.ca:12048/rfi_sk_metrics/sk_metrics_0/sk
   #   sk_lo: 0.7                 # SK bounds: clean Gaussian noise has SK ~= 1
   #   sk_hi: 1.5
+  #   # A reading above this is impossible for a feed (SK <= rfi_downsampling_factor + 1,
+  #   # 257 on the pathfinder): a poisoned running average.  It judges nothing and
+  #   # the endpoint is reported, so one bad GPU instance cannot mask the array.
+  #   sk_max_physical: 1000
   #   min_valid_frac: 0.25       # ignore feeds with fewer valid SK cells
   #   # The /sk values are moving averages that freeze when a stage stops
   #   # seeing frames; each node's /metrics gives the SK gauges' last

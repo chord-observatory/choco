@@ -25,6 +25,15 @@ an instance older than ``max_stale_s`` is ignored (reported ``stale``);
 when ``/metrics`` cannot be read the freshness is unknown and the
 readings are used.
 
+A reading above ``sk_max_physical`` is impossible for a real feed: the
+single-feed SK of ``M`` samples cannot exceed about ``M + 1`` (one sample
+carrying all the power; the pathfinder's ``rfi_downsampling_factor`` is
+256).  Such a value is the stage's running average poisoned by a spike
+(an interval of zero data makes the ratio explode and the average takes
+minutes to decay), seen on 2026-10-17 when one GPU instance read millions
+for every live feed and this source masked the whole array.  Unphysical
+readings judge nothing and the endpoint is reported, so that node's own
+RFI mask still covers its band while the other nodes keep their feeds.
 PROVISIONAL (tune against live data): the default SK bounds and
 ``min_valid_frac``.
 
@@ -60,6 +69,9 @@ _FRESHNESS_GAUGE = "kotekan_rfi_sk_per_feed_valid_frac"
 DEFAULT_MAX_STALE_S = 60.0
 #: choco node statuses under which a node's /sk is not worth polling.
 _NOT_POLLED = ("down", "idle")
+#: Readings above this (or negative, or not finite) are unphysical: a feed's SK
+#: is bounded by about rfi_downsampling_factor + 1 (257 on the pathfinder).
+DEFAULT_SK_MAX_PHYSICAL = 1000.0
 
 
 def resolve_urls(src: dict, skipped: list[dict] | None = None) -> list[str]:
@@ -153,7 +165,11 @@ def mask(src: dict, labels, kotekan_file: str):
     valid cells puts its SK outside ``[sk_lo, sk_hi]``.  Endpoints that
     cannot be read, or whose gauges are older than ``max_stale_s`` (0
     disables the check), contribute nothing — this source only flags what
-    it can measure — and the run is reported ``degraded`` naming them.
+    it can measure — and the run is reported ``degraded`` naming them.  A
+    reading above ``sk_max_physical`` (or negative, or not a number) is
+    not a measurement either: the feed is left as the other endpoints
+    judge it, and the run is reported ``degraded`` naming the endpoint
+    and how many of its feeds read so.
     Nothing pollable at all (no started node up, every endpoint failed or
     stale) is the same report with no feed judged; the core fails the run
     only if *every* source ends up with nothing to measure.
@@ -164,6 +180,7 @@ def mask(src: dict, labels, kotekan_file: str):
     sk_hi = float(src.get("sk_hi", 1.5))
     min_valid = float(src.get("min_valid_frac", 0.25))
     max_stale = float(src.get("max_stale_s", DEFAULT_MAX_STALE_S))
+    sk_max_physical = float(src.get("sk_max_physical", DEFAULT_SK_MAX_PHYSICAL))
     now = time.time()
     axis = [str(lbl) for lbl in labels]
     input_good: dict[str, bool] = {}
@@ -171,6 +188,7 @@ def mask(src: dict, labels, kotekan_file: str):
     endpoints: list[dict] = []
     freshness: dict[str, dict[str, float] | None] = {}
     failures = stale = 0
+    unphysical: list[str] = []
     for url in urls:
         entry: dict = {"url": url, "ok": False}
         try:
@@ -202,9 +220,12 @@ def mask(src: dict, labels, kotekan_file: str):
                     stale += 1
                     endpoints.append(entry)
                     continue
-        n_meas = n_flag = 0
+        n_meas = n_flag = n_unphys = 0
         for element, (sk, valid_frac) in readings.items():
             if element >= len(axis) or sk is None or valid_frac < min_valid:
+                continue
+            if not (0.0 <= sk <= sk_max_physical):    # also rejects NaN
+                n_unphys += 1
                 continue
             n_meas += 1
             measured.add(element)
@@ -212,6 +233,11 @@ def mask(src: dict, labels, kotekan_file: str):
                 input_good[axis[element]] = False
                 n_flag += 1
         entry.update(n_measured=n_meas, n_flagged=n_flag)
+        if n_unphys:
+            entry["n_unphysical"] = n_unphys
+            unphysical.append(f"{url} ({n_unphys} feeds)")
+            log.warning("rfi: %s reports an unphysical SK (> %g) on %d feeds; "
+                        "those readings ignored", url, sk_max_physical, n_unphys)
         endpoints.append(entry)
 
     problems = []
@@ -222,6 +248,8 @@ def mask(src: dict, labels, kotekan_file: str):
         problems.append(f"{failures} of {len(urls)} /sk endpoints unreachable")
     if stale:
         problems.append(f"{stale} of {len(urls)} /sk endpoints stale (> {max_stale:.0f} s)")
+    if unphysical:
+        problems.append(f"unphysical SK (> {sk_max_physical:g}) on " + ", ".join(unphysical))
     if not urls and not skipped_nodes:
         problems.append("no started nodes in the group: nothing to measure")
     status = "degraded" if problems else "ok"
@@ -232,7 +260,8 @@ def mask(src: dict, labels, kotekan_file: str):
         status, reason, n_measured=len(measured),
         n_endpoints=len(urls), n_failed=failures, n_stale=stale,
         skipped_nodes=skipped_nodes, endpoints=endpoints,
-        sk_bounds=[sk_lo, sk_hi], min_valid_frac=min_valid, max_stale_s=max_stale)
+        sk_bounds=[sk_lo, sk_hi], min_valid_frac=min_valid, max_stale_s=max_stale,
+        sk_max_physical=sk_max_physical)
 
 
 def main(argv=None) -> int:
@@ -244,6 +273,7 @@ def main(argv=None) -> int:
     p.add_argument("--sk-lo", type=float, default=0.7)
     p.add_argument("--sk-hi", type=float, default=1.5)
     p.add_argument("--min-valid-frac", type=float, default=0.25)
+    p.add_argument("--sk-max-physical", type=float, default=DEFAULT_SK_MAX_PHYSICAL)
     args = p.parse_args(argv)
 
     elements: dict[int, list[dict]] = {}
@@ -257,10 +287,13 @@ def main(argv=None) -> int:
             ts = None
         ages[url] = round(now - ts, 1) if ts is not None else None
         for element, (sk, valid_frac) in sorted(read_sk(url).items()):
-            flagged = (sk is not None and valid_frac >= args.min_valid_frac
+            measured = sk is not None and valid_frac >= args.min_valid_frac
+            unphysical = measured and not (0.0 <= sk <= args.sk_max_physical)
+            flagged = (measured and not unphysical
                        and not (args.sk_lo <= sk <= args.sk_hi))
             elements.setdefault(element, []).append(
-                {"sk": sk, "valid_frac": valid_frac, "flagged": flagged})
+                {"sk": sk, "valid_frac": valid_frac, "flagged": flagged,
+                 "unphysical": unphysical})
 
     print(json.dumps({
         "n_elements": len(elements),

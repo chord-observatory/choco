@@ -66,6 +66,35 @@ def test_mask_flags_out_of_bounds_sk(monkeypatch):
     assert rep["detail"]["endpoints"][0]["n_flagged"] == 1
 
 
+def test_unphysical_sk_judges_nothing_and_is_reported(monkeypatch):
+    # 2026-10-17: one GPU instance read SK of millions for every live feed (a
+    # spike in its running average) and this source masked the whole array.
+    poisoned = {"num_elements": 5, "ema_frames": 256,
+                "sk": [5.5e6, 3.1e7, 1.0, float("nan"), -2.0],
+                "valid_frac": [0.99, 0.99, 0.9, 0.9, 0.9]}
+    monkeypatch.setattr(rfi, "read_sk", _serve({"u0": poisoned, "u1": _SK_1}))
+    labels = np.array(["A1X", "A2X", "A3X", "A4X", "B1X"])
+    good, rep = _mask({"kind": "rfi", "urls": ["u0", "u1"]}, labels)
+    # u0's readings of elements 0, 1, 3 and 4 are impossible: left to u1, which
+    # finds only element 2 cold.  Element 2's SK 1.0 on u0 is a real reading.
+    np.testing.assert_array_equal(good, [True, True, False, True, True])
+    assert rep["status"] == "degraded"
+    assert "unphysical SK (> 1000) on u0 (4 feeds)" in rep["reason"]
+    e0 = rep["detail"]["endpoints"][0]
+    assert e0["ok"] and e0["n_unphysical"] == 4 and e0["n_measured"] == 1
+    assert e0["n_flagged"] == 0
+    assert rep["detail"]["sk_max_physical"] == 1000.0
+
+
+def test_sk_max_physical_configurable(monkeypatch):
+    monkeypatch.setattr(rfi, "read_sk", _serve({"u0": _SK_0}))
+    labels = np.array(["A1X", "A2X"])
+    # with the bound below element 1's 3.5, that reading is unphysical, not hot
+    good, rep = _mask({"kind": "rfi", "url": "u0", "sk_max_physical": 3.0}, labels)
+    np.testing.assert_array_equal(good, [True, True])
+    assert rep["status"] == "degraded" and "u0 (1 feeds)" in rep["reason"]
+
+
 def test_mask_bounds_configurable(monkeypatch):
     monkeypatch.setattr(rfi, "read_sk", _serve({"u0": _SK_0}))
     labels = np.array(["A1X", "A2X"])
