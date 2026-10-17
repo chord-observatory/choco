@@ -150,7 +150,7 @@ entries:
     and 16.  The dish table lists all 64 dishes (rows A-H) as ArrayDish, thus the files have
     128 elements.  The dish order is A01-A04, B01-B04, A05-A08, B05-B08, the same pattern
     for C/D and E/F, then G01-G08 and H01-H08.  Files written before this table was pulled
-    have 64 elements (rows A-D).  The X/Y order of boards 15 and 16 (row H) is not verified.
+    have 64 elements (rows A-D).  Boards 15 and 16 are HX and HY (cabling note of 2026-10-17).
 
 # ---- polarization ---------------------------------------------------------------------
 - topic: polarization
@@ -180,6 +180,16 @@ entries:
   text: >-
     No dish has swapped feeds.  The swap on A6, A7 and B7 was corrected between 2026-09-14
     and 2026-09-19.  The check for this acquisition is below.
+- topic: polarization
+  from: 2026-10-17T04:40
+  to: null
+  source: "cabling note 2026-10-17 (crate slot 15 = HX, 16 = HY); kotekan chord crs_board_remap before 26bce6c64"
+  text: >-
+    kotekan's crs_board_remap kept the RFI-antenna order for crate slots 15 and 16, thus the
+    files label row H's X feeds as Y and its Y feeds as X.  For H01-H08, use X as the
+    array's Y, and Y as the array's X.  The config fix is kotekan chord 26bce6c64; it applies
+    from the first X-engine restart after it is pulled.  The other rows are not affected.
+  swapped: [H01, H02, H03, H04, H05, H06, H07, H08]
 
 # ---- RFI --------------------------------------------------------------------------------
 - topic: rfi
