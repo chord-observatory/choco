@@ -289,18 +289,24 @@ class CalAccumulator:
                    np.zeros((n_freq, n_pol, n_prod), np.float64), 0, calibrator)
 
     def add_block(self, sl: slice, V: np.ndarray, W: np.ndarray, freq_mhz: np.ndarray,
-                  tau: np.ndarray, b2: np.ndarray, t_unix: np.ndarray) -> None:
+                  tau: np.ndarray, b2: np.ndarray, t_unix: np.ndarray,
+                  first: bool | None = None) -> None:
         """A block of channels *sl* for several samples: *V*, *W* are
         ``(n_chan, n_pol, n_prod, n_time)``, *freq_mhz* ``(n_chan,)``,
         *tau* the calibrator's geometric delays ``(n_pol, n_prod, n_time)``
         and *b2* its model beam response per channel ``(n_chan, n_time)``
         (the beam scales with wavelength, so a single width across the
-        band would leave a frequency-dependent bias in the amplitudes)."""
+        band would leave a frequency-dependent bias in the amplitudes).
+        *first* says this is the file's first block, where the samples
+        are counted (once per file, not per block); unset, a block
+        starting at channel 0 is the first."""
         model = np.exp(2j * np.pi * (freq_mhz[:, None, None, None] * 1e6) * tau[None])
         b2c = b2[:, None, None, :]
         self.gsum[sl] += (W * b2c * V * np.conj(model)).sum(axis=-1)
         self.gwt[sl] += (W * (b2c * b2c)).sum(axis=-1)
-        if sl.start == 0 or sl.start is None:        # count samples once per file, not per block
+        if first is None:
+            first = sl.start == 0 or sl.start is None
+        if first:
             self.n_samples += int(len(t_unix))
             lo, hi = float(np.min(t_unix)), float(np.max(t_unix))
             self.first_time = lo if self.first_time is None else min(self.first_time, lo)

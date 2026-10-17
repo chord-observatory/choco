@@ -158,6 +158,33 @@ the waterfall renderer, which already reads every new file within ~50 s of
 each 2 min tick; the NFS read is the only real cost, and
 ``max_files_per_run`` the only effective throttle.
 
+**The 128-element files (2026-10-17).**  With all 64 dishes in the subset a
+file is 12 GB per 400 s (8256 products, 40 bins), ``vis`` is chunked
+``(16, 8256, 40)`` — 42 MB a chunk, every product in it — and the link
+from the choco host delivers 36–59 MB/s.  Reading every channel was 16 GB
+of ``vis`` and 8 GB of ``vis_weight`` per file, longer than the cadence.
+The reducer now reads one chunk-aligned window of ``subband_read_channels``
+(16) channels nearest each 64-channel sub-band's centre
+(``reduce.subband_windows``), and the sub-band's frequency, for the kernel
+and for ``clean.py``'s dirty beam, is the mean of the channels read, so the
+window joins the grid signature.  The sub-band average was already
+discarding the other channels' independent information — the gains are
+per channel, but the visibility is averaged after them — so the map loses
+nothing but a factor two of noise per sub-band, and the read is a quarter.
+``weights: flags`` drops ``vis_weight`` as well (a third less again) at the
+price of natural weighting: on the live files the weight varies by a factor
+~20 across the products of one cell, so the default keeps it.  One file is
+now about 3 GB on the wire, 60–80 s.
+
+The same files found a stale record: the maps carried ``last_file_idx``
+4236144 while the live files were numbered 2119669, so nothing had been
+pending since 2026-10-07 (the origin is unknown; kotekan's counter is not
+monotonic across acquisitions).  The last folded file is now recorded as
+``(acquisition, index)`` and a file is pending when its acquisition is
+newer or its index higher within the same one; a record that carries only
+an index is looked up by it, and one no file carries is dropped with a
+warning so the run starts from the newest acquisition.
+
 ## Colour and stretch
 
 Each colour bin is painted in the sRGB of the visible wavelength it maps

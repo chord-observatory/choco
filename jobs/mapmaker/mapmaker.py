@@ -72,6 +72,10 @@ DEFAULTS = {
     "colour_bins": 16,
     "colour_range_mhz": [300.0, 1500.0],
     "subband_channels": 64,
+    # channels read per sub-band (one chunk; null reads them all) and where
+    # the weights come from (reduce.WEIGHT_SOURCES)
+    "subband_read_channels": 16,
+    "weights": "vis_weight",
     "bad_freq_mhz": [[350, 400], [600, 650], [700, 800], [850, 900], [1150, 1300]],
     "max_rfi_fraction": 0.05,
     "n_ra_bins": 4096,
@@ -145,6 +149,12 @@ def load_config(path) -> dict:
         raise ValueError("colour_bins must be at least 1")
     if cfg["subband_channels"] < 1 or cfg["n_ra_bins"] < 16:
         raise ValueError("subband_channels and n_ra_bins must be positive")
+    if cfg["subband_read_channels"] is not None:
+        cfg["subband_read_channels"] = int(cfg["subband_read_channels"])
+        if not 1 <= cfg["subband_read_channels"] <= cfg["subband_channels"]:
+            raise ValueError("subband_read_channels must be between 1 and subband_channels, or null")
+    if cfg["weights"] not in R.WEIGHT_SOURCES:
+        raise ValueError(f"weights must be one of {', '.join(R.WEIGHT_SOURCES)}")
     for key in ("dec_halfwidth_deg", "dec_step_deg", "dish_diameter_m", "beam_fwhm_factor",
                 "footprint_fwhm", "sun_exclusion_deg", "calibrator_max_offset_deg",
                 "calibration_window_deg", "dead_fraction", "exposure_floor"):
@@ -194,7 +204,8 @@ def grid_signature(cfg: dict) -> str:
     must never be cleaned with another."""
     keys = ("pointing_dec_deg", "colour_bins", "colour_range_mhz", "n_ra_bins",
             "dec_halfwidth_deg", "dec_step_deg", "subband_channels",
-            "dish_diameter_m", "beam_fwhm_factor", "footprint_fwhm")
+            "dish_diameter_m", "beam_fwhm_factor", "footprint_fwhm",
+            "subband_read_channels", "weights")
     return json.dumps({k: cfg[k] for k in keys}, sort_keys=True)
 
 
@@ -266,10 +277,22 @@ def source_files(acq_dir: str) -> list[tuple[int, str]]:
     return sorted((idx, p) for idx, p in named if idx is not None)
 
 
-def pending_files(cfg: dict, last_idx: int | None) -> tuple[list[tuple[int, str]], list[str]]:
+def acq_of(path: str) -> str:
+    """The acquisition a file belongs to: its directory's name."""
+    return os.path.basename(os.path.dirname(path))
+
+
+def pending_files(cfg: dict, last: tuple[str, int] | None) -> tuple[list[tuple[int, str]], list[str]]:
     """Files not yet folded in, oldest first, across all roots; and the
-    degraded reasons for roots that could not be listed.  Without a
-    ``last_idx`` the first run starts at ``backfill_from`` (an acquisition
+    degraded reasons for roots that could not be listed.
+
+    ``last`` is ``(acquisition, index)`` of the last file folded in: a
+    file is pending when its acquisition is newer, or the same one and
+    its index higher.  The index alone is not enough — kotekan's counter
+    is not monotonic across acquisitions (the maps once recorded 4236144
+    while the live files were at 2119669, and nothing was pending for a
+    week) — and acquisition names carry their start time.  Without a
+    ``last`` the first run starts at ``backfill_from`` (an acquisition
     name) or at the newest acquisition."""
     files, reasons = [], []
     for root in cfg["roots"]:
@@ -278,7 +301,7 @@ def pending_files(cfg: dict, last_idx: int | None) -> tuple[list[tuple[int, str]
         except Degraded as e:
             reasons.append(str(e))
             continue
-        if last_idx is None:
+        if last is None:
             start = cfg.get("backfill_from")
             if start and start in acqs:
                 acqs = acqs[acqs.index(start):]
@@ -286,10 +309,36 @@ def pending_files(cfg: dict, last_idx: int | None) -> tuple[list[tuple[int, str]
                 acqs = acqs[-1:]
         for acq in acqs:
             for idx, p in source_files(os.path.join(root["path"], acq)):
-                if last_idx is None or idx > last_idx:
+                if last is None or (acq, idx) > tuple(last):
                     files.append((idx, p))
-    files.sort()
+    files.sort(key=lambda t: (acq_of(t[1]), t[0]))
     return files, reasons
+
+
+def resolve_last(cfg: dict, meta: dict) -> tuple[str, int] | None:
+    """``(acquisition, index)`` of the last file the saved maps folded in.
+
+    Maps saved before the acquisition joined the record (2026-10-17) carry
+    the index alone; the file is looked up by index across the roots.  An
+    index no file carries is dropped with a warning, so the run starts
+    from the newest acquisition rather than wait for a counter that may
+    never come back."""
+    idx = meta.get("last_file_idx")
+    if idx is None:
+        return None
+    if meta.get("last_acq"):
+        return (str(meta["last_acq"]), int(idx))
+    for root in cfg["roots"]:
+        try:
+            acqs = list_acquisitions(root["path"])
+        except Degraded:
+            continue
+        for acq in reversed(acqs):
+            if any(i == idx for i, _ in source_files(os.path.join(root["path"], acq))):
+                return (acq, int(idx))
+    log.warning("the maps' last file index %s matches no file in the tree; "
+                "starting from the newest acquisition", idx)
+    return None
 
 
 # --- persistent state -----------------------------------------------------------
@@ -315,6 +364,7 @@ class Maps:
         self.geometry: dict | None = None
         self.passes = I.PassSlots.empty(n_pol, n_band, grid.n_dec, grid.n_bins)
         self.last_file_idx: int | None = None
+        self.last_acq: str | None = None
         self.last_sample_time: float | None = None
         self.current_pass: int | None = None
         self.n_samples = 0
@@ -347,6 +397,7 @@ class Maps:
             return cls(grid, n_pol, n_band, signature, n_sub, n_unique)
         m.geometry = meta.get("geometry")
         m.last_file_idx = meta.get("last_file_idx")
+        m.last_acq = meta.get("last_acq")
         m.last_sample_time = meta.get("last_sample_time")
         m.current_pass = meta.get("current_pass")
         m.n_samples = int(meta.get("n_samples", 0))
@@ -372,6 +423,7 @@ class Maps:
 
     def save(self, path) -> None:
         meta = json.dumps({"last_file_idx": self.last_file_idx,
+                           "last_acq": self.last_acq,
                            "last_sample_time": self.last_sample_time,
                            "current_pass": self.current_pass,
                            "n_samples": self.n_samples,
@@ -455,22 +507,26 @@ class Run:
 
     # -- per-geometry setup --
     def setup(self, ax: R.FileAxes, pols: list) -> None:
-        key = (ax.n_freq, ax.n_prod, ax.n_elements, round(ax.lat_deg, 6), round(ax.lon_deg, 6))
+        key = (ax.n_freq, ax.n_prod, ax.n_elements, round(ax.lat_deg, 6), round(ax.lon_deg, 6),
+               ax.chunk_rows)
         if self.axes_key == key:
             return
         cfg = self.cfg
         self.grid = I.Grid.build(cfg["n_ra_bins"], cfg["pointing_dec_deg"], cfg["dec_halfwidth_deg"],
                                  cfg["dec_step_deg"], ax.lat_deg, ax.lon_deg)
         self.bl = I.group_baselines(pols[0].bl_xy, ax.sep_x, ax.sep_y)
-        n_sub = int(math.ceil(ax.n_freq / cfg["subband_channels"]))
+        # the sub-bands and the channels read from each: the kernel's
+        # frequency is that of the channels the visibility is averaged over
+        windows = R.subband_windows(ax.n_freq, cfg["subband_channels"],
+                                    cfg["subband_read_channels"], ax.chunk_rows)
+        n_sub = len(windows)
         edges = colour_edges(cfg)
         self.kernels, self.band_of_sub, subbands = [], [], []
-        for s in range(n_sub):
-            lo, hi = s * cfg["subband_channels"], min((s + 1) * cfg["subband_channels"], ax.n_freq)
-            fc = float(ax.freq_mhz[lo:hi].mean())
+        for s, (_, rsl) in enumerate(windows):
+            fc = float(ax.freq_mhz[rsl].mean())
             band = colour_bin_of(fc, edges)
             self.band_of_sub.append(band)
-            if band is None or R.channel_mask(ax.freq_mhz[lo:hi], cfg["bad_freq_mhz"]).all():
+            if band is None or R.channel_mask(ax.freq_mhz[rsl], cfg["bad_freq_mhz"]).all():
                 self.kernels.append(None)
                 continue
             fwhm = float(I.beam_fwhm_deg(fc, cfg["dish_diameter_m"], cfg["beam_fwhm_factor"]))
@@ -569,7 +625,8 @@ class Run:
         red = R.read_reduced(ax, pols, cfg["subband_channels"], cfg["bad_freq_mhz"],
                              cfg["max_rfi_fraction"], gains,
                              cal=self.calsum if (window is not None and window.in_window.any()) else None,
-                             window=window)
+                             window=window, read_channels=cfg["subband_read_channels"],
+                             weights=cfg["weights"])
 
         # a transit that has passed: solve the gains for the passes to come
         if (self.calsum is not None and on_sky is not None and self.calsum.n_samples > 0
@@ -600,6 +657,7 @@ class Run:
             self.image(red, bins, passes, era_local, ax)
             self.report["files_imaged"] += 1
         self.maps.last_file_idx = ax.file_idx
+        self.maps.last_acq = acq_of(path)
         self.maps.last_sample_time = float(ax.t_unix.max())
         log.info("folded %s: %d samples, %s, %d in the calibration window, %.0f%% of weights zero, %.1fs",
                  os.path.basename(path), ax.n_time,
@@ -667,29 +725,32 @@ class Run:
 def run(cfg: dict, state_dir: Path, budget: int | None = None) -> dict:
     t0 = time.perf_counter()
     r = Run(cfg, state_dir)
-    # the last folded index lives with the maps, so read it before listing
-    maps_meta_idx = Maps.stored_meta(state_dir / MAPS_FILE, grid_signature(cfg)).get("last_file_idx")
-    files, reasons = pending_files(cfg, maps_meta_idx)
+    # the last folded file lives with the maps, so read it before listing
+    stored = resolve_last(cfg, Maps.stored_meta(state_dir / MAPS_FILE, grid_signature(cfg)))
+    files, reasons = pending_files(cfg, stored)
     r.report["degraded"].extend(reasons)
     budget = cfg["max_files_per_run"] if budget is None else budget
     todo = files if budget <= 0 else files[:budget]
     r.report["backlog"] = max(0, len(files) - len(todo))
-    last_idx = maps_meta_idx
+    last = stored
     for idx, path in todo:
+        here = (acq_of(path), idx)
         try:
             r.process(path)
-            last_idx = idx
+            last = here
         except R.Unusable as e:
             r.report["skipped"].append(str(e))
-            last_idx = idx
+            last = here
             if r.maps is not None:
-                r.maps.last_file_idx = idx
+                r.maps.last_acq, r.maps.last_file_idx = here
         except OSError as e:
             r.report["degraded"].append(f"{os.path.basename(path)}: {e}")
             break                        # the mount is the likely cause; retry next tick
     if r.maps is not None:
-        if last_idx is not None:
-            r.maps.last_file_idx = max(last_idx, r.maps.last_file_idx or last_idx)
+        if last is not None:
+            held = ((r.maps.last_acq, r.maps.last_file_idx)
+                    if r.maps.last_acq and r.maps.last_file_idx is not None else None)
+            r.maps.last_acq, r.maps.last_file_idx = max(last, held) if held else last
         r.maps.save(state_dir / MAPS_FILE)
         save_calsum(state_dir / CALSUM_FILE, r.calsum)
         if r.maps.n_samples > 0 or r.report["files_imaged"]:
@@ -697,13 +758,13 @@ def run(cfg: dict, state_dir: Path, budget: int | None = None) -> dict:
                 r.report["coverage"] = r.render()
             except (OSError, ValueError) as e:
                 r.report["errors"].append(f"render: {e}")
-    elif todo and last_idx is not None and last_idx != maps_meta_idx:
+    elif todo and last is not None and last != stored:
         # every file was unusable; remember where we got to without a grid
         stub = Maps.load(state_dir / MAPS_FILE, I.Grid.build(cfg["n_ra_bins"], cfg["pointing_dec_deg"],
                                                              cfg["dec_halfwidth_deg"], cfg["dec_step_deg"],
                                                              0.0, 0.0),
                          2, cfg["colour_bins"], grid_signature(cfg))
-        stub.last_file_idx = last_idx
+        stub.last_acq, stub.last_file_idx = last
         stub.save(state_dir / MAPS_FILE)
     if r.gains is None and r.calibrator is not None and r.report["files_processed"]:
         acc = r.calsum.n_samples if r.calsum is not None else 0
@@ -711,7 +772,10 @@ def run(cfg: dict, state_dir: Path, budget: int | None = None) -> dict:
             f"no gains yet: waiting for a {r.calibrator['name']} transit "
             f"({acc} calibration samples so far)")
     r.report["run_seconds"] = round(time.perf_counter() - t0, 2)
-    r.report["last_file_idx"] = (r.maps.last_file_idx if r.maps is not None else last_idx)
+    r.report["last_file_idx"] = (r.maps.last_file_idx if r.maps is not None
+                                 else (last[1] if last else None))
+    r.report["last_acq"] = (r.maps.last_acq if r.maps is not None
+                            else (last[0] if last else None))
     r.report["last_sample_time"] = r.maps.last_sample_time if r.maps is not None else None
     r.report["gains"] = dict(r.gains_meta) if r.gains is not None else None
     r.report["calibrator"] = r.calibrator["name"] if r.calibrator else None
@@ -762,11 +826,12 @@ def main(argv=None) -> int:
     budget = args.max_files
 
     if args.dry_run:
-        last_idx = Maps.stored_meta(state_dir / MAPS_FILE, grid_signature(cfg)).get("last_file_idx")
-        files, reasons = pending_files(cfg, last_idx)
+        last = resolve_last(cfg, Maps.stored_meta(state_dir / MAPS_FILE, grid_signature(cfg)))
+        files, reasons = pending_files(cfg, last)
         for reason in reasons:
             log.error("%s", reason)
-        print(f"{len(files)} files pending (last folded index {last_idx})")
+        print(f"{len(files)} files pending (last folded: "
+              f"{'none' if last is None else f'{last[1]} in {last[0]}'})")
         for idx, p in files[:10]:
             print(f"  {idx} {p}")
         return 2 if reasons else 0

@@ -94,3 +94,52 @@ def test_sub_band_average_of_a_calibrated_source_is_coherent(tmp_path):
     # the source sits at the pointing: |V| ~ flux * B^2 ~ 1 near transit
     assert np.median(np.abs(cal.V[:, 0, :, 10])) == pytest.approx(1.0, abs=0.1)
     assert np.median(np.abs(raw.V[:, 0, :, 10])) < 0.9 * np.median(np.abs(cal.V[:, 0, :, 10]))
+
+
+def test_subband_windows_open_one_chunk_per_subband():
+    sl = slice
+    # 64-channel sub-bands, 16-row chunks: the chunk nearest each centre
+    assert R.subband_windows(128, 64, 16, 16) == [(sl(0, 64), sl(16, 32)), (sl(64, 128), sl(80, 96))]
+    # not chunked: centred exactly
+    assert R.subband_windows(128, 64, 16, 1) == [(sl(0, 64), sl(24, 40)), (sl(64, 128), sl(88, 104))]
+    # the whole sub-band when asked, or when the window is no narrower
+    assert R.subband_windows(128, 64, None, 16) == [(sl(0, 64), sl(0, 64)), (sl(64, 128), sl(64, 128))]
+    assert R.subband_windows(128, 64, 64, 16) == [(sl(0, 64), sl(0, 64)), (sl(64, 128), sl(64, 128))]
+    # a short last sub-band keeps its window inside itself
+    assert R.subband_windows(100, 64, 16, 16)[1] == (sl(64, 100), sl(64, 80))
+
+
+def test_read_reduced_reads_one_window_per_subband(tmp_path):
+    t0 = 1_791_000_000.0
+    p = tmp_path / "acq_x" / file_name(7, t0)
+    write_vis_file(str(p), 7, t0, 100.0, dead_elements=(1,), rfi_channels=(3,))
+    ax = R.read_axes(str(p))
+    assert ax.chunk_rows == 16
+    pols = R.pol_sets(ax)
+    full = R.read_reduced(ax, pols, 16, [], 0.05, None)                    # every 16-channel block
+    part = R.read_reduced(ax, pols, 32, [], 0.05, None, read_channels=16)   # one block per 32
+    assert part.V.shape == (4, 2, 6, 20)
+    # the window is the first chunk of each 32-channel sub-band here, so
+    # the sub-band average is exactly the full read's even block
+    for s in range(4):
+        assert part.sub_freq_mhz[s] == pytest.approx(full.sub_freq_mhz[2 * s])
+        np.testing.assert_allclose(part.V[s], full.V[2 * s])
+        np.testing.assert_allclose(part.W[s], full.W[2 * s])
+
+
+def test_weights_from_flags_alone(tmp_path):
+    t0 = 1_791_000_000.0
+    p = tmp_path / "acq_x" / file_name(7, t0)
+    write_vis_file(str(p), 7, t0, 100.0, dead_elements=(1,), rfi_channels=(3,))
+    ax = R.read_axes(str(p))
+    pols = R.pol_sets(ax)
+    ref = R.read_reduced(ax, pols, 16, [], 0.05, None)
+    red = R.read_reduced(ax, pols, 16, [], 0.05, None, weights="flags")
+    dead = (pols[0].a == 1) | (pols[0].b == 1)
+    # the same zeros (dead element, RFI channel), unit weight elsewhere
+    np.testing.assert_array_equal(red.W > 0, ref.W > 0)
+    assert red.W[1, 0, ~dead, :].min() == 16 and red.W[0, 0, ~dead, 0].max() == 15
+    # the file's weights are uniform, so the averages agree
+    np.testing.assert_allclose(red.V, ref.V, rtol=1e-5)
+    with pytest.raises(ValueError, match="weights"):
+        R.read_reduced(ax, pols, 16, [], 0.05, None, weights="guess")

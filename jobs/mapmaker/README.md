@@ -23,16 +23,22 @@ python mapmaker.py -c mapmaker.yaml --state-dir /tmp/maps -vv   # a hand run, el
 
 ## What a run does
 
-1. **Pending files** are decided from filenames: kotekan's `vis_<idx>_…`
-   index against the last index folded in (kept with the maps).  The first
-   run starts at the newest acquisition, or at `backfill_from`.
-2. **Reduce** (`reduce.py`): each file is swept once in 64-channel blocks.
-   Per block, the array dishes' cross products are taken per polarization
-   (RFI antennas and Missing elements excluded), weights are zeroed by the
-   element flags kotekan applied, by the per-sample RFI fraction and by the
-   configured bad frequency ranges; the calibrator transit's gain sums are
-   accumulated per channel; the per-channel gains are divided out; the
-   channels are averaged into one visibility per sub-band.
+1. **Pending files** are decided from filenames: a file is pending when its
+   acquisition is newer than the last one folded in, or the same one and
+   its `vis_<idx>_…` index higher (both kept with the maps; kotekan's index
+   is not monotonic across acquisitions).  The first run starts at the
+   newest acquisition, or at `backfill_from`.
+2. **Reduce** (`reduce.py`): each file is swept once, one chunk-aligned
+   window of `subband_read_channels` channels per 64-channel sub-band
+   (kotekan chunks `vis` over every product, so a read costs chunks, not
+   channels).  Per window, the array dishes' cross products are taken per
+   polarization (RFI antennas and Missing elements excluded), weights come
+   from `vis_weight` or from the element flags alone (`weights`) and are
+   zeroed by the element flags kotekan applied, by the per-sample RFI
+   fraction and by the configured bad frequency ranges; the calibrator
+   transit's gain sums are accumulated per channel; the per-channel gains
+   are divided out; the channels are averaged into one visibility per
+   sub-band at the window's mean frequency.
 3. **Image** (`imaging.py`): redundant baselines are averaged (22 unique
    vectors for the 2 × 8 grid), then each sample is scatter-added through a
    precomputed kernel `K = B² exp(iφ)` over the beam's footprint into the

@@ -37,6 +37,21 @@ colour_range_mhz: [300, 1500]
 # on the long baselines), narrower ones cost proportionally more compute.
 subband_channels: 64
 
+# Channels read from each sub-band, nearest its centre and aligned to the
+# file's chunk boundary (null reads the whole sub-band).  kotekan chunks
+# vis as 16 channels x every product x every time bin (42 MB at 128
+# elements) and a chunk decompresses whole, so one chunk per 64-channel
+# sub-band is a quarter of the read -- and the sub-band average was already
+# discarding the other channels' independent information.  Part of the grid
+# signature: changing it starts the maps afresh.
+subband_read_channels: 16
+
+# Where the per-sample weights come from: vis_weight (kotekan's inverse
+# variance per product, 8 GB a file at 128 elements) or flags (the file's
+# element flags alone, 0/1: a third less to read, every live product weighed
+# the same).  Part of the grid signature.
+weights: vis_weight
+
 # Channels excluded outright, [lo, hi] MHz.  Measured in the 2026-10-04
 # subset data: TV/LTE bands with 14-49% of samples excised by kotekan's RFI
 # stage; the per-sample fraction below handles the rest.
@@ -134,9 +149,10 @@ clean:
 # (acq_YYYYMMDD_...) to backfill from, or null for the newest acquisition.
 backfill_from: null
 
-# Files folded per run.  Each costs the NFS read of a 1.6 GB file (~20 s)
-# plus a few seconds of imaging; files land every ~3.2 min, so the live data
-# keeps up at any value above 1.  0 means unlimited, for a hand-run backfill.
+# Files folded per run.  Each costs the NFS read of one chunk per sub-band
+# (about 3 GB on the wire of a 12 GB file, 60-80 s) plus a few seconds of
+# imaging; files land every 400 s, so the live data keeps up at any value
+# above 1.  0 means unlimited, for a hand-run backfill.
 max_files_per_run: 10
 
 # The maps (maps.npz), gains (gains.npz), state.json, clean.json, the PNGs

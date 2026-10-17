@@ -56,6 +56,7 @@ class FileAxes:
     sep_y: float
     era_deg: np.ndarray      # (n_time,) Earth rotation angle per sample
     t_unix: np.ndarray       # (n_time,)
+    chunk_rows: int = 1      # frequency rows per chunk of ``vis`` (1: not chunked)
 
 
 def read_axes(path: str) -> FileAxes:
@@ -100,7 +101,37 @@ def read_axes(path: str) -> FileAxes:
             sep_x=float(attrs.get("feed_separation_x_m", 6.3)),
             sep_y=float(attrs.get("feed_separation_y_m", 8.5)),
             era_deg=era, t_unix=t,
+            chunk_rows=int(vis.chunks[0]) if vis.chunks else 1,
         )
+
+
+def subband_windows(n_freq: int, subband_channels: int, read_channels: int | None,
+                    chunk_rows: int) -> list[tuple[slice, slice]]:
+    """Per sub-band, ``(the sub-band, the channels read from it)``.
+
+    ``vis`` is chunked over every product (16 channels × 8256 products ×
+    40 bins, 42 MB, since 2026-10), so a sub-band costs as many chunks
+    as it spans whatever is done with the channels.  With
+    ``read_channels`` set, each sub-band is represented by that many
+    channels nearest its centre, aligned to the chunk boundary so the
+    read opens one chunk: one 16-channel chunk per 64-channel sub-band
+    is a quarter of the read for a map whose sub-band average was
+    already discarding the other 48 channels' independent information
+    (they are averaged after the gains, not before).  None reads the
+    whole sub-band.
+    """
+    n = None if read_channels is None else max(1, int(read_channels))
+    cs = max(1, int(chunk_rows))
+    out = []
+    for lo in range(0, n_freq, subband_channels):
+        hi = min(lo + subband_channels, n_freq)
+        if n is None or n >= hi - lo:
+            out.append((slice(lo, hi), slice(lo, hi)))
+            continue
+        start = int((lo + hi) / 2 - n / 2) // cs * cs
+        start = max(lo, min(start, hi - n))
+        out.append((slice(lo, hi), slice(start, start + n)))
+    return out
 
 
 @dataclass
@@ -175,12 +206,26 @@ class Reduced:
     frac_flagged: float        # fraction of (channel, product, sample) weights zeroed
 
 
+#: Where the weights come from: kotekan's inverse-variance ``vis_weight``
+#: (per product, a factor ~20 across products in one cell on the live
+#: files), or the file's element ``flags`` alone (0/1; a third less to
+#: read, every live product weighed the same).
+WEIGHT_SOURCES = ("vis_weight", "flags")
+
+
 def read_reduced(ax: FileAxes, pols: list, subband_channels: int, bad_ranges,
                  max_rfi_fraction: float, gains: np.ndarray | None,
-                 cal: CalAccumulator | None = None, window: CalWindow | None = None) -> Reduced:
-    """Sweep the file once; see the module docstring."""
+                 cal: CalAccumulator | None = None, window: CalWindow | None = None,
+                 read_channels: int | None = None, weights: str = "vis_weight") -> Reduced:
+    """Sweep the file once; see the module docstring.  ``read_channels``
+    channels of each sub-band are read (:func:`subband_windows`; None for
+    all of them) and ``weights`` names the weight source
+    (:data:`WEIGHT_SOURCES`)."""
+    if weights not in WEIGHT_SOURCES:
+        raise ValueError(f"weights must be one of {WEIGHT_SOURCES}, not {weights!r}")
     n_pol, n_prod, n_time = len(pols), len(pols[0].prod_idx), ax.n_time
-    nsub = int(np.ceil(ax.n_freq / subband_channels))
+    windows = subband_windows(ax.n_freq, subband_channels, read_channels, ax.chunk_rows)
+    nsub = len(windows)
     V_out = np.zeros((nsub, n_pol, n_prod, n_time), np.complex64)
     W_out = np.zeros((nsub, n_pol, n_prod, n_time), np.float32)
     sub_freq = np.zeros(nsub)
@@ -188,15 +233,15 @@ def read_reduced(ax: FileAxes, pols: list, subband_channels: int, bad_ranges,
     n_zero = 0
     n_total = 0
     with h5py.File(ax.path, "r") as f:
-        dvis, dw = f["vis"], f["vis_weight"]
+        dvis = f["vis"]
+        dw = f["vis_weight"] if weights == "vis_weight" else None
         dflags = f["flags"] if "flags" in f else None
         drfi = f["frac_rfi"] if "frac_rfi" in f else None
-        for s in range(nsub):
-            lo, hi = s * subband_channels, min((s + 1) * subband_channels, ax.n_freq)
-            sl = slice(lo, hi)
+        for s, (_, sl) in enumerate(windows):
             sub_freq[s] = ax.freq_mhz[sl].mean()
             vis = dvis[sl]                                   # (nc, n_prod_all, n_time)
-            wgt = dw[sl].astype(np.float32)
+            wgt = (dw[sl].astype(np.float32) if dw is not None
+                   else np.ones(vis.shape, np.float32))
             flags = dflags[sl] if dflags is not None else None  # (nc, n_el, n_time)
             rfi = drfi[sl] if drfi is not None else None        # (nc, n_time)
             V = np.stack([vis[:, ps.prod_idx, :] for ps in pols], axis=1)   # (nc, n_pol, n_prod, n_time)
@@ -215,7 +260,8 @@ def read_reduced(ax: FileAxes, pols: list, subband_channels: int, bad_ranges,
             if cal is not None and window is not None and window.in_window.any():
                 w = window.in_window
                 cal.add_block(sl, V[..., w], W[..., w], ax.freq_mhz[sl],
-                              window.tau[..., w], window.beam_sq(ax.freq_mhz[sl], w), ax.t_unix[w])
+                              window.tau[..., w], window.beam_sq(ax.freq_mhz[sl], w), ax.t_unix[w],
+                              first=(s == 0))
             if gains is not None:
                 V, W = apply_gains(V, W, gains[sl])
             wsum = W.sum(axis=0)

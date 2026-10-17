@@ -43,7 +43,8 @@ def test_load_config_checks_the_clean_block(tmp_path):
 def test_signature_tolerates_files_from_before_the_beam_keys():
     cfg = {"pointing_dec_deg": 40.8, "colour_bins": 16, "colour_range_mhz": [300.0, 1500.0],
            "n_ra_bins": 4096, "dec_halfwidth_deg": 10.0, "dec_step_deg": 0.25, "subband_channels": 64,
-           "dish_diameter_m": 6.0, "beam_fwhm_factor": 1.03, "footprint_fwhm": 1.2}
+           "dish_diameter_m": 6.0, "beam_fwhm_factor": 1.03, "footprint_fwhm": 1.2,
+           "subband_read_channels": 16, "weights": "vis_weight"}
     current = M.grid_signature(cfg)
     old_keys = ("pointing_dec_deg", "colour_bins", "colour_range_mhz", "n_ra_bins",
                 "dec_halfwidth_deg", "dec_step_deg", "subband_channels")
@@ -120,8 +121,29 @@ def test_first_run_starts_at_the_newest_acquisition(tmp_path):
     cfg["backfill_from"] = "acq_20260101_000000_1"
     files, _ = M.pending_files(cfg, None)
     assert [i for i, _ in files] == [10, 11, 20, 21, 22]
-    files, _ = M.pending_files(cfg, 21)
+    files, _ = M.pending_files(cfg, ("acq_20260102_000000_1", 21))
     assert [i for i, _ in files] == [22]
+    # a newer acquisition is pending whatever its index: kotekan's counter
+    # is not monotonic across acquisitions
+    write_acquisition(str(root), "acq_20260103_000000_1", 2, first_idx=5, n_freq=16)
+    files, _ = M.pending_files(cfg, ("acq_20260102_000000_1", 21))
+    assert [(M.acq_of(p)[4:12], i) for i, p in files] == [("20260102", 22), ("20260103", 5), ("20260103", 6)]
+    files, _ = M.pending_files(cfg, ("acq_20260103_000000_1", 5))
+    assert [i for i, _ in files] == [6]
+
+
+def test_resolve_last_finds_the_file_or_starts_afresh(tmp_path, caplog):
+    root = tmp_path / "root"
+    write_acquisition(str(root), "acq_20260101_000000_1", 2, first_idx=10, n_freq=16)
+    write_acquisition(str(root), "acq_20260102_000000_1", 3, first_idx=20, n_freq=16)
+    cfg = M.load_config(write_cfg(tmp_path / "m.yaml", root))
+    assert M.resolve_last(cfg, {}) is None
+    assert M.resolve_last(cfg, {"last_file_idx": 11, "last_acq": "acq_x"}) == ("acq_x", 11)
+    # maps from before the acquisition was recorded: the index is looked up
+    assert M.resolve_last(cfg, {"last_file_idx": 11}) == ("acq_20260101_000000_1", 11)
+    # an index no file carries (the 4236144 of 2026-10): start afresh, say so
+    assert M.resolve_last(cfg, {"last_file_idx": 4236144}) is None
+    assert "matches no file" in caplog.text
 
 
 def test_missing_root_is_degraded(tmp_path):
@@ -159,6 +181,23 @@ def test_first_pass_solves_gains_then_images(acquisition, tmp_path):
     assert report["last_file_idx"] == 1019
     assert report["degraded"] == []                  # gains exist now
     assert report["pointing_check"]["agrees"] is True
+
+
+def test_windowed_read_still_solves_and_images(acquisition, tmp_path):
+    root, paths = acquisition
+    cfg = M.load_config(write_cfg(tmp_path / "m.yaml", root, subband_channels=32,
+                                  subband_read_channels=16, weights="flags"))
+    sd = tmp_path / "state"
+    sd.mkdir()
+    report = M.run(cfg, sd)
+    assert report["gains_solved"] and report["files_imaged"] == 4
+    assert report["last_acq"] == "acq_20260101_000000_1" and report["last_file_idx"] == 1019
+    assert M.run(cfg, sd)["files_processed"] == 0
+    # a window wider than the sub-band, or an unknown weight source, is a config error
+    with pytest.raises(ValueError, match="subband_read_channels"):
+        M.load_config(write_cfg(tmp_path / "m.yaml", root, subband_channels=32, subband_read_channels=48))
+    with pytest.raises(ValueError, match="weights"):
+        M.load_config(write_cfg(tmp_path / "m.yaml", root, weights="guess"))
 
 
 @pytest.mark.parametrize("offset,agrees", [(0.1, True), (2.0, False)])
