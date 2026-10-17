@@ -133,12 +133,24 @@ entries:
     `index_map/pol`.  The dish order is A01-A04, B01-B04, A05-A08, B05-B08.
 - topic: labels
   from: 2026-10-09T19:14
-  to: null
+  to: 2026-10-17
   source: "kotekan 180da474d / 063a965c2 (2026-10-08, \"connect dish rows C and D\"); file attributes 2026-10-10 to 10-12"
   text: >-
     kotekan 180da474d and 063a965c2 connect dish rows C and D.  The subset files do not
     include them.  The files have 48 elements: 16 dishes (rows A and B) and 8 RFI antennas,
     in two polarizations.
+- topic: labels
+  from: 2026-10-17
+  to: null
+  source: "cabling note for boards 13-16 (2026-10-17); kotekan chord 90de714fa to 34fb6f37f; switch port status 2026-10-17"
+  text: >-
+    After the power cycle of 2026-10-15, all 16 CRS boards are cabled to dishes and the RFI
+    antennas are disconnected.  Boards 1-12 carry four dishes of two rows each, as before.
+    Boards 13-16 carry one full row each: G01-G08 on boards 13 and 14, H01-H08 on boards 15
+    and 16.  The dish table lists all 64 dishes (rows A-H) as ArrayDish, thus the files have
+    128 elements.  The dish order is A01-A04, B01-B04, A05-A08, B05-B08, the same pattern
+    for C/D and E/F, then G01-G08 and H01-H08.  Files written before this table was pulled
+    have 64 elements (rows A-D).  The X/Y order of boards 15 and 16 (row H) is not verified.
 
 # ---- polarization ---------------------------------------------------------------------
 - topic: polarization
@@ -250,6 +262,16 @@ entries:
     inputs.  bffs flagged B04X (hot) and B04Y (dead) from 2026-10-03 20:37 UTC; the files
     show the flags from 20:41.  After each kotekan restart the mask starts without them
     for some minutes, until bffs sends it again.
+- topic: badfeed
+  from: 2026-10-17
+  to: null
+  source: "switch port status 2026-10-17 (Et14, Et19, Et21, Et24 down); n2_buffer frame on cx52; bffs manual list"
+  text: >-
+    Four CRS boards send no data: boards 9 and 10 (E01-E04 and F01-F04, both polarizations),
+    board 12 (E05-E08 and F05-F08, Y) and board 13 (G01-G08, X).  Their 32 inputs are zero.
+    These inputs are flagged by hand in the bffs manual list; the dish table does not mark
+    them.  Board 8 (C05-D08, Y) drops its link for a few seconds now and then; the
+    packet-loss mask covers these gaps.
 
 # ---- data / software ----------------------------------------------------------------
 - topic: data
@@ -288,6 +310,14 @@ entries:
   text: >-
     recv1 stopped at 2026-10-07 17:21 UTC.  It wrote no subset files until 2026-10-09
     19:14 UTC.
+- topic: data
+  from: 2026-10-15T23:00
+  to: 2026-10-17T02:49
+  source: "switch and node uptimes, kotekan start times (2026-10-17)"
+  text: >-
+    Building power cycle.  The switch came back on 2026-10-16 01:49 UTC, the nodes on
+    2026-10-17 at about 01:53 UTC and kotekan on the cx nodes at 02:49 UTC.  No data in this
+    period.
 - topic: software
   from: 2026-09-09
   to: null
