@@ -79,6 +79,29 @@ pass as all-good.  The web side reads the file in ``jobdetail._bffs_run_summary`
 systemd's verdict is degraded or failed — the verdict stays systemd's; the
 file supplies the words.
 
+**The N² file is read by chunk (bffs, 2026-10-17).**  When the subset grew
+to all 64 dishes the files went from 2.8 GB (48 elements, 1176 products) to
+12 GB (128 elements, 8256 products) every 400 s, and ``vis`` is chunked
+``(16 freq, every product, every time)``: 42 MB a chunk, bitshuffle on
+disk.  HDF5 decompresses a chunk whole however little of it a read keeps,
+so the power-outlier source's ``vis[:, diag, lo:hi]`` — 128 autocorrelations
+over 16 rows — decompressed every chunk of ``vis`` and ``vis_weight``, 24
+GB, and took 3.7 min on a 30 s timer over a link that delivers 36–59 MB/s
+(measured with ``dd`` against the live file; kotekan writes 31 MB/s into
+the same server).  Three changes brought a run under 5 s.  The reader takes
+``blocks`` (8) chunk-aligned 16-channel blocks spread over the band
+(``kotekan_io.channel_blocks``), 113 channels for 8 chunks, 3.5 s cold.  It
+no longer reads ``vis_weight``: on the live files every delivered cell of an
+unflagged input has a positive weight, so ``frames_added`` (0.5 MB) carries
+the same validity, and the band mean is a plain mean over delivered cells.
+And the verdict is cached per file beside ``run.json``
+(``power_outlier.json``, keyed on path, mtime, size and the source's
+parameters): a kotekan file is complete when it is renamed into the
+acquisition and never changes, while the timer fires some 13 times before
+the next one lands, so the same read repeated 13 times for one answer.  The
+report's ``cached`` flag says which it was; a changed parameter or
+``dish_types`` map is a miss.
+
 **Abstain, never flag for lack of data.**  Measured 2026-10-01 against the
 state history: the stopped-acquisition tail file (20 rows, frames in 1 of
 6145 channels) had twice flagged all 128 elements bad (09-19 02:30, 09-20

@@ -1,6 +1,7 @@
 """Tests for the power-outlier source — run with `pytest`."""
 
 import numpy as np
+import pytest
 
 from sources import power_outlier
 from sources.power_outlier import band_coverage, power_outlier_mask
@@ -214,3 +215,63 @@ def test_mask_with_no_filled_rows_abstains(tmp_path):
     good, rep = power_outlier.mask({"kind": "power-outlier"}, labels, path)
     assert good.all()
     assert rep["status"] == "degraded" and "no filled time rows" in rep["reason"]
+
+
+def _outlier_file(tmp_path, nfreq=8):
+    path = tmp_path / "n2.h5"
+    power = np.ones((2, nfreq, 4), "f4") * 5.0
+    power[..., 3] = 500.0                           # B1Y hot
+    write_chord_n2(path, ["A1", "B1"], np.linspace(400, 800, nfreq), power, num_elements=4)
+    return path
+
+
+def test_mask_caches_the_verdict_per_file(tmp_path, monkeypatch):
+    path = _outlier_file(tmp_path)
+    labels = np.array(["A1X", "B1X", "A1Y", "B1Y"])
+    src = {"kind": "power-outlier", "state_dir": str(tmp_path)}
+    good, rep = power_outlier.mask(src, labels, path)
+    assert good.tolist() == [True, True, True, False]
+    assert rep["detail"]["cached"] is False and rep["detail"]["blocks"] == power_outlier.DEFAULT_BLOCKS
+    assert (tmp_path / power_outlier.CACHE_NAME).exists()
+
+    def boom(*a, **k):
+        raise RuntimeError("the file was read again")
+    monkeypatch.setattr(power_outlier, "read_autocorr", boom)
+    # the same file: the verdict comes from the cache, projected onto the
+    # flag axis the caller passes now
+    good2, rep2 = power_outlier.mask(src, labels, path)
+    assert good2.tolist() == good.tolist()
+    assert rep2["detail"]["cached"] is True and rep2["n_measured"] == rep["n_measured"]
+    good3, rep3 = power_outlier.mask(src, np.array(["B1Y", "A1X", "C9X"]), path)
+    assert good3.tolist() == [False, True, True]
+    assert (rep3["detail"]["n_in_file"], rep3["detail"]["n_not_in_file"]) == (2, 1)
+    # a changed parameter or a changed file is a miss
+    with pytest.raises(RuntimeError):
+        power_outlier.mask({**src, "nsigma": 3.0}, labels, path)
+    st = path.stat()
+    import os
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    with pytest.raises(RuntimeError):
+        power_outlier.mask(src, labels, path)
+
+
+def test_mask_caches_an_abstention_too(tmp_path, monkeypatch):
+    path = _outlier_file(tmp_path)
+    labels = np.array(["A1X", "B1X", "A1Y", "B1Y"])
+    src = {"kind": "power-outlier", "state_dir": str(tmp_path), "freq_lo": 900.0}
+    good, rep = power_outlier.mask(src, labels, path)
+    assert good.all() and rep["status"] == "degraded" and rep["detail"]["cached"] is False
+    monkeypatch.setattr(power_outlier, "read_autocorr",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("read again")))
+    good, rep = power_outlier.mask(src, labels, path)
+    assert good.all() and rep["status"] == "degraded" and rep["detail"]["cached"] is True
+
+
+def test_mask_without_a_state_dir_does_not_cache(tmp_path, monkeypatch):
+    path = _outlier_file(tmp_path)
+    labels = np.array(["A1X", "B1X", "A1Y", "B1Y"])
+    src = {"kind": "power-outlier"}
+    power_outlier.mask(src, labels, path)
+    assert not list(tmp_path.glob("*.json"))
+    good, rep = power_outlier.mask(src, labels, path)
+    assert rep["detail"]["cached"] is False and good.tolist() == [True, True, True, False]

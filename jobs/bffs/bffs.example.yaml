@@ -73,6 +73,14 @@ sources:
     nsigma: 5.0
     freq_lo: 400.0
     freq_hi: 800.0
+    # Chunk-aligned 16-channel frequency blocks read per file, spread over
+    # the band (0 reads every channel).  The file's vis is chunked over
+    # every product, so each block costs one 42 MB chunk (128 elements)
+    # however few channels it keeps: 8 blocks are 128 channels for 340 MB
+    # where the whole band was 24 GB.  The verdict on a file is cached in
+    # the state directory (power_outlier.json), so a file is read once
+    # however many runs see it.
+    blocks: 8
     # Per feed: the least fraction of the delivered (time, freq) cells a
     # feed must have weight on to count as alive. Relative to the cells
     # that hold data at all, so a band only partly delivered (X-engine

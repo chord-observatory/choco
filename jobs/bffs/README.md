@@ -260,6 +260,20 @@ one live channel in thousands abstains).  `min_valid_frac` is per feed and
 relative to the delivered cells, so a band only partly delivered costs every
 feed the same cells and counts against none of them.
 
+The read is sized by chunks, not channels.  kotekan chunks `vis` as
+`(16 freq, every product, every time)`, 42 MB a chunk at 128 elements, and
+pulling the diagonal out of a chunk decompresses the whole chunk: reading the
+band channel by channel cost 24 GB a run (four minutes on the NFS link) for
+128 autocorrelations.  The reader (`kotekan_io.read_autocorr`) therefore takes
+`blocks` (default 8) chunk-aligned 16-channel blocks spread over the band and
+nothing else, and takes validity and weight from `frames_added` instead of
+`vis_weight` (which marks no delivered cell zero that `frames_added` and the
+file's own `flags` do not).  The verdict on a file is cached beside `run.json`
+(`power_outlier.json`, keyed on the file's path, mtime and size and on the
+source's parameters): a kotekan file never changes once it has landed and the
+timer fires some 13 times between files, so each file is read once.  The
+report's `cached` says which it was.
+
 ### State & change history
 
 bffs keeps a small JSON file, `state.json` in its state directory

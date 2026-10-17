@@ -155,3 +155,46 @@ def test_read_autocorr_chord_no_filled_rows_is_none(tmp_path):
     write_chord_n2(path, ["A1"], [400.0, 500.0], power, num_elements=2,
                    frames_added=np.zeros((2, 3), "u1"))
     assert kotekan_io.read_autocorr(path) is None
+
+
+def test_channel_blocks_spreads_aligned_blocks_over_the_band():
+    freq = np.arange(128, dtype="f4")               # 8 blocks of 16
+    assert kotekan_io.channel_blocks(freq, 16, None, None, None).size == 128
+    assert kotekan_io.channel_blocks(freq, 16, None, None, 0).size == 128
+    # the band 32..95 spans blocks 2..5; two of them -> the first and last
+    sel = kotekan_io.channel_blocks(freq, 16, 32.0, 95.0, 2)
+    assert sel.tolist() == list(range(32, 48)) + list(range(80, 96))
+    # more blocks than the band has -> every block of the band
+    assert kotekan_io.channel_blocks(freq, 16, 32.0, 95.0, 10).tolist() == list(range(32, 96))
+    # a band edge inside a block keeps only the in-band channels
+    assert kotekan_io.channel_blocks(freq, 16, 40.0, 50.0, 8).tolist() == list(range(40, 51))
+    assert kotekan_io.channel_blocks(freq, 16, 500.0, 600.0, 8).size == 0
+
+
+def test_read_autocorr_reads_only_the_chosen_blocks(tmp_path):
+    path = tmp_path / "chord.h5"
+    nfreq = 64
+    power = np.ones((2, nfreq, 2), "f4") * np.arange(nfreq, dtype="f4")[None, :, None]
+    freq = np.linspace(400, 400 + nfreq - 1, nfreq)
+    write_chord_n2(path, ["A1"], freq, power, num_elements=2)
+    # band = channels 16..47, two 16-channel blocks; one block -> the first
+    frame = kotekan_io.read_autocorr(path, freq_lo=416.0, freq_hi=447.0, blocks=1)
+    assert frame.freq.tolist() == freq[16:32].tolist()
+    np.testing.assert_allclose(frame.auto[0, :, 0], np.arange(16, 32))
+    assert frame.weight.shape == frame.auto.shape and frame.valid.shape == (2, 16)
+    # the whole band when blocks is not set
+    frame = kotekan_io.read_autocorr(path, freq_lo=416.0, freq_hi=447.0)
+    assert frame.freq.tolist() == freq[16:48].tolist()
+
+
+def test_read_autocorr_weight_is_the_delivered_cells(tmp_path):
+    # vis_weight is not read: a delivered cell weighs 1 and an empty one 0
+    path = tmp_path / "chord.h5"
+    power = np.ones((3, 2, 2), "f4")
+    frames_added = np.ones((2, 3), "u1")
+    frames_added[1, 2] = 0
+    write_chord_n2(path, ["A1"], [400.0, 500.0], power, num_elements=2,
+                   frames_added=frames_added, weight=np.full((3, 2, 2), 7.0, "f4"))
+    frame = kotekan_io.read_autocorr(path, chunk=2)
+    np.testing.assert_array_equal(frame.weight[..., 0], [[1, 1], [1, 0]])
+    np.testing.assert_array_equal(frame.weight[..., 1], [[1, 1], [1, 0]])

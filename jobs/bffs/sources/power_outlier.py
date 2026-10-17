@@ -29,13 +29,16 @@ band's cells hold data the source abstains (every feed left good,
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 
 import numpy as np
 
 from choco.dishlabels import DISH_RFI
-from kotekan_io import Frame, read_autocorr, uniquify_labels
+from choco.jobclient import write_json_atomic
+from kotekan_io import DEFAULT_BLOCKS, Frame, read_autocorr, uniquify_labels
 
 from .common import project, report
 
@@ -47,6 +50,10 @@ NEEDS_FILE = True
 
 _MAD_TO_SIGMA = 1.4826  # turns a median-absolute-deviation into a standard deviation
 _KEYS = ("freq_lo", "freq_hi", "nsigma", "abs_lo", "abs_hi", "min_valid_frac")
+#: The verdict on the newest file, kept beside run.json: a file is
+#: complete when it lands and never changes, and the timer fires 13
+#: times between files, so the same read would otherwise repeat 13 times.
+CACHE_NAME = "power_outlier.json"
 #: Elements of these kotekan dish types are neither compared nor flagged.
 DEFAULT_EXCLUDE_TYPES = (DISH_RFI,)
 #: Least fraction of the band's (time, freq) cells that must hold data
@@ -169,6 +176,109 @@ def power_outlier_mask(
     return good
 
 
+def _cache_key(src: dict, kotekan_file: str, chunk: int, blocks: int,
+               params: dict, min_coverage: float, exclude: set, types) -> dict | None:
+    """What the verdict depends on: the file (path, mtime, size) and
+    every parameter that shapes the judgement.  None when the file
+    cannot be stat'ed (the reader then reports it missing)."""
+    try:
+        st = os.stat(kotekan_file)
+    except OSError:
+        return None
+    return {"file": str(kotekan_file), "mtime_ns": int(st.st_mtime_ns), "size": int(st.st_size),
+            "chunk": chunk, "blocks": blocks, "params": params, "min_coverage": min_coverage,
+            "exclude_types": sorted(exclude), "dish_types": dict(types) if types else None}
+
+
+def _cache_path(src: dict) -> Path | None:
+    state_dir = src.get("state_dir")
+    return Path(state_dir) / CACHE_NAME if state_dir else None
+
+
+def _read_cache(path: Path | None, key: dict | None):
+    """``(verdict, report)`` cached for *key*, or None."""
+    if path is None or key is None:
+        return None
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("key") != key:
+        return None
+    verdict, rep = doc.get("verdict"), doc.get("report")
+    if not isinstance(rep, dict) or (verdict is not None and not isinstance(verdict, dict)):
+        return None
+    return verdict, rep
+
+
+def _write_cache(path: Path | None, key: dict | None, verdict, rep: dict) -> None:
+    if path is None or key is None:
+        return
+    try:
+        write_json_atomic(path, {"key": key, "verdict": verdict, "report": rep})
+    except OSError as e:
+        log.warning("power-outlier: could not write %s: %s", path, e)
+
+
+def _judge(src: dict, kotekan_file: str, chunk: int, blocks: int, params: dict,
+           min_coverage: float, exclude: set, types):
+    """Read the file and judge its own axis.
+
+    Returns ``(verdict, report)``: ``verdict`` maps each file label to
+    good/bad, or is None when the source abstained (the report says why).
+    Neither depends on the flag axis, so both can be cached per file.
+    """
+    name = os.path.basename(str(kotekan_file))
+    frame = read_autocorr(kotekan_file, chunk=chunk, blocks=blocks,
+                          freq_lo=params.get("freq_lo"), freq_hi=params.get("freq_hi"))
+    if frame is None:
+        log.warning("power-outlier: no filled time rows in %s; no feeds judged", kotekan_file)
+        return None, report(
+            "degraded", f"no filled time rows in {name}: nothing to judge",
+            n_measured=0, file=str(kotekan_file))
+    coverage = band_coverage(frame, params.get("freq_lo"), params.get("freq_hi"))
+    detail = {
+        "file": str(kotekan_file),
+        "rows": frame.ntime,
+        "rows_in_file": frame.file_ntime,
+        "tail_rows_skipped": frame.tail_skipped,
+        "channels_read": int(frame.freq.shape[0]),
+        "blocks": blocks,
+        "band_coverage": round(coverage, 4),
+        "min_coverage": min_coverage,
+    }
+    if coverage < min_coverage:
+        log.warning(
+            "power-outlier: %s holds data for %.0f%% of the band's cells in "
+            "its newest %d rows (min_coverage %.0f%%); no feeds judged — "
+            "X-engine nodes down, or the acquisition has ended",
+            name, 100 * coverage, frame.ntime, 100 * min_coverage)
+        return None, report(
+            "degraded",
+            f"band coverage {coverage:.0%} is below {min_coverage:.0%}: too "
+            f"little N² data to judge feeds (X-engine nodes down, or the "
+            f"acquisition has ended)",
+            n_measured=0, **detail)
+    # The file's own axis; its elements are judged in place and projected
+    # onto the flag axis by label by the caller.
+    file_axis = uniquify_labels(frame.labels)
+    eligible = None
+    if types:
+        eligible = np.array([types.get(lbl) not in exclude for lbl in file_axis],
+                            dtype=bool)
+    detail["exclude_types"] = sorted(exclude)
+    detail["n_excluded"] = int((~eligible).sum()) if eligible is not None else 0
+    detail["types_known"] = bool(types)
+    stats: dict = {}
+    file_good = power_outlier_mask(frame, stats=stats, eligible=eligible, **params)
+    if stats.get("median") is not None:
+        detail["median_power"] = float(f"{stats['median']:.4g}")
+        detail["spread"] = float(f"{stats['spread']:.4g}")
+    detail["n_file_elements"] = int(frame.nfeed)
+    verdict = {str(lbl): bool(g) for lbl, g in zip(file_axis, file_good)}
+    return verdict, report("ok", n_measured=stats.get("n_live"), **detail)
+
+
 def mask(src: dict, labels: np.ndarray, kotekan_file: str):
     """Good-mask over ``labels`` from the kotekan file's autocorrelation power.
 
@@ -184,61 +294,39 @@ def mask(src: dict, labels: np.ndarray, kotekan_file: str):
     ``exclude_types`` (default ``RFIDish``) are left out of the comparison
     and never flagged, ``n_excluded`` of them; without types every
     element is judged.
+
+    The file is read in ``blocks`` chunk-aligned frequency blocks spread
+    over the band (:func:`kotekan_io.channel_blocks`; 0 reads every
+    channel), and the verdict is cached in the state directory keyed on
+    the file's path, mtime and size and on these parameters: a kotekan
+    file never changes once it has landed, so a run that finds the same
+    file reuses the verdict (``cached`` in the report) instead of the
+    read.
     """
     all_good = np.ones(len(labels), dtype=bool)
-    name = os.path.basename(str(kotekan_file))
-    frame = read_autocorr(kotekan_file, chunk=int(src.get("chunk", 16)))
-    if frame is None:
-        log.warning("power-outlier: no filled time rows in %s; no feeds judged", kotekan_file)
-        return all_good, report(
-            "degraded", f"no filled time rows in {name}: nothing to judge",
-            n_measured=0, file=str(kotekan_file))
+    chunk = int(src.get("chunk", 16))
+    blocks = int(src.get("blocks", DEFAULT_BLOCKS))
     params = {k: src[k] for k in _KEYS if k in src}
     min_coverage = float(src.get("min_coverage", DEFAULT_MIN_COVERAGE))
-    coverage = band_coverage(frame, params.get("freq_lo"), params.get("freq_hi"))
-    detail = {
-        "file": str(kotekan_file),
-        "rows": frame.ntime,
-        "rows_in_file": frame.file_ntime,
-        "tail_rows_skipped": frame.tail_skipped,
-        "band_coverage": round(coverage, 4),
-        "min_coverage": min_coverage,
-    }
-    if coverage < min_coverage:
-        log.warning(
-            "power-outlier: %s holds data for %.0f%% of the band's cells in "
-            "its newest %d rows (min_coverage %.0f%%); no feeds judged — "
-            "X-engine nodes down, or the acquisition has ended",
-            name, 100 * coverage, frame.ntime, 100 * min_coverage)
-        return all_good, report(
-            "degraded",
-            f"band coverage {coverage:.0%} is below {min_coverage:.0%}: too "
-            f"little N² data to judge feeds (X-engine nodes down, or the "
-            f"acquisition has ended)",
-            n_measured=0, **detail)
-    # The file's own axis; its elements are judged in place and projected
-    # onto the flag axis by label below.
-    file_axis = uniquify_labels(frame.labels)
     types = src.get("dish_types")
     exclude = {str(t) for t in (src.get("exclude_types") or DEFAULT_EXCLUDE_TYPES)}
-    eligible = None
-    if types:
-        eligible = np.array([types.get(lbl) not in exclude for lbl in file_axis],
-                            dtype=bool)
-    detail["exclude_types"] = sorted(exclude)
-    detail["n_excluded"] = int((~eligible).sum()) if eligible is not None else 0
-    detail["types_known"] = bool(types)
-    stats: dict = {}
-    file_good = power_outlier_mask(frame, stats=stats, eligible=eligible, **params)
-    if stats.get("median") is not None:
-        detail["median_power"] = float(f"{stats['median']:.4g}")
-        detail["spread"] = float(f"{stats['spread']:.4g}")
+
+    key = _cache_key(src, kotekan_file, chunk, blocks, params, min_coverage, exclude, types)
+    cache = _cache_path(src)
+    hit = _read_cache(cache, key)
+    if hit is not None:
+        verdict, rep = hit
+        log.debug("power-outlier: verdict for %s from %s", kotekan_file, cache)
+    else:
+        verdict, rep = _judge(src, kotekan_file, chunk, blocks, params, min_coverage, exclude, types)
+        _write_cache(cache, key, verdict, rep)
+    rep = {**rep, "detail": dict(rep.get("detail") or {})}
+    rep["detail"]["cached"] = hit is not None
+    if verdict is None:
+        return all_good, rep
     # Feeds the file does not carry have no entry and project to good
     # (unmeasured).
-    verdict = {lbl: bool(g) for lbl, g in zip(file_axis, file_good)}
     in_file = [lbl for lbl in (str(l) for l in labels) if lbl in verdict]
-    detail["n_file_elements"] = int(frame.nfeed)
-    detail["n_in_file"] = len(in_file)
-    detail["n_not_in_file"] = len(labels) - len(in_file)
-    return project(verdict, labels), report(
-        "ok", n_measured=stats.get("n_live"), **detail)
+    rep["detail"]["n_in_file"] = len(in_file)
+    rep["detail"]["n_not_in_file"] = len(labels) - len(in_file)
+    return project(verdict, labels), rep

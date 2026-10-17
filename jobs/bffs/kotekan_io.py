@@ -91,16 +91,74 @@ class Frame:
         return self.auto.shape[2]
 
 
-def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
+#: Chunk-aligned frequency blocks read per file when the band is sampled.
+DEFAULT_BLOCKS = 8
+
+
+def channel_blocks(freq: np.ndarray, chunk_rows: int, freq_lo: float | None,
+                   freq_hi: float | None, blocks: int | None) -> np.ndarray:
+    """Which channels to read: ``blocks`` chunk-aligned runs spread over
+    the band, or the whole band when ``blocks`` is None or 0.
+
+    ``vis`` is chunked ``(16 freq, every product, every time)`` since
+    2026-10 (42 MB a chunk at 128 elements), so a read of the diagonal
+    decompresses every chunk it touches whole: the cost of this source is
+    the number of chunks it opens, not the number of channels it keeps.
+    Eight 16-channel blocks spread over 400-800 MHz are 128 channels for
+    the price of 8 chunks, where the whole band was 128 chunks (24 GB a
+    run, four minutes on the link — every 30 s).
+
+    Returns the sorted channel indices, each block's channels contiguous.
+    """
+    nfreq = freq.shape[0]
+    band = np.ones(nfreq, dtype=bool)
+    if freq_lo is not None:
+        band &= freq >= freq_lo
+    if freq_hi is not None:
+        band &= freq <= freq_hi
+    chans = np.flatnonzero(band)
+    if not blocks or chans.size == 0:
+        return chans
+    cs = max(1, int(chunk_rows))
+    starts = np.unique(chans // cs) * cs            # the aligned blocks the band touches
+    if starts.size > blocks:
+        pick = np.unique(np.round(np.linspace(0, starts.size - 1, int(blocks))).astype(int))
+        starts = starts[pick]
+    keep = np.zeros(nfreq, dtype=bool)
+    for s in starts:
+        keep[s:s + cs] = True
+    return np.flatnonzero(keep & band)
+
+
+def _runs(idx: np.ndarray) -> list[tuple[int, int]]:
+    """``[(start, stop), ...]`` of the contiguous runs in sorted ``idx``."""
+    if idx.size == 0:
+        return []
+    cuts = np.flatnonzero(np.diff(idx) != 1) + 1
+    out = []
+    for part in np.split(idx, cuts):
+        out.append((int(part[0]), int(part[-1]) + 1))
+    return out
+
+
+def read_autocorr(path: str | Path, *, chunk: int = 16, freq_lo: float | None = None,
+                  freq_hi: float | None = None, blocks: int | None = None) -> Frame | None:
     """Read the most recent ``chunk`` time rows of kotekan N² output as a Frame.
 
     The autocorrelation diagonal (``input_a == input_b``) is extracted from
-    ``vis[freq, prod, time]``, weighted by the root-level ``vis_weight``.
-    The feed axis is the element axis (:func:`element_labels`, one label
-    per element); products beyond it are dropped.  The root-level
-    ``flags`` dataset is kotekan's own per-input flag state, downstream of
-    this job's flagging, and deliberately unused (see the README appendix
-    on the latch problem).
+    ``vis[freq, prod, time]``.  The feed axis is the element axis
+    (:func:`element_labels`, one label per element); products beyond it
+    are dropped.  Only the channels :func:`channel_blocks` picks are read
+    (``freq_lo``/``freq_hi``/``blocks``; everything by default), and the
+    frame's ``freq`` axis is those channels.
+
+    Validity and weight both come from ``frames_added``: a delivered cell
+    weighs 1, an empty one 0.  ``vis_weight`` is not read — it holds no
+    delivered cell at zero that ``frames_added`` and the file's own
+    ``flags`` do not already explain (checked on the 2026-10-17 files),
+    and it is 8 GB a file.  The root-level ``flags`` dataset is kotekan's
+    own per-input flag state, downstream of this job's flagging, and
+    deliberately unused (see the README appendix on the latch problem).
 
     The window ends at the newest row with any frame
     (``frames_added[freq, time] > 0``), not at the file's last row: a
@@ -113,9 +171,9 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         return None
     with h5py.File(path, "r") as f:
         labels = element_labels(f)
-        freq = n2file.freq_axis(f)[0].astype(np.float32)
+        freq_all = n2file.freq_axis(f)[0].astype(np.float32)
         a, b = n2file.prod_axis(f)
-        nfeed, nfreq = labels.shape[0], freq.shape[0]
+        nfeed = labels.shape[0]
         diag = np.nonzero((a == b) & (a < nfeed))[0]
         feed_idx = a[diag]
 
@@ -138,17 +196,24 @@ def read_autocorr(path: str | Path, *, chunk: int = 16) -> Frame | None:
         lo = max(0, hi - int(chunk))
         nrows = hi - lo
 
-        # vis[freq, prod, time] -> (time, freq, prod)
-        power = np.real(vis[:, diag, lo:hi]).astype(np.float32).transpose(2, 0, 1)
-        wdiag = (np.asarray(f["vis_weight"][:, diag, lo:hi], dtype=np.float32).transpose(2, 0, 1)
-                 if "vis_weight" in f else None)
-        valid = (frames_added[:, lo:hi].T > 0 if frames_added is not None
+        chunk_rows = vis.chunks[0] if vis.chunks else 16
+        chans = channel_blocks(freq_all, chunk_rows, freq_lo, freq_hi, blocks)
+        freq = freq_all[chans]
+        nfreq = chans.shape[0]
+        # vis[freq, prod, time] -> (time, freq, prod), one read per block
+        power = np.zeros((nrows, nfreq, diag.shape[0]), dtype=np.float32)
+        at = 0
+        for start, stop in _runs(chans):
+            blk = np.real(vis[start:stop, diag, lo:hi]).astype(np.float32)
+            power[:, at:at + stop - start, :] = blk.transpose(2, 0, 1)
+            at += stop - start
+        valid = (frames_added[chans, lo:hi].T > 0 if frames_added is not None
                  else np.ones((nrows, nfreq), dtype=bool))
 
         auto = np.zeros((nrows, nfreq, nfeed), dtype=np.float32)
         auto[..., feed_idx] = power
         weight = np.zeros_like(auto)
-        weight[..., feed_idx] = 1.0 if wdiag is None else wdiag
+        weight[..., feed_idx] = valid[:, :, None]
         measured = np.zeros(nfeed, dtype=bool)
         measured[feed_idx] = True
     return Frame(auto=auto, weight=weight, valid=valid, freq=freq, labels=labels,
