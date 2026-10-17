@@ -1,7 +1,7 @@
 """Cross-pol vs co-pol transit amplitude per element pair at a bright transit.
 
 For the best-covered Cyg A transit (else the Sun) in an acquisition, reads all products of
-one 32-channel block near 610 MHz, subtracts the stationary (crosstalk) term estimated off
+one frequency chunk (16 channels) near 610 MHz, subtracts the stationary (crosstalk) term estimated off
 source, and records the median |V - c| on source for every product.  A dish whose X and Y
 feeds are swapped relative to the array shows cross-pol (X_i Y_j) amplitudes larger than
 co-pol (X_i X_j) ones.
@@ -13,6 +13,7 @@ import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
+from extract import chunk_rows
 from transit import BIN_S, file_span, file_start, ha_deg, src_radec
 
 FC = 610.0
@@ -44,7 +45,8 @@ def run(d, source):
     vs, ts = [], []
     with h5py.File(files[sel[0]], "r") as f:
         fr = f["index_map/freq"]["centre"]
-        c0 = (int(np.searchsorted(fr, FC)) // 32) * 32
+        cs = chunk_rows(f["vis"])                   # one chunk: it holds every product
+        c0 = (int(np.searchsorted(fr, FC)) // cs) * cs
         prod = f["index_map/prod"][()]
     for k in sel:
         t0 = starts[k]
@@ -53,7 +55,7 @@ def run(d, source):
         if abs(hh) > 0.6 * w and (k % 2):
             continue  # off-source: every other file is enough
         with h5py.File(files[k], "r") as f:
-            v = f["vis"][c0:c0 + 32, :, :]
+            v = f["vis"][c0:c0 + cs, :, :]
             nt = v.shape[2]
             t = None
             if "time_center_t_inst_ns" in f:
@@ -73,7 +75,7 @@ def run(d, source):
         return None
     v = np.where(np.isfinite(v), v, np.nan)
     c = np.nanmedian(v[:, :, off].real, axis=2) + 1j * np.nanmedian(v[:, :, off].imag, axis=2)
-    amp_on = np.nanmedian(np.abs(v[:, :, on] - c[:, :, None]), axis=2)  # (32, nprod)
+    amp_on = np.nanmedian(np.abs(v[:, :, on] - c[:, :, None]), axis=2)  # (cs, nprod)
     amp_off = np.nanmedian(np.abs(v[:, :, off] - c[:, :, None]), axis=2)
     a = np.nanmedian(amp_on, axis=0)
     b = np.nanmedian(amp_off, axis=0)

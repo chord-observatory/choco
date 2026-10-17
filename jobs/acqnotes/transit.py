@@ -17,6 +17,7 @@ from astropy.time import Time
 from astropy.utils import iers
 
 from choco.acqtree import file_time as file_start  # a file's first sample, from its name
+from extract import chunk_rows
 from choco.observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 from choco.observatory import SOURCES as OBS_SOURCES
 
@@ -84,12 +85,13 @@ def analyse(d):
     t_end = starts[-1] + span
     with h5py.File(files[0], "r") as f:
         fr = f["index_map/freq"]["centre"]
+        cs = chunk_rows(f["vis"])                   # a chunk holds every product
         chans = []
         for lo, hi in BANDS:
             idx = np.where((fr >= lo) & (fr < hi))[0]
             if idx.size:
-                c0 = (int(idx.min()) // 32) * 32  # one 32-channel chunk
-                chans.append(slice(c0, c0 + 32))
+                c0 = (int(idx.min()) // cs) * cs    # one chunk per band
+                chans.append(slice(c0, c0 + cs))
             else:
                 chans.append(None)
         lab = [x.decode() if isinstance(x, bytes) else str(x) for x in f["index_map/label"][()]] \

@@ -1,4 +1,4 @@
-"""Per element: fraction of its cross products that are exactly zero / NaN in a mid-band block.
+"""Per element: fraction of its cross products that are exactly zero / NaN in one mid-band chunk.
 
 A bad-feed mask applied by N2Accumulate zeroes every baseline of a masked element, so this
 shows the applied mask in files that do not record it.  Reads three files of the acquisition.
@@ -9,6 +9,8 @@ import os
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
+
+from extract import chunk_rows
 
 
 
@@ -24,9 +26,10 @@ def analyse(d):
             prod = f["index_map/prod"][()]
             ne = int(f.attrs["num_elements"])
             fr = f["index_map/freq"]["centre"]
-            i0 = int(np.searchsorted(fr, 600.0))
-            v = f["vis"][i0:i0 + 64, :, :]  # (64, nprod, nt)
-            w = f["vis_weight"][i0:i0 + 64, :, :] if "vis_weight" in f else None
+            cs = chunk_rows(f["vis"])              # one chunk: it holds every product
+            i0 = int(np.searchsorted(fr, 600.0)) // cs * cs
+            v = f["vis"][i0:i0 + cs, :, :]  # (cs, nprod, nt)
+            w = f["vis_weight"][i0:i0 + cs, :, :] if "vis_weight" in f else None
         a, b = prod["input_a"], prod["input_b"]
         live_cell = np.isfinite(v) & (v != 0)
         # cells where at least one product is nonzero (the frequency/time had data)

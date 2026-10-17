@@ -249,3 +249,22 @@ class TestRender:
     def test_date_pattern_matches_the_header(self):
         assert render.GEN_DATE_RE.search(
             "The choco acqnotes job (`jobs/acqnotes/`) wrote these notes on 2026-10-12.")
+
+
+class TestChunkBlocks:
+    """Reads are priced per chunk: a chunk of ``vis`` holds every product."""
+
+    def test_blocks_are_chunk_aligned_and_distinct(self, tmp_path):
+        import h5py
+        import numpy as np
+        import extract
+        with h5py.File(tmp_path / "v.h5", "w") as f:
+            d = f.create_dataset("vis", shape=(100, 3, 2), dtype="c8", chunks=(16, 3, 2))
+            assert extract.chunk_rows(d) == 16
+            assert extract.chunk_blocks(d, (0.25, 0.5, 0.75)) == [(16, 32), (48, 64), (64, 80)]
+            # a fraction past the last whole chunk still lands inside the axis
+            assert extract.chunk_blocks(d, (0.99,)) == [(84, 100)]
+            # the same chunk twice is read once
+            assert extract.chunk_blocks(d, (0.5, 0.51)) == [(48, 64)]
+            c = f.create_dataset("flat", data=np.zeros((20, 2, 2), "c8"))
+            assert extract.chunk_rows(c) == 16 and extract.chunk_blocks(c, (0.5,)) == [(0, 16)]

@@ -14,6 +14,26 @@ KEYRE = re.compile(r"fringe|^rfi_|excision|sk_|coelev|dish_inputs|bad_feed|bf_ma
                    r"updatable|threshold|sigma|n2_layout|num_dishes", re.I)
 
 
+def chunk_rows(dset) -> int:
+    """Frequency rows per chunk of a ``vis``-shaped dataset (16 when it is
+    not chunked, the size kotekan writes)."""
+    return int(dset.chunks[0]) if dset.chunks else 16
+
+
+def chunk_blocks(dset, fractions) -> list:
+    """``(start, stop)`` of one chunk-aligned block at each fraction of the
+    frequency axis.  Reads are priced per chunk (one holds every product),
+    so a measurement samples whole chunks, as few as it needs."""
+    nf, cs = dset.shape[0], chunk_rows(dset)
+    out = []
+    for frac in fractions:
+        c0 = min(int(nf * float(frac)) // cs * cs, max(nf - cs, 0))
+        blk = (c0, min(c0 + cs, nf))
+        if blk not in out:
+            out.append(blk)
+    return out
+
+
 def flat(o, p=""):
     r = {}
     if isinstance(o, dict):
@@ -124,9 +144,12 @@ def summarize_file(path):
         if "vis" in f and "index_map/prod" in f:
             prod = f["index_map/prod"][()]
             auto = np.where(prod["input_a"] == prod["input_b"])[0]
-            nf = f["vis"].shape[0]
-            sl = slice(nf // 8, 7 * nf // 8)
-            v = np.abs(f["vis"][sl, auto[0]:auto[-1] + 1, 0])[:, auto - auto[0]]
+            # Three chunk-aligned blocks at 1/4, 1/2 and 3/4 of the band,
+            # one chunk each: vis is chunked over every product, so a
+            # block costs one chunk however few channels it keeps, and
+            # the middle 3/4 of the band was 288 chunks (12 GB) a file.
+            v = np.concatenate([np.abs(f["vis"][c0:c1, :, 0])[:, auto]
+                                for c0, c1 in chunk_blocks(f["vis"], (0.25, 0.5, 0.75))])
             s["auto_median_per_el"] = [float(x) for x in np.nanmedian(v, axis=0)]
         if "config_json" in f:
             cj = f["config_json"][()]

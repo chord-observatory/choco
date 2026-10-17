@@ -81,5 +81,12 @@ backfill is roughly 5-10 min of NFS reads per acquisition).
 - **Bad-feed flags**: an input is "dead" when it shows no transit at > 3 sigma while at least
   40 % of the array does; the mask is "correct" when it covers exactly the dead inputs
   (hot inputs excepted).
+- **Reads are priced per chunk.**  Since 2026-10 kotekan chunks `vis` as 16 channels by
+  every product by every time bin (42 MB at 128 elements), and HDF5 decompresses a chunk
+  whole.  Each measurement therefore reads one aligned chunk where it needs a band: the
+  autocorrelation medians come from three chunks at 1/4, 1/2 and 3/4 of the band, the
+  transit curves from one chunk per band, the pol check and the zero-visibility check from
+  one chunk near 600 MHz.  Reading the middle 3/4 of the band for the autos cost 12 GB a
+  file.
 - **RFI**: config values are start-up defaults (first-stage excision is updatable since
   2026-09-17); the measured `frac_rfi` is the evidence of what was applied.

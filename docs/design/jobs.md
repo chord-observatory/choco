@@ -234,6 +234,17 @@ hard-coded 200 s halved every transit's coverage below the 0.6 gate, so no
 source was found, and every file boundary was reported as a gap.  The bin
 count now comes from the files' ``vis`` shape.
 
+The 10-17 files (128 elements, 12 GB) showed the other assumption: that a
+narrow read is cheap.  ``vis`` is chunked over every product, so the
+metadata summary's read of the autocorrelations over the middle 3/4 of the
+band at one time bin decompressed 288 chunks, 12 GB, for 128 numbers — on
+five files per acquisition, every three hours for the live one.  Every
+measurement now reads whole aligned chunks and as few as it needs
+(``extract.chunk_blocks``): three for the autocorrelation medians, one per
+band for the transit curves (which already sample every third file), one
+near 600 MHz for the pol and zero-visibility checks; the summary went from
+over 100 s a file to 12 s.
+
 ## EOP merge policy
 
 ``jobs/eop/eop_update.py::merge_tables`` is **append-only and no-overwrite**.
