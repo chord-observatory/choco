@@ -299,6 +299,115 @@ def selection_from_index(axes: Axes, index: dict) -> tuple[Selection | None, str
     return sel, None
 
 
+# --- the overview: every product, at chunk resolution ------------------------
+
+def triangle_order(n_el: int) -> tuple[np.ndarray, np.ndarray]:
+    """kotekan's product order: ``(a, b)`` for a in 0..n, b in a..n."""
+    a, b = np.triu_indices(n_el)
+    return a.astype(int), b.astype(int)
+
+
+def band_edges(freq_mhz: np.ndarray, n_bands: int) -> list[float]:
+    """``n_bands`` log-spaced bands over the file's frequency range."""
+    lo, hi = float(np.min(freq_mhz)), float(np.max(freq_mhz))
+    if n_bands < 1 or hi <= lo:
+        return [lo, hi]
+    return [float(x) for x in np.geomspace(lo, hi, int(n_bands) + 1)]
+
+
+@dataclass
+class OverviewSpec:
+    """What the overview of an acquisition records per source file.
+
+    The pass over a file opens every selected chunk whole, so every
+    product is in memory for nothing, and three small cubes are kept
+    beside the selected images: per product the mean |V| over each chunk
+    (``coarse``: any of the 8256 products as a waterfall, one row per
+    file, one column per chunk), per element the mean normalized
+    amplitude |V_ab| / sqrt(V_aa V_bb) over its partners per chunk
+    (``coherence``), and per band the same coherence as an element x
+    element matrix (``matrix``), one frame per file.  Columns are the
+    chunks the selection keeps (``chunk_freq``, their centres), bands
+    are ``edges`` in MHz and a chunk belongs to the band its centre
+    falls in.
+    """
+
+    n_el: int
+    chunk_rows: int
+    chunk_starts: np.ndarray     # (n_chunk,) first selected-axis index of each column
+    chunk_freq: np.ndarray       # (n_chunk,) MHz
+    edges: list[float]           # (n_band + 1,)
+    input_a: np.ndarray          # the file's product axis
+    input_b: np.ndarray
+
+    @property
+    def n_chunk(self) -> int:
+        return int(self.chunk_starts.shape[0])
+
+    @property
+    def n_band(self) -> int:
+        return max(1, len(self.edges) - 1)
+
+    def band_of(self, freq_mhz: float) -> int | None:
+        if freq_mhz < self.edges[0] or freq_mhz > self.edges[-1]:
+            return None
+        return min(int(np.searchsorted(self.edges, freq_mhz, side="right") - 1), self.n_band - 1)
+
+    @property
+    def is_triangle(self) -> bool:
+        a, b = triangle_order(self.n_el)
+        return (a.shape == self.input_a.shape and bool(np.array_equal(a, self.input_a))
+                and bool(np.array_equal(b, self.input_b)))
+
+    def to_index(self) -> dict:
+        d = {"chunks": self.n_chunk, "chunk_rows": int(self.chunk_rows),
+             "edges": [round(e, 3) for e in self.edges], "n_el": int(self.n_el),
+             "prod_order": "triangle" if self.is_triangle else "list"}
+        if d["prod_order"] == "list":
+            d["prod_pairs"] = [[int(a), int(b)] for a, b in zip(self.input_a, self.input_b)]
+        return d
+
+
+def overview_spec(axes: Axes, sel: Selection, n_bands: int = 8,
+                  edges: list[float] | None = None) -> OverviewSpec:
+    """The overview columns for this selection: one per chunk-sized group
+    of consecutive selected channels, their centre frequencies, and the
+    bands over the file's range (or the ``edges`` an acquisition recorded)."""
+    cs = max(1, int(axes.chunk_rows))
+    starts, centres = [], []
+    offset = 0
+    for lo, hi in _runs(sel.freq_idx):
+        for c0 in range(lo, hi, cs):
+            c1 = min(c0 + cs, hi)
+            starts.append(offset)
+            centres.append(float(axes.freq_mhz[c0:c1].mean()))
+            offset += c1 - c0
+    return OverviewSpec(n_el=int(axes.n_elements or 0), chunk_rows=cs,
+                        chunk_starts=np.array(starts, int), chunk_freq=np.array(centres),
+                        edges=[float(e) for e in edges] if edges else band_edges(axes.freq_mhz, n_bands),
+                        input_a=axes.input_a, input_b=axes.input_b)
+
+
+@dataclass
+class FileOverview:
+    """One file's overview, before quantization (the store scales it)."""
+
+    coarse: np.ndarray       # (n_prod_file, n_chunk) float32 mean |V|, nan where no data
+    coherence: np.ndarray    # (n_el, n_chunk) float32 in 0..1, nan where no data
+    matrix: np.ndarray       # (n_band, n_el, n_el) float32 in 0..1, nan where no data
+
+
+def _incidence(n_el: int, input_a: np.ndarray, input_b: np.ndarray) -> np.ndarray:
+    """``(n_el, n_prod)`` float32: 1 where the product is a cross product of
+    the element."""
+    m = np.zeros((n_el, input_a.shape[0]), np.float32)
+    cross = input_a != input_b
+    p = np.flatnonzero(cross)
+    m[input_a[p], p] = 1.0
+    m[input_b[p], p] = 1.0
+    return m
+
+
 def _runs(idx: np.ndarray) -> list[tuple[int, int]]:
     """``[(start, stop), ...]`` of the contiguous runs in sorted ``idx``."""
     if idx.size == 0:
@@ -372,7 +481,7 @@ def sample_magnitudes(path, sel: Selection | None = None,
 
 
 def scale_from_sample(sample: np.ndarray, pct=(0.5, 99.5),
-                      headroom: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+                      headroom: float = 0.5, min_values: int = 16) -> tuple[np.ndarray, np.ndarray]:
     """Per-product ``(lo, hi)`` for the whole acquisition, from one file.
 
     The range is frozen for the acquisition's lifetime — it is baked into
@@ -396,7 +505,7 @@ def scale_from_sample(sample: np.ndarray, pct=(0.5, 99.5),
     for p in range(n_prod):
         v = sample[p]
         v = v[np.isfinite(v) & (v > 0)]
-        if v.size < 16:
+        if v.size < max(2, int(min_values)):
             continue
         a, b = np.percentile(v, pct)
         if not (a > 0 and b > a):
@@ -417,6 +526,39 @@ def quantize_file(path, lo: np.ndarray, hi: np.ndarray,
     appended in.  Products whose scale is nan come back all-``MISSING``.
     ``axes`` saves re-reading the file's metadata when the caller has it.
     """
+    out, _ = fold_file(path, lo, hi, out=out, sel=sel, axes=axes)
+    return out
+
+
+def _quantizer(lo: np.ndarray, hi: np.ndarray):
+    """Per-product log scale, shaped to broadcast over a
+    ``(block_freq, n_prod, n_time)`` slab; returns ``(lo_l, span, keep)``."""
+    usable = np.isfinite(lo) & np.isfinite(hi) & (hi > lo) & (lo > 0)
+    lo_l = np.where(usable, np.log10(np.where(usable, lo, 1.0)), 0.0)
+    span = np.where(usable, np.log10(np.where(usable, hi, 10.0)) - lo_l, 1.0)
+    return lo_l[None, :, None], span[None, :, None], usable[None, :, None]
+
+
+def _quantize(mag: np.ndarray, ok: np.ndarray, lo_l, span) -> np.ndarray:
+    lg = np.zeros_like(mag)
+    np.log10(mag, out=lg, where=ok)
+    frac = (lg - lo_l) / span
+    np.clip(frac, 0.0, 1.0, out=frac)
+    q = (1.0 + frac * (wfpng.N_LEVELS - 1)).astype(np.uint8)
+    q[~np.broadcast_to(ok, q.shape)] = wfpng.MISSING
+    return q
+
+
+def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = None,
+              sel: Selection | None = None, axes: Axes | None = None,
+              overview: OverviewSpec | None = None) -> tuple[np.ndarray, FileOverview | None]:
+    """One pass over the file: the selected products' pixels and, with an
+    ``overview``, the three cubes of :class:`OverviewSpec`.
+
+    With an overview the pass reads one chunk at a time with every
+    product in it (the overview needs them all); without, the selected
+    products in ``BLOCK_ROWS`` blocks as :func:`quantize_file` always did.
+    """
     if axes is None:
         axes = read_axes(path)
     if sel is None:
@@ -430,32 +572,134 @@ def quantize_file(path, lo: np.ndarray, hi: np.ndarray,
     elif out.shape != (n_prod, n_time, n_freq):
         raise ValueError(f"out is {out.shape}, expected "
                          f"{(n_prod, n_time, n_freq)}")
+    lo_l, span, keep = _quantizer(lo, hi)
+
+    ov = None
+    if overview is not None:
+        n_el, n_pf = overview.n_el, axes.n_prod
+        if n_el <= 0 or overview.input_a.shape[0] != n_pf:
+            raise ValueError("overview does not fit this file's product axis")
+        auto_of = np.full(n_el, -1, int)
+        autos = np.flatnonzero(axes.input_a == axes.input_b)
+        auto_of[axes.input_a[autos]] = autos
+        has_auto = (auto_of[axes.input_a] >= 0) & (auto_of[axes.input_b] >= 0)
+        a_auto = np.where(has_auto, auto_of[axes.input_a], 0)
+        b_auto = np.where(has_auto, auto_of[axes.input_b], 0)
+        inc = _incidence(n_el, axes.input_a, axes.input_b)       # (n_el, n_prod)
+        partners = inc.sum(axis=1)
+        coarse = np.full((n_pf, overview.n_chunk), np.nan, np.float32)
+        coh = np.full((n_el, overview.n_chunk), np.nan, np.float32)
+        band_sum = np.zeros((overview.n_band, n_pf), np.float64)
+        band_cnt = np.zeros((overview.n_band, n_pf), np.float64)
+        col_of = {int(c): k for k, c in enumerate(overview.chunk_starts)}
+        take = None if sel.is_all_products(axes) else sel.prod_idx
+
     with h5py.File(path, "r") as f:
         d = f["vis"]
         valid = _validity(f, axes.n_freq, n_time)
         if valid is not None:
             valid = valid[sel.freq_idx]
-        usable = np.isfinite(lo) & np.isfinite(hi) & (hi > lo) & (lo > 0)
-        lo_l = np.where(usable, np.log10(np.where(usable, lo, 1.0)), 0.0)
-        span = np.where(usable, np.log10(np.where(usable, hi, 10.0)) - lo_l, 1.0)
-        # shaped to broadcast over a (block_freq, n_prod, n_time) slab
-        lo_l = lo_l[None, :, None]
-        span = span[None, :, None]
-        keep = usable[None, :, None]
+        if overview is None:
+            blocks = _blocks(d, sel, axes)
+        else:
+            blocks = _chunks(d, sel, axes)
+        for i, blk in blocks:
+            if overview is None:
+                mag = np.abs(blk)
+                ok = (mag > 0) & keep
+                if valid is not None:
+                    ok &= valid[i:i + blk.shape[0], None, :]
+                out[:, :, i:i + blk.shape[0]] = _quantize(mag, ok, lo_l, span).transpose(1, 2, 0)
+                continue
+            # the whole chunk is here: pixels for the selection, then the cubes
+            mag = np.abs(blk)                                      # (nc, n_prod_file, nt)
+            cell = (valid[i:i + blk.shape[0], None, :] if valid is not None
+                    else np.ones((blk.shape[0], 1, n_time), bool))
+            live = (mag > 0) & cell
+            sel_mag = mag if take is None else mag[:, take, :]
+            sel_ok = (live if take is None else live[:, take, :]) & keep
+            out[:, :, i:i + blk.shape[0]] = _quantize(sel_mag, sel_ok, lo_l, span).transpose(1, 2, 0)
+            k = col_of.get(int(i))
+            if k is None:
+                continue                                           # not a column start (cannot happen)
+            cnt = live.sum(axis=(0, 2))                            # (n_prod_file,)
+            tot = np.where(live, mag, 0).sum(axis=(0, 2))
+            with np.errstate(invalid="ignore", divide="ignore"):
+                coarse[:, k] = np.where(cnt > 0, tot / np.maximum(cnt, 1), np.nan)
+            band = overview.band_of(float(overview.chunk_freq[k]))
+            if band is not None:
+                band_sum[band] += tot
+                band_cnt[band] += cnt
+            # normalized amplitude per cross product, averaged per element
+            denom = np.sqrt(mag[:, a_auto, :] * mag[:, b_auto, :])
+            norm_ok = live & has_auto[None, :, None] & (denom > 0)
+            norm = np.where(norm_ok, mag / np.where(norm_ok, denom, 1.0), 0.0).astype(np.float32)
+            flat = norm.transpose(1, 0, 2).reshape(n_pf, -1)        # (n_prod, nc*nt)
+            flat_ok = norm_ok.transpose(1, 0, 2).reshape(n_pf, -1).astype(np.float32)
+            esum = inc @ flat                                      # (n_el, nc*nt)
+            ecnt = inc @ flat_ok
+            with np.errstate(invalid="ignore", divide="ignore"):
+                coh[:, k] = np.where(ecnt.sum(axis=1) > 0,
+                                     esum.sum(axis=1) / np.maximum(ecnt.sum(axis=1), 1), np.nan)
+    if overview is None:
+        return out, None
+    # the matrix: band means of |V_ab| normalized by the band means of the autos
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(band_cnt > 0, band_sum / np.maximum(band_cnt, 1), np.nan)   # (n_band, n_prod)
+    matrix = np.full((overview.n_band, n_el, n_el), np.nan, np.float32)
+    for bi in range(overview.n_band):
+        m = mean[bi]
+        auto_mean = np.full(n_el, np.nan)
+        auto_mean[axes.input_a[autos]] = m[autos]
+        den = np.sqrt(auto_mean[axes.input_a] * auto_mean[axes.input_b])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            c = np.where(np.isfinite(m) & np.isfinite(den) & (den > 0), m / den, np.nan)
+        matrix[bi, axes.input_a, axes.input_b] = c
+        matrix[bi, axes.input_b, axes.input_a] = c
+    del partners
+    return out, FileOverview(coarse=coarse, coherence=coh, matrix=matrix)
 
-        for i, blk in _blocks(d, sel, axes):
-            mag = np.abs(blk)
-            ok = (mag > 0) & keep
-            if valid is not None:
-                ok &= valid[i:i + blk.shape[0], None, :]
-            lg = np.zeros_like(mag)
-            np.log10(mag, out=lg, where=ok)
-            frac = (lg - lo_l) / span
-            np.clip(frac, 0.0, 1.0, out=frac)
-            q = (1.0 + frac * (wfpng.N_LEVELS - 1)).astype(np.uint8)
-            q[~np.broadcast_to(ok, q.shape)] = wfpng.MISSING
-            out[:, :, i:i + blk.shape[0]] = q.transpose(1, 2, 0)
-    return out
+
+def quantize_log(values: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+    """``(n_prod, n_cols)`` palette indices for per-product values on the
+    products' log scale — the coarse cube's quantization, the same
+    levels the images use."""
+    lo_l, span, keep = _quantizer(lo, hi)
+    v = np.asarray(values, np.float32)[None]                 # (1, n_prod, n_cols)
+    ok = np.isfinite(v) & (v > 0) & keep
+    return _quantize(np.where(ok, v, 1.0), ok, lo_l, span)[0]
+
+
+#: The coherence scale: log10 from this floor to 1.  On the live files the
+#: noise floor of |V_ab| / sqrt(V_aa V_bb) in a 16-channel x 40-bin block
+#: is ~1e-3 and the sky on a short baseline ~0.1, so a linear scale would
+#: spend one level on the floor and a few on the sky.
+COHERENCE_FLOOR = 1e-3
+
+
+def quantize_unit(values: np.ndarray) -> np.ndarray:
+    """Palette indices for coherence values: 1..255 linear in log10 between
+    :data:`COHERENCE_FLOOR` and 1, 0 where there is no value."""
+    v = np.asarray(values, np.float32)
+    ok = np.isfinite(v) & (v > 0)
+    lg = np.log10(np.where(ok, v, 1.0))
+    frac = np.clip((lg - np.log10(COHERENCE_FLOOR)) / -np.log10(COHERENCE_FLOOR), 0.0, 1.0)
+    q = np.rint(1.0 + frac * (wfpng.N_LEVELS - 1)).astype(np.uint8)
+    q[~ok] = wfpng.MISSING
+    return q
+
+
+def _chunks(d, sel: Selection, axes: Axes):
+    """Yield ``(offset, chunk)`` over the selected channels, one chunk-sized
+    group of consecutive channels at a time with **every** product in it:
+    the overview pass."""
+    cs = max(1, int(axes.chunk_rows))
+    offset = 0
+    for start, stop in _runs(sel.freq_idx):
+        for lo in range(start, stop, cs):
+            hi = min(lo + cs, stop)
+            yield offset, d[lo:hi, :, :]
+            offset += hi - lo
 
 
 def thumb_rows(indices: np.ndarray, n_bins: int = 128) -> np.ndarray:

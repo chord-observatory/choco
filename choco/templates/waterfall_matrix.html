@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ acq }} — matrix — CHOCO{% endblock %}
+
+{% block styles %}
+.mx-head { display: flex; align-items: baseline; justify-content: space-between;
+           gap: 1em; flex-wrap: wrap; margin-bottom: 0.4em; }
+.mx-head h2 { margin: 0; font-size: 1.2em; }
+.mx-head code { font-size: 0.9em; }
+.mx-note { margin: 0 0 0.8em; }
+.mx-bands { display: flex; flex-wrap: wrap; gap: 0.3em; margin: 0 0 0.6em; }
+.mx-bands a { font-size: 0.8em; padding: 0.15em 0.5em; border-radius: 3px;
+              border: 1px solid var(--pico-muted-border-color, #ccc); text-decoration: none; }
+.mx-bands a.on { background: var(--pico-primary, #1c5a5c); color: #fff; border-color: transparent; }
+.mx-body { display: flex; gap: 1.2em; flex-wrap: wrap; align-items: flex-start; }
+.mx-frame { position: relative; flex: 0 1 640px; max-width: 100%; }
+.mx-frame img { width: 100%; height: auto; display: block; image-rendering: pixelated;
+                border: 1px solid var(--pico-muted-border-color, #ccc); cursor: crosshair; }
+.mx-ticks { position: relative; height: 1.4em; font-size: 0.72em;
+            color: var(--pico-muted-color, #666); font-family: var(--pico-font-family-monospace); }
+.mx-ticks .t { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.mx-side { flex: 1 1 14em; font-size: 0.85em; }
+.mx-side p { margin: 0 0 0.6em; }
+.mx-readout { font-family: var(--pico-font-family-monospace); min-height: 1.4em; }
+.mx-row { display: flex; gap: 0.6em; align-items: center; }
+.mx-row input[type=range] { flex: 1 1 auto; margin: 0; }
+.mx-scale { display: flex; align-items: center; gap: 0.5em; }
+.mx-scale .bar { flex: 1 1 auto; height: 0.8em; border: 1px solid var(--pico-muted-border-color, #ccc); }
+{% endblock %}
+
+{% block content %}
+<div class="mx-head page-head">
+    <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>matrix</h2>
+</div>
+
+<p class="note mx-note">
+    Every product at once: |V<sub>ab</sub>| / √(V<sub>aa</sub> V<sub>bb</sub>), averaged over one band and one
+    source file, element against element ({{ n_el }} × {{ n_el }}).  One frame per source file;
+    {{ n_rows }} frame{{ '' if n_rows == 1 else 's' }} so far.  Point at a cell for its name, click it for
+    that product's waterfall at chunk resolution.
+</p>
+
+<div class="mx-bands">
+    {%- for b in bands %}
+    <a href="?band={{ b.i }}&amp;row={{ row }}" class="{{ 'on' if b.i == band else '' }}">{{ b.label }}</a>
+    {%- endfor %}
+</div>
+
+<div class="mx-body">
+    <div class="mx-frame">
+        <div class="mx-ticks">
+            {%- for t in ticks %}
+            <span class="t" style="left: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
+            {%- endfor %}
+        </div>
+        <img id="matrix-img" src="/waterfall/{{ root }}/{{ acq }}/matrix/{{ band }}/{{ row }}.png"
+             alt="element by element coherence, {{ bands[band].label }}, frame {{ row }}" decoding="async">
+    </div>
+    <div class="mx-side">
+        <p><strong>{{ bands[band].label }}</strong> · frame {{ row + 1 }} of {{ n_rows }}
+           {%- if when %} · {{ when }}{% endif %}</p>
+        <div class="mx-row">
+            <a href="?band={{ band }}&amp;row={{ row - 1 if row > 0 else 0 }}" aria-label="previous frame">‹</a>
+            <input type="range" id="matrix-row" min="0" max="{{ n_rows - 1 }}" value="{{ row }}"
+                   aria-label="frame">
+            <a href="?band={{ band }}&amp;row={{ row + 1 if row + 1 < n_rows else n_rows - 1 }}" aria-label="next frame">›</a>
+        </div>
+        <p class="mx-readout" id="matrix-readout">&nbsp;</p>
+        {%- if gradient %}
+        <div class="mx-scale"><span>0.001</span><div class="bar" style="background: {{ gradient }}"></div><span>1</span></div>
+        <p>Coherence on a log scale: the bar runs a decade per third.</p>
+        {%- endif %}
+        <p>Black is no data (a dead element, or none in the band).  The diagonal is 1 by construction.</p>
+    </div>
+</div>
+
+<script type="application/json" id="matrix-data">{{ matrix_data | tojson }}</script>
+<script src="{{ url_for('static', filename='waterfall_matrix.js') }}"></script>
+{% endblock %}

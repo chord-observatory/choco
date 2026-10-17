@@ -526,11 +526,11 @@ class TestDegradedAccounting:
         from store import AcquisitionStore
         real_add = AcquisitionStore.add_file
 
-        def flaky(self, axes, indices, level=6):
+        def flaky(self, axes, indices, level=6, overview=None):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise OSError("mount went away")
-            return real_add(self, axes, indices, level=level)
+            return real_add(self, axes, indices, level=level, overview=overview)
 
         monkeypatch.setattr(AcquisitionStore, "add_file", flaky)
         rep = W.run(cfg)
@@ -672,3 +672,57 @@ class TestSelection:
             W.load_config(write_cfg(tmp_path, tmp_path / "subset", freq_stride=0))
         cfg = W.load_config(write_cfg(tmp_path, tmp_path / "subset"))
         assert cfg["products"] is None and cfg["freq_stride"] == 1
+
+
+# --- the overview ----------------------------------------------------------
+
+class TestOverview:
+    ACQ = "acq_20260202_000000_000000000"
+
+    def test_run_writes_the_cubes(self, tree, tmp_path):
+        _, root = tree
+        cfg = W.load_config(write_cfg(tmp_path, root, products={"autos": True}))
+        rep = W.run(cfg)
+        assert rep["files_rendered"] == 3 and rep["errors"] == []
+        out = tmp_path / "wf" / "subset" / self.ACQ
+        idx = json.loads((out / "index.json").read_text())
+        assert idx["overview"]["chunks"] == 4 and idx["overview"]["n_el"] == 4
+        assert idx["overview"]["prod_order"] == "triangle" and len(idx["overview"]["edges"]) == 9
+        assert idx["coarse_rows"] == 1
+        assert (out / "coarse.dat").stat().st_size == 10 * 4 == idx["coarse_bytes"]
+        assert (out / "e0003" / "co_e0003.png").exists() and idx["elements"][3]["rows"] == 1
+        assert (out / "matrix.dat").stat().st_size == 8 * 16 == idx["matrix_bytes"]
+        assert (out / "coarse_times.bin").stat().st_size == 8 and (out / "palette.bin").stat().st_size == 768
+        assert len(np.load(out / "coarse_freq.npy")) == 4 and np.load(out / "coarse_scale.npy").shape == (10, 2)
+        # a second file grows every cube by one row
+        add_source(root / self.ACQ, 201)
+        assert W.run(cfg)["files_rendered"] == 1
+        idx = json.loads((out / "index.json").read_text())
+        assert idx["coarse_rows"] == 2 and (out / "coarse.dat").stat().st_size == 80
+        assert idx["elements"][3]["rows"] == 2
+
+    def test_overview_off_keeps_none(self, tree, tmp_path):
+        _, root = tree
+        W.run(W.load_config(write_cfg(tmp_path, root, overview=False)))
+        out = tmp_path / "wf" / "subset" / self.ACQ
+        idx = json.loads((out / "index.json").read_text())
+        assert "overview" not in idx and not (out / "coarse.dat").exists()
+        # turning it on later does not add one to a started acquisition
+        add_source(root / self.ACQ, 201)
+        assert W.run(W.load_config(write_cfg(tmp_path, root)))["files_rendered"] == 1
+        assert "overview" not in json.loads((out / "index.json").read_text())
+        assert not (out / "coarse.dat").exists()
+
+    def test_file_stride_folds_every_nth_index(self, tree, tmp_path):
+        _, root = tree
+        for i in (201, 202, 203, 204):
+            add_source(root / self.ACQ, i)
+        cfg = W.load_config(write_cfg(tmp_path, root, file_stride=2))
+        rep = W.run(cfg)
+        assert rep["files_rendered"] == 4 and rep["backlog"] == 0
+        new = json.loads((tmp_path / "wf" / "subset" / self.ACQ / "index.json").read_text())
+        old = json.loads((tmp_path / "wf" / "subset" / "acq_20260101_000000_000000000" / "index.json").read_text())
+        assert new["files"] == [200, 202, 204] and old["files"] == [100]
+        assert W.run(cfg)["files_rendered"] == 0
+        with pytest.raises(ValueError, match="file_stride"):
+            W.load_config(write_cfg(tmp_path, root, file_stride=0))

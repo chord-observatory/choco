@@ -333,3 +333,57 @@ def test_start_with_a_selection_records_it(tmp_path):
     assert st.committed and st.n_rows == 6
     assert "products" in st.matches(R.read_axes(build(tmp_path / "v3.h5", n_elem=3)))
     assert "widened" in st.matches(R.read_axes(build(tmp_path / "v4.h5", n_freq=32)))
+
+
+# --- the overview ----------------------------------------------------------
+
+def test_overview_cubes_grow_one_row_per_file(tmp_path):
+    src = build(tmp_path / "v.h5")
+    axes = R.read_axes(src)
+    sel, _ = R.select(axes, {"autos": True})
+    spec = R.overview_spec(axes, sel, 2)
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(src, sel))
+    o = tmp_path / "o"
+    st = S.AcquisitionStore(o, "acq_x", "subset")
+    st.start(axes, lo, hi, sel, spec)
+    idx = json.loads((o / "index.json").read_text())
+    assert idx["overview"]["chunks"] == 4 and idx["overview"]["n_el"] == 4
+    assert idx["overview"]["prod_order"] == "triangle" and idx["coarse_bytes"] == 0
+    assert (o / "palette.bin").stat().st_size == 768 and np.load(o / "coarse_freq.npy").shape == (4,)
+    assert st.has_overview
+    out, ov = R.fold_file(src, lo, hi, sel=sel, axes=axes, overview=st.overview_spec(axes, sel))
+    st.add_file(axes, out, overview=ov)
+    idx = json.loads((o / "index.json").read_text())
+    assert (idx["coarse_bytes"], idx["matrix_bytes"], idx["coarse_times_bytes"]) == (40, 32, 8)
+    assert [el["rows"] for el in idx["elements"]] == [1, 1, 1, 1]
+    assert (o / "e0002" / "co_e0002.png").exists()
+    rows, _ = wfpng.read(o / "e0002" / "co_e0002.png")
+    assert rows.shape == (1, 4) and (rows > 0).all()
+    assert idx["coarse_rows"] == 1 and idx["files"] == [4202415]
+    scale = np.load(o / "coarse_scale.npy")
+    assert scale.shape == (10, 2) and np.isfinite(scale).all()
+    coarse = np.frombuffer((o / "coarse.dat").read_bytes(), np.uint8).reshape(1, 10, 4)
+    assert (coarse > 0).all()                         # every product has a scale and data
+    mat = np.frombuffer((o / "matrix.dat").read_bytes(), np.uint8).reshape(1, 2, 4, 4)
+    assert (np.diagonal(mat[0, 0]) == 255).all() and (mat[0, 0] == mat[0, 0].T).all()
+    # a second file appends; the scale stays the first file's
+    src2 = build(tmp_path / "v2.h5", idx=5, seed=3)
+    ax2 = R.read_axes(src2)
+    out, ov = R.fold_file(src2, lo, hi, sel=sel, axes=ax2, overview=st.overview_spec(ax2, sel))
+    st.add_file(ax2, out, overview=ov)
+    assert st.index["coarse_rows"] == 2 and (o / "coarse.dat").stat().st_size == 80
+    assert wfpng.read(o / "e0002" / "co_e0002.png")[0].shape == (2, 4)
+    assert np.array_equal(np.load(o / "coarse_scale.npy"), scale)
+    # once started with an overview a file must bring one
+    with pytest.raises(ValueError, match="overview"):
+        st.add_file(ax2, out)
+    # an acquisition started without one ignores it
+    st2 = S.AcquisitionStore(tmp_path / "o2", "acq_y", "subset")
+    st2.start(axes, lo, hi, sel)
+    st2.add_file(axes, out, overview=ov)
+    assert not st2.has_overview and not (tmp_path / "o2" / "coarse.dat").exists()
+    assert not (tmp_path / "o2" / "e0000" / "co_e0000.png").exists()
+    # the overview spec rebuilt for a file must match the record
+    assert st2.overview_spec(axes, sel) is None
+    with pytest.raises(ValueError, match="columns"):
+        st.overview_spec(R.read_axes(build(tmp_path / "v3.h5", n_freq=32)), R.select(R.read_axes(build(tmp_path / "v3.h5", n_freq=32)), {"autos": True})[0])

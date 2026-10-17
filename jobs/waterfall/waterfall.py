@@ -57,6 +57,12 @@ DEFAULTS = {
     # chunk of channels in that many.
     "products": None,
     "freq_stride": 1,
+    # fold one file in this many (by kotekan's file index); the overview
+    # (every product at chunk resolution, per-element coherence, the
+    # element x element matrix per band) and its band count
+    "file_stride": 1,
+    "overview": True,
+    "matrix_bands": 8,
     # state.json and the run lock live in the job's state directory
     # (/var/lib/choco/waterfall; --state-dir overrides), not here.
 }
@@ -80,6 +86,13 @@ def load_config(path) -> dict:
     cfg["freq_stride"] = int(cfg["freq_stride"])
     if cfg["freq_stride"] < 1:
         raise ValueError("freq_stride must be at least 1")
+    cfg["file_stride"] = int(cfg["file_stride"])
+    if cfg["file_stride"] < 1:
+        raise ValueError("file_stride must be at least 1")
+    cfg["overview"] = bool(cfg["overview"])
+    cfg["matrix_bands"] = int(cfg["matrix_bands"])
+    if cfg["matrix_bands"] < 1:
+        raise ValueError("matrix_bands must be at least 1")
     cfg["products"] = product_rule(cfg.get("products"))
     return cfg
 
@@ -111,7 +124,7 @@ def product_rule(raw) -> dict | None:
 SCALE_TRIES = 3
 
 
-def pending_candidates(store, files) -> list[tuple]:
+def pending_candidates(store, files, file_stride: int = 1) -> list[tuple]:
     """``(named_index, path, basename)`` for each file still to fold in.
 
     Decided from the *filenames* alone, so only the files a run will
@@ -120,7 +133,10 @@ def pending_candidates(store, files) -> list[tuple]:
     2-minute timer can absorb.  Index order where the name gives one;
     anything unnamed goes last, since its index is only knowable by
     opening it.  The dry run counts with this too, so both agree on what
-    "pending" means (skipped files included).
+    "pending" means (skipped files included).  With a ``file_stride``
+    only every Nth index is a candidate: time is the one axis a read can
+    be thinned along, and only in whole files, since a chunk spans every
+    bin of its file.
     """
     done, skipped = store.processed, store.skipped
     candidates = []
@@ -129,7 +145,7 @@ def pending_candidates(store, files) -> list[tuple]:
         if basename in skipped:
             continue
         named = file_index(basename)
-        if named is not None and named in done:
+        if named is not None and (named in done or named % file_stride):
             continue
         candidates.append((named, path, basename))
     candidates.sort(key=lambda c: (c[0] is None, c[0] or 0, c[2]))
@@ -166,7 +182,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         report["skipped"] += 1
         store.skip({basename: why})
 
-    candidates = pending_candidates(store, files)
+    candidates = pending_candidates(store, files, cfg["file_stride"])
     report["backlog"] += len(candidates)
     if not candidates or budget <= 0:
         # Out of budget for this run, but the backlog above is still
@@ -192,7 +208,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         if axes.n_time <= 0 or axes.n_freq <= 0 or axes.n_prod <= 0:
             drop(basename, f"empty frame ({axes.n_freq}x{axes.n_prod}x{axes.n_time})")
             continue
-        if axes.file_idx in done:
+        if axes.file_idx in done or axes.file_idx % cfg["file_stride"]:
             # the filename did not say so, but the index did
             report["backlog"] -= 1
             continue
@@ -243,7 +259,13 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         if n_scaled < first_sel.n_prod:
             log.warning("%s: %d of %d products have no usable data",
                         acq, first_sel.n_prod - n_scaled, first_sel.n_prod)
-        store.start(first_axes, lo, hi, first_sel)
+        spec = None
+        if cfg["overview"]:
+            if first_axes.n_elements > 0:
+                spec = R.overview_spec(first_axes, first_sel, cfg["matrix_bands"])
+            else:
+                log.warning("%s: no num_elements in the file; no overview for this acquisition", acq)
+        store.start(first_axes, lo, hi, first_sel, spec)
         # the files dropped above are behind the scale file; never fold them
         pending = [p for p in pending if os.path.basename(p[1]) not in store.skipped]
 
@@ -256,11 +278,16 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         if why is not None:
             drop(basename, why)
             continue
+        try:
+            spec = store.overview_spec(axes, sel)
+        except ValueError as exc:
+            drop(basename, str(exc))
+            continue
         if buf is None or buf.shape != (sel.n_prod, axes.n_time, sel.n_freq):
             buf = np.empty((sel.n_prod, axes.n_time, sel.n_freq), np.uint8)
         try:
-            R.quantize_file(path, lo, hi, out=buf, sel=sel, axes=axes)
-            store.add_file(axes, buf, level=cfg["level"])
+            _, overview = R.fold_file(path, lo, hi, out=buf, sel=sel, axes=axes, overview=spec)
+            store.add_file(axes, buf, level=cfg["level"], overview=overview)
         except OSError as exc:
             # Stop this acquisition but keep what was committed: returning
             # here rather than raising is what keeps the run's budget
@@ -490,7 +517,7 @@ def main(argv=None) -> int:
                 store = AcquisitionStore(
                     Path(cfg["waterfalls_dir"]) / root["name"] / acq, acq, root["name"])
                 files = source_files(os.path.join(root["path"], acq))
-                n, pend = len(files), len(pending_candidates(store, files))
+                n, pend = len(files), len(pending_candidates(store, files, cfg["file_stride"]))
                 if pend > 0:
                     print(f"{root['name']}/{acq}: {pend} of {n} files pending")
                     total += pend

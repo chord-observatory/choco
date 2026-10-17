@@ -263,3 +263,37 @@ current config, since no pixel depends on it — the first 128-element
 acquisition had been indexed with every product before any file landed.
 One file is now 96 chunks, about 2 GB on the wire and under a minute, in
 a 16 MB buffer.
+
+**The overview: every product from one pass (2026-10-17).**  The selection
+kept the renderer alive but lost the triangle, and the triangle is what
+shows a dead board or a swapped cable at a glance.  Two facts set the
+design.  A chunk holds every product, so once the pass opens it for the
+254 selected products the other 8002 are in memory for nothing; and the
+X-engine streams are a comb (channel index mod 16, checked on the live
+file: a down stream is one dead channel in every chunk), so a chunk sees
+every node, and reading every chunk is the only way to see every channel.
+The pass therefore reads every chunk of every ``file_stride``-th file —
+171 s plus 21 s for the scale on a live file, 0.5 GB, inside the 400 s
+cadence beside the mapmaker's minute — and keeps three things per file
+beside the images (``reduce.OverviewSpec``, ``FileOverview``): the mean
+|V| of every product over each chunk (``coarse.dat``, 3.2 MB a file), each
+element's mean over its partners of |V_ab| / sqrt(V_aa V_bb) per chunk
+(``co_eNNNN.png``, one scanline a file, so the sheet shows 128 of them
+without a seek per row), and that coherence per band as an element ×
+element matrix (``matrix.dat``, 128 KB a file).  Coherence is an
+amplitude mean, not a coherent average: the fringe of a 60 m baseline
+turns several times in 400 s, and a health view wants the correlated
+power whether or not it is fringe-stopped.  On the live files its noise
+floor is ~1e-3 and the sky on a short baseline ~0.1, so the cubes are
+quantized on a log scale from 1e-3 to 1 (``reduce.quantize_unit``), where
+a linear one spent a level on the floor.  The web renders a slice of a
+cube into a PNG on request with the stdlib (``waterfalls.encode_png``;
+the job's ``palette.bin`` supplies the colours) — a product's rows are
+one seek per file, a matrix frame one read — so the triangle is now a
+128 × 128 image with a band selector and a frame slider, and a click on
+a cell opens that product's coarse waterfall; the 8256-thumbnail page
+is gone.  Time is thinned only in whole files (``file_stride``), since a
+chunk spans every bin of its file.  The structural fix stays on the
+recv: a second N² writer behind a 16-channel average would hold every
+product at this resolution in 0.75 GB per file, and the same pass would
+read it in 15 s.

@@ -69,9 +69,17 @@
     {{ n_freq }} channel{{ '' if n_freq == 1 else 's' }} ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }}
     {%- if time_axis.start %} · {{ time_axis.start }} → {{ time_axis.end }} {{ time_axis.unit }}{% endif %}
-    · <a href="/waterfall/{{ root }}/{{ acq }}/{{ shard }}/{{ name }}">raw PNG</a>
-    · <a href="/files/{{ root }}/{{ acq }}/triangle">back to the triangle</a>
+    · <a href="{{ image_src }}">raw PNG</a>
+    · <a href="/files/{{ root }}/{{ acq }}/triangle">back to the sheet</a>
+    {%- if kind != 'full' %} · <a href="/files/{{ root }}/{{ acq }}/matrix">matrix</a>{% endif %}
     <br>
+    {%- if kind == 'coarse' %}
+    Every product is kept at chunk resolution: one column per 16-channel chunk (mean |V|), one row per
+    source file.
+    {%- elif kind == 'coherence' %}
+    This element's coherence with the array: the mean over its partners of |V<sub>ab</sub>| / √(V<sub>aa</sub> V<sub>bb</sub>),
+    one column per 16-channel chunk, one row per source file.
+    {%- endif %}
     Frequency across{% if freq_axis.unit == 'MHz' %} in MHz{% else %} in channel index{% endif %},
     time down{% if time_axis.unit == 'scanline' %} in scanline number{% else %} in local time ({{ time_axis.unit }}){% endif %};
     black is missing data.
@@ -92,13 +100,13 @@
                 <span class="t" style="top: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
                 {%- endfor %}
             </div>
-            <img src="/waterfall/{{ root }}/{{ acq }}/{{ shard }}/{{ name }}"
+            <img src="{{ image_src }}"
                  alt="{{ label_a }} × {{ label_b }} waterfall" decoding="async">
         </div>
         <div class="wfv-cwrap">
             {%- if gradient %}
             <div class="wfv-csticky">
-                <div class="wfv-ctitle">|V|</div>
+                <div class="wfv-ctitle">{{ value_title or '|V|' }}</div>
                 <div class="wfv-cbar" style="background: {{ gradient }}">
                     {%- for t in value_ticks %}
                     <span class="t" style="bottom: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>

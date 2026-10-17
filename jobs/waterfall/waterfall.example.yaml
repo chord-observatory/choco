@@ -41,9 +41,30 @@ products:
 # 16-channel chunk in four (a column is still a real channel).  kotekan
 # chunks vis as 16 channels x every product x every time bin and a chunk
 # decompresses whole, so the read is priced in chunks: at 128 elements a
-# file is 16 GB of vis, and 4 brings a file to about 2 GB on the wire,
-# under a minute, against the 400 s cadence.
-freq_stride: 4
+# file is 16 GB of vis.  The X-engine streams are a comb (channel mod 16),
+# so every chunk holds every node and a stride cannot hide a node, only
+# the detail between kept chunks.  With the overview below every chunk is
+# wanted anyway: 1.
+freq_stride: 1
+
+# Fold one file in this many, by kotekan's file index.  Time is the one
+# axis a read can be thinned along, and only in whole files: a chunk
+# spans every bin of its file.  A full pass over a 12 GB file is about
+# 3.5 min on a link that gives 36-59 MB/s, against the 400 s cadence, with
+# the mapmaker's minute beside it; 2 halves the load and the overview
+# still gets a frame every 13 min.
+file_stride: 1
+
+# The overview, kept beside the selected images from the same pass: every
+# product at chunk resolution (coarse.dat: mean |V| per chunk, one row per
+# file, any of the 8256 products viewable on request), each element's
+# coherence with the array (co_eNNNN.png: mean over its partners of
+# |V_ab| / sqrt(V_aa V_bb) per chunk, one scanline per file), and the
+# element x element matrix of the same coherence per band, one frame per
+# file (matrix.dat; the /files/<root>/<acq>/matrix page).  Fixed per
+# acquisition when it starts.
+overview: true
+matrix_bands: 8
 
 # Deflate level.  6 is the balance point (level 9 costs 3.5x the CPU for
 # 0.58% fewer bytes); 4 is worth passing for a long backfill.

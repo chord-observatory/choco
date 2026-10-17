@@ -28,13 +28,14 @@ import os
 import re
 import struct
 import time
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from gevent.lock import BoundedSemaphore
 
-from .acqtree import IMAGE_RE, SHARD_RE, product_name, shard_name  # noqa: F401 (re-exported)
+from .acqtree import COHERENCE_RE, IMAGE_RE, SHARD_RE, product_name, shard_name  # noqa: F401 (re-exported)
 from .datafiles import run_blocking
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,110 @@ def read_times(path: str) -> list[int]:
     blob = _read_capped(path)
     n = len(blob) // 8
     return list(struct.unpack(f"<{n}q", blob[:n * 8]))
+
+
+def read_palette(path: str) -> list[tuple[int, int, int]]:
+    """palette.bin — the 256 RGB triples the overview is drawn with.  Blocking."""
+    blob = _read_capped(path)
+    if len(blob) != _PLTE_LEN:
+        raise ValueError(f"{path}: a palette is {_PLTE_LEN} bytes, not {len(blob)}")
+    return [(blob[i], blob[i + 1], blob[i + 2]) for i in range(0, _PLTE_LEN, 3)]
+
+
+# --- the overview: every product at chunk resolution ----------------------
+#
+# The job keeps, per acquisition that has one, three append-only cubes
+# with one row per source file (jobs/waterfall/store.py): coarse.dat
+# (every product, mean |V| per chunk), matrix.dat (per band, element x
+# element coherence) and the per-element coherence images.  The web
+# renders a slice of a cube into a PNG on request with the stdlib: a
+# row of a cube is a row of pixels already, quantized by the job.
+
+#: Most rows a cube read may ask for (a year of 400 s files is ~79k).
+CUBE_ROWS_MAX = 100_000
+
+
+def overview_of(index: dict) -> dict | None:
+    """The acquisition's overview record, checked, or None without one."""
+    rec = index.get("overview") if isinstance(index, dict) else None
+    if not isinstance(rec, dict):
+        return None
+    try:
+        chunks, n_el = int(rec.get("chunks") or 0), int(rec.get("n_el") or 0)
+        edges = [float(e) for e in rec.get("edges") or []]
+        rows = int(index.get("coarse_rows") or 0)
+        n_prod_file = int(index.get("n_prod_file") or 0)
+    except (TypeError, ValueError):
+        return None
+    if chunks <= 0 or n_el <= 0 or len(edges) < 2 or n_prod_file <= 0:
+        return None
+    order = rec.get("prod_order")
+    pairs = rec.get("prod_pairs") if order == "list" else None
+    if order == "list" and not isinstance(pairs, list):
+        return None
+    return {"chunks": chunks, "n_el": n_el, "edges": edges, "n_band": len(edges) - 1,
+            "rows": max(0, min(rows, CUBE_ROWS_MAX)), "n_prod_file": n_prod_file,
+            "prod_order": "triangle" if order != "list" else "list", "prod_pairs": pairs}
+
+
+def product_row(ov: dict, a: int, b: int) -> int | None:
+    """Where product ``(a, b)`` sits in the coarse cube's product axis
+    (kotekan's upper-triangle order, or the recorded list), or None."""
+    a, b = int(min(a, b)), int(max(a, b))
+    n = ov["n_el"]
+    if a < 0 or b >= n:
+        return None
+    if ov["prod_order"] == "triangle":
+        p = a * n - a * (a - 1) // 2 + (b - a)
+    else:
+        try:
+            p = next(i for i, pair in enumerate(ov["prod_pairs"])
+                     if isinstance(pair, list) and len(pair) == 2
+                     and int(pair[0]) == a and int(pair[1]) == b)
+        except (StopIteration, TypeError, ValueError):
+            return None
+    return p if 0 <= p < ov["n_prod_file"] else None
+
+
+def read_cube_rows(path: str, offset: int, row_bytes: int, stride: int,
+                   n_rows: int) -> list[bytes]:
+    """``n_rows`` slices of ``row_bytes`` from a cube, one per ``stride``
+    bytes from ``offset``.  Blocking; runs in a thread.  Stops at the
+    file's committed end rather than pad: on a live acquisition the file
+    can be one uncommitted append ahead, never behind."""
+    out = []
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        for r in range(min(int(n_rows), CUBE_ROWS_MAX)):
+            at = offset + r * stride
+            if at + row_bytes > size:
+                break
+            f.seek(at)
+            row = f.read(row_bytes)
+            if len(row) < row_bytes:
+                break
+            out.append(row)
+    return out
+
+
+def _png_chunk(typ: bytes, data: bytes) -> bytes:
+    return struct.pack(">I", len(data)) + typ + data + struct.pack(">I", zlib.crc32(typ + data))
+
+
+def encode_png(width: int, rows: list[bytes], palette) -> bytes:
+    """An 8-bit palette PNG from ``rows`` of ``width`` palette indices —
+    the same format the job writes, made with the stdlib."""
+    if width <= 0 or not rows or any(len(r) != width for r in rows):
+        raise ValueError("every row must be the image's width")
+    pal = b"".join(bytes((r, g, b)) for r, g, b in palette)
+    if len(pal) != _PLTE_LEN:
+        raise ValueError("a palette has 256 entries")
+    raw = b"".join(b"\x00" + r for r in rows)
+    return (_PNG_SIG
+            + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, len(rows), 8, 3, 0, 0, 0))
+            + _png_chunk(b"PLTE", pal)
+            + _png_chunk(b"IDAT", zlib.compress(raw, 6))
+            + _png_chunk(b"IEND", b""))
 
 
 def read_png_head(path: str) -> dict:
@@ -522,7 +627,9 @@ class WaterfallStore:
         base = self.acquisition_dir(root, acq)
         if base is None:
             return None
-        if not (SHARD_RE.match(shard or "") and IMAGE_RE.match(name or "")):
+        if not SHARD_RE.match(shard or ""):
+            return None
+        if not (IMAGE_RE.match(name or "") or COHERENCE_RE.match(name or "")):
             return None
         return base / shard, name
 
@@ -619,6 +726,32 @@ class WaterfallStore:
     def freq_axis(self, root: str, acq: str) -> list[float] | None:
         """Frequency centres in MHz, one per image column."""
         return self._side_file(root, acq, "freq.npy", read_npy_1d)
+
+    def coarse_freq(self, root: str, acq: str) -> list[float] | None:
+        """The overview's column centres in MHz, one per chunk."""
+        return self._side_file(root, acq, "coarse_freq.npy", read_npy_1d)
+
+    def coarse_times(self, root: str, acq: str) -> list[int] | None:
+        """UT1 ns since J2000 per overview row (one per source file)."""
+        return self._side_file(root, acq, "coarse_times.bin", read_times)
+
+    def palette(self, root: str, acq: str) -> list | None:
+        """The 256 RGB triples the overview is drawn with."""
+        return self._side_file(root, acq, "palette.bin", read_palette)
+
+    def cube_rows(self, root: str, acq: str, filename: str, offset: int,
+                  row_bytes: int, stride: int, n_rows: int) -> list[bytes] | None:
+        """Rows of one cube file (``coarse.dat`` / ``matrix.dat``), off the hub."""
+        base = self.acquisition_dir(root, acq)
+        if base is None or filename not in ("coarse.dat", "matrix.dat"):
+            return None
+        try:
+            return run_blocking(read_cube_rows, str(base / filename), int(offset),
+                                int(row_bytes), int(stride), int(n_rows),
+                                timeout=READ_TIMEOUT_S)
+        except Exception as exc:
+            logger.warning(f"waterfalls: read of {base / filename}: {exc}")
+            return None
 
     def times(self, root: str, acq: str) -> list[int] | None:
         """UT1 ns since J2000 per scanline (0 = no timestamp)."""
@@ -723,11 +856,13 @@ def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
     itself plus the frozen lo/hi in the index — each read hub-safe and
     each degrading to a plainer page rather than a 500 when missing.
     """
-    m = IMAGE_RE.match(name or "")
-    if not m or not name.startswith("wf_"):
-        return None
     index = store.index(root, acq)
     if index is None:
+        return None
+    if COHERENCE_RE.match(name or ""):
+        return coherence_view_context(store, root, acq, name, index, tz=tz)
+    m = IMAGE_RE.match(name or "")
+    if not m or not name.startswith("wf_"):
         return None
     a, b = int(m.group(1)), int(m.group(2))
     prod = next((p for p in index.get("products") or []
@@ -752,7 +887,8 @@ def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
     # handful of time labels where a night-long one fits dozens.
     time_target = max(3, min(40, round(43 * rows / max(n_freq, 1))))
     return {
-        "root": root, "acq": acq, "shard": shard, "name": name,
+        "root": root, "acq": acq, "shard": shard, "name": name, "kind": "full",
+        "image_src": f"/waterfall/{root}/{acq}/{shard}/{name}",
         "a": a, "b": b, "label_a": label(a), "label_b": label(b),
         "rows": rows, "n_freq": n_freq,
         "freq_axis": freq_ticks(store.freq_axis(root, acq), n_freq),
@@ -761,3 +897,214 @@ def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
         "gradient": palette_gradient(pal),
         "n_files": len(index.get("files") or []),
     }
+
+
+def _label_of(index: dict):
+    labels = index.get("labels") or []
+
+    def label(e: int) -> str:
+        return labels[e] if 0 <= e < len(labels) else str(e)
+    return label
+
+
+#: Coherence is drawn on a log scale from 1e-3 (the noise floor of one
+#: chunk) to 1, as the job quantizes it: a decade per third of the bar.
+_UNIT_TICKS = [{"frac": f, "label": lbl} for f, lbl in
+               ((0.0, "0.001"), (1 / 3, "0.01"), (2 / 3, "0.1"), (1.0, "1"))]
+
+
+def coherence_view_context(store, root: str, acq: str, name: str, index: dict,
+                           tz=None) -> dict | None:
+    """The viewer page around one element's coherence image (``co_eNNNN.png``)."""
+    m = COHERENCE_RE.match(name or "")
+    ov = overview_of(index)
+    if not m or ov is None:
+        return None
+    e = int(m.group(1))
+    elements = index.get("elements") or []
+    rec = elements[e] if 0 <= e < len(elements) and isinstance(elements[e], dict) else None
+    if rec is None or not rec.get("rows"):
+        return None
+    shard = shard_name(e)
+    head = store.image_head(root, acq, shard, name)
+    rows = int(head["height"]) if head and head.get("height") else int(rec["rows"])
+    label = _label_of(index)
+    return {
+        "root": root, "acq": acq, "shard": shard, "name": name, "kind": "coherence",
+        "image_src": f"/waterfall/{root}/{acq}/{shard}/{name}",
+        "a": e, "b": e, "label_a": label(e), "label_b": "array",
+        "rows": rows, "n_freq": ov["chunks"],
+        "freq_axis": freq_ticks(store.coarse_freq(root, acq), ov["chunks"]),
+        "time_axis": time_ticks(store.coarse_times(root, acq), rows, target=12, tz=tz),
+        "value_ticks": _UNIT_TICKS, "value_title": "coherence",
+        "gradient": palette_gradient(head["palette"] if head else None),
+        "n_files": len(index.get("files") or []),
+    }
+
+
+def coarse_view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
+    """The viewer page around one product's coarse waterfall (any product
+    of the file, rendered from ``coarse.dat`` on request)."""
+    m = IMAGE_RE.match(name or "")
+    if not m or not name.startswith("wf_"):
+        return None
+    index = store.index(root, acq)
+    ov = overview_of(index) if index is not None else None
+    if ov is None:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    if product_row(ov, a, b) is None or ov["rows"] == 0:
+        return None
+    label = _label_of(index)
+    return {
+        "root": root, "acq": acq, "shard": shard_name(a), "name": name, "kind": "coarse",
+        "image_src": f"/waterfall/{root}/{acq}/coarse/{name}",
+        "a": a, "b": b, "label_a": label(a), "label_b": label(b),
+        "rows": ov["rows"], "n_freq": ov["chunks"],
+        "freq_axis": freq_ticks(store.coarse_freq(root, acq), ov["chunks"]),
+        "time_axis": time_ticks(store.coarse_times(root, acq), ov["rows"], target=12, tz=tz),
+        "value_ticks": [], "value_title": "|V|",
+        "gradient": palette_gradient(store.palette(root, acq)),
+        "n_files": len(index.get("files") or []),
+    }
+
+
+def coarse_image(store, root: str, acq: str, name: str) -> bytes | None:
+    """One product's coarse waterfall as a PNG, or None."""
+    m = IMAGE_RE.match(name or "")
+    if not m or not name.startswith("wf_"):
+        return None
+    index = store.index(root, acq)
+    ov = overview_of(index) if index is not None else None
+    if ov is None:
+        return None
+    p = product_row(ov, int(m.group(1)), int(m.group(2)))
+    pal = store.palette(root, acq)
+    if p is None or ov["rows"] == 0 or pal is None:
+        return None
+    rows = store.cube_rows(root, acq, "coarse.dat", offset=p * ov["chunks"],
+                           row_bytes=ov["chunks"], stride=ov["n_prod_file"] * ov["chunks"],
+                           n_rows=ov["rows"])
+    if not rows:
+        return None
+    return encode_png(ov["chunks"], rows, pal)
+
+
+def matrix_image(store, root: str, acq: str, band: int, row: int) -> bytes | None:
+    """One frame of the element x element matrix as a PNG, or None."""
+    index = store.index(root, acq)
+    ov = overview_of(index) if index is not None else None
+    if ov is None:
+        return None
+    try:
+        band, row = int(band), int(row)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= band < ov["n_band"] and 0 <= row < ov["rows"]):
+        return None
+    n = ov["n_el"]
+    pal = store.palette(root, acq)
+    if pal is None:
+        return None
+    frame = store.cube_rows(root, acq, "matrix.dat", offset=(row * ov["n_band"] + band) * n * n,
+                            row_bytes=n * n, stride=0, n_rows=1)
+    if not frame:
+        return None
+    blob = frame[0]
+    return encode_png(n, [blob[i * n:(i + 1) * n] for i in range(n)], pal)
+
+
+def matrix_context(store, root: str, acq: str, band, row, tz=None) -> dict | None:
+    """The matrix page: which band and frame, the labels along the axes,
+    and what the page's script needs to name and open cells."""
+    index = store.index(root, acq)
+    ov = overview_of(index) if index is not None else None
+    if ov is None or ov["rows"] == 0:
+        return None
+    n_rows, n_band = ov["rows"], ov["n_band"]
+    try:
+        band = int(band) if band not in (None, "") else n_band // 2
+        row = int(row) if row not in (None, "") else n_rows - 1
+    except ValueError:
+        return None
+    if not (0 <= band < n_band and 0 <= row < n_rows):
+        return None
+    edges = ov["edges"]
+    bands = [{"i": i, "label": f"{edges[i]:.0f}–{edges[i + 1]:.0f} MHz"} for i in range(n_band)]
+    label = _label_of(index)
+    n = ov["n_el"]
+    ticks = [{"frac": (e + 0.5) / n, "label": label(e)} for e in _spread(n, 9)]
+    times = store.coarse_times(root, acq)
+    when = None
+    if isinstance(times, list) and row < len(times) and times[row] > 0:
+        when = _j2000_dt(times[row], _tzinfo(tz or DEFAULT_TZ)).strftime("%Y-%m-%d %H:%M:%S %Z")
+    page = f"/files/{root}/{acq}/matrix"
+    return {
+        "root": root, "acq": acq, "band": band, "row": row, "n_rows": n_rows, "n_el": n,
+        "bands": bands, "ticks": ticks, "when": when,
+        "gradient": palette_gradient(store.palette(root, acq)),
+        "matrix_data": {"n_el": n, "labels": [label(e) for e in range(n)], "band": band,
+                        "page": page, "coarse_view": f"/waterfall/{root}/{acq}/coarse-view"},
+    }
+
+
+def strips(index: dict) -> list[dict] | None:
+    """The contact sheet as strips, for an acquisition that renders a
+    selection rather than the whole triangle: the autocorrelations, each
+    reference element's cross products, any other pairs, and the
+    coherence images.  None when the triangle is the better layout
+    (every product rendered)."""
+    products = [p for p in (index.get("products") or [])
+                if isinstance(p, dict) and p.get("rows")]
+    n_el = int(index.get("n_elements") or 0)
+    ov = overview_of(index)
+    if not products or (ov is None and n_el and len(products) >= n_el * (n_el + 1) // 2):
+        return None
+    label = _label_of(index)
+    root, acq = index.get("source_root"), index.get("acquisition")
+
+    def cell(p, a, b):
+        return {"src": f"/waterfall/{root}/{acq}/{shard_name(a)}/th_{p['name']}.png",
+                "view": f"/waterfall/{root}/{acq}/view/wf_{p['name']}.png",
+                "label": label(a) if a == b else f"{label(a)}×{label(b)}",
+                "title": f"{label(a)} × {label(b)} (elements {a}, {b}) — {p.get('rows')} scanlines"}
+
+    autos, crosses = [], []
+    for p in products:
+        try:
+            a, b = int(p["a"]), int(p["b"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        (autos if a == b else crosses).append((a, b, p))
+    out = []
+    if autos:
+        out.append({"title": "Autocorrelations", "cells": [cell(p, a, b) for a, b, p in autos]})
+    # a reference is an element with several cross products; its strip
+    # lists them by the other element
+    count: dict = {}
+    for a, b, _ in crosses:
+        count[a] = count.get(a, 0) + 1
+        count[b] = count.get(b, 0) + 1
+    taken = set()
+    for ref, _ in sorted(count.items(), key=lambda kv: (-kv[1], kv[0])):
+        mine = [(a, b, p) for a, b, p in crosses if (a == ref or b == ref) and id(p) not in taken]
+        if len(mine) < 2:
+            break
+        mine.sort(key=lambda t: t[1] if t[0] == ref else t[0])
+        out.append({"title": f"{label(ref)} × the array",
+                    "cells": [cell(p, a, b) for a, b, p in mine]})
+        taken.update(id(p) for _, _, p in mine)
+    rest = [(a, b, p) for a, b, p in crosses if id(p) not in taken]
+    if rest:
+        out.append({"title": "Other pairs", "cells": [cell(p, a, b) for a, b, p in rest]})
+    if ov is not None:
+        els = [(e, rec) for e, rec in enumerate(index.get("elements") or [])
+               if isinstance(rec, dict) and rec.get("rows")]
+        if els:
+            out.append({"title": "Coherence with the array", "cells": [
+                {"src": f"/waterfall/{root}/{acq}/{shard_name(e)}/co_{shard_name(e)}.png",
+                 "view": f"/waterfall/{root}/{acq}/view/co_{shard_name(e)}.png",
+                 "label": label(e),
+                 "title": f"{label(e)} coherence with the array (element {e}) — {rec['rows']} files"}
+                for e, rec in els]})
+    return out

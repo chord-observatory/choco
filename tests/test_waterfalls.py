@@ -780,3 +780,196 @@ class TestViewerRoute:
         login(client)
         body = client.get(f"/files/subset/{ACQ}/triangle").data.decode()
         assert f"/waterfall/subset/{ACQ}/view/wf_e0000xe0001.png" in body
+
+
+# --- the overview: every product at chunk resolution, the matrix, coherence
+
+from choco.waterfalls import (coarse_image, coarse_view_context, encode_png, matrix_context,
+                              matrix_image, overview_of, product_row, strips, view_context)
+
+OV_ACQ = "acq_20260725_000000_000000000"
+
+
+def make_overview_index(path, n_el=3, n_chunk=4, n_band=2, rows=3, labels=None):
+    """An acquisition with a selection (autos + element 0's crosses) and an
+    overview: the cubes hold recognisable values, one row per file."""
+    n_prod_file = n_el * (n_el + 1) // 2
+    pairs = [(a, b) for a in range(n_el) for b in range(a, n_el)]
+    rendered = [(a, b) for a, b in pairs if a == b or a == 0]
+    make_index(path, n_elements=n_el, files=tuple(range(1, rows + 1)), rows=rows * 2,
+               rendered_pairs=rendered)
+    index = json.loads((path / "index.json").read_text())
+    index["labels"] = labels or [f"A{i}X" for i in range(n_el)]
+    index["n_prod_file"] = n_prod_file
+    index["n_freq_file"] = 64
+    index["overview"] = {"chunks": n_chunk, "chunk_rows": 16, "edges": [600.0, 650.0, 700.0][:n_band + 1],
+                         "n_el": n_el, "prod_order": "triangle"}
+    index["coarse_rows"] = rows
+    index["coarse_bytes"] = rows * n_prod_file * n_chunk
+    index["matrix_bytes"] = rows * n_band * n_el * n_el
+    index["coarse_times_bytes"] = rows * 8
+    index["elements"] = [{"e": e, "name": f"e{e:04d}", "width": n_chunk, "rows": rows,
+                          "nbytes": 100, "adler": 1} for e in range(n_el)]
+    (path / "index.json").write_text(json.dumps(index))
+    # coarse: value = product index + 1 for every chunk, so a slice is recognisable
+    (path / "coarse.dat").write_bytes(bytes(
+        p + 1 for r in range(rows) for p in range(n_prod_file) for c in range(n_chunk)))
+    # matrix: value = 10 * band + row + 1, diagonal 255
+    (path / "matrix.dat").write_bytes(bytes(
+        255 if i == j else 10 * b + r + 1
+        for r in range(rows) for b in range(n_band) for i in range(n_el) for j in range(n_el)))
+    (path / "coarse_times.bin").write_bytes(struct.pack("<%dq" % rows, *(T0_NS + 400 * 10**9 * r for r in range(rows))))
+    (path / "coarse_freq.npy").write_bytes(npy_bytes([600.0 + 25.0 * c for c in range(n_chunk)]))
+    (path / "palette.bin").write_bytes(bytes(b for i in range(256) for b in (i, i, i)))
+    for e in range(n_el):
+        shard = path / f"e{e:04d}"
+        shard.mkdir(exist_ok=True)
+        (shard / f"co_e{e:04d}.png").write_bytes(png_with_palette(n_chunk, rows))
+    return path
+
+
+def _decode_rows(png: bytes) -> list[bytes]:
+    """The scanlines of an unfiltered 8-bit PNG (what encode_png writes)."""
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", png[16:24])
+    pos, idat = 8, b""
+    while pos < len(png):
+        (n,), typ = struct.unpack(">I", png[pos:pos + 4]), png[pos + 4:pos + 8]
+        if typ == b"IDAT":
+            idat += png[pos + 8:pos + 8 + n]
+        pos += 12 + n
+    raw = zlib.decompress(idat)
+    assert len(raw) == height * (width + 1)
+    return [raw[r * (width + 1) + 1:(r + 1) * (width + 1)] for r in range(height)]
+
+
+@pytest.fixture
+def ov_images(tmp_path):
+    root = tmp_path / "waterfalls"
+    make_index(root / "subset" / ACQ)
+    make_overview_index(root / "subset" / OV_ACQ)
+    return root
+
+
+@pytest.fixture
+def ov_store(ov_images):
+    return WaterfallStore(ov_images, ttl_s=0)
+
+
+class TestOverviewRecord:
+    def test_overview_of_checks_the_record(self, ov_store):
+        ov = overview_of(ov_store.index("subset", OV_ACQ))
+        assert ov["chunks"] == 4 and ov["n_el"] == 3 and ov["n_band"] == 2 and ov["rows"] == 3
+        assert ov["n_prod_file"] == 6 and ov["prod_order"] == "triangle"
+        assert overview_of(ov_store.index("subset", ACQ)) is None
+        assert overview_of({"overview": {"chunks": "x"}}) is None
+        assert overview_of({"overview": {"chunks": 4, "n_el": 3, "edges": [1.0]}, "n_prod_file": 6}) is None
+
+    def test_product_row_follows_kotekan_order(self):
+        ov = {"n_el": 4, "n_prod_file": 10, "prod_order": "triangle", "prod_pairs": None}
+        pairs = [(a, b) for a in range(4) for b in range(a, 4)]
+        assert [product_row(ov, a, b) for a, b in pairs] == list(range(10))
+        assert product_row(ov, 3, 1) == product_row(ov, 1, 3) == 6
+        assert product_row(ov, 0, 4) is None
+        listed = {"n_el": 3, "n_prod_file": 2, "prod_order": "list", "prod_pairs": [[0, 0], [1, 2]]}
+        assert product_row(listed, 2, 1) == 1 and product_row(listed, 0, 1) is None
+
+    def test_encode_png_round_trips(self):
+        pal = [(i, 0, 0) for i in range(256)]
+        png = encode_png(3, [b"\x01\x02\x03", b"\x04\x05\x06"], pal)
+        assert _decode_rows(png) == [b"\x01\x02\x03", b"\x04\x05\x06"]
+        assert png[41:47] == b"\x00\x00\x00\x01\x00\x00"      # the PLTE at the writer's offset
+        with pytest.raises(ValueError):
+            encode_png(3, [b"\x01\x02"], pal)
+
+
+class TestOverviewImages:
+    def test_coarse_image_is_the_products_rows(self, ov_store):
+        png = coarse_image(ov_store, "subset", OV_ACQ, "wf_e0001xe0002.png")
+        rows = _decode_rows(png)
+        assert rows == [bytes([5] * 4)] * 3                      # product (1,2) is index 4 -> value 5
+        assert coarse_image(ov_store, "subset", OV_ACQ, "wf_e0002xe0001.png") == png
+        assert coarse_image(ov_store, "subset", OV_ACQ, "wf_e0000xe0009.png") is None
+        assert coarse_image(ov_store, "subset", OV_ACQ, "th_e0000xe0001.png") is None
+        assert coarse_image(ov_store, "subset", ACQ, "wf_e0000xe0001.png") is None   # no overview
+
+    def test_matrix_image_is_one_frame(self, ov_store):
+        rows = _decode_rows(matrix_image(ov_store, "subset", OV_ACQ, 1, 2))
+        assert rows == [bytes([255, 13, 13]), bytes([13, 255, 13]), bytes([13, 13, 255])]
+        assert matrix_image(ov_store, "subset", OV_ACQ, 2, 0) is None
+        assert matrix_image(ov_store, "subset", OV_ACQ, 0, 3) is None
+        assert matrix_image(ov_store, "subset", OV_ACQ, "x", 0) is None
+
+    def test_matrix_context_defaults_to_the_latest_frame(self, ov_store):
+        ctx = matrix_context(ov_store, "subset", OV_ACQ, None, None)
+        assert (ctx["band"], ctx["row"], ctx["n_rows"], ctx["n_el"]) == (1, 2, 3, 3)
+        assert [b["label"] for b in ctx["bands"]] == ["600–650 MHz", "650–700 MHz"]
+        assert ctx["matrix_data"]["labels"] == ["A0X", "A1X", "A2X"]
+        assert ctx["when"] and ctx["gradient"].startswith("linear-gradient")
+        assert matrix_context(ov_store, "subset", OV_ACQ, "0", "1")["row"] == 1
+        assert matrix_context(ov_store, "subset", OV_ACQ, "9", None) is None
+        assert matrix_context(ov_store, "subset", OV_ACQ, "a", None) is None
+        assert matrix_context(ov_store, "subset", ACQ, None, None) is None
+
+    def test_view_contexts_name_their_kind(self, ov_store):
+        full = view_context(ov_store, "subset", OV_ACQ, "wf_e0000xe0001.png")
+        assert full["kind"] == "full" and full["image_src"].endswith("/e0000/wf_e0000xe0001.png")
+        coh = view_context(ov_store, "subset", OV_ACQ, "co_e0002.png")
+        assert coh["kind"] == "coherence" and coh["label_a"] == "A2X" and coh["n_freq"] == 4
+        assert coh["value_ticks"][-1]["label"] == "1" and coh["freq_axis"]["unit"] == "MHz"
+        assert view_context(ov_store, "subset", OV_ACQ, "co_e0007.png") is None
+        assert view_context(ov_store, "subset", ACQ, "co_e0000.png") is None
+        coarse = coarse_view_context(ov_store, "subset", OV_ACQ, "wf_e0001xe0002.png")
+        assert coarse["kind"] == "coarse" and coarse["rows"] == 3 and coarse["n_freq"] == 4
+        assert coarse["label_b"] == "A2X" and coarse["image_src"].endswith("/coarse/wf_e0001xe0002.png")
+        assert coarse_view_context(ov_store, "subset", ACQ, "wf_e0000xe0001.png") is None
+
+    def test_strips_group_the_selection(self, ov_store):
+        out = strips(ov_store.index("subset", OV_ACQ))
+        assert [s["title"] for s in out] == ["Autocorrelations", "A0X × the array", "Coherence with the array"]
+        assert [c["label"] for c in out[0]["cells"]] == ["A0X", "A1X", "A2X"]
+        assert [c["label"] for c in out[1]["cells"]] == ["A0X×A1X", "A0X×A2X"]
+        assert out[2]["cells"][1]["src"].endswith("/e0001/co_e0001.png")
+        assert strips(ov_store.index("subset", ACQ)) is None            # the whole triangle
+
+
+class TestOverviewRoutes:
+    @pytest.fixture
+    def ov_client(self, tmp_path, ov_images):
+        app = _app(tmp_path, ov_images)
+        with app.test_client() as client:
+            login(client)
+            yield client
+
+    def test_matrix_page_and_frames(self, ov_client):
+        body = ov_client.get(f"/files/subset/{OV_ACQ}/matrix").data.decode()
+        assert "650–700 MHz" in body and 'id="matrix-row"' in body and "frame 3 of 3" in body
+        assert f"/waterfall/subset/{OV_ACQ}/matrix/1/2.png" in body
+        resp = ov_client.get(f"/waterfall/subset/{OV_ACQ}/matrix/1/2.png")
+        assert resp.status_code == 200 and resp.data.startswith(b"\x89PNG")
+        assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/matrix/1/9.png").status_code == 404
+        assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/matrix/x/0.png").status_code == 404
+        assert ov_client.get(f"/files/subset/{ACQ}/matrix").status_code == 404
+
+    def test_coarse_images_and_views(self, ov_client):
+        resp = ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0001xe0002.png")
+        assert resp.status_code == 200 and _decode_rows(resp.data)[0] == bytes([5] * 4)
+        body = ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse-view/wf_e0001xe0002.png").data.decode()
+        assert "chunk resolution" in body and f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0001xe0002.png" in body
+        assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0000xe0009.png").status_code == 404
+        assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse-view/th_e0000xe0001.png").status_code == 404
+
+    def test_coherence_image_and_view(self, ov_client):
+        assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/e0002/co_e0002.png").status_code == 200
+        body = ov_client.get(f"/waterfall/subset/{OV_ACQ}/view/co_e0002.png").data.decode()
+        assert "coherence with the array" in body and "A2X" in body
+        assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/e0002/co_e0007.png").status_code == 404
+
+    def test_sheet_shows_strips_and_the_matrix_link(self, ov_client):
+        body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle").data.decode()
+        assert "Autocorrelations" in body and "Coherence with the array" in body
+        assert f"/files/subset/{OV_ACQ}/matrix" in body and 'class="strip"' in body
+        body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle?layout=triangle").data.decode()
+        assert 'class="strip"' not in body and 'table class="tri"' in body
+        body = ov_client.get(f"/files/subset/{ACQ}/triangle").data.decode()
+        assert 'table class="tri"' in body and f"/files/subset/{ACQ}/matrix" not in body

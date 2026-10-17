@@ -9,6 +9,14 @@
 .tri-note { margin: 0 0 1em; }
 .tri-filter { margin: 0; }
 .tri-filter input { flex: 0 0 12em; }
+.strip { display: flex; flex-wrap: wrap; gap: 0.35em; margin: 0 0 1em; }
+.strip figure { margin: 0; flex: 0 0 5.6em; }
+.strip figure a { display: block; line-height: 0; }
+.strip img { width: 100%; height: auto; display: block; image-rendering: pixelated;
+             border: 1px solid var(--pico-muted-border-color, #ddd); }
+.strip figcaption { font-size: 0.68em; text-align: center; line-height: 1.2;
+                    font-family: var(--pico-font-family-monospace); white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; }
 
 table.tri { width: 100%; border-collapse: collapse; table-layout: fixed; }
 table.tri td { padding: 0; border: 1px solid var(--pico-muted-border-color, #ddd);
@@ -44,14 +52,31 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     {{ grid.elements | length }} element{{ '' if grid.elements | length == 1 else 's' }} ·
     {{ grid.cells | length }} product{{ '' if grid.cells | length == 1 else 's' }} rendered ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }} folded in
-    {%- if index.n_freq %} · {{ index.n_freq }} channels{% endif %} ·
+    {%- if index.n_freq %} · {{ index.n_freq }} channels{% endif %}
+    {%- if overview %} · <a href="/files/{{ root }}/{{ acq }}/matrix">element × element matrix</a>{% endif %} ·
+    {%- if strips %} <a href="?layout=triangle">as a triangle</a> ·{% elif overview %} <a href="?layout=strips">as strips</a> ·{% endif %}
     <a href="/files">back to data files</a>
     <br>
     Frequency across, time down; a thumbnail is one row per source file.
     Click a cell for the full-resolution image with axes.
 </p>
 
-{% if not grid.elements %}
+{% if strips %}
+{%- for strip in strips %}
+<h3>{{ strip.title }} <small>({{ strip.cells | length }})</small></h3>
+<div class="strip">
+    {%- for cell in strip.cells %}
+    <figure>
+        <a href="{{ cell.view }}" title="{{ cell.title }}">
+            <img src="{{ cell.src }}" loading="lazy" decoding="async" alt="{{ cell.title }}"
+                 onerror="this.style.visibility='hidden'">
+        </a>
+        <figcaption>{{ cell.label }}</figcaption>
+    </figure>
+    {%- endfor %}
+</div>
+{%- endfor %}
+{% elif not grid.elements %}
 <p>Nothing rendered for this acquisition yet.</p>
 {% else %}
 <table class="tri">

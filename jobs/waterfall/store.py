@@ -9,8 +9,15 @@ Layout, mirroring the acquisition it describes::
         times.bin           int64 per scanline, appended
         counts.npy          (n_prod, 256) index histogram, for the equalization
         thumbs.dat          (n_files, n_prod, n_bins) uint8, appended
+        coarse.dat          (n_files, n_prod_file, n_chunk) uint8: every product,
+                            mean |V| per chunk, appended       } the overview,
+        matrix.dat          (n_files, n_band, n_el, n_el)      } one row per file
+        coarse_times.bin    int64 per overview row             } (reduce.OverviewSpec)
+        coarse_freq.npy     (n_chunk,) column centres, coarse_scale.npy (n_prod_file, 2)
+        palette.bin         the 256 x 3 palette the overview is drawn with
         e0000/wf_e0000xe0000.png
               th_e0000xe0000.png
+              co_e0000.png  the element's coherence, one scanline per file
 
 Every product is one PNG that *grows*: kotekan's files land atomically and
 never change, so a new file is appended as scanlines and nothing already
@@ -42,7 +49,9 @@ import numpy as np
 import wfpng
 from choco.acqtree import shard_name
 from choco.jobclient import atomic_output
-from reduce import Axes, Selection, everything, selection_from_index, thumb_rows
+from reduce import (Axes, FileOverview, OverviewSpec, Selection, everything, overview_spec,
+                    quantize_log, quantize_unit, scale_from_sample, selection_from_index,
+                    thumb_rows)
 
 log = logging.getLogger("waterfall.store")
 
@@ -91,6 +100,7 @@ class AcquisitionStore:
         self.source_path = source_path
         self.index: dict = {}
         self._counts: np.ndarray | None = None
+        self._coarse_scale: tuple | None = None
         self._load()
 
     # --- index ----------------------------------------------------------
@@ -215,7 +225,7 @@ class AcquisitionStore:
     # --- creation -------------------------------------------------------
 
     def start(self, axes: Axes, lo: np.ndarray, hi: np.ndarray,
-              sel: Selection | None = None) -> None:
+              sel: Selection | None = None, overview: OverviewSpec | None = None) -> None:
         """Record the acquisition's shape and its frozen value scale.
 
         The scale is fixed here for the acquisition's whole life: it is
@@ -226,7 +236,10 @@ class AcquisitionStore:
         and is recorded with the same permanence: the products by their
         inputs, the channels by their indices (``freq_idx``, only when
         not every channel), so later files are matched to it by name and
-        never by position.
+        never by position.  ``overview`` adds the three cubes of
+        :class:`reduce.OverviewSpec` (recorded in the index as
+        ``overview``; their column frequencies in ``coarse_freq.npy``,
+        the palette the web renders them with in ``palette.bin``).
         """
         if sel is None:
             sel = everything(axes)
@@ -269,6 +282,19 @@ class AcquisitionStore:
         self.index["n_freq_file"] = int(axes.n_freq)
         if not sel.is_all_channels(axes):
             self.index["freq_idx"] = [int(i) for i in sel.freq_idx]
+        if overview is not None:
+            self.index["overview"] = overview.to_index()
+            self.index["coarse_bytes"] = 0
+            self.index["matrix_bytes"] = 0
+            self.index["coarse_times_bytes"] = 0
+            self.index["coarse_rows"] = 0
+            # one image per element, a scanline per file (reduce.OverviewSpec)
+            self.index["elements"] = [
+                {"e": e, "name": shard_name(e), "width": 0, "rows": 0, "nbytes": 0, "adler": 0}
+                for e in range(overview.n_el)]
+            np.save(self.path / "coarse_freq.npy", np.asarray(overview.chunk_freq, np.float64))
+            _atomic_write(self.path / "palette.bin", wfpng.palette().astype(np.uint8).tobytes())
+        self._coarse_scale = None
         self._counts = np.zeros((sel.n_prod, 256), np.int64)
         self._save_index()
         try:
@@ -302,6 +328,42 @@ class AcquisitionStore:
         file cannot join this acquisition (:func:`selection_from_index`)."""
         return selection_from_index(axes, self.index)
 
+    @property
+    def has_overview(self) -> bool:
+        return isinstance(self.index.get("overview"), dict)
+
+    def overview_spec(self, axes: Axes, sel: Selection) -> OverviewSpec | None:
+        """The acquisition's overview applied to a file, or None when it
+        keeps none.  The columns are rebuilt from the selection and must
+        number what the index recorded."""
+        rec = self.index.get("overview")
+        if not isinstance(rec, dict):
+            return None
+        spec = overview_spec(axes, sel, edges=rec.get("edges"))
+        if spec.n_chunk != int(rec.get("chunks") or 0) or spec.n_el != int(rec.get("n_el") or 0):
+            raise ValueError(f"the overview has {rec.get('chunks')} columns for "
+                             f"{rec.get('n_el')} elements, this file gives {spec.n_chunk} "
+                             f"for {spec.n_el}")
+        return spec
+
+    def coarse_scale(self, coarse: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """The per-product ``(lo, hi)`` the coarse cube is quantized with:
+        frozen from the first file's chunk means (``coarse_scale.npy``),
+        like the images' scale from their first file."""
+        if self._coarse_scale is not None:
+            return self._coarse_scale
+        f = self.path / "coarse_scale.npy"
+        if f.exists():
+            arr = np.load(f)
+            self._coarse_scale = (arr[:, 0].astype(float), arr[:, 1].astype(float))
+            return self._coarse_scale
+        if coarse is None:
+            raise ValueError("no coarse scale yet and no file to set it from")
+        lo, hi = scale_from_sample(coarse, min_values=2)     # one value per chunk, few in a test
+        _atomic_write(f, _npy_bytes(np.stack([lo, hi], axis=1).astype(np.float32)))
+        self._coarse_scale = (lo, hi)
+        return self._coarse_scale
+
     def matches(self, axes: Axes) -> str | None:
         """Why ``axes`` cannot be appended to this store, or None."""
         _, why = self.selection(axes)
@@ -317,6 +379,9 @@ class AcquisitionStore:
 
     def thumb_path(self, p: int) -> Path:
         return self.product_dir(p) / f"th_{self.index['products'][p]['name']}.png"
+
+    def coherence_path(self, e: int) -> Path:
+        return self.path / shard_name(e) / f"co_{shard_name(e)}.png"
 
     # --- the append -----------------------------------------------------
 
@@ -336,18 +401,26 @@ class AcquisitionStore:
         return self._counts
 
     def add_file(self, axes: Axes, indices: np.ndarray,
-                 level: int = wfpng.DEFAULT_LEVEL) -> None:
+                 level: int = wfpng.DEFAULT_LEVEL,
+                 overview: FileOverview | None = None) -> None:
         """Fold one source file in.
 
         Order matters and is the crash-safety contract: every append
         happens first, from its own recorded offset, and ``index.json``
         is written last.  Until that final write nothing has been
-        committed, and re-running redoes exactly the same work.
+        committed, and re-running redoes exactly the same work.  An
+        acquisition with an overview must be given the file's
+        (:class:`reduce.FileOverview`): its cubes grow one row per file,
+        in step with the images.
         """
         prods = self.index["products"]
         n_prod = len(prods)
         if indices.shape[0] != n_prod:
             raise ValueError(f"{indices.shape[0]} products, index has {n_prod}")
+        if self.has_overview and overview is None:
+            raise ValueError("this acquisition keeps an overview; the file's is missing")
+        if overview is not None and not self.has_overview:
+            overview = None                         # started without one: keep none
 
         pal_default = wfpng.palette()
         new_state = []
@@ -375,11 +448,50 @@ class AcquisitionStore:
 
         _atomic_write(self.path / "counts.npy", _npy_bytes(counts))
 
+        cube_bytes = {}
+        if overview is not None:
+            rec = self.index["overview"]
+            n_chunk, n_el = int(rec["chunks"]), int(rec["n_el"])
+            n_band = max(1, len(rec["edges"]) - 1)
+            if (overview.coarse.shape != (int(self.index["n_prod_file"]), n_chunk)
+                    or overview.coherence.shape != (n_el, n_chunk)
+                    or overview.matrix.shape != (n_band, n_el, n_el)
+                    or len(self.index.get("elements") or []) != n_el):
+                raise ValueError("the file's overview does not have the acquisition's shape")
+            lo, hi = self.coarse_scale(overview.coarse)
+            cube_bytes["coarse_bytes"] = _append_at(
+                self.path / "coarse.dat", int(self.index["coarse_bytes"]),
+                quantize_log(overview.coarse, lo, hi).tobytes())
+            coh = quantize_unit(overview.coherence)                  # (n_el, n_chunk)
+            elements = self.index["elements"]
+            coh_state = []
+            for e in range(n_el):
+                rec = elements[e]
+                path = self.coherence_path(e)
+                if rec["rows"] == 0:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    st = wfpng.create(path, coh[e:e + 1], pal_default, level=level)
+                else:
+                    st = wfpng.append(path, coh[e:e + 1], wfpng.WfState.from_dict(rec),
+                                      level=level)
+                coh_state.append(st)
+            cube_bytes["matrix_bytes"] = _append_at(
+                self.path / "matrix.dat", int(self.index["matrix_bytes"]),
+                quantize_unit(overview.matrix).tobytes())
+            cube_bytes["coarse_times_bytes"] = _append_at(
+                self.path / "coarse_times.bin", int(self.index["coarse_times_bytes"]),
+                np.array([int(times[0]) if times.size else 0], np.int64).tobytes())
+
         for p, st in enumerate(new_state):
             prods[p].update(st.to_dict())
         self.index["files"] = sorted(self.processed | {int(axes.file_idx)})
         self.index["thumbs_bytes"] = thumbs_bytes
         self.index["times_bytes"] = times_bytes
+        if cube_bytes:
+            self.index.update(cube_bytes)
+            self.index["coarse_rows"] = int(self.index.get("coarse_rows", 0)) + 1
+            for e, st in enumerate(coh_state):
+                self.index["elements"][e].update(st.to_dict())
         self._save_index()                      # <- the commit
 
     # --- display --------------------------------------------------------

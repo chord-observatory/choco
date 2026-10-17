@@ -283,8 +283,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   opens whole aligned chunks, as few as it needs, never a channel or
   product slice across the band: bffs `blocks`, acqnotes
   `extract.chunk_blocks`, the mapmaker's `subband_read_channels`, the
-  waterfall's `freq_stride` and `products` (a selection fixed per
-  acquisition in its index) ([jobs.md](docs/design/jobs.md),
+  waterfall's `freq_stride`, `file_stride` and `products` (a selection
+  fixed per acquisition in its index; its overview cubes come from the
+  same pass and the web renders their slices with the stdlib, never
+  numpy) ([jobs.md](docs/design/jobs.md),
   [waterfall.md](docs/design/waterfall.md)).  bffs also takes validity
   and weight from `frames_added`, not `vis_weight`, and caches the
   power-outlier verdict per file (`power_outlier.json`: path, mtime,

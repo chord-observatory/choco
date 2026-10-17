@@ -356,3 +356,71 @@ def test_selection_from_index_matches_by_inputs(vis_file):
     assert "products" in why
     _, why = R.selection_from_index(ax, {**index, "products": [{"name": "x", "a": 7, "b": 7}]})
     assert "not in this file" in why
+
+
+# --- the overview ----------------------------------------------------------
+
+def test_overview_spec_columns_and_bands(vis_file):
+    path, _ = vis_file
+    ax = R.read_axes(path)                            # 64 channels, chunk rows 16
+    sel, _ = R.select(ax, None, freq_stride=2)        # channels 0..15 and 32..47
+    spec = R.overview_spec(ax, sel, 2)
+    assert spec.n_chunk == 2 and spec.chunk_starts.tolist() == [0, 16]
+    assert np.allclose(spec.chunk_freq, [ax.freq_mhz[0:16].mean(), ax.freq_mhz[32:48].mean()])
+    assert len(spec.edges) == 3 and spec.edges[0] == ax.freq_mhz.min() and spec.edges[-1] == ax.freq_mhz.max()
+    assert spec.band_of(spec.edges[0]) == 0 and spec.band_of(spec.edges[-1]) == 1
+    assert spec.band_of(1.0) is None
+    assert spec.is_triangle and spec.to_index()["prod_order"] == "triangle"
+    full = R.overview_spec(ax, R.everything(ax), 8)
+    assert full.n_chunk == 4 and full.n_band == 8
+    a, b = R.triangle_order(4)
+    assert list(zip(a, b)) == [(0, 0), (0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3), (2, 2), (2, 3), (3, 3)]
+    # the recorded edges win over a band count
+    again = R.overview_spec(ax, sel, 8, edges=spec.edges)
+    assert again.edges == spec.edges and again.n_band == 2
+
+
+def test_fold_file_overview_cubes(vis_file):
+    import h5py
+    path, _ = vis_file
+    ax = R.read_axes(path)
+    sel, _ = R.select(ax, {"autos": True})
+    spec = R.overview_spec(ax, sel, 2)
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(path, sel))
+    out, ov = R.fold_file(path, lo, hi, sel=sel, axes=ax, overview=spec)
+    np.testing.assert_array_equal(out, R.quantize_file(path, lo, hi, sel=sel, axes=ax))
+    assert ov.coarse.shape == (10, 4) and ov.coherence.shape == (4, 4) and ov.matrix.shape == (2, 4, 4)
+    with h5py.File(path) as f:
+        mag = np.abs(f["vis"][()])
+        live = (mag > 0) & (f["frames_added"][()][:, None, :] > 0)
+    # coarse: the mean |V| over a chunk's live cells, per product
+    for k in range(4):
+        c = slice(16 * k, 16 * k + 16)
+        m = np.where(live[c], mag[c], 0).sum(axis=(0, 2)) / live[c].sum(axis=(0, 2))
+        np.testing.assert_allclose(ov.coarse[:, k], m, rtol=1e-5)
+    # coherence of element 0 in chunk 0: its partners' |V_0b| / sqrt(V_00 V_bb), averaged
+    auto = {0: 0, 1: 4, 2: 7, 3: 9}
+    vals = []
+    for p, b in ((1, 1), (2, 2), (3, 3)):
+        with np.errstate(invalid="ignore", divide="ignore"):
+            n = mag[0:16, p, :] / np.sqrt(mag[0:16, 0, :] * mag[0:16, auto[b], :])
+        vals.append(n[live[0:16, p, :]])
+    assert ov.coherence[0, 0] == pytest.approx(np.concatenate(vals).mean(), rel=1e-4)
+    assert np.nanmin(ov.coherence) >= 0 and np.nanmax(ov.coherence) <= 1.0 + 1e-6
+    # the matrix: band means, normalized by the autos' band means, symmetric, unit diagonal
+    band0 = slice(0, 32)                              # chunks 0 and 1 (centres below the band edge)
+    def band_mean(p):
+        return np.where(live[band0, p], mag[band0, p], 0).sum() / live[band0, p].sum()
+    expect = band_mean(1) / np.sqrt(band_mean(0) * band_mean(4))
+    assert ov.matrix[0, 0, 1] == pytest.approx(expect, rel=1e-4) and ov.matrix[0, 1, 0] == ov.matrix[0, 0, 1]
+    assert np.allclose(np.diagonal(ov.matrix[0]), 1.0)
+    assert np.allclose(ov.matrix[1], ov.matrix[1].T, equal_nan=True)
+
+
+def test_cube_quantizers():
+    # coherence: log scale from the floor (1e-3 -> 1) to 1 (-> 255); nothing -> 0
+    np.testing.assert_array_equal(R.quantize_unit(np.array([[1e-3, 1e-2, 0.1, 1.0, np.nan, 2.0, 0.0, 1e-5]])),
+                                  [[1, 86, 170, 255, 0, 255, 0, 1]])
+    lo, hi = np.array([1.0, np.nan]), np.array([100.0, np.nan])
+    q = R.quantize_log(np.array([[1.0, 10.0, 100.0, 0.0, np.nan], [5.0] * 5]), lo, hi)
+    assert q.tolist() == [[1, 128, 255, 0, 0], [0] * 5]

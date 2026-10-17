@@ -27,7 +27,10 @@ from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
 from . import dishlabels
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
-from .waterfalls import (open_stream, parse_elements, rendered_index, triangle as wf_triangle,
+from .waterfalls import (coarse_image as wf_coarse_image, coarse_view_context as wf_coarse_view_context,
+                         matrix_context as wf_matrix_context, matrix_image as wf_matrix_image,
+                         open_stream, overview_of, parse_elements, rendered_index,
+                         strips as wf_strips, triangle as wf_triangle,
                          view_context as wf_view_context)
 from .jobdetail import (JOB_DETAILS, MAPMAKER_IMAGES, file_mtime, float_or_none, fmt_utc,
                         job_manual_path, same_path)
@@ -1261,12 +1264,80 @@ def waterfall_triangle(root, acq):
     if index is None:
         abort(404)
     grid = wf_triangle(index, parse_elements(request.args.get("elements")))
+    # a selected acquisition reads as strips; the whole triangle as a triangle
+    layout = request.args.get("layout")
+    strips = None if layout == "triangle" else wf_strips(index)
+    if layout == "strips" and strips is None:
+        strips = wf_strips({**index, "n_elements": 0}) or None
     return render_template(
         "waterfall_triangle.html",
-        root=root, acq=acq, index=index, grid=grid,
+        root=root, acq=acq, index=index, grid=grid, strips=strips,
+        overview=overview_of(index) is not None,
         n_files=len(index.get("files") or []),
         elements_arg=request.args.get("elements") or "",
     )
+
+
+@bp.route("/files/<root>/<acq>/matrix")
+@login_required
+def waterfall_matrix(root, acq):
+    """The element x element coherence matrix, one frame per source file
+    (``waterfalls.matrix_context``)."""
+    store = _component("waterfall_store")
+    if store is None:
+        abort(404)
+    context = wf_matrix_context(store, root, acq, request.args.get("band"), request.args.get("row"),
+                                tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
+    if context is None:
+        abort(404)
+    return render_template("waterfall_matrix.html", **context)
+
+
+def _png_response(png: bytes | None) -> Response:
+    if png is None:
+        abort(404)
+    resp = Response(png, mimetype="image/png")
+    resp.cache_control.max_age = 30
+    return resp
+
+
+@bp.route("/waterfall/<root>/<acq>/matrix/<band>/<row>.png")
+@login_required
+def waterfall_matrix_image(root, acq, band, row):
+    """One frame of the matrix, rendered from ``matrix.dat`` on request.
+    Band and row are parsed as integers after the login check and
+    bounded by the index's record; the cube is read off the hub and
+    encoded with the stdlib."""
+    store = _component("waterfall_store")
+    if store is None:
+        abort(404)
+    return _png_response(wf_matrix_image(store, root, acq, band, row))
+
+
+@bp.route("/waterfall/<root>/<acq>/coarse/<name>")
+@login_required
+def waterfall_coarse_image(root, acq, name):
+    """Any product of the file as a coarse waterfall, rendered from
+    ``coarse.dat`` on request.  The name is matched like an image name
+    and resolved to a product through the index's recorded order."""
+    store = _component("waterfall_store")
+    if store is None:
+        abort(404)
+    return _png_response(wf_coarse_image(store, root, acq, name))
+
+
+@bp.route("/waterfall/<root>/<acq>/coarse-view/<name>")
+@login_required
+def waterfall_coarse_view(root, acq, name):
+    """A coarse waterfall with its axes (``waterfalls.coarse_view_context``)."""
+    store = _component("waterfall_store")
+    if store is None:
+        abort(404)
+    context = wf_coarse_view_context(store, root, acq, name,
+                                     tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
+    if context is None:
+        abort(404)
+    return render_template("waterfall_view.html", **context)
 
 
 @bp.route("/waterfall/<root>/<acq>/<shard>/<name>")

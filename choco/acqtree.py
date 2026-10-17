@@ -36,6 +36,8 @@ _VIS_INDEX_RE = re.compile(r"^vis_0*(\d+)_")
 #: side matches every URL component against them.
 SHARD_RE = re.compile(r"^e\d{4}$")
 IMAGE_RE = re.compile(r"^(?:wf|th)_e(\d{4})xe(\d{4})\.png$")
+#: One element's coherence image (the overview; one scanline per file).
+COHERENCE_RE = re.compile(r"^co_e(\d{4})\.png$")
 
 
 def file_index(name: str) -> int | None:

@@ -50,6 +50,24 @@ the index records it (products by their inputs, channels by index), so
 later files are matched to it by name and a config change shapes only
 the next acquisition.
 
+**The overview sees every product.** The pass opens each chunk whole, so
+every product is in memory for nothing, and three small things are kept
+from it (`reduce.OverviewSpec`): per product the mean |V| over each
+chunk (`coarse.dat`, one row per file; any product renders on request as
+a waterfall at chunk resolution), per element the mean over its partners
+of |V_ab| / √(V_aa V_bb) per chunk (`co_eNNNN.png`, a scanline per file),
+and per band the same coherence as an element × element matrix, one
+frame per file (`matrix.dat`; the matrix page steps through them and a
+click on a cell opens that product).  Coherence is an amplitude mean,
+not a coherent sum — the sky rotates through the fringes of a long
+baseline inside one file — and is drawn on a log scale from 1e-3 (one
+chunk's noise floor) to 1.  The web renders cube slices with the stdlib;
+no numpy reaches the web process.
+
+**Time is thinned in whole files.** A chunk spans every bin of its file,
+so skipping bins saves nothing; `file_stride` folds one file in N and
+halves the link at 2.
+
 **Rows are time.** Frequency-major compresses ~10% better and cannot be
 appended to at all. Appending costs 2.5% (crosses) to 15% (autos) over an
 ideal monolithic encode, and still beats one file per source file.
@@ -80,7 +98,10 @@ stays on-scale.
     times.bin       int64 per scanline, appended
     counts.npy      (n_prod, 256) index histogram, drives the equalization
     thumbs.dat      (n_files, n_prod, n_bins) uint8, appended
-    e0000/wf_e0000xe0000.png    th_e0000xe0000.png
+    coarse.dat      (n_files, n_prod_file, n_chunk) uint8, the overview, appended
+    matrix.dat      (n_files, n_band, n_el, n_el) uint8, appended
+    coarse_times.bin, coarse_freq.npy, coarse_scale.npy, palette.bin
+    e0000/wf_e0000xe0000.png    th_e0000xe0000.png    co_e0000.png
 ```
 
 Element indices are zero-padded to four digits and sharded by the first
@@ -121,9 +142,11 @@ in four):
 
 | | |
 |---|---|
-| read + quantize per file | 96 chunks, ~2 GB on the wire, 40–60 s |
-| index buffer | 16 MB (254 × 40 × 1536) |
-| peak RSS | ~0.4 GB |
+| one chunk in four, no overview | 96 chunks, ~2 GB on the wire, 40–60 s |
+| every chunk with the overview | 385 chunks, ~8 GB on the wire, 171 s + 21 s for the scale |
+| index buffer | 62 MB (254 × 40 × 6145) |
+| the overview per file | 3.2 MB coarse + 128 KB matrix + 128 scanlines |
+| peak RSS | ~0.5 GB |
 
 `max_files_per_run` bounds the work, not the size.
 
