@@ -302,3 +302,57 @@ def test_thumb_rows_clamp_bins_to_the_band(vis_file):
     lo, hi = R.scale_from_sample(R.sample_magnitudes(path))
     q = R.quantize_file(path, lo, hi)
     assert R.thumb_rows(q, n_bins=10_000).shape == (len(pairs), 64)
+
+
+# --- the selection ---------------------------------------------------------
+
+def test_select_by_reference_and_pairs(vis_file):
+    path, _ = vis_file
+    ax = R.read_axes(path)                      # elements A0X, A1X, A0Y, A1Y
+    assert ax.labels == ["A0X", "A1X", "A0Y", "A1Y"] and ax.chunk_rows == 16
+    sel, warns = R.select(ax, {"autos": True, "reference": ["A0X"], "pairs": [["A0Y", "A1Y"]]})
+    assert warns == []
+    # the file's own order; the reference keeps same-polarization crosses only
+    assert list(zip(sel.input_a, sel.input_b)) == [(0, 0), (0, 1), (1, 1), (2, 2), (2, 3), (3, 3)]
+    assert sel.n_freq == 64 and sel.product_names()[1] == "e0000xe0001"
+    sel, warns = R.select(ax, {"autos": False, "reference": ["Z9X"], "pairs": [["A0X", "A0X"], ["A0X"]]})
+    assert sel.n_prod == 1 and list(zip(sel.input_a, sel.input_b)) == [(0, 0)]
+    assert any("Z9X: not an element" in w for w in warns) and any("[label, label]" in w for w in warns)
+    sel, warns = R.select(ax, None)
+    assert sel.n_prod == 10 and sel.is_all_products(ax) and warns == []
+
+
+def test_strided_channels_keep_one_chunk_in_n(vis_file):
+    path, _ = vis_file
+    ax = R.read_axes(path)
+    sel, _ = R.select(ax, {"autos": True}, freq_stride=2)
+    assert sel.freq_idx.tolist() == list(range(0, 16)) + list(range(32, 48))
+    assert np.allclose(sel.freq_mhz, ax.freq_mhz[sel.freq_idx])
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(path))
+    full = R.quantize_file(path, lo, hi)
+    part = R.quantize_file(path, lo[sel.prod_idx], hi[sel.prod_idx], sel=sel, axes=ax)
+    assert part.shape == (4, 6, 32)
+    # the same pixels the full pass makes, for the selected products and channels
+    np.testing.assert_array_equal(part, full[sel.prod_idx][:, :, sel.freq_idx])
+    # the scale sample covers only the selected chunks and products
+    sample = R.sample_magnitudes(path, sel, block_stride=1)
+    assert sample.shape == (4, 32 * 6)
+    assert R.strided_channels(ax, 1).tolist() == list(range(64))
+
+
+def test_selection_from_index_matches_by_inputs(vis_file):
+    path, _ = vis_file
+    ax = R.read_axes(path)
+    index = {"n_freq": 32, "n_prod": 2, "n_prod_file": 10, "n_freq_file": 64,
+             "freq_idx": list(range(16)) + list(range(32, 48)),
+             "products": [{"name": "e0001xe0001", "a": 1, "b": 1}, {"name": "e0002xe0003", "a": 2, "b": 3}]}
+    sel, why = R.selection_from_index(ax, index)
+    assert why is None and sel.prod_idx.tolist() == [4, 8] and sel.n_freq == 32
+    # an index from before the selection existed: everything, by the file's counts
+    sel, why = R.selection_from_index(ax, {"n_freq": 64, "n_prod": 10,
+                                           "products": [{"name": "x", "a": a, "b": b} for a in range(4) for b in range(a, 4)]})
+    assert why is None and sel.is_all_products(ax) and sel.is_all_channels(ax)
+    _, why = R.selection_from_index(ax, {**index, "n_prod_file": 6})
+    assert "products" in why
+    _, why = R.selection_from_index(ax, {**index, "products": [{"name": "x", "a": 7, "b": 7}]})
+    assert "not in this file" in why

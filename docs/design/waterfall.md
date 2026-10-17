@@ -236,3 +236,30 @@ nothing for a sibling cgroup such as ``user.slice``.  On choco's side the
 parsed-index cache is **LRU-bounded** (``INDEX_CACHE_MAX``) for the mirror-
 image reason: the store lives as long as the process, and one index is ~700 kB
 of JSON at 100 elements.
+
+**A selection per acquisition (2026-10-17).**  When the subset grew to all
+64 dishes the files became 12 GB per 400 s — 128 elements, 8256 products,
+40 bins — and ``vis`` chunked ``(16, 8256, 40)``, 42 MB a chunk.  The
+renderer's one pass over every chunk was 16 GB a file over a link that
+delivers 36–59 MB/s, its ``(n_prod, n_time, n_freq)`` buffer 2 GB and the
+scale sample another gigabyte, so the first run sat for half an hour at
+the unit's 3 GB ceiling, 91 % stalled in memory reclaim, and would have
+needed more than the cadence even unthrottled: 100 s of deflate for 2 GB
+of pixels and 8256 appends over NFS per file.  Two things changed, both
+recorded in the index so an acquisition keeps them for life.  ``products``
+names what a new acquisition renders (``reduce.select``): the autos, every
+same-polarization cross with the reference elements (A01X, A01Y: each
+dish's fringe against one reference), named pairs — 254 images where
+there were 8256 — recorded by their inputs so later files join by name.
+``freq_stride`` keeps one chunk of channels in N (``reduce.strided_channels``,
+recorded as ``freq_idx``): a chunk is the unit of cost, so one in four is a
+quarter of the read, and every column is still a real channel, which is
+why the stride is in chunks and not an average.  A file is matched to a
+started acquisition by its shape (``n_prod_file`` / ``n_freq_file``) and
+then by product inputs and channel indices (``reduce.selection_from_index``);
+an index from before carries every product and channel and reads as such.
+An index with nothing folded in yet may be started again under the
+current config, since no pixel depends on it — the first 128-element
+acquisition had been indexed with every product before any file landed.
+One file is now 96 chunks, about 2 GB on the wire and under a minute, in
+a 16 MB buffer.

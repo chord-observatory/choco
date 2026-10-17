@@ -307,3 +307,29 @@ def test_bin_fixed_reports_a_fully_missing_group():
 
 def test_bin_fixed_on_too_few_rows_is_empty():
     assert S.bin_fixed(np.zeros((2, 4), np.uint8), 3).shape == (0, 4)
+
+
+# --- the selection ---------------------------------------------------------
+
+def test_start_with_a_selection_records_it(tmp_path):
+    src = build(tmp_path / "v.h5")
+    axes = R.read_axes(src)
+    sel, _ = R.select(axes, {"autos": True, "reference": ["A0X"]}, freq_stride=2)
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(src, sel))
+    st = S.AcquisitionStore(tmp_path / "o", "acq_x", "subset")
+    st.start(axes, lo, hi, sel)
+    idx = json.loads((tmp_path / "o" / "index.json").read_text())
+    assert idx["n_prod"] == 5 and idx["n_freq"] == 32
+    assert idx["n_prod_file"] == 10 and idx["n_freq_file"] == 64
+    assert idx["freq_idx"] == sel.freq_idx.tolist() and idx["thumb_bins"] == 32
+    assert [(p["a"], p["b"]) for p in idx["products"]] == [(0, 0), (0, 1), (1, 1), (2, 2), (3, 3)]
+    assert np.allclose(np.load(tmp_path / "o" / "freq.npy"), axes.freq_mhz[sel.freq_idx])
+    # a later file is matched by inputs and channel indices, never by position
+    got, why = st.selection(R.read_axes(build(tmp_path / "v2.h5", idx=5)))
+    assert why is None and got.prod_idx.tolist() == sel.prod_idx.tolist()
+    assert got.freq_idx.tolist() == sel.freq_idx.tolist()
+    assert not st.committed
+    st.add_file(axes, R.quantize_file(src, lo, hi, sel=sel))
+    assert st.committed and st.n_rows == 6
+    assert "products" in st.matches(R.read_axes(build(tmp_path / "v3.h5", n_elem=3)))
+    assert "widened" in st.matches(R.read_axes(build(tmp_path / "v4.h5", n_freq=32)))

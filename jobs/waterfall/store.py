@@ -42,7 +42,7 @@ import numpy as np
 import wfpng
 from choco.acqtree import shard_name
 from choco.jobclient import atomic_output
-from reduce import Axes, thumb_rows
+from reduce import Axes, Selection, everything, selection_from_index, thumb_rows
 
 log = logging.getLogger("waterfall.store")
 
@@ -123,6 +123,13 @@ class AcquisitionStore:
     def processed(self) -> set:
         """Source-file indices already folded in."""
         return set(self.index.get("files", []))
+
+    @property
+    def committed(self) -> bool:
+        """Whether any file has been folded in.  Until one has, the index
+        records a shape and a scale and no pixel depends on them, so an
+        acquisition may be started again under the current config."""
+        return bool(self.index.get("files"))
 
     @property
     def prestart_path(self) -> Path:
@@ -207,24 +214,32 @@ class AcquisitionStore:
 
     # --- creation -------------------------------------------------------
 
-    def start(self, axes: Axes, lo: np.ndarray, hi: np.ndarray) -> None:
+    def start(self, axes: Axes, lo: np.ndarray, hi: np.ndarray,
+              sel: Selection | None = None) -> None:
         """Record the acquisition's shape and its frozen value scale.
 
         The scale is fixed here for the acquisition's whole life: it is
         baked into every pixel and there is no way to revise it without
         rewriting every image.  What stays adjustable is the *display*,
-        which lives in the palette.
+        which lives in the palette.  ``sel`` says which products and
+        channels of the file are rendered (every one of them by default)
+        and is recorded with the same permanence: the products by their
+        inputs, the channels by their indices (``freq_idx``, only when
+        not every channel), so later files are matched to it by name and
+        never by position.
         """
+        if sel is None:
+            sel = everything(axes)
         self.path.mkdir(parents=True, exist_ok=True)
-        np.save(self.path / "freq.npy", axes.freq_mhz)
-        names = axes.product_names()
+        np.save(self.path / "freq.npy", sel.freq_mhz)
+        names = sel.product_names()
         self.index = {
             "version": INDEX_VERSION,
             "acquisition": self.acq_name,
             "source_root": self.source_root,
             "created": time.time(),
-            "n_freq": int(axes.n_freq),
-            "n_prod": int(axes.n_prod),
+            "n_freq": int(sel.n_freq),
+            "n_prod": int(sel.n_prod),
             "n_elements": int(axes.n_elements),
             # the acquisition this was rendered from, so choco can match
             # a scan root to its images without guessing from basenames
@@ -232,7 +247,7 @@ class AcquisitionStore:
             # the *effective* bin count: thumb_rows clamps to the band
             # width, and the stride recorded here has to match what was
             # actually written or thumbs.dat reshapes wrong.
-            "thumb_bins": min(THUMB_BINS, int(axes.n_freq)),
+            "thumb_bins": min(THUMB_BINS, int(sel.n_freq)),
             "labels": list(axes.labels),
             "files": [],
             "skipped": self._prestart_skipped(),
@@ -242,14 +257,19 @@ class AcquisitionStore:
             "thumbs_bytes": 0,
             "products": [
                 {"name": names[p],
-                 "a": int(axes.input_a[p]), "b": int(axes.input_b[p]),
+                 "a": int(sel.input_a[p]), "b": int(sel.input_b[p]),
                  "lo": (float(lo[p]) if np.isfinite(lo[p]) else None),
                  "hi": (float(hi[p]) if np.isfinite(hi[p]) else None),
                  "width": 0, "rows": 0, "nbytes": 0, "adler": 0}
-                for p in range(axes.n_prod)
+                for p in range(sel.n_prod)
             ],
         }
-        self._counts = np.zeros((axes.n_prod, 256), np.int64)
+        # the file shape this acquisition accepts; the selection within it
+        self.index["n_prod_file"] = int(axes.n_prod)
+        self.index["n_freq_file"] = int(axes.n_freq)
+        if not sel.is_all_channels(axes):
+            self.index["freq_idx"] = [int(i) for i in sel.freq_idx]
+        self._counts = np.zeros((sel.n_prod, 256), np.int64)
         self._save_index()
         try:
             self.prestart_path.unlink()
@@ -277,15 +297,15 @@ class AcquisitionStore:
         hi = np.array([np.nan if p["hi"] is None else p["hi"] for p in prods])
         return lo, hi
 
+    def selection(self, axes: Axes) -> tuple[Selection | None, str | None]:
+        """The recorded selection applied to a file's axes, or why the
+        file cannot join this acquisition (:func:`selection_from_index`)."""
+        return selection_from_index(axes, self.index)
+
     def matches(self, axes: Axes) -> str | None:
         """Why ``axes`` cannot be appended to this store, or None."""
-        if int(axes.n_freq) != self.index["n_freq"]:
-            return (f"frequency axis is {axes.n_freq}, acquisition is "
-                    f"{self.index['n_freq']} — a PNG cannot be widened")
-        if int(axes.n_prod) != self.index["n_prod"]:
-            return (f"{axes.n_prod} products, acquisition has "
-                    f"{self.index['n_prod']}")
-        return None
+        _, why = self.selection(axes)
+        return why
 
     # --- paths ----------------------------------------------------------
 

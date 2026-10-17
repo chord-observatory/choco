@@ -487,7 +487,8 @@ class TestEmptyFirstFiles:
         cfg = W.load_config(write_cfg(tmp_path, root))
         sampled = []
         real = W.R.sample_magnitudes
-        monkeypatch.setattr(W.R, "sample_magnitudes", lambda p: sampled.append(os.path.basename(p)) or real(p))
+        monkeypatch.setattr(W.R, "sample_magnitudes",
+                            lambda p, *a, **k: sampled.append(os.path.basename(p)) or real(p, *a, **k))
 
         first = W.run(cfg)
         assert first["files_rendered"] == 0 and first["skipped"] == W.SCALE_TRIES
@@ -599,3 +600,75 @@ class TestBacklogIsCheap:
         W.run(cfg)
         rep = W.run(cfg)
         assert rep["files_rendered"] == 0 and rep["backlog"] == 0
+
+
+# --- what of a file is rendered ------------------------------------------
+
+class TestSelection:
+    """The products and channels an acquisition renders are fixed when it
+    starts and recorded in its index; the config shapes only new ones."""
+
+    def test_config_rule_shapes_a_new_acquisition(self, tree, tmp_path):
+        _, root = tree
+        cfg = W.load_config(write_cfg(tmp_path, root,
+                                      products={"autos": True, "reference": ["A0X"]}, freq_stride=2))
+        rep = W.run(cfg)
+        assert rep["files_rendered"] == 3 and rep["errors"] == []
+        for acq in ("acq_20260101_000000_000000000", "acq_20260202_000000_000000000"):
+            out = tmp_path / "wf" / "subset" / acq
+            idx = json.loads((out / "index.json").read_text())
+            assert idx["n_prod"] == 5 and idx["n_freq"] == 32
+            assert idx["n_prod_file"] == 10 and idx["n_freq_file"] == 64 and len(idx["freq_idx"]) == 32
+            assert sorted(p.name for p in out.glob("e*/wf_*.png")) == [
+                "wf_e0000xe0000.png", "wf_e0000xe0001.png", "wf_e0001xe0001.png",
+                "wf_e0002xe0002.png", "wf_e0003xe0003.png"]
+            assert len(np.load(out / "freq.npy")) == 32
+
+    def test_a_started_acquisition_keeps_its_set(self, tree, tmp_path):
+        _, root = tree
+        W.run(W.load_config(write_cfg(tmp_path, root)))                  # every product, every channel
+        cfg = W.load_config(write_cfg(tmp_path, root, products={"autos": True}, freq_stride=2))
+        add_source(root / "acq_20260202_000000_000000000", 201)
+        rep = W.run(cfg)
+        assert rep["files_rendered"] == 1 and rep["errors"] == []
+        idx = json.loads((tmp_path / "wf" / "subset" / "acq_20260202_000000_000000000" / "index.json").read_text())
+        assert idx["n_prod"] == 10 and idx["n_freq"] == 64 and "freq_idx" not in idx
+        assert idx["files"] == [200, 201]
+
+    def test_an_uncommitted_index_restarts_under_the_current_rule(self, tree, tmp_path):
+        """A run that died between start() and the first append left an
+        index no pixel depends on; the next run may change its mind."""
+        import reduce as R
+        import store as S
+        _, root = tree
+        acq = root / "acq_20260202_000000_000000000"
+        src = sorted(acq.glob("*.h5"))[0]
+        axes = R.read_axes(src)
+        lo, hi = R.scale_from_sample(R.sample_magnitudes(src))
+        st = S.AcquisitionStore(tmp_path / "wf" / "subset" / acq.name, acq.name, "subset")
+        st.start(axes, lo, hi)
+        assert st.started and not st.committed and st.index["n_prod"] == 10
+        cfg = W.load_config(write_cfg(tmp_path, root, products={"autos": True}))
+        assert W.run(cfg)["files_rendered"] == 3
+        idx = json.loads((tmp_path / "wf" / "subset" / acq.name / "index.json").read_text())
+        assert idx["n_prod"] == 4 and idx["files"] == [200]
+
+    def test_unknown_labels_are_reported_not_guessed(self, tree, tmp_path, caplog):
+        _, root = tree
+        cfg = W.load_config(write_cfg(tmp_path, root, products={"autos": False, "reference": ["Z9X", "A1Y"]}))
+        rep = W.run(cfg)
+        assert rep["files_rendered"] == 3
+        assert "Z9X: not an element" in caplog.text
+        idx = json.loads((tmp_path / "wf" / "subset" / "acq_20260202_000000_000000000" / "index.json").read_text())
+        assert [(p["a"], p["b"]) for p in idx["products"]] == [(2, 3)]      # A0Y x A1Y
+
+    def test_product_rule(self, tmp_path):
+        assert W.product_rule(None) is None and W.product_rule("all") is None
+        assert W.product_rule({"reference": ["A0X"]}) == {"autos": True, "reference": ["A0X"], "pairs": []}
+        for bad in ("some", {"autos": False}, {"pairs": [["A0X"]]}, {"stride": 2}):
+            with pytest.raises(ValueError):
+                W.product_rule(bad)
+        with pytest.raises(ValueError, match="freq_stride"):
+            W.load_config(write_cfg(tmp_path, tmp_path / "subset", freq_stride=0))
+        cfg = W.load_config(write_cfg(tmp_path, tmp_path / "subset"))
+        assert cfg["products"] is None and cfg["freq_stride"] == 1

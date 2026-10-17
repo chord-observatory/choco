@@ -277,15 +277,22 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   only with the bad list.  eigencal follows the same split: `run.json`
   every exit with the reason, `state.json` per solution, the archives
   `gain_*.h5` beside them; its page reads all three.
-- bffs reads the receiver's `subset/` files by chunk, never by channel:
-  `vis` is chunked over every product, so the power-outlier source reads
-  `blocks` chunk-aligned 16-channel blocks across its band (8 by default,
-  3.5 s where the whole band was 24 GB and four minutes), takes validity
-  and weight from `frames_added` (not `vis_weight`), and caches the verdict
-  per file (`power_outlier.json`: path, mtime, size, parameters) because a
-  landed file never changes.  It joins the file to the flag axis by label,
-  never by position: a file label the config does not know sidelines the
-  file like a stale one (file sources skipped), it does not fail the run.  The config's `dish_inputs` `type` is
+- N² reads are priced per `vis` chunk (16 channels × every product ×
+  every bin, 42 MB at 128 elements; a chunk decompresses whole, and the
+  link delivers 36–59 MB/s against a 12 GB file every 400 s).  Every reader
+  opens whole aligned chunks, as few as it needs, never a channel or
+  product slice across the band: bffs `blocks`, acqnotes
+  `extract.chunk_blocks`, the mapmaker's `subband_read_channels`, the
+  waterfall's `freq_stride` and `products` (a selection fixed per
+  acquisition in its index) ([jobs.md](docs/design/jobs.md),
+  [waterfall.md](docs/design/waterfall.md)).  bffs also takes validity
+  and weight from `frames_added`, not `vis_weight`, and caches the
+  power-outlier verdict per file (`power_outlier.json`: path, mtime,
+  size, parameters) because a landed file never changes.
+- bffs joins the file to the flag axis by label, never by position: a
+  file label the config does not know sidelines the file like a stale
+  one (file sources skipped), it does not fail the run.  The config's
+  `dish_inputs` `type` is
   the authority on what is a feed: `Missing` elements are always bad
   (`dish-type` source) and `RFIDish` elements are never power-outlier
   flagged nor part of its median (`exclude_types`).

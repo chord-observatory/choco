@@ -51,6 +51,12 @@ DEFAULTS = {
     # with room left over for backfill, while still returning promptly.
     "max_files_per_run": 40,
     "roots": [],
+    # what of a file becomes pixels, fixed per acquisition when it starts:
+    # None renders every product; a mapping names the autos, reference
+    # elements and pairs to keep (reduce.select).  freq_stride keeps one
+    # chunk of channels in that many.
+    "products": None,
+    "freq_stride": 1,
     # state.json and the run lock live in the job's state directory
     # (/var/lib/choco/waterfall; --state-dir overrides), not here.
 }
@@ -71,7 +77,34 @@ def load_config(path) -> dict:
     cfg["roots"] = normalize_roots(cfg.get("roots"))
     cfg["level"] = int(cfg["level"])
     cfg["max_files_per_run"] = int(cfg["max_files_per_run"])
+    cfg["freq_stride"] = int(cfg["freq_stride"])
+    if cfg["freq_stride"] < 1:
+        raise ValueError("freq_stride must be at least 1")
+    cfg["products"] = product_rule(cfg.get("products"))
     return cfg
+
+
+def product_rule(raw) -> dict | None:
+    """Normalise the ``products`` key: None (or ``all``) renders every
+    product; a mapping keeps ``autos`` (default true), every
+    same-polarization cross product with each element in ``reference``,
+    and the ``pairs`` listed as ``[label, label]``."""
+    if raw is None or raw == "all":
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("products must be 'all' or a mapping of autos / reference / pairs")
+    unknown = set(raw) - {"autos", "reference", "pairs"}
+    if unknown:
+        raise ValueError(f"products: unknown key(s) {', '.join(sorted(unknown))}")
+    rule = {"autos": bool(raw.get("autos", True)),
+            "reference": [str(x) for x in (raw.get("reference") or [])],
+            "pairs": [list(p) for p in (raw.get("pairs") or [])]}
+    for pair in rule["pairs"]:
+        if len(pair) != 2:
+            raise ValueError(f"products.pairs: {pair!r} is not [label, label]")
+    if not rule["autos"] and not rule["reference"] and not rule["pairs"]:
+        raise ValueError("products selects nothing: set autos, reference or pairs")
+    return rule
 
 
 #: Files sampled per run to find one that can set a new acquisition's scale.
@@ -168,18 +201,31 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
     if not pending:
         return 0
 
-    if not store.started:
+    if not store.started or not store.committed:
         # The first file of a run is often partial or empty, so the scale
         # comes from the first pending file with usable data.  Empty ones
         # are skipped for good; at most SCALE_TRIES are sampled per run, so
         # an acquisition with no data at all stays cheap and works through
-        # its files a few at a time.
+        # its files a few at a time.  An index with nothing folded in yet
+        # is started again: no pixel depends on it, and the selection the
+        # config asks for now is the one the acquisition should keep.
         scaled = None
+        warned = False
         for _, path, axes in pending[:SCALE_TRIES]:
-            log.info("%s: new acquisition, %d products, %d x %d — setting scale from %s",
-                     acq, axes.n_prod, axes.n_freq, axes.n_time, os.path.basename(path))
+            sel, warnings = R.select(axes, cfg["products"], cfg["freq_stride"])
+            if warnings and not warned:
+                for w in warnings:
+                    log.warning("%s: products: %s", acq, w)
+                warned = True
+            if sel.n_prod == 0:
+                report["errors"].append(
+                    f"{acq}: the products rule selects nothing of {os.path.basename(path)}")
+                return 0
+            log.info("%s: new acquisition, %d of %d products, %d of %d channels x %d — "
+                     "setting scale from %s", acq, sel.n_prod, axes.n_prod, sel.n_freq,
+                     axes.n_freq, axes.n_time, os.path.basename(path))
             try:
-                sample = R.sample_magnitudes(path)
+                sample = R.sample_magnitudes(path, sel, axes=axes)
             except OSError as exc:
                 report["errors"].append(f"{path}: {exc}")
                 report["degraded"] = True
@@ -188,16 +234,16 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
             if int(np.isfinite(lo).sum()) == 0:
                 drop(os.path.basename(path), "no product has usable data")
                 continue
-            scaled = (path, axes, lo, hi)
+            scaled = (path, axes, sel, lo, hi)
             break
         if scaled is None:
             return 0
-        first_path, first_axes, lo, hi = scaled
+        first_path, first_axes, first_sel, lo, hi = scaled
         n_scaled = int(np.isfinite(lo).sum())
-        if n_scaled < first_axes.n_prod:
+        if n_scaled < first_sel.n_prod:
             log.warning("%s: %d of %d products have no usable data",
-                        acq, first_axes.n_prod - n_scaled, first_axes.n_prod)
-        store.start(first_axes, lo, hi)
+                        acq, first_sel.n_prod - n_scaled, first_sel.n_prod)
+        store.start(first_axes, lo, hi, first_sel)
         # the files dropped above are behind the scale file; never fold them
         pending = [p for p in pending if os.path.basename(p[1]) not in store.skipped]
 
@@ -206,14 +252,14 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
     written = 0
     for idx, path, axes in pending:
         basename = os.path.basename(path)
-        why = store.matches(axes)
+        sel, why = store.selection(axes)
         if why is not None:
             drop(basename, why)
             continue
-        if buf is None or buf.shape != (axes.n_prod, axes.n_time, axes.n_freq):
-            buf = np.empty((axes.n_prod, axes.n_time, axes.n_freq), np.uint8)
+        if buf is None or buf.shape != (sel.n_prod, axes.n_time, sel.n_freq):
+            buf = np.empty((sel.n_prod, axes.n_time, sel.n_freq), np.uint8)
         try:
-            R.quantize_file(path, lo, hi, out=buf)
+            R.quantize_file(path, lo, hi, out=buf, sel=sel, axes=axes)
             store.add_file(axes, buf, level=cfg["level"])
         except OSError as exc:
             # Stop this acquisition but keep what was committed: returning

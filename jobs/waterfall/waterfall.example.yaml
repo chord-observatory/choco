@@ -23,6 +23,28 @@ waterfalls_dir: /mnt/cs00/data/kotekan_vis_files/waterfalls
 # immediately) live in /var/lib/choco/waterfall, the job's state directory.
 # Not a setting; --state-dir redirects a hand run.
 
+# What of a file becomes pixels.  Fixed per acquisition when it starts
+# (the images are append-only), so this shapes new acquisitions only.
+#
+# `all` renders every product.  With 128 elements that is 8256 images per
+# acquisition and a 2 GB buffer per file; this rule keeps 254: every
+# autocorrelation, and every same-polarization cross product with the
+# reference elements (A01X: all X dishes against A01; A01Y likewise), so
+# each dish shows its fringe against one reference.  `pairs` adds named
+# cross products.  A label the file does not carry is reported and skipped.
+products:
+  autos: true
+  reference: [A01X, A01Y]
+  pairs: []
+
+# Frequency chunks kept per file: 1 keeps every channel, 4 keeps one
+# 16-channel chunk in four (a column is still a real channel).  kotekan
+# chunks vis as 16 channels x every product x every time bin and a chunk
+# decompresses whole, so the read is priced in chunks: at 128 elements a
+# file is 16 GB of vis, and 4 brings a file to about 2 GB on the wire,
+# under a minute, against the 400 s cadence.
+freq_stride: 4
+
 # Deflate level.  6 is the balance point (level 9 costs 3.5x the CPU for
 # 0.58% fewer bytes); 4 is worth passing for a long backfill.
 level: 6
@@ -33,8 +55,8 @@ level: 6
 # but not from the timer, where a 24 h run would starve the live data.
 #
 # This is also the only effective throttle against kotekan: the reads go
-# over NFS, which neither Nice nor IOSchedulingClass governs.  40 sustains
-# roughly 58 MB/s off the data server and clears a 10,900-file backlog in
-# about a day; 10 quarters that and takes about four days.  Live data
-# keeps up either way -- files land every ~3.2 min and a run renders many.
+# over NFS, which neither Nice nor IOSchedulingClass governs.  Live data
+# keeps up at any value above 1: a 12 GB file lands every 400 s and takes
+# about a minute with the selection and stride above; a backfill of the
+# old 2.8 GB files runs at 40 per run.
 max_files_per_run: 40

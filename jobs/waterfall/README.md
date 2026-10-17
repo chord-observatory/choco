@@ -35,11 +35,20 @@ acquisition directory — verified live, with the inode preserved across
 the move. So the file list only ever grows, which is what makes the
 whole pipeline append-only. `.partial` is never read.
 
-**One sequential pass per file.** `vis` is chunked
-`(16 freq, 16 prod, 20 time)`. Pulling a single product's column touches
-385 chunks scattered through 700 MB and runs at ~6 MB/s; a sequential
-sweep runs at ~100 MB/s. Every product together costs ~1.9× what one
-product costs, so the reducer never loops products over a file.
+**One sequential pass per file, priced in chunks.** `vis` is chunked
+`(16 freq, every product, every time)` — 42 MB a chunk at 128 elements —
+and a chunk decompresses whole. A product therefore costs nothing once
+its chunk is open, and a chunk skipped is a chunk never read: the
+reducer makes one pass over the chunks the acquisition's selection
+names (`freq_stride`: one chunk in N) and never loops products.
+
+**A selection per acquisition.** With 128 elements every product is 8256
+images and a 2 GB buffer per file, and a contact sheet nobody can read.
+`products` names what a new acquisition keeps — the autos, every
+same-polarization cross with the reference elements, named pairs — and
+the index records it (products by their inputs, channels by index), so
+later files are matched to it by name and a config change shapes only
+the next acquisition.
 
 **Rows are time.** Frequency-major compresses ~10% better and cannot be
 appended to at all. Appending costs 2.5% (crosses) to 15% (autos) over an
@@ -103,9 +112,20 @@ Measured on choco.site against live files, 32 elements / 528 products:
 | peak RSS | ~200 MB (the index buffer is `n_prod × n_time × n_freq`) |
 | whole `subset` archive | ~200 GB in ~16,000 files, 8.1% of the source |
 
-Storage is O(N²) in element count: 100 elements is ~358 MB per source
-file and ~157 GB per observing day. `max_files_per_run` bounds the work,
-not the size.
+Storage is O(N²) in element count when every product is kept: 100
+elements is ~358 MB per source file and ~157 GB per observing day.
+
+Measured 2026-10-17 on the 128-element files (12 GB, 8256 products,
+40 bins) with the example config's selection (254 products, one chunk
+in four):
+
+| | |
+|---|---|
+| read + quantize per file | 96 chunks, ~2 GB on the wire, 40–60 s |
+| index buffer | 16 MB (254 × 40 × 1536) |
+| peak RSS | ~0.4 GB |
+
+`max_files_per_run` bounds the work, not the size.
 
 ## Files
 
