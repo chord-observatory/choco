@@ -19,6 +19,7 @@ against a Cyg A transit on 2026-10-05 (see docs/design/mapmaker.md):
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -319,7 +320,11 @@ class CalAccumulator:
         with np.errstate(invalid="ignore", divide="ignore"):
             g = np.where(self.gwt > 0, self.gsum / np.maximum(self.gwt, 1e-300), 0)
         amp = np.abs(g)
-        med = np.median(np.where(amp > 0, amp, np.nan), axis=-1, keepdims=True)
+        # the median of the live products only: a plain median over the
+        # NaN holes is NaN, which disabled this gate until 2026-10-18
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)       # all-NaN channels
+            med = np.nanmedian(np.where(amp > 0, amp, np.nan), axis=-1, keepdims=True)
         med = np.nan_to_num(med, nan=0.0)
         dead = amp < dead_fraction * med
         g = np.where(dead, 0, g)

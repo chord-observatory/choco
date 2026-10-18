@@ -20,7 +20,9 @@ IOSchedulingClass=idle
 # and choco's CPU.
 CPUQuota=200%
 CPUWeight=20
-# The accumulators (~130 MB summed), the kernels (~300 MB) and the dirty
-# beam rows it visits (~3.4 MB each, at most one per Dec row).
-MemoryHigh=2G
-MemoryMax=3G
+# The accumulators (~260 MB), the kernels it rebuilds for the imaged
+# sub-bands (1.0 GB at 128 elements, measured 2026-10-18; the same
+# kernels the fold-in holds) and the dirty beam rows it visits (a few MB
+# each, at most one per Dec row).
+MemoryHigh=3G
+MemoryMax=4G

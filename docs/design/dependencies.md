@@ -54,3 +54,16 @@ plugin linked against ``libhdf5_serial.so.103``, which would load a second
 HDF5 library into a process already running the 2.0 that the h5py wheel
 bundles.  Building hdf5plugin from sdist with ``HDF5PLUGIN_STRIP`` would trim
 it to the one filter at the cost of a compiler on the install host; not done.
+
+**The venv is the lock (2026-10-18).**  Audited again: every pin clean
+on OSV, pillow one major behind (13.0.0, two days old, matplotlib's
+alone; left).  But the production venv held 18 packages the lock no
+longer named — ldap3, Flask-Login, Flask-SocketIO and their closures,
+WTForms, watchdog, cryptography — because ``pip install -r`` adds and
+never removes, and ``audit`` read only the lock.  Nothing imported them,
+but three carried advisories (cryptography 46.0.6 five, python-engineio
+and python-socketio denial-of-service), which is what an unused package
+in a venv eventually looks like.  Install now uninstalls whatever the
+lock does not name (choco, pip, setuptools and wheel excepted) and
+``audit`` lists such leftovers with their advisories, exiting non-zero
+on one, so the gap shows up before the next install rather than never.

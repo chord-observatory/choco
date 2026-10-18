@@ -25,8 +25,16 @@ IOSchedulingClass=idle
 CPUQuota=200%
 CPUWeight=20
 # Page cache from the source files is read-once (MemoryHigh reclaims it from
-# this cgroup rather than the box); the job's own footprint is the kernels
-# (~300 MB) plus the accumulators (~260 MB at 16 colour bins).  MemoryMax is the backstop that
-# turns a runaway into a red badge instead of a system-wide OOM.
-MemoryHigh=2G
-MemoryMax=3G
+# this cgroup rather than the box).  The job's own footprint, measured
+# 2026-10-18 on the 128-element subset files (64 dishes per polarization,
+# 2016 products, 6145 channels, 97 sub-bands): the imaging kernels 1.0 GB
+# (112 unique baselines x 81 Dec rows x up to 355 columns per sub-band),
+# the calibration sums 0.6 GB, the gains 0.2 GB, the maps 0.26 GB, the
+# reduced file 0.19 GB, plus the chunk being read and the gain solve's
+# temporaries; the run peaked past 4.3 GB.  At the former 2G line a run
+# spent 60% of its time stalled in reclaim and took 25 min per file, so a
+# 400 s file cadence could never be kept.  High is the working budget
+# with headroom for a larger array; MemoryMax is the backstop that turns
+# a runaway into a red badge instead of a system-wide OOM.
+MemoryHigh=6G
+MemoryMax=8G

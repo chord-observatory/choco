@@ -170,6 +170,28 @@ cmd_install() {
     if [ -f "$tmp_src/requirements.lock" ]; then
         "$INSTALL_DIR/.venv/bin/pip" install --require-hashes -r "$tmp_src/requirements.lock"
         "$INSTALL_DIR/.venv/bin/pip" install --no-deps "$tmp_src"
+        # The lock is the whole venv.  pip never removes what a lock
+        # stopped naming, so a dependency choco dropped (ldap3,
+        # Flask-SocketIO, ...) would sit in the venv for good, advisories
+        # and all, unseen by `audit`, which reads the lock.
+        local orphans
+        orphans=$("$INSTALL_DIR/.venv/bin/python" - "$tmp_src/requirements.lock" <<'PYEOF'
+import re, sys
+from importlib.metadata import distributions
+norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+keep = {"choco", "pip", "setuptools", "wheel"}
+for line in open(sys.argv[1]):
+    m = re.match(r"^([A-Za-z0-9_.-]+)==", line)
+    if m:
+        keep.add(norm(m.group(1)))
+names = {d.metadata["Name"] for d in distributions() if d.metadata["Name"]}
+print(" ".join(sorted(n for n in names if norm(n) not in keep)))
+PYEOF
+)
+        if [ -n "$orphans" ]; then
+            echo "Removing packages the lock does not name: $orphans"
+            "$INSTALL_DIR/.venv/bin/pip" uninstall -y $orphans
+        fi
     else
         echo "Warning: requirements.lock missing; installing unpinned versions."
         "$INSTALL_DIR/.venv/bin/pip" install "$tmp_src[jobs]"
@@ -313,7 +335,35 @@ PY
     # systemd units: main service + any job units (jobs/<name>/choco-*.{service,timer})
     cp "$SCRIPT_DIR/jobs/choco.service" /etc/systemd/system/
     cp "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer} /etc/systemd/system/ 2>/dev/null || true
+    # `systemctl set-property` (an operator raising a memory line mid-run,
+    # say) writes a drop-in under /run or /etc/systemd/system.control that
+    # outranks the unit file -- silently, and across a daemon-reload -- so
+    # a limit raised that way would pin a freshly installed unit to the
+    # old value.  The unit file in the repo is the source of truth: drop
+    # those overrides, saying what they held so a value meant to stay can
+    # be moved into the unit.
+    for unit in "$SCRIPT_DIR"/jobs/choco.service "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer}; do
+        [ -f "$unit" ] || continue
+        for d in /run/systemd/system.control /etc/systemd/system.control; do
+            d="$d/$(basename "$unit").d"
+            if [ -d "$d" ]; then
+                echo "Removing set-property overrides on $(basename "$unit") (the unit file now rules):"
+                grep -h -v '^#' "$d"/*.conf 2>/dev/null | grep -v '^\[' | sed 's/^/    /'
+                rm -rf "$d"
+            fi
+        done
+    done
     systemctl daemon-reload
+    # Ask systemd, not the filesystem, whether anything still overrides a
+    # unit: this catches a control directory that moved as well as an
+    # operator's `systemctl edit` drop-in, which is left alone on purpose.
+    for unit in "$SCRIPT_DIR"/jobs/choco.service "$SCRIPT_DIR"/jobs/*/choco-*.{service,timer}; do
+        [ -f "$unit" ] || continue
+        dropins=$(systemctl show -p DropInPaths --value "$(basename "$unit")" 2>/dev/null)
+        if [ -n "$dropins" ]; then
+            echo "Warning: $(basename "$unit") is still overridden by: $dropins"
+        fi
+    done
 
     # Enable job services WITHOUT starting them (enable only creates their
     # WantedBy=choco.service links): the jobs run when choco (re)starts
@@ -591,8 +641,9 @@ cmd_audit() {
     # advisory feed + GitHub advisories).  Read-only and stdlib-only —
     # nothing is installed or changed.  To act on findings: bump with
     # ./choco.sh lock, review the diff, run tests, commit.
-    python3 - "$SCRIPT_DIR/requirements.lock" <<'PYEOF'
-import json, re, sys, urllib.request
+    python3 - "$SCRIPT_DIR/requirements.lock" "$INSTALL_DIR/.venv" <<'PYEOF'
+import glob, json, re, sys, urllib.request
+from importlib.metadata import distributions
 
 def get(url, payload=None):
     req = urllib.request.Request(
@@ -624,6 +675,27 @@ for name, version in pins:
         stale.append(name)
     print(f"  {name + '==' + version:<44s} {'; '.join(notes) or 'ok'}")
 
+# The installed venv, if there is one we can read: packages the lock does
+# not name are leftovers of an earlier stack (install removes them now,
+# but an older install left them) and get the same OSV check.
+canon = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+locked = {canon(n) for n, _ in pins} | {"choco", "pip", "setuptools", "wheel"}
+site = glob.glob(f"{sys.argv[2]}/lib/python*/site-packages")
+orphans = sorted({(d.metadata["Name"], d.version) for d in distributions(path=site)
+                  if d.metadata["Name"] and canon(d.metadata["Name"]) not in locked})
+bad_orphans = []
+if orphans:
+    print(f"\nInstalled in {sys.argv[2]} but not in the lock (reinstall removes them):")
+    for name, version in orphans:
+        osv = get("https://api.osv.dev/v1/query", json.dumps(
+            {"package": {"name": canon(name), "ecosystem": "PyPI"},
+             "version": version}).encode())
+        vulns = [v["id"] for v in (osv.get("vulns") or [])]
+        if vulns:
+            bad_orphans.append(name)
+        print(f"  {name + '==' + version:<44s} "
+              f"{'VULNERABLE: ' + ', '.join(vulns) if vulns else 'no advisories'}")
+
 print()
 if vulnerable:
     print(f"{len(vulnerable)} pin(s) have known advisories: "
@@ -631,9 +703,13 @@ if vulnerable:
           f"review, test, commit.")
 if stale:
     print(f"{len(stale)} pin(s) behind latest: {', '.join(stale)}")
-if not vulnerable and not stale:
-    print("All pins are the latest release with no known advisories.")
-sys.exit(1 if vulnerable else 0)
+if bad_orphans:
+    print(f"{len(bad_orphans)} leftover package(s) have known advisories: "
+          f"{', '.join(bad_orphans)} — run ./choco.sh install to remove them.")
+if not vulnerable and not stale and not orphans:
+    print("All pins are the latest release with no known advisories, "
+          "and the venv holds nothing else.")
+sys.exit(1 if vulnerable or bad_orphans else 0)
 PYEOF
 }
 
@@ -649,7 +725,7 @@ cmd_help() {
     echo "  develop     Run a loopback-only dev instance: no auth, no TLS, dev/ configs (no root)"
     echo "  test        Run tests (extra args forwarded to pytest)"
     echo "  lock        Regenerate requirements.lock (pinned production deps)"
-    echo "  audit       Check lock pins against latest PyPI + OSV advisories"
+    echo "  audit       Check lock pins, and the venv's leftovers, against latest PyPI + OSV advisories"
     echo "  help        Show this message"
     echo ""
     echo "Once installed, the 'choco' command (choco/cli.py) talks to the running"

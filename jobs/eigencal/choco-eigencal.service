@@ -14,14 +14,18 @@ ExecStart=/opt/choco/jobs/run-job.sh eigencal/eigencal.py /etc/choco/eigencal.ya
 Nice=10
 IOSchedulingClass=idle
 # Most ticks exit at the gate; a transit reads about an hour of N² files
-# and eigen-decomposes per frequency.  Not yet measured under a cap:
-# generous backstops, so a runaway dies in its own cgroup rather than
-# waking the system OOM killer.  Check `systemctl show -p MemoryPeak`
-# during a transit run and tighten.
+# and eigen-decomposes per frequency.  Measured 2026-10-18 on the
+# 128-element subset files: the former 3G line pinned the transit run
+# (1.6 million throttle events, a third of its time stalled in reclaim);
+# with the line lifted the read phase settled at 3.3 GB and the run
+# peaked at 6.4 GB.  High is that peak with headroom; MemoryMax is the backstop
+# so a runaway dies in its own cgroup rather than waking the system OOM
+# killer.  Check the cgroup's memory.peak after a transit run before
+# tightening.
 CPUQuota=200%
 CPUWeight=20
-MemoryHigh=3G
-MemoryMax=4G
+MemoryHigh=8G
+MemoryMax=10G
 # No Restart: the script self-gates (it exits 0 in seconds unless a transit
 # just completed and is unprocessed), so a failed run — N² data missing,
 # choco not up, transit not yet covered — is simply retried by the next

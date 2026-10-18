@@ -171,6 +171,24 @@ class TestSelfCal:
         assert np.allclose(g[:, :, :5], g_true[:, :, :5], atol=1e-5)
         assert np.all(g[:, :, 5] == 0)
 
+    def test_dead_gate_fires_beside_a_zero_product(self):
+        # a product at 1% of its channel's median is dead; a product with no
+        # signal at all (a NaN hole in the median) must not disable the gate
+        n_freq, n_pol, n_prod, n_time = 4, 1, 5, 10
+        freq = np.linspace(400, 500, n_freq)
+        tau = np.zeros((n_pol, n_prod, n_time))
+        b2 = np.ones((n_freq, n_time))
+        g_true = np.ones((n_freq, n_pol, n_prod), complex)
+        g_true[:, :, 3] = 0.01                                               # weak: a dead feed
+        g_true[:, :, 4] = 0                                                  # no signal at all
+        V = g_true[..., None] * np.ones(n_time)
+        W = np.ones_like(V, dtype=float)
+        acc = I.CalAccumulator.empty(n_freq, n_pol, n_prod, "t")
+        acc.add_block(slice(0, n_freq), V, W, freq, tau, b2, np.arange(n_time) * 10.0)
+        g = acc.solve(0.05)
+        assert np.allclose(g[:, :, :3], 1.0)
+        assert np.all(g[:, :, 3] == 0) and np.all(g[:, :, 4] == 0)
+
     def test_apply_gains_divides_and_zeroes_dead(self):
         g = np.array([[[2.0, 0.0]]], np.complex64)
         V = np.array([[[[4.0, 4.0], [7.0, 7.0]]]], np.complex64)        # (f, pol, prod, t)

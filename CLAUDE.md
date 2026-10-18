@@ -36,7 +36,7 @@ install steps, dependencies or run commands.
 ./choco.sh develop   # loopback-only dev instance: no auth, no TLS, dev/ configs
 ./choco.sh test      # main suite + the job suites (args forwarded to pytest)
 ./choco.sh lock      # regenerate requirements.lock after editing pyproject.toml
-./choco.sh audit     # check pins against PyPI and OSV (read-only)
+./choco.sh audit     # check pins, and the installed venv's leftovers, against PyPI and OSV (read-only)
 ```
 
 Configuration is `config.yaml` (gitignored; start from `config.yaml.template`,

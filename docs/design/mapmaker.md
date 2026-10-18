@@ -96,6 +96,15 @@ composite — colour is spectral index relative to it.  Products below
 drop out (gain 0 → weight 0), which is what "flags are not perfect" asked
 for: in the 10-04 data B01, B02 and B04 were flagged by kotekan and five of
 twelve long EW baselines showed no transit.
+The gate was inert until 2026-10-18: it took a plain median over an
+array with NaN holes (the products with no weight), which is NaN, so no
+product was ever below the threshold and every zero gain came from the
+file flags alone.  On the 10-18 transit that changed nothing — the
+median was set by the dishes pointed away from Cyg A, responding ten
+times weaker through a sidelobe, and the threshold sat below every
+product — which is also why the gate is not the tool for a mixed
+pointing: a product's calibrated weight scales with its gain squared, so
+those products carried 4.6% (X) and 0.4% (Y) of the map on their own.
 
 Gains are per product, not per antenna (no closure assumption; enough
 for a dirty map).  Uncalibrated delays were ~45° rms across a 3 MHz slab,
