@@ -13,7 +13,7 @@ instances on the CHORD telescope cluster.  It replaces the older **coco**
 (gitignored reference copy in `coco/`) with a single-process Flask app:
 
 - **Flask + gevent** — web UI with htmx polling of partial templates (no
-  WebSockets), LDAP auth, JSON API, served by gevent's WSGIServer.
+  WebSockets), sign-in through the site proxy (Authelia), JSON API, served by gevent's WSGIServer.
 - **Per-node sync workers** — one greenlet owns each node, drains its FIFO
   change queue, and reconciles the node against its desired config.
 - **Config directory** — YAML on disk is the source of truth for desired
@@ -73,8 +73,7 @@ choco/
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
-├── auth.py         # login sessions (signed cookie + in-memory users), direct LDAP bind, localhost bypass decorator, proxy sign-in
-├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
+├── auth.py         # login sessions (signed cookie + in-memory users), proxy sign-in and roles, trusted hosts, localhost bypass decorator
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
 jobs/               # One dir per job: systemd units, code, tests; run-job.sh runs any of them
@@ -202,9 +201,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   POST/PUT/PATCH/DELETE for them in one place; never gate a write route by
   route.  The UI keeps write controls visible but inert under `.read-only`
   (`choco.css`): anything that writes from a script carries `.write-control`.
-  Trusted hosts and loopback callers are never read-only.  With no
-  `ldap.host` and a `proxy_auth.public_url`, the login page only points to
-  the proxy.
+  Trusted hosts and loopback callers are never read-only.
+- choco has no login of its own: `/login` (GET only) points to
+  `proxy_auth.public_url` and, for emergencies, an ssh tunnel to loopback.
+  An `ldap:` block is refused; do not bring back a password form.
 - Every URL a page builds starts at the app root, so choco works under the
   proxy's prefix: `url_for`, or `{{ request.script_root }}` before a path
   in a template (`request.script_root ~ '/x'` in a Jinja expression), and
@@ -213,9 +213,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   prefix.  `tests/test_proxy_auth.py` renders every route behind the proxy
   and checks the sources.
 - Keep the startup guardrails: a placeholder or short `server.secret_key` is
-  refused; `server.dev_auth` requires a loopback `server.host`; LDAPS
-  verifies the server certificate and hostname (`ldapbind` uses
-  `ssl.create_default_context`; no mode turns it off); a missing `ldap.ca_cert` file is a startup error; the
+  refused; `server.dev_auth` requires a loopback `server.host`; the
   session cookie (`choco_session`, never Flask's shared default name) is Secure (when `server.ssl`), HttpOnly, SameSite=Lax;
   `_next_target` rejects `//`, backslashes and control characters.
 - Dev mode turns login **and** CSRF off together (the token lives in the
@@ -372,7 +370,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 **Retired config keys are refused, not read.** `load_config` raises on
 `sync.num_workers`, a `psu:` block, `eop.fpga_master_*`, the eop job's own
 settings (now `/etc/choco/eop.yaml`), `waterfall.images_dir` (choco reads
-the tree from the job's `state.json`), the search-bind LDAP keys and every
+the tree from the job's `state.json`), the `ldap:` block and every
 per-job state path (`*.state_file`, `bffs.run_file`/`manual_file`,
 `skymap.image_file`/`night_image_file`), naming the replacement.  Do not add
 a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
@@ -391,7 +389,7 @@ names) rather than coin new ones.  This file holds the rules for agents;
 
 - [sync.md](docs/design/sync.md) — config model, config library and includes, workers, maintenance, one-offs, drift, load resilience
 - [cli.md](docs/design/cli.md) — the `choco` command
-- [auth.md](docs/design/auth.md) — config.yaml, LDAP direct bind, dev mode
+- [auth.md](docs/design/auth.md) — config.yaml, the site proxy and roles, trusted hosts, dev mode
 - [ui.md](docs/design/ui.md) — landing page, service strip, service pages, `/api/status`, `/metrics`
 - [fpga-pdb.md](docs/design/fpga-pdb.md) — gain archive, FPGA/PDB controls, master PDB map
 - [pipeline.md](docs/design/pipeline.md) — pipeline page, frame peeks, `bufferplot.js`

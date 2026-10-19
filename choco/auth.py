@@ -1,4 +1,9 @@
-"""Login sessions and LDAP authentication for choco.
+"""Login sessions for choco.
+
+choco has no login of its own: people sign in at the site proxy
+(Authelia; ``server.proxy_auth``), the hosts in ``server.trusted_hosts``
+are signed in by address, and loopback callers (the jobs, the CLI) skip
+login on the API.  Its own LDAP login was removed in 2026-10 (auth.md).
 
 A session is Flask's signed cookie carrying the user's id under
 ``_user_id``; each request looks it up in the in-memory ``_users``
@@ -10,7 +15,6 @@ loads as nobody.  Flask-Login did this until 2026-10 (dependencies.md).
 import hmac
 import ipaddress
 import logging
-import os
 import re
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
@@ -18,7 +22,6 @@ from urllib.parse import urlencode, urlsplit
 from flask import Flask, Response, abort, current_app, g, request, session, url_for
 from werkzeug.local import LocalProxy
 
-from .ldapbind import LdapError, LdapServer, escape_rdn, simple_bind
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +30,9 @@ _users: dict[str, "User"] = {}
 
 
 class User:
-    """Authenticated user backed by LDAP, or -- ``trusted=True`` -- the
-    synthetic user a ``server.trusted_hosts`` peer is logged in as.
+    """A person signed in through the site proxy (or dev mode), or --
+    ``trusted=True`` -- the synthetic user a ``server.trusted_hosts`` peer
+    is logged in as.
 
     ``read_only`` is set only for users signed in through the site proxy
     who are in none of ``proxy_auth.write_groups``: they see everything
@@ -326,61 +330,6 @@ def is_proxied() -> bool:
     return bool(request.environ.get("choco.proxied"))
 
 
-class LdapAuthenticator:
-    """Direct-bind LDAP authentication, FreeIPA-flavoured defaults.
-
-    The login attribute doubles as the RDN under a single user container,
-    so a user's DN can be strung together
-    (``uid=<user>,cn=users,cn=accounts,<base_dn>``) and bound directly
-    with their password — the bind itself proves the credentials, no
-    service account involved.
-    """
-
-    def __init__(self, host: str, port: int | None = None, use_ssl: bool = True,
-                 base_dn: str = "", user_dn: str = "cn=users,cn=accounts",
-                 login_attr: str = "uid", ca_cert: str | None = None,
-                 timeout: float = 10.0):
-        self.host = host
-        # TLS verifies the certificate chain *and* the hostname, against
-        # ca_cert or the system store (choco.ldapbind; there is no way to
-        # turn it off).  The URL scheme decides TLS whatever use_ssl says
-        # -- an ldaps:// host is TLS even with use_ssl false -- as it did
-        # under ldap3, so the cleartext warning keys off server.ssl.  A
-        # missing ca_cert file must be caught by the caller (init_auth):
-        # it would only surface at the first login, as a TLS failure.
-        # No port is ldapbind's rule (389, or 636 under TLS); a default
-        # here would send an ldap:// bind in cleartext to the LDAPS port.
-        self.server = LdapServer(host, port=None if port is None else int(port),
-                                 use_ssl=use_ssl, ca_cert=ca_cert)
-        self.timeout = float(timeout)
-        self.login_attr = login_attr
-        parts = [p for p in (user_dn.strip(), base_dn.strip()) if p]
-        self.user_container = ",".join(parts)
-
-    def user_dn_for(self, username: str) -> str:
-        """The DN the user binds as; RDN-escaped, so a crafted username
-        cannot splice extra components into the DN."""
-        return f"{self.login_attr}={escape_rdn(username)},{self.user_container}"
-
-    def authenticate(self, username: str, password: str) -> str | None:
-        """The user's DN on success, None on any failure.  Never raises.
-
-        The empty-password guard matters: LDAP treats a bind with a DN
-        and no password as an *anonymous* bind, which "succeeds" on most
-        servers — without the guard, a blank password would log anyone in.
-        (``simple_bind`` refuses one too.)
-        """
-        if not username or not password:
-            return None
-        dn = self.user_dn_for(username)
-        try:
-            simple_bind(self.server, dn, password, timeout=self.timeout)
-        except LdapError as e:
-            logger.info(f"LDAP bind failed for '{username}': {e}")
-            return None
-        return dn
-
-
 def dev_auth_active() -> bool:
     """True when running with ``server.dev_auth`` (loopback-only, no auth).
 
@@ -431,8 +380,8 @@ def localhost_or_login_required(f):
 
 
 def init_auth(app: Flask, config: dict):
-    """Set up the login session, dev / trusted-host logins and the LDAP
-    authenticator on the app.  LDAP settings are read from config["ldap"].
+    """Set up the login session and the dev, trusted-host and proxy logins
+    on the app (``config["server"]``).
     """
     app.jinja_env.globals["current_user"] = current_user
 
@@ -463,7 +412,7 @@ def init_auth(app: Flask, config: dict):
 
     # Trusted hosts: a peer inside ``server.trusted_hosts`` is logged in as
     # a synthetic user named by its label, so the whole UI (which gates
-    # htmx and the toggles on ``is_authenticated``) works with no LDAP.
+    # htmx and the toggles on ``is_authenticated``) works without signing in.
     # Three properties keep this narrower than dev mode:
     #
     # * CSRF stays on.  The session cookie round-trips normally, so the
@@ -522,9 +471,7 @@ def init_auth(app: Flask, config: dict):
             if not (current_user.is_authenticated and not current_user.trusted
                     and current_user.username == username):
                 session.clear()
-                authenticator = current_app.config.get("ldap_authenticator")
-                dn = authenticator.user_dn_for(username) if authenticator else f"proxy:{username}"
-                login_user(save_user(dn, username))
+                login_user(save_user(f"proxy:{username}", username))
             # The groups decide on every request, so a change in FreeIPA
             # applies as soon as Authelia's view of the user refreshes.
             groups = {g.strip() for g in
@@ -539,40 +486,3 @@ def init_auth(app: Flask, config: dict):
     def _refuse_read_only_writes():
         if request.method in _WRITES and current_user.read_only:
             abort(403)
-
-    # LDAP setup: direct bind, so no service account and no search filter.
-    ldap = config.get("ldap", {}) or {}
-    ldap_host = ldap.get("host")
-    if not ldap_host:
-        logger.warning(
-            "ldap.host not set in config. LDAP authentication will not work."
-        )
-        app.config["LDAP_ENABLED"] = False
-        return
-
-    use_ssl = bool(ldap.get("use_ssl", True))
-    ca_cert = ldap.get("ca_cert") or None
-    if ca_cert and not os.path.isfile(ca_cert):
-        # Refuse at startup: the operator asked for a specific CA, and a
-        # missing file would only show up as every login failing TLS.
-        raise ValueError(
-            f"ldap.ca_cert is set to {ca_cert!r} but no such file exists.")
-    app.config["LDAP_ENABLED"] = True
-    authenticator = LdapAuthenticator(
-        host=ldap_host,
-        port=ldap.get("port"),
-        use_ssl=use_ssl,
-        base_dn=ldap.get("base_dn", ""),
-        user_dn=ldap.get("user_dn", "cn=users,cn=accounts"),
-        login_attr=ldap.get("user_login_attr", "uid"),
-        ca_cert=ca_cert,
-    )
-    app.config["ldap_authenticator"] = authenticator
-    # The *effective* mode, not the flag: an ldaps:// host overrides
-    # use_ssl.
-    if not authenticator.server.ssl:
-        logger.warning(
-            "LDAP connection is plaintext (ldap.use_ssl false, host not "
-            "ldaps://): user passwords will cross the network in cleartext "
-            "on every login.")
-    logger.info(f"LDAP authentication configured (server: {ldap_host})")

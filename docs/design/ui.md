@@ -459,7 +459,7 @@ indexes its bad-input mask with); the master PDB channel map plus its cross-
 check at ``/api/pdb/map``; and the data-file scan at ``/api/files``
 (``?refresh=1`` bypasses its cache).  ``/metrics`` re-renders the same summary
 as hand-rolled Prometheus exposition text (no client library) and is
-unauthenticated — Prometheus scrapes cross-host and can't do LDAP sessions —
+unauthenticated — Prometheus scrapes cross-host and can't do login sessions —
 so it must stay aggregate-only: no node names, hosts, or configs in metric
 labels.  The only other unauthenticated routes are ``/skymap.png`` and its
 night-palette twin ``/skymap-night.png`` (see the sky-map bullet), open for the

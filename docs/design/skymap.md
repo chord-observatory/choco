@@ -39,7 +39,7 @@ The PNG is written **atomically** (savefig to a ``.tmp`` sibling with an
 explicit ``format='png'``, since matplotlib infers format from the suffix,
 then ``os.replace``), because choco serves the same file: ``/skymap.png`` is,
 with ``/metrics``, one of only two **unauthenticated** routes (wall displays
-can't do LDAP sessions; the image's only cluster fact is the pointing),
+can't do login sessions; the image's only cluster fact is the pointing),
 answering conditional GETs with 304s off the file mtime.  The landing page
 shows it below the service table as an htmx card (``/partials/skymap``, every
 5 min) whose ``<img>`` URL carries the file mtime as ``?v=`` so a swap fetches

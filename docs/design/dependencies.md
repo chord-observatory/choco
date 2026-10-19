@@ -30,7 +30,8 @@ pins to 35): its last stable release was 2.9.1 in 2021, only release
 candidates since, and it calls pyasn1's ``tagMap``/``typeMap``, deprecated
 and warned about on every test run, so the pyasn1 release that removes
 them would have broken login on a routine lock bump.  choco used one
-simple bind of it, now ``choco/ldapbind.py`` (auth.md).  **Flask-Login
+simple bind of it, then ``choco/ldapbind.py`` -- itself removed
+2026-10 with choco's own login (auth.md).  **Flask-Login
 was dropped 2026-10-16** (one pin; the lock is at 34): kept on the ldap3
 review as pure Python with a small API, but its last release is 2023-10,
 and choco used only ``login_user`` / ``logout_user`` / ``current_user`` /

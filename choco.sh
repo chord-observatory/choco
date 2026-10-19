@@ -90,12 +90,10 @@ check_config() {
     if grep -qE '^\s*secret_key:\s*(change-me|dev-key-change-me)?\s*(#.*)?$' "$config" 2>/dev/null; then
         warnings+=("server.secret_key is a placeholder -- choco refuses to start with it; set it to the output of: python3 -c 'import secrets; print(secrets.token_hex(32))'")
     fi
-    # Direct-bind LDAP: no bind_dn / bind_password to check for.
-    for field in host base_dn; do
-        if grep -qE "^\s*${field}:\s*(#.*)?$" "$config" 2>/dev/null; then
-            warnings+=("ldap.$field is not set")
-        fi
-    done
+    # choco has no login of its own (2026-10): an ldap: block is refused.
+    if grep -qE '^ldap:' "$config" 2>/dev/null; then
+        warnings+=("the ldap: block is retired -- choco refuses to start with it; remove it (people sign in through the site proxy, server.proxy_auth)")
+    fi
 
     if [ ${#warnings[@]} -gt 0 ]; then
         echo ""
@@ -524,9 +522,6 @@ sync:
 # fpga_master / pdb are deliberately absent: a dev instance should not
 # poll (let alone control) the real F-engine or the power boards.  Their
 # badges render as "unconfigured" and no greenlet spawns.
-
-ldap:
-  host:                           # disabled — dev_auth logs you in
 EOF
     fi
 

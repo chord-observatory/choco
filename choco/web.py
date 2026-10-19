@@ -19,8 +19,7 @@ from flask import (
 )
 
 from . import auth, library
-from .auth import (current_user, localhost_or_login_required, login_required, login_user,
-                   logout_user, save_user)
+from .auth import current_user, localhost_or_login_required, login_required, logout_user
 from .jobclient import MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT
 from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
                         run_blocking, timeline_rows, utc_minute)
@@ -201,47 +200,16 @@ def partial_presence():
                            window_min=PRESENCE_WINDOW_S // 60)
 
 
-@bp.route("/login", methods=["GET", "POST"])
+@bp.route("/login")
 def login():
+    """Where an unauthenticated request is sent.  choco has no login of its
+    own: the page points to the site proxy (``proxy_auth.public_url``),
+    where Authelia signs people in; the trusted hosts are signed in by
+    address and never land here."""
     if current_user.is_authenticated:
         return redirect(_next_target())
-
-    if request.method == "POST":
-        _check_csrf()
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-
-        if not username or not password:
-            flash("Username and password are required.", "error")
-            return _login_page()
-
-        if not current_app.config.get("LDAP_ENABLED"):
-            flash("LDAP is not configured. Set ldap.host in config.yaml.", "error")
-            return _login_page()
-
-        authenticator = current_app.config["ldap_authenticator"]
-        user_dn = authenticator.authenticate(username, password)
-
-        if user_dn:
-            user = save_user(user_dn, username)
-            login_user(user)
-            return redirect(_next_target())
-        else:
-            logger.warning(f"Login failed for '{username}'")
-            flash("Invalid username or password.", "error")
-
-    return _login_page()
-
-
-def _login_page():
-    """The sign-in page.  Behind the site proxy with no ``ldap.host``
-    there is no form: people sign in through the proxy
-    (``proxy_auth.public_url``) and the trusted hosts need no sign-in."""
     proxy = current_app.config.get("PROXY_AUTH") or {}
-    proxy_only = (not current_app.config.get("LDAP_ENABLED")
-                  and bool(proxy.get("public_url")))
-    return render_template("login.html", proxy_only=proxy_only,
-                           proxy_url=proxy.get("public_url"))
+    return render_template("login.html", proxy_url=proxy.get("public_url"))
 
 
 @bp.route("/logout")
@@ -341,7 +309,7 @@ def skymap_png():
 
     Deliberately unauthenticated (like /metrics, and for the same
     cross-host reason: wall displays and external dashboards can't do
-    LDAP sessions).  It is an aggregate sky rendering whose only
+    login sessions).  It is an aggregate sky rendering whose only
     cluster fact is the pointing declination.  ``conditional`` +
     ``max_age=0`` make the browser revalidate each time and get a 304
     until the 5-minute job rewrites the file.
@@ -2503,7 +2471,7 @@ def metrics():
     """Prometheus metrics.
 
     Deliberately unauthenticated (Prometheus scrapes from another
-    host and speaks neither LDAP sessions nor our CSRF); it exposes
+    host and speaks neither login sessions nor our CSRF); it exposes
     only aggregate health — no node names, hosts, or configs.
     """
     summary = _status_summary()

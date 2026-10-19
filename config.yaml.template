@@ -19,7 +19,7 @@ server:
   trusted_hosts: {}                # Peers logged in WITHOUT credentials, as a synthetic user named by
                                   # the label (which is what audit lines then record).  Keys are IP
                                   # addresses or CIDR networks; quote IPv6 ("::1").  CSRF stays on and
-                                  # a real LDAP login from a listed host keeps its own name.  Anyone who
+                                  # a person signed in through the proxy keeps their own name.  Anyone who
                                   # can reach choco from a listed address -- a shell there, an ssh
                                   # tunnel -- gets the whole UI, F-engine and PDB controls included.
                                   #   trusted_hosts:
@@ -45,8 +45,8 @@ server:
                                   #                    # anyone else the proxy signs in is read-only.
                                   #                    # Unset = everyone may.
                                   #     public_url: https://ctc.chord-observatory.ca/choco/
-                                  #                    # where the login page sends people when
-                                  #                    # ldap.host is unset (sign-in only via the proxy)
+                                  #                    # where the login page sends people (choco
+                                  #                    # has no login of its own)
 
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs
@@ -165,18 +165,3 @@ vis_files:
     - /mnt/cs00/data/kotekan_vis_files/full
     - /mnt/cs00/data/kotekan_vis_files/subset
   ttl: 30                           # Seconds to cache a scan (these are NFS mounts)
-
-# FreeIPA LDAP authentication (direct bind: the user's DN is
-# <user_login_attr>=<username>,<user_dn>,<base_dn>, bound with their own
-# password — no service account needed).
-# All routes require login. Leave host empty to disable (dev/testing only).
-ldap:
-  host:                             # e.g. ldaps://ipa1.auth.chord-observatory.ca
-  port: 636
-  use_ssl: true                     # false sends passwords in cleartext (logged as a warning)
-  ca_cert:                          # PEM bundle the LDAP server's certificate must chain to.  Empty: the
-                                    # system CA store, where ipa-client-install already put the IPA CA.
-                                    # Verification is always on; a path to a missing file is a startup error.
-  base_dn:                          # e.g. dc=auth,dc=chord-observatory,dc=ca
-  user_dn: cn=users,cn=accounts
-  user_login_attr: uid

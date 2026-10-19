@@ -1,20 +1,22 @@
-"""Tests for LDAP authentication."""
+"""Tests for login sessions and the login page.
 
-import copy
-import ssl
-from unittest.mock import MagicMock, patch
+choco has no login of its own (the site proxy signs people in:
+test_proxy_auth; trusted hosts: test_trusted_hosts).  Here: the user
+store, the session, where an unauthenticated request is sent, and the
+``?next=`` rules ``/login`` applies to a request that is already signed in.
+"""
+
 from urllib.parse import quote
 
 import pytest
 
-from choco.app import _DEFAULT_CONFIG, create_app
-from choco.auth import LdapAuthenticator, User, save_user, _users
-from choco.ldapbind import BindRejected, LdapError
+from choco.app import create_app
+from choco.auth import User, save_user, _users
 
 
 @pytest.fixture
 def app(tmp_path):
-    """Create a test app with LDAP disabled."""
+    """A test app with the shipped defaults."""
     nodes_yaml = tmp_path / "nodes.yaml"
     nodes_yaml.write_text("groups: {}\n")
     app = create_app(configs_dir=tmp_path)
@@ -71,108 +73,40 @@ class TestSession:
         assert client.get("/nodes", follow_redirects=False).status_code == 302
 
 
-class TestUnauthenticatedAccess:
-    """The login page and its flow (every other route's redirect is swept
-    in test_route_auth)."""
+class TestLoginPage:
+    """choco has no login form: the page points to the site proxy."""
 
     def test_login_page_accessible(self, client):
         resp = client.get("/login")
         assert resp.status_code == 200
-        assert b"Log in" in resp.data
+        assert b'name="password"' not in resp.data
+        assert b"ssh -L 5000:127.0.0.1:5000" in resp.data
 
+    def test_there_is_nothing_to_post_to(self, client):
+        assert client.post("/login", data={"username": "a", "password": "b"}).status_code == 405
 
-class TestLoginFlow:
-    def _get_csrf(self, client):
-        """GET /login to establish a session, then extract the CSRF token."""
-        client.get("/login")
-        with client.session_transaction() as sess:
-            return sess["_csrf_token"]
-
-    def test_login_missing_fields(self, client):
-        token = self._get_csrf(client)
-        resp = client.post("/login", data={"username": "", "password": "", "_csrf_token": token})
-        assert resp.status_code == 200
-        assert b"required" in resp.data
-
-    def test_login_ldap_not_configured(self, client):
-        token = self._get_csrf(client)
-        resp = client.post(
-            "/login", data={"username": "test", "password": "pass", "_csrf_token": token},
-            follow_redirects=True,
-        )
-        assert b"LDAP is not configured" in resp.data
-
-    def _enable_ldap(self, app):
-        """Wire a stub authenticator in as if ldap.host were configured."""
-        app.config["LDAP_ENABLED"] = True
-        authenticator = MagicMock(spec=LdapAuthenticator)
-        app.config["ldap_authenticator"] = authenticator
-        return authenticator
-
-    def test_login_success_creates_session(self, client, app):
-        authenticator = self._enable_ldap(app)
-        authenticator.authenticate.return_value = \
-            "uid=alice,cn=users,cn=accounts,dc=example"
-        token = self._get_csrf(client)
-        resp = client.post(
-            "/login",
-            data={"username": "alice", "password": "pw", "_csrf_token": token},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 302
-        assert resp.headers["Location"] == "/"
-        authenticator.authenticate.assert_called_once_with("alice", "pw")
-        # the session is live: a protected page now renders
-        assert client.get("/").status_code == 200
-
-    def test_session_cookie_is_hardened(self, client, app):
+    def test_session_cookie_is_hardened(self, client):
         """Secure (server.ssl is on by default), HttpOnly, SameSite=Lax."""
-        authenticator = self._enable_ldap(app)
-        authenticator.authenticate.return_value = \
-            "uid=alice,cn=users,cn=accounts,dc=example"
-        token = self._get_csrf(client)
-        resp = client.post(
-            "/login",
-            data={"username": "alice", "password": "pw", "_csrf_token": token},
-            follow_redirects=False,
-        )
+        user = save_user("proxy:alice", "alice")
+        with client.session_transaction() as sess:
+            sess["_user_id"] = user.get_id()
+        resp = client.get("/nodes")          # seeds the CSRF token: the session is rewritten
         cookie = next(h for h in resp.headers.getlist("Set-Cookie")
                       if h.startswith("choco_session="))
         assert "Secure" in cookie
         assert "HttpOnly" in cookie
         assert "SameSite=Lax" in cookie
 
-    def test_login_failure_flashes_error(self, client, app):
-        authenticator = self._enable_ldap(app)
-        authenticator.authenticate.return_value = None
-        token = self._get_csrf(client)
-        resp = client.post(
-            "/login",
-            data={"username": "alice", "password": "wrong", "_csrf_token": token},
-            follow_redirects=True,
-        )
-        assert b"Invalid username or password" in resp.data
-        # still locked out
-        assert client.get("/", follow_redirects=False).status_code == 302
-
 
 class TestLoginNextRedirect:
-    """Login returns the user to the page they were trying to reach."""
+    """A request that needs a login carries where it was going (?next=),
+    and /login sends a signed-in request there -- same-site paths only."""
 
-    def _login(self, client, app, url="/login"):
-        app.config["LDAP_ENABLED"] = True
-        authenticator = MagicMock(spec=LdapAuthenticator)
-        authenticator.authenticate.return_value = \
-            "uid=alice,cn=users,cn=accounts,dc=example"
-        app.config["ldap_authenticator"] = authenticator
-        client.get("/login")
+    def _signed_in_get(self, client, url):
+        user = save_user("proxy:alice", "alice")
         with client.session_transaction() as sess:
-            token = sess["_csrf_token"]
-        return client.post(
-            url,
-            data={"username": "alice", "password": "pw", "_csrf_token": token},
-            follow_redirects=False,
-        )
+            sess["_user_id"] = user.get_id()
+        return client.get(url, follow_redirects=False)
 
     def test_unauthorized_get_carries_next(self, client):
         resp = client.get("/nodes", follow_redirects=False)
@@ -201,117 +135,18 @@ class TestLoginNextRedirect:
         assert resp.status_code == 200
         assert resp.headers["HX-Redirect"] == "/login?next=%2Fnodes"
 
-    def test_login_redirects_to_next(self, client, app):
-        resp = self._login(client, app, "/login?next=/nodes")
+    def test_login_redirects_to_next(self, client):
+        resp = self._signed_in_get(client, "/login?next=/nodes")
         assert resp.status_code == 302
         assert resp.headers["Location"] == "/nodes"
 
-    def test_login_rejects_offsite_next(self, client, app):
-        for evil in ("https://evil.example", "//evil.example",
-                     "javascript:alert(1)",
-                     # browsers resolve these as //evil.example
-                     "/\\evil.example", "/\\/evil.example",
-                     "/\t/evil.example", "/\r\n/evil.example"):
-            _users.clear()
-            resp = self._login(client, app,
-                               f"/login?next={quote(evil, safe='')}")
-            assert resp.headers["Location"] == "/", repr(evil)
-            client.get("/logout")
-
-    def test_already_logged_in_login_honors_next(self, client, app):
-        self._login(client, app)
-        resp = client.get("/login?next=/files", follow_redirects=False)
-        assert resp.status_code == 302
-        assert resp.headers["Location"] == "/files"
-
-
-class TestLdapAuthenticator:
-    def _auth(self, **kwargs):
-        defaults = dict(host="ldaps://ipa.example", port=636, use_ssl=True,
-                        base_dn="dc=example,dc=ca",
-                        user_dn="cn=users,cn=accounts", login_attr="uid")
-        defaults.update(kwargs)
-        return LdapAuthenticator(**defaults)
-
-    def test_tls_verifies_the_server_certificate(self):
-        """ldap3's own default, Server(use_ssl=True) with no tls=, was
-        Tls(validate=CERT_NONE): any certificate from any host.  The
-        stdlib bind has no such mode -- chain and hostname, always."""
-        auth = self._auth()
-        assert auth.server.ssl is True
-        ctx = auth.server.ssl_context()
-        assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
-        assert auth.server.ca_cert is None  # the system CA store
-
-    def test_ca_cert_is_passed_through(self, tmp_path):
-        pem = tmp_path / "ipa-ca.pem"
-        pem.write_text("not a real certificate\n")
-        assert self._auth(ca_cert=str(pem)).server.ca_cert == str(pem)
-
-    def test_ldaps_url_overrides_use_ssl_false_and_still_verifies(self):
-        """The URL scheme wins, as it did under ldap3.  The first ldap3
-        version built the strict Tls only when use_ssl was true, so this
-        exact config got CERT_NONE back -- the test that caught it."""
-        auth = self._auth(host="ldaps://ipa.example", use_ssl=False)
-        assert auth.server.ssl is True
-        assert auth.server.ssl_context().verify_mode == ssl.CERT_REQUIRED
-
-    def test_plain_ldap_is_plain(self):
-        auth = self._auth(host="ldap://ipa.example", use_ssl=False, port=389)
-        assert auth.server.ssl is False and auth.server.port == 389
-
-    @pytest.mark.parametrize("host,port", [("ldap://ipa.example", 389),
-                                           ("ldaps://ipa.example", 636)])
-    def test_no_port_follows_the_scheme(self, host, port):
-        """No configured port is ldapbind's rule, not a blanket 636: an
-        ldap:// bind must never go in cleartext to the LDAPS port."""
-        assert self._auth(host=host, port=None).server.port == port
-
-    def test_init_auth_passes_no_port_through(self, tmp_path):
-        from choco.auth import init_auth
-        from flask import Flask
-        app = Flask(__name__)
-        app.secret_key = "x" * 32
-        init_auth(app, {"ldap": {"host": "ldap://ipa.example", "use_ssl": False}})
-        assert app.config["ldap_authenticator"].server.port == 389
-
-    def test_user_dn_construction(self):
-        auth = self._auth()
-        assert auth.user_dn_for("alice") == \
-            "uid=alice,cn=users,cn=accounts,dc=example,dc=ca"
-
-    def test_user_dn_without_base_dn(self):
-        auth = self._auth(base_dn="")
-        assert auth.user_dn_for("alice") == "uid=alice,cn=users,cn=accounts"
-
-    def test_user_dn_escapes_dn_metacharacters(self):
-        """A crafted username must not splice components into the DN."""
-        auth = self._auth()
-        dn = auth.user_dn_for("alice,cn=admins")
-        assert dn == "uid=alice\\,cn\\=admins,cn=users,cn=accounts,dc=example,dc=ca"
-
-    def test_successful_bind_returns_dn(self):
-        auth = self._auth()
-        with patch("choco.auth.simple_bind") as bind:
-            dn = auth.authenticate("alice", "pw")
-        assert dn == "uid=alice,cn=users,cn=accounts,dc=example,dc=ca"
-        server, bound_dn, password = bind.call_args.args
-        assert server is auth.server and bound_dn == dn and password == "pw"
-
-    @pytest.mark.parametrize("err", [BindRejected(49), LdapError("TLS to ipa.example: bad cert")])
-    def test_failed_bind_returns_none(self, err):
-        auth = self._auth()
-        with patch("choco.auth.simple_bind", side_effect=err):
-            assert auth.authenticate("alice", "wrong") is None
-
-    def test_empty_password_rejected_without_contacting_ldap(self):
-        """An empty password would be an anonymous bind — the classic
-        LDAP pitfall where 'authentication' succeeds with no credentials."""
-        auth = self._auth()
-        with patch("choco.auth.simple_bind") as bind:
-            assert auth.authenticate("alice", "") is None
-            assert auth.authenticate("", "pw") is None
-        bind.assert_not_called()
+    @pytest.mark.parametrize("evil", [
+        "https://evil.example", "//evil.example", "javascript:alert(1)",
+        # browsers resolve these as //evil.example
+        "/\\evil.example", "/\\/evil.example", "/\t/evil.example", "/\r\n/evil.example"])
+    def test_login_rejects_offsite_next(self, client, evil):
+        resp = self._signed_in_get(client, f"/login?next={quote(evil, safe='')}")
+        assert resp.headers["Location"] == "/", repr(evil)
 
 
 class TestAuthenticatedAccess:
@@ -349,43 +184,3 @@ class TestAuthenticatedAccess:
         resp = client.get("/login", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["Location"] == "/"
-
-
-class TestInitAuthLdapConfig:
-    """init_auth's handling of the ldap: block."""
-
-    def _app(self, tmp_path, **ldap):
-        (tmp_path / "nodes.yaml").write_text("groups: {}\n")
-        cfg = copy.deepcopy(_DEFAULT_CONFIG)
-        cfg["ldap"] = {"host": "ldaps://ipa.example", **ldap}
-        return create_app(configs_dir=tmp_path, config=cfg)
-
-    def test_ca_cert_reaches_the_authenticator(self, tmp_path):
-        pem = tmp_path / "ipa-ca.pem"
-        pem.write_text("not a real certificate\n")
-        app = self._app(tmp_path, ca_cert=str(pem))
-        server = app.config["ldap_authenticator"].server
-        assert server.ca_cert == str(pem)
-
-    def test_missing_ca_cert_file_refuses_to_start(self, tmp_path):
-        """The operator asked for a specific CA; a missing file would only
-        surface as every login failing TLS."""
-        with pytest.raises(ValueError, match="ldap.ca_cert"):
-            self._app(tmp_path, ca_cert=str(tmp_path / "nope.pem"))
-
-    def test_empty_ca_cert_means_system_store(self, tmp_path):
-        app = self._app(tmp_path, ca_cert="")
-        assert app.config["ldap_authenticator"].server.ca_cert is None
-
-    def test_plain_ldap_is_loud(self, tmp_path, caplog):
-        with caplog.at_level("WARNING", logger="choco.auth"):
-            app = self._app(tmp_path, host="ldap://ipa.example",
-                            use_ssl=False, port=389)
-        assert app.config["ldap_authenticator"].server.ssl is False
-        assert any("cleartext" in r.getMessage() for r in caplog.records)
-
-    def test_ldaps_url_with_use_ssl_false_is_not_plaintext(self, tmp_path, caplog):
-        with caplog.at_level("WARNING", logger="choco.auth"):
-            app = self._app(tmp_path, use_ssl=False)  # host is ldaps://
-        assert app.config["ldap_authenticator"].server.ssl is True
-        assert not any("cleartext" in r.getMessage() for r in caplog.records)

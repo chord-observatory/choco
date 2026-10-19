@@ -174,9 +174,9 @@ class TestCookieIsBoundToTheAddress:
 
 
 class TestRealLoginWins:
-    def test_ldap_session_keeps_its_own_name(self, trusted_app):
+    def test_a_signed_in_person_keeps_their_own_name(self, trusted_app):
         client = trusted_app.test_client()
-        user = save_user("cn=tester,dc=example", "tester")
+        user = save_user("proxy:tester", "tester")
         with client.session_transaction() as sess:
             sess["_user_id"] = user.get_id()
         resp = client.get("/nodes", **_from(CHIVE))

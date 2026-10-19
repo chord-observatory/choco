@@ -61,7 +61,6 @@ _DEFAULT_CONFIG = {
     "mapmaker": {},
     "acqnotes": {},
     "vis_files": {},
-    "ldap": {},
     # Where the jobs keep their state (systemd's StateDirectory=choco/<job>).
     # choco reads <state_dir>/<job>/... here; a dev instance points it at
     # a scratch directory.  The per-job state_file keys this replaced are
@@ -89,12 +88,11 @@ _RETIRED_KEYS = (
     (("psu",), "rename the block to pdb:"),
     (("eop", "fpga_master_host"), "move it to a top-level fpga_master.host"),
     (("eop", "fpga_master_port"), "move it to a top-level fpga_master.port"),
-    # The flask-ldap3-login era's search bind: choco binds as the user, so
-    # these were never read -- and a service password should not sit unused.
-    (("ldap", "bind_dn"), "remove it: choco binds as the user logging in"),
-    (("ldap", "bind_password"), "remove it: choco binds as the user logging in"),
-    (("ldap", "user_object_filter"), "remove it: there is no user search"),
-    (("ldap", "user_search_scope"), "remove it: there is no user search"),
+    # 2026-10: choco's own LDAP login is gone.  People sign in at the site
+    # proxy (Authelia), which also knows their groups.
+    (("ldap",), "remove the block: choco has no login of its own; people sign "
+                "in through the site proxy (server.proxy_auth) and the hosts in "
+                "server.trusted_hosts are signed in by address"),
     # 2026-10: the eop job has its own /etc/choco/eop.yaml like every job
     # (choco.sh install carries these values over into it).
     (("eop", "intervals_before"), "move it to /etc/choco/eop.yaml"),

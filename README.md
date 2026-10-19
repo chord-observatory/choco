@@ -11,7 +11,7 @@ Around that core, choco also fronts the observatory's companion services: header
 ## Requirements
 
 - Python 3.10+
-- A FreeIPA server for LDAP authentication (e.g. `ipa1.auth.chord-observatory.ca`)
+- The site's reverse proxy with Authelia in front of choco, which signs people in (see [Signing in](#signing-in))
 - Kotekan instances reachable over HTTP (default port 12048)
 - graphviz (`dot`) — optional; renders the pipeline graph on node pipeline pages
   (without it the raw dot text is shown instead)
@@ -27,7 +27,7 @@ cd choco
 sudo ./choco.sh install                   # install; prompts to overwrite existing configs
 sudo ./choco.sh install --overwrite-configs  # overwrite configs without prompting
 sudo ./choco.sh install --keep-configs       # keep existing configs without prompting
-sudo $EDITOR /etc/choco/config.yaml  # edit LDAP settings + secret_key
+sudo $EDITOR /etc/choco/config.yaml  # edit server.proxy_auth + secret_key
 sudo systemctl restart choco
 ```
 
@@ -97,17 +97,14 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 | `skymap` | the sky-map job's `service_unit`; its PNGs are read from `<state_dir>/skymap/` |
 | `mapmaker` | the drift-scan map job's `service_unit`; its state and PNGs are read from `<state_dir>/mapmaker/` |
 | `vis_files` | the data roots `/files` scans |
-| `ldap` | FreeIPA host, port, `use_ssl`, `ca_cert`, `base_dn`, `user_dn`, `user_login_attr` |
 
 `config.yaml` contains secrets and is chmod 600. Only `config.yaml.template` is checked into the repo.
 
-#### LDAP Authentication (FreeIPA)
+#### Signing in
 
-choco authenticates against a FreeIPA LDAP directory by **direct bind**: the user's DN is strung together as `<user_login_attr>=<username>,<user_dn>,<base_dn>` and bound with their own password — the bind itself proves the credentials, so **no service account is needed**. The defaults are tuned for FreeIPA (`cn=users,cn=accounts` user DN, `uid` login attribute, LDAPS on port 636).
+choco has no login of its own.  It is reached at `https://ctc.chord-observatory.ca/choco/`, where the site proxy's Authelia signs people in (FreeIPA account and second factor) and passes the user and their groups on; `server.proxy_auth` names the proxy (its address and a shared secret) and `write_groups` the FreeIPA groups that may change things — anyone else is read-only.  The hosts in `server.trusted_hosts` (choco itself, chive) are signed in by address, and the jobs and the CLI use the loopback API.  If the site is down, anyone with ssh access to choco can tunnel to it and is signed in as localhost: `ssh -L 5000:127.0.0.1:5000 choco`, then `https://localhost:5000/`.  See [docs/design/auth.md](docs/design/auth.md).
 
-The LDAPS connection **verifies the server's certificate and hostname** — always; there is no setting that turns it off (an unverified connection lets anyone on the path to the IPA server answer "bind succeeded" to any password). The bind is a few dozen lines of standard-library code (`choco/ldapbind.py`), not an LDAP library. By default it verifies against the system CA store, where `ipa-client-install` has already placed the IPA CA; `ldap.ca_cert` points at a PEM bundle instead, and a path to a missing file is a startup error rather than a silent fallback. `use_ssl: false` is allowed but logged as a warning, since passwords would then cross the network in cleartext.
-
-Two other startup-time guardrails sit alongside: `server.secret_key` may not be a placeholder or shorter than 16 characters (it signs the session cookie, so a guessable key is a login bypass; `choco.sh install` generates one), and the session cookie is issued `Secure` (when `server.ssl` is on), `HttpOnly` and `SameSite=Lax`.
+Two startup-time guardrails protect the session: `server.secret_key` may not be a placeholder or shorter than 16 characters (it signs the session cookie, so a guessable key is a login bypass; `choco.sh install` generates one), and the session cookie is issued `Secure` (when `server.ssl` is on), `HttpOnly` and `SameSite=Lax`.
 
 ### Config Directory
 
@@ -184,7 +181,7 @@ Because there may be no upstream source for this wiring, **treat the deployed co
 
 ## Running
 
-After installation, choco runs as a systemd service. Open `https://<hostname>` in a browser and log in with your LDAP credentials.
+After installation, choco runs as a systemd service. Open it through the site proxy (`server.proxy_auth.public_url`); see [Signing in](#signing-in).
 
 To run manually (e.g. for debugging):
 
@@ -312,7 +309,7 @@ Every reply is printed as JSON. Exit status: 0 ok, 1 rejected (the server's erro
 ### Prometheus metrics
 
 `GET /metrics` serves Prometheus exposition text and is **unauthenticated** (Prometheus
-scrapes from another host and speaks neither LDAP sessions nor CSRF tokens); the
+scrapes from another host and speaks neither login sessions nor CSRF tokens); the
 only other unauthenticated routes are `/skymap.png` and `/skymap-night.png`, for wall displays. It deliberately exposes only aggregate health — no node names,
 hosts, or configs:
 
@@ -488,8 +485,7 @@ choco/
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
-├── auth.py         # login sessions (signed cookie + in-memory users), direct LDAP bind, localhost bypass decorator
-├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
+├── auth.py         # login sessions (signed cookie + in-memory users), proxy sign-in and roles, trusted hosts, localhost bypass decorator
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
 jobs/               # One dir per job: systemd units, code, tests; run-job.sh runs any of them

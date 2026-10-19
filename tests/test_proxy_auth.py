@@ -275,7 +275,7 @@ CHIVE = "10.222.0.54"
 
 @pytest.fixture
 def roles_client(configs_dir):
-    """choco with write groups, a public URL, no LDAP, and chive trusted."""
+    """choco with write groups, a public URL, and chive trusted."""
     app = create_app(configs_dir=configs_dir, config=_config(
         configs_dir, proxy_auth=ROLES, trusted_hosts={CHIVE: "chive"}))
     app.config["TESTING"] = True

@@ -27,9 +27,9 @@ class TestRetiredKeys:
         ("eop:\n  fpga_master_port: 54321\n", "fpga_master.port"),
         # 2026-10: the eop job's own settings moved to its own config
         ("eop:\n  intervals_before: 2\n", "/etc/choco/eop.yaml"),
-        ("ldap:\n  bind_dn: uid=svc\n", "binds as the user"),
-        ("ldap:\n  bind_password: s3cret\n", "binds as the user"),
-        ("ldap:\n  user_search_scope: SUBTREE\n", "no user search"),
+        # 2026-10: choco has no login of its own
+        ("ldap:\n  host: ldaps://ipa.example\n", "server.proxy_auth"),
+        ("ldap:\n  host:\n  port: 636\n", "server.proxy_auth"),
         ("eop:\n  endpoint: earth_rotation_data\n", "/etc/choco/eop.yaml"),
         # 2026-10: state paths are a convention, not configuration
         ("eop:\n  state_file: /var/lib/choco/eop/state.json\n", "state_dir"),
@@ -113,5 +113,6 @@ class TestBlocks:
 
     def test_absent_blocks_are_empty(self, tmp_path):
         cfg = _load(tmp_path, "")
-        assert cfg["eop"] == {} and cfg["ldap"] == {} and cfg["vis_files"] == {}
+        assert cfg["eop"] == {} and cfg["vis_files"] == {}
+        assert "ldap" not in cfg
         assert cfg["sync"]["poll_interval"] == 5

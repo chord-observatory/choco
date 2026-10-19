@@ -2,23 +2,21 @@
 {% block title %}Sign in — CHOCO{% endblock %}
 
 {% block styles %}
-main.container { max-width: 400px; margin-top: 10vh; }
+main.container { max-width: 520px; margin-top: 10vh; }
 {% endblock %}
 
 {% block content %}
 <h2>Sign in</h2>
-{% if proxy_only %}
-<div class="notice"><p>Sign in through the site: <a href="{{ proxy_url }}">{{ proxy_url }}</a>.</p></div>
-{% else %}
-<form method="post">
-    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    <label for="username">Username</label>
-    <input type="text" id="username" name="username" required autofocus>
-
-    <label for="password">Password</label>
-    <input type="password" id="password" name="password" required>
-
-    <button type="submit">Log in</button>
-</form>
-{% endif %}
+{# choco has no login of its own: the site proxy (Authelia) signs people
+   in, and the trusted hosts are signed in by address. #}
+<div class="notice">
+    {% if proxy_url %}
+    <p>Sign in through the site: <a href="{{ proxy_url }}">{{ proxy_url }}</a>.</p>
+    {% else %}
+    <p>choco is reached through the site proxy, or from a trusted host.</p>
+    {% endif %}
+    <p>If the site is down, anyone with ssh access to this host can tunnel to it
+    and is signed in as localhost: <code>ssh -L 5000:127.0.0.1:5000 &lt;this host&gt;</code>,
+    then open <code>https://localhost:5000/</code>.</p>
+</div>
 {% endblock %}
