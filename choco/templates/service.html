@@ -10,17 +10,17 @@
 {% block content %}
 <div class="page-head">
     <h2>
-        <a href="/" class="crumb">Services</a><span class="crumb-sep">/</span>{{ name | upper }}
+        <a href="{{ request.script_root }}/" class="crumb">Services</a><span class="crumb-sep">/</span>{{ name | upper }}
         {{ tag(job_tone(job.health, job.running), job_label(job.health, job.running)) }}
     </h2>
 </div>
 {% if svc.description %}
-<div class="note" style="margin-bottom: 1em;"><p>{{ svc.description }}</p></div>
+<div class="note" style="margin-bottom: 1em;"><p>{{ svc.description.format(root=request.script_root) }}</p></div>
 {% endif %}
 
 <div id="service-flash"></div>
 <div id="service-status"
-     hx-get="/partials/service-status/{{ name }}"
+     hx-get="{{ request.script_root }}/partials/service-status/{{ name }}"
      hx-trigger="every 5s"
      hx-swap="innerHTML">
 {% include "_service_status.html" %}
@@ -30,7 +30,7 @@
 {# The newest archived solution in the live-plot panel, loaded after the
    page paints (reading the file is a subprocess); see web.partial_eigencal_gains. #}
 <script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
-<div id="eigencal-gains" hx-get="/partials/eigencal-gains" hx-trigger="load" hx-swap="innerHTML">
+<div id="eigencal-gains" hx-get="{{ request.script_root }}/partials/eigencal-gains" hx-trigger="load" hx-swap="innerHTML">
     <p class="note"><em>Loading the latest solution…</em></p>
 </div>
 {% endif %}
@@ -47,19 +47,19 @@
     <h3>{{ f.svc.label }}</h3>
     {{ tag(job_tone(f.job.health, f.job.running), job_label(f.job.health, f.job.running)) }}
 </div>
-{% if f.svc.description %}<p class="note">{{ f.svc.description }}</p>{% endif %}
+{% if f.svc.description %}<p class="note">{{ f.svc.description.format(root=request.script_root) }}</p>{% endif %}
 {% if f.svc.card %}
-<div id="{{ fname }}-card" hx-get="{{ f.svc.card }}" hx-trigger="load, every 300s" hx-swap="innerHTML"></div>
+<div id="{{ fname }}-card" hx-get="{{ request.script_root }}{{ f.svc.card }}" hx-trigger="load, every 300s" hx-swap="innerHTML"></div>
 {% endif %}
 <div id="{{ fname }}-status"
-     hx-get="/partials/service-status/{{ fname }}"
+     hx-get="{{ request.script_root }}/partials/service-status/{{ fname }}"
      hx-trigger="every 30s"
      hx-swap="innerHTML">
 {% with name=fname, job=f.job, svc=f.svc, timer=f.timer, detail=f.detail, now_ts=f.now_ts %}
 {% include "_service_status.html" %}
 {% endwith %}
 </div>
-{% with name=fname, job=f.job, state_json=f.state_json, lines_href='/service/' ~ host, lines_anchor='#' ~ fname, journal_id=fname ~ '-journal' %}
+{% with name=fname, job=f.job, state_json=f.state_json, lines_href=request.script_root ~ '/service/' ~ host, lines_anchor='#' ~ fname, journal_id=fname ~ '-journal' %}
 {% include "_service_tail.html" %}
 {% endwith %}
 </section>

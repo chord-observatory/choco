@@ -73,7 +73,7 @@ choco/
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
-├── auth.py         # login sessions (signed cookie + in-memory users), direct LDAP bind, localhost bypass decorator
+├── auth.py         # login sessions (signed cookie + in-memory users), direct LDAP bind, localhost bypass decorator, proxy sign-in
 ├── ldapbind.py     # LDAP simple bind on stdlib ssl/socket (RFC 4511 BER; replaces ldap3)
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
@@ -187,13 +187,27 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - `server.trusted_hosts` (default empty) logs a listed peer in as a synthetic
   `User(trusted=True)` named by its label.  CSRF stays on; the user never
   enters `_users`, so its cookie is worthless from any other address; a real
-  login is never replaced.  It is safe only because nothing proxies to choco
-  and `remote_addr` is the real peer.
+  login is never replaced.  It is safe only because `remote_addr` is always
+  the real TCP peer: nothing reads `X-Forwarded-For` (no `ProxyFix`).
+- `server.proxy_auth` (default unset) is how the site proxy is recognised:
+  its address **and** a shared secret (`X-Choco-Proxy-Secret`, stripped by
+  `auth.ProxyMiddleware`).  Only such a request is served under the prefix
+  (`SCRIPT_NAME`) and signed in as the proxy's `Remote-User`, a real user in
+  `_users`, replaced when the header names someone else.  The peer may not
+  be loopback nor in `trusted_hosts`; logout behind the proxy continues to
+  its `logout_url`.
+- Every URL a page builds starts at the app root, so choco works under the
+  proxy's prefix: `url_for`, or `{{ request.script_root }}` before a path
+  in a template (`request.script_root ~ '/x'` in a Jinja expression), and
+  in a script the page's `<meta name="choco-root">`.  Python modules without
+  Flask (`waterfalls.py`) return root-relative paths for the template to
+  prefix.  `tests/test_proxy_auth.py` renders every route behind the proxy
+  and checks the sources.
 - Keep the startup guardrails: a placeholder or short `server.secret_key` is
   refused; `server.dev_auth` requires a loopback `server.host`; LDAPS
   verifies the server certificate and hostname (`ldapbind` uses
   `ssl.create_default_context`; no mode turns it off); a missing `ldap.ca_cert` file is a startup error; the
-  session cookie is Secure (when `server.ssl`), HttpOnly, SameSite=Lax;
+  session cookie (`choco_session`, never Flask's shared default name) is Secure (when `server.ssl`), HttpOnly, SameSite=Lax;
   `_next_target` rejects `//`, backslashes and control characters.
 - Dev mode turns login **and** CSRF off together (the token lives in the
   session cookie) and re-establishes the synthetic login per request.

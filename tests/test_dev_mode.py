@@ -93,7 +93,7 @@ class TestDevAuthOn:
         doing this in before_request rather than via login_user alone."""
         client = dev_app.test_client()
         assert client.get("/").status_code == 200
-        client.delete_cookie("session")
+        client.delete_cookie("choco_session")
         assert client.get("/").status_code == 200
 
 

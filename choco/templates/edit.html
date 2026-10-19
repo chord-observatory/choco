@@ -3,9 +3,9 @@
 
 {% block content %}
 <div class="page-head">
-    <h2><a href="/nodes" class="crumb">Nodes</a><span class="crumb-sep">/</span>{{ node.key }}</h2>
+    <h2><a href="{{ request.script_root }}/nodes" class="crumb">Nodes</a><span class="crumb-sep">/</span>{{ node.key }}</h2>
     <div class="page-actions">
-        <a href="/pipeline/{{ node_key }}" role="button" class="secondary outline btn-sm"
+        <a href="{{ request.script_root }}/pipeline/{{ node_key }}" role="button" class="secondary outline btn-sm"
            title="The live pipeline graph: stages, buffers and frame peeks on this node">Live pipeline</a>
     </div>
 </div>
@@ -23,7 +23,7 @@
 </dl>
 <dl id="node-status" class="service-facts node-facts"
     hx-ext="morph"
-    hx-get="/nodes/partials/node-status/{{ node_key }}"
+    hx-get="{{ request.script_root }}/nodes/partials/node-status/{{ node_key }}"
     hx-trigger="load, every 2s"
     hx-swap="morph:innerHTML">
     {% include "_node_status.html" %}
@@ -32,7 +32,7 @@
     <dt>Config file</dt>
     <dd>
         <code>{{ node.config_filename }}</code>
-        <a href="/configs/edit/{{ node.config_filename }}" role="button" class="secondary outline btn-sm"
+        <a href="{{ request.script_root }}/configs/edit/{{ node.config_filename }}" role="button" class="secondary outline btn-sm"
            title="Edit {{ node.config_filename }} in the config library{% if shared_with %} (also rendered by {{ shared_with | join(', ') }}){% endif %}"
            style="margin-left: 0.5em;">Edit config</a>
         {% if shared_with %}<small class="muted" style="margin-left: 0.5em;">shared with {{ shared_with | join(", ") }}</small>{% endif %}
@@ -57,7 +57,7 @@
             onclick="return confirm('Make {{ node_key }} render the selected file?\n\nThis rewrites nodes.yaml and rebuilds the registry: every node is placed in maintenance mode until you lift it.')">Apply</button>
 </form>
 <p class="note">The selected file is this node's desired config; edit its text in the
-<a href="/configs">config library</a>. Applying a different file rewrites
+<a href="{{ request.script_root }}/configs">config library</a>. Applying a different file rewrites
 <code>nodes.yaml</code> and pauses every node until maintenance is lifted.</p>
 
 <h3>Actions</h3>

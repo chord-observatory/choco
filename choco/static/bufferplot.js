@@ -2198,13 +2198,17 @@
     // dataset differ only here — everything downstream sees a
     // descriptor and bytes and cannot tell them apart.
 
+    // The path prefix choco is served under behind the site proxy ("" when
+    // reached directly), from the page's <meta name="choco-root">.
+    var ROOT = (document.querySelector('meta[name="choco-root"]') || {}).content || "";
+
     function bufferSource(nodeKey, buffer) {
         return {
             id: nodeKey + "|" + buffer,
             title: buffer,
-            url: "/api/node-buffer-data/" + nodeKey +
+            url: ROOT + "/api/node-buffer-data/" + nodeKey +
                  "?buffer=" + encodeURIComponent(buffer),
-            page: "/plot/" + nodeKey + "?buffer=" + encodeURIComponent(buffer),
+            page: ROOT + "/plot/" + nodeKey + "?buffer=" + encodeURIComponent(buffer),
         };
     }
 

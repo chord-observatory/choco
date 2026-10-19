@@ -15,14 +15,14 @@ table.services code { font-size: 0.85em; }
 page; the header badges carry the same health from any page.</p>
 
 <div id="landing-services"
-     hx-get="/partials/landing-services"
+     hx-get="{{ request.script_root }}/partials/landing-services"
      hx-trigger="every 30s"
      hx-swap="innerHTML">
     {% include "_landing_services.html" %}
 </div>
 
 <div id="skymap"
-     hx-get="/partials/skymap"
+     hx-get="{{ request.script_root }}/partials/skymap"
      hx-trigger="load, every 300s"
      hx-swap="innerHTML"></div>
 {% endblock %}

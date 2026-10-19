@@ -3,6 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {# the path prefix behind the site proxy ("" when reached directly); the scripts read it #}
+    <meta name="choco-root" content="{{ request.script_root }}">
     <title>{% block title %}CHOCO{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='pico.min.css') }}">
     {# Palette tokens and the shared components; see static/choco.css. #}
@@ -33,19 +35,19 @@
     {% endif %}
     <nav class="container">
         <ul>
-            <li><a href="/" class="brand">CHOCO</a></li>
+            <li><a href="{{ request.script_root }}/" class="brand">CHOCO</a></li>
             {% if current_user.is_authenticated %}
             <li id="services-status" class="services-strip"
-                hx-get="/partials/services"
+                hx-get="{{ request.script_root }}/partials/services"
                 hx-trigger="load, every 30s"
                 hx-swap="innerHTML"></li>
             {% endif %}
         </ul>
         <ul style="font-size: 0.85em;">
             {% if current_user.is_authenticated %}
-            <li id="presence" hx-get="/partials/presence" hx-trigger="load, every 60s" hx-swap="innerHTML"><small>{{ current_user.username }}</small></li>
+            <li id="presence" hx-get="{{ request.script_root }}/partials/presence" hx-trigger="load, every 60s" hx-swap="innerHTML"><small>{{ current_user.username }}</small></li>
             {% if not current_user.trusted %}
-            <li><a href="/logout" title="Logout" class="logout-icon"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3v12h3"/><path d="M10 5l3 3-3 3"/><path d="M13 8H6"/></svg></a></li>
+            <li><a href="{{ request.script_root }}/logout" title="Logout" class="logout-icon"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3v12h3"/><path d="M10 5l3 3-3 3"/><path d="M13 8H6"/></svg></a></li>
             {% endif %}
             {% endif %}
             <li><button type="button" id="theme-toggle" class="icon-btn" title="Toggle dark/light" aria-label="Toggle dark/light"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg></button></li>

@@ -4,7 +4,7 @@
    registry slug, ``lines_href`` the page the lines picker reloads
    (default: the service page) and ``journal_id`` the journal's id when a
    page carries two. #}
-{% set picker_href = lines_href or ('/service/' ~ name) %}
+{% set picker_href = lines_href or (request.script_root ~ '/service/' ~ name) %}
 {% if state_json %}
 <section>
     <details>
@@ -26,7 +26,7 @@
         </span>
     </div>
     <div id="{{ journal_id or 'journal' }}" class="journal-log"
-         hx-get="/partials/service-logs/{{ name }}?lines={{ nlines }}"
+         hx-get="{{ request.script_root }}/partials/service-logs/{{ name }}?lines={{ nlines }}"
          hx-trigger="load, every 30s"
          hx-swap="innerHTML"></div>
 </section>

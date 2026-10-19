@@ -83,7 +83,7 @@ table.dish-grid form { margin: 0; display: inline; }
 {% block content %}
 <div class="page-head">
     <h2>
-        <a href="/" class="crumb">Services</a><span class="crumb-sep">/</span>PDB
+        <a href="{{ request.script_root }}/" class="crumb">Services</a><span class="crumb-sep">/</span>PDB
         {{ tag(monitor_tone(pdb.health), monitor_label(pdb.health)) }}
     </h2>
 </div>
@@ -95,7 +95,7 @@ the feed amplifiers, one channel per output.</p>
 <div id="pdb-flash"></div>
 
 <div id="pdb-status"
-     hx-get="/partials/service-pdb"
+     hx-get="{{ request.script_root }}/partials/service-pdb"
      hx-trigger="every 5s"
      hx-ext="morph"
      hx-swap="morph:innerHTML"

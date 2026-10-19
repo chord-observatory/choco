@@ -8,6 +8,9 @@
     var data = document.getElementById("matrix-data");
     if (!img || !data) return;
     var cfg = JSON.parse(data.textContent);
+    // cfg's links are relative to the app root; behind the site proxy the
+    // page's <meta name="choco-root"> carries the prefix ("" directly).
+    var root = (document.querySelector('meta[name="choco-root"]') || {}).content || "";
     var n = cfg.n_el, labels = cfg.labels;
     var readout = document.getElementById("matrix-readout");
 
@@ -29,12 +32,12 @@
         var c = cell(ev);
         if (!c) return;
         var a = Math.min(c[0], c[1]), b = Math.max(c[0], c[1]);
-        window.location.href = cfg.coarse_view + "/wf_e" + pad(a) + "xe" + pad(b) + ".png";
+        window.location.href = root + cfg.coarse_view + "/wf_e" + pad(a) + "xe" + pad(b) + ".png";
     });
     var range = document.getElementById("matrix-row");
     if (range) {
         range.addEventListener("change", function () {
-            window.location.href = cfg.page + "?band=" + cfg.band + "&row=" + range.value;
+            window.location.href = root + cfg.page + "?band=" + cfg.band + "&row=" + range.value;
         });
     }
 })();

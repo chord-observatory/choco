@@ -8,8 +8,8 @@
 {%- set unmapped = '' if label else ' unmapped' -%}
 {% if control %}
 <form id="pdb-c-{{ bus }}-{{ board }}-{{ chip }}-{{ ci }}"
-      method="post" action="/service/pdb/set"
-      hx-post="/service/pdb/set"
+      method="post" action="{{ request.script_root }}/service/pdb/set"
+      hx-post="{{ request.script_root }}/service/pdb/set"
       hx-target="#pdb-status" hx-swap="morph:innerHTML"
       data-confirm="Power {{ 'OFF' if on else 'ON' }}: bus {{ bus }} board {{ board }} chip {{ chip }} ch{{ ci }}{% if label %} ({{ label }}){% endif %}?">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -40,8 +40,8 @@
     ~ ' channels of ' ~ scope ~ '?'
     ~ ('\n\nThat is every amplifier on the bus — expect a large inrush on power-up.'
        if board is none else '') -%}
-<form method="post" action="/service/pdb/set-group"
-      hx-post="/service/pdb/set-group"
+<form method="post" action="{{ request.script_root }}/service/pdb/set-group"
+      hx-post="{{ request.script_root }}/service/pdb/set-group"
       hx-target="#pdb-status" hx-swap="morph:innerHTML"
       data-confirm-always="{{ confirm }}">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -60,8 +60,8 @@
 {% macro rowbulk(row, pol, on, count) %}
 {%- set confirm = 'Power ' ~ ('ON' if on else 'OFF') ~ ' all ' ~ count ~ ' '
     ~ pol ~ ' channels of row ' ~ row ~ '?' -%}
-<form method="post" action="/service/pdb/set-row"
-      hx-post="/service/pdb/set-row"
+<form method="post" action="{{ request.script_root }}/service/pdb/set-row"
+      hx-post="{{ request.script_root }}/service/pdb/set-row"
       hx-target="#pdb-status" hx-swap="morph:innerHTML"
       data-confirm-always="{{ confirm }}">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">

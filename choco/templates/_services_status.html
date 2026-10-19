@@ -33,7 +33,7 @@
 {% for word, j in parts %}{% set ns.tip = ns.tip ~ job_tip(word, word, j) %}{% endfor %}
 {% set jobs = [['', job]] + parts %}
 {{ tag(data_tone(none, jobs), data_word(none, jobs),
-       label=label, href='/service/' ~ name, title=ns.tip ~ '\n\nclick for details', quiet=true) }}
+       label=label, href=request.script_root ~ '/service/' ~ name, title=ns.tip ~ '\n\nclick for details', quiet=true) }}
 {%- endmacro %}
 {# A hardware monitor's badge: where it is, its health, one line of its
    own (extra), when it was last seen and its error. #}
@@ -53,13 +53,13 @@
              ~ ('\nunknown: ' ~ nodes.unknown if nodes.unknown else '')
              ~ '\nin maintenance: ' ~ nodes.maintenance
              ~ '\n\nclick for the dashboard' %}
-{{ tag(monitor_tone(nodes.health), nodes.label, label='NODES', href='/nodes', title=tip, quiet=true) }}
+{{ tag(monitor_tone(nodes.health), nodes.label, label='NODES', href=request.script_root ~ '/nodes', title=tip, quiet=true) }}
 {% endif %}
 {% if fpga %}
-{{ monitor_tag('FPGA', 'fpga_master', fpga, ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else ''), '/service/fpga') }}
+{{ monitor_tag('FPGA', 'fpga_master', fpga, ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else ''), request.script_root ~ '/service/fpga') }}
 {% endif %}
 {% if pdb %}
-{{ monitor_tag('PDB', 'power_db', pdb, ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else ''), '/service/pdb') }}
+{{ monitor_tag('PDB', 'power_db', pdb, ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else ''), request.script_root ~ '/service/pdb') }}
 {% endif %}
 {# DATA is the mounts and the jobs that read them (the waterfall
    renderer, the acquisition notes), one tag (data_tone / data_word pick
@@ -76,7 +76,7 @@
              ~ job_tip('notes', 'acqnotes', notes)
              ~ '\n\nclick for details' %}
 {% set data_jobs = [['waterfall', wf], ['notes', notes]] %}
-{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs), label='DATA', href='/files', title=tip, quiet=true) }}
+{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs), label='DATA', href=request.script_root ~ '/files', title=tip, quiet=true) }}
 {% endif %}
 {% for name, s in svc.items() if s.kind == 'job' and not s.page %}
 {{ job_tag(s.label, name, services[name], s.mtime_label, folds.get(name, [])) }}

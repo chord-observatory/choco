@@ -13,7 +13,7 @@ import gevent
 import yaml
 from flask import Flask
 
-from .auth import init_auth, parse_trusted_hosts
+from .auth import init_auth, parse_proxy_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
 from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
 from .waterfalls import WaterfallStore
@@ -36,6 +36,7 @@ _DEFAULT_CONFIG = {
         "ssl": True,
         "dev_auth": None,
         "trusted_hosts": {},
+        "proxy_auth": None,
     },
     "configs_dir": "configs",
     "kotekan": {
@@ -185,7 +186,12 @@ def load_config(path: str | Path) -> dict:
     # Validated here as well as in init_auth so a typo in the mapping is a
     # startup error with the offending key named, not a peer silently let
     # in or silently locked out.
-    parse_trusted_hosts(config["server"].get("trusted_hosts"))
+    trusted = parse_trusted_hosts(config["server"].get("trusted_hosts"))
+    # Likewise proxy_auth, which also checks its peer against trusted_hosts.
+    # Dev mode binds loopback, where no proxy can reach it.
+    if parse_proxy_auth(config["server"].get("proxy_auth"), trusted) \
+            and config["server"].get("dev_auth"):
+        raise ValueError("server.proxy_auth and server.dev_auth cannot both be set")
     _refuse_retired_keys(raw)
     config["configs_dir"] = raw.get("configs_dir", "configs")
     # The jobs resolve the same root from systemd, so a relative path here
@@ -233,6 +239,10 @@ def create_app(
     # would never be sent back at all.  SameSite=Lax is defence in depth
     # behind the CSRF token; HttpOnly is Flask's default, stated anyway.
     app.config["SESSION_COOKIE_SECURE"] = bool(config["server"].get("ssl", True))
+    # Not Flask's default "session": behind the site proxy choco shares a
+    # host with other Flask apps (padloper), whose cookie of that name
+    # would overwrite choco's and log the user out on every switch.
+    app.config["SESSION_COOKIE_NAME"] = "choco_session"
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 

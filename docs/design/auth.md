@@ -145,8 +145,9 @@ logging out would only log it straight back in.
 The peer address is trustworthy because gevent's WSGIServer terminates the
 TCP connection itself: there is no reverse proxy on the box, and the
 iptables 443→5000 rule is PREROUTING only, so ``remote_addr`` is the real
-peer.  Putting a proxy in front of choco would have to come with
-``ProxyFix`` and a rethink of this key.  The list is validated in
+peer.  The site proxy that now fronts choco does not change that: it is
+recognised by address and secret, never by ``X-Forwarded-For`` (see
+"Behind the site proxy" below).  The list is validated in
 ``load_config`` (and again in ``init_auth`` for tests that build a config
 dict directly): a non-mapping, an unparsable key or an empty label is a
 startup error naming the entry.  Entries are matched most-specific first so
@@ -173,3 +174,49 @@ no HTML form can send one cross-origin, so even a leaked token cannot be
 spent by a form.  A trusted-host peer is a browser session like any other
 here.  ``/api/fpga/gain-data`` alone is login-only even from loopback:
 nothing on the host reads the F-engine's gains.
+
+## Behind the site proxy (2026-10)
+
+choco is reached from outside at ``https://ctc.chord-observatory.ca/choco/``:
+nginx on the proxy host asks Authelia (FreeIPA accounts, two-factor) before
+every request and passes the signed-in user in ``Remote-User``.  Direct
+access on the site network is unchanged (choco's own LDAP login).
+
+**Recognising the proxy.**  ``ProxyFix`` was the obvious tool and the wrong
+one: it rewrites ``remote_addr`` from ``X-Forwarded-For``, a header any
+client can send, and ``remote_addr`` is what the loopback bypass and
+``trusted_hosts`` trust -- a forged ``X-Forwarded-For: 127.0.0.1`` would be
+a login and CSRF bypass on the whole API.  Instead ``server.proxy_auth``
+names the proxy's address as choco sees it (no NAT between ctc and site,
+checked) and a shared secret the proxy adds (``X-Choco-Proxy-Secret``, from
+a root-only nginx snippet).  ``auth.ProxyMiddleware`` marks a request
+proxied only when both match, strips the secret header from every request,
+and never touches ``REMOTE_ADDR``.  ``load_config`` refuses a loopback peer,
+a peer inside ``trusted_hosts`` (every proxied request would become that
+label) and ``dev_auth`` alongside it.
+
+**Who it signs in.**  A proxied request is signed in as ``Remote-User``
+through ``save_user``, a real user like an LDAP login, so audit lines name
+the person; Authelia has already checked the password, the second factor
+and the ``choco-users``/``choco-admins`` group.  The header decides on every
+request, so a session minted for someone else is replaced.  A username that
+is not plain ``[A-Za-z0-9._-]`` is a 403 rather than a DN built from it.
+Logout behind the proxy goes on to Authelia's logout (``logout_url``),
+since clearing only choco's session would sign straight back in.  CSRF is
+unchanged; a proxied request is not loopback, so an API write needs the
+token and JSON like any browser write.
+
+**The prefix.**  nginx strips ``/choco`` and the middleware sets
+``SCRIPT_NAME``, so ``url_for`` and ``request.script_root`` produce prefixed
+URLs.  About 150 hand-built URLs in the templates and scripts were made
+prefix-aware: ``{{ request.script_root }}`` in templates, the page's
+``<meta name="choco-root">`` in scripts, and ``?next=`` kept relative to the
+app root with the prefix restored by ``_next_target``.
+``tests/test_proxy_auth.py`` renders every route as a proxied request and
+also checks the template and script sources, because pages that need data
+(the waterfalls) do not render in tests.
+
+**The cookie.**  Behind the proxy choco shares a host with padloper, another
+Flask app.  Both used Flask's default cookie name ``session``, so each would
+overwrite the other's on every visit; choco's is ``choco_session``.  The
+rename logged everyone out once.

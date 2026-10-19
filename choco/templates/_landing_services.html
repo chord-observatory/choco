@@ -45,7 +45,7 @@
     </thead>
     <tbody>
         <tr>
-            <td class="svc"><a href="/service/choco"><strong>CHOCO</strong></a></td>
+            <td class="svc"><a href="{{ request.script_root }}/service/choco"><strong>CHOCO</strong></a></td>
             <td>{{ tag('ok', 'up') }}</td>
             <td>
                 {% if choco %}
@@ -57,26 +57,26 @@
         </tr>
         {% if nodes %}
         <tr>
-            <td class="svc"><a href="/nodes"><strong>NODES</strong></a></td>
+            <td class="svc"><a href="{{ request.script_root }}/nodes"><strong>NODES</strong></a></td>
             <td>{{ tag(monitor_tone(nodes.health), nodes.label) }}</td>
             <td>
                 {{ nodes.total }} node{{ 's' if nodes.total != 1 }}
                 &mdash; {{ nodes.started }} started, {{ nodes.idle }} idle,
                 {{ nodes.down }} down{% if nodes.syncing %}, {{ nodes.syncing }} syncing{% endif %}{% if nodes.unknown %}, {{ nodes.unknown }} unknown{% endif %},
                 {{ nodes.maintenance }} in maintenance
-                &middot; <a href="/nodes">dashboard</a>
-                &middot; <a href="/configs">configs</a>
+                &middot; <a href="{{ request.script_root }}/nodes">dashboard</a>
+                &middot; <a href="{{ request.script_root }}/configs">configs</a>
             </td>
             <td><span class="muted">&mdash;</span></td>
         </tr>
         {% endif %}
         {% if services.fpga %}{% set fpga = services.fpga %}
-        {% call monitor_row('FPGA', '/service/fpga', 'fpga_master', fpga, 'fpga_master.host/port') %}
+        {% call monitor_row('FPGA', request.script_root ~ '/service/fpga', 'fpga_master', fpga, 'fpga_master.host/port') %}
                 {% if fpga.state %} &middot; state: {{ fpga.state }}{% endif %}
         {%- endcall %}
         {% endif %}
         {% if services.pdb %}{% set pdb = services.pdb %}
-        {% call monitor_row('PDB', '/service/pdb', 'power_db', pdb, 'pdb.host/port') %}
+        {% call monitor_row('PDB', request.script_root ~ '/service/pdb', 'power_db', pdb, 'pdb.host/port') %}
                 {% if pdb.n_channels %} &middot; {{ pdb.n_on }} / {{ pdb.n_channels }} channels on{% endif %}
         {%- endcall %}
         {% endif %}
@@ -88,7 +88,7 @@
         {% if data or wf or notes %}
         {% set d = details.get('waterfall') %}{% set timer = timers.get('waterfall') %}
         <tr>
-            <td class="svc"><a href="/files"><strong>DATA</strong></a></td>
+            <td class="svc"><a href="{{ request.script_root }}/files"><strong>DATA</strong></a></td>
             <td>{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</td>
             <td>
                 {% if data and data.configured %}
@@ -129,7 +129,7 @@
         {% set parts = folds.get(name, []) %}
         {% set jobs = [['', job]] + parts %}
         <tr>
-            <td class="svc"><a href="/service/{{ name }}"><strong>{{ label }}</strong></a></td>
+            <td class="svc"><a href="{{ request.script_root }}/service/{{ name }}"><strong>{{ label }}</strong></a></td>
             <td>{{ tag(data_tone(none, jobs), data_word(none, jobs)) }}</td>
             {# The unit name lives on the service page and in the strip's
                tooltip; here only what changed matters. #}

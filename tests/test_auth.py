@@ -137,7 +137,7 @@ class TestLoginFlow:
             follow_redirects=False,
         )
         cookie = next(h for h in resp.headers.getlist("Set-Cookie")
-                      if h.startswith("session="))
+                      if h.startswith("choco_session="))
         assert "Secure" in cookie
         assert "HttpOnly" in cookie
         assert "SameSite=Lax" in cookie

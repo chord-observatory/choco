@@ -26,6 +26,20 @@ server:
                                   #     127.0.0.1: localhost
                                   #     "::1": localhost
                                   #     10.222.0.54: chive
+  proxy_auth:                     # Serving choco behind the site's reverse proxy (nginx + Authelia,
+                                  # https://<site>/choco/).  A request from `peer` carrying `secret`
+                                  # (X-Choco-Proxy-Secret, sent only by the proxy) is served under
+                                  # `prefix` over HTTPS and signed in as the proxy's Remote-User.
+                                  # The peer must be the address choco sees the proxy connect from,
+                                  # may not be loopback, and may not be in trusted_hosts.  Unset =
+                                  # no proxy.  Generate the secret with
+                                  #   python3 -c 'import secrets; print(secrets.token_hex(32))'
+                                  # and give the proxy the same value.
+                                  #   proxy_auth:
+                                  #     peer: 10.220.1.13
+                                  #     secret: <64 hex characters>
+                                  #     prefix: /choco
+                                  #     logout_url: /authelia/logout   # the default
 
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs

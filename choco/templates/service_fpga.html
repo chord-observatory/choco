@@ -11,7 +11,7 @@
 {% block content %}
 <div class="page-head">
     <h2>
-        <a href="/" class="crumb">Services</a><span class="crumb-sep">/</span>FPGA
+        <a href="{{ request.script_root }}/" class="crumb">Services</a><span class="crumb-sep">/</span>FPGA
         {{ tag(monitor_tone(fpga.health), monitor_label(fpga.health)) }}
     </h2>
 </div>
@@ -19,7 +19,7 @@
 kotekan and the EOP table are anchored to.</p>
 
 <div id="fpga-status"
-     hx-get="/partials/service-fpga"
+     hx-get="{{ request.script_root }}/partials/service-fpga"
      hx-trigger="every 5s"
      hx-swap="innerHTML">
 {% include "_service_fpga_status.html" %}
@@ -29,7 +29,7 @@ kotekan and the EOP table are anchored to.</p>
    plot module loads here, before the card arrives, so the card's own
    init script can count on window.chocoPlot existing. #}
 <script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
-<div id="fpga-gains" hx-get="/partials/fpga-gains" hx-trigger="load"
+<div id="fpga-gains" hx-get="{{ request.script_root }}/partials/fpga-gains" hx-trigger="load"
      hx-swap="innerHTML">
     <p class="note"><em>Loading digital gains…</em></p>
 </div>
@@ -41,12 +41,12 @@ kotekan and the EOP table are anchored to.</p>
     timing and the EOP table are anchored to it, so downstream consumers must resynchronize
     after the F-engine comes back up.</div>
     <div class="fpga-controls" style="display: flex; gap: 1em;">
-        <form method="post" action="/service/fpga/start"
+        <form method="post" action="{{ request.script_root }}/service/fpga/start"
               onsubmit="return confirm('Start the FPGA master?\n\nIt initializes in the background with the config it was launched with; the state above follows the progress.')">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <button type="submit">Start</button>
         </form>
-        <form method="post" action="/service/fpga/stop"
+        <form method="post" action="{{ request.script_root }}/service/fpga/stop"
               onsubmit="return confirm('Stop the FPGA master?\n\nThe F-engine shuts down (this can take a while), and the next start assigns a new frame0.')">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="secondary outline">Stop</button>

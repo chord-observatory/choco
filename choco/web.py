@@ -103,14 +103,16 @@ def _next_target() -> str:
     to another site.  The backslash rule is what makes the ``//`` rule
     hold: browsers resolve ``/\\host`` in a Location header exactly as
     ``//host``.  The login form posts to its own URL (no action
-    attribute), so ?next= survives failed attempts too.
+    attribute), so ?next= survives failed attempts too.  ?next= is
+    relative to the app root; behind the site proxy the prefix
+    (``request.script_root``) goes back on here.
     """
     next_page = request.args.get("next", "")
     if (not next_page.startswith("/") or next_page.startswith("//")
             or "\\" in next_page
             or any(ord(c) < 0x20 or c == "\x7f" for c in next_page)):
         return url_for("web.landing")
-    return next_page
+    return request.script_root + next_page
 
 
 # --- who is here -----------------------------------------------------------
@@ -235,6 +237,10 @@ def login():
 @login_required
 def logout():
     logout_user()
+    # Behind the site proxy the session comes from Authelia: sign out
+    # there too, or the next request signs straight back in.
+    if auth.is_proxied():
+        return redirect(current_app.config["PROXY_AUTH"]["logout_url"])
     flash("You have been logged out.", "success")
     return redirect(url_for("web.login"))
 
@@ -537,7 +543,7 @@ def node_plot_page(node_key):
     return render_template(
         "plot.html", node_key=node_key, title=buffer_name,
         subtitle=node.key,
-        source_url="/api/node-buffer-data/" + node_key
+        source_url=request.script_root + "/api/node-buffer-data/" + node_key
                    + "?buffer=" + quote(buffer_name, safe=""),
         source_id=node_key + "|" + buffer_name,
         back_url=url_for("web.node_pipeline_page", node_key=node_key),
@@ -1048,10 +1054,11 @@ def eigencal_gain_plot_page():
         flash("Invalid dataset name", "error")
         return redirect(url_for("web.service_page", name="eigencal"))
     return render_template("plot.html", title=dataset, subtitle="eigencal solution",
-                           source_url="/api/eigencal/gain-data?dataset="
+                           source_url=request.script_root + "/api/eigencal/gain-data?dataset="
                                       + quote(dataset, safe=""),
                            source_id="eigencal-gain|" + dataset,
-                           back_url="/service/eigencal", back_label="eigencal",
+                           back_url=url_for("web.service_page", name="eigencal"),
+                           back_label="eigencal",
                            node_key=None, poll_ms=GAIN_POLL_MS,
                            fetch_bytes=GAIN_FETCH_BYTES)
 
@@ -1107,7 +1114,7 @@ def fpga_gain_plot_page():
         flash("Invalid dataset name", "error")
         return redirect(url_for("web.service_page", name="fpga"))
     return render_template("plot.html", title=dataset, subtitle="F-engine gains",
-                           source_url="/api/fpga/gain-data?dataset="
+                           source_url=request.script_root + "/api/fpga/gain-data?dataset="
                                       + quote(dataset, safe=""),
                            source_id="fpga-gain|" + dataset,
                            back_url=url_for("web.service_page", name="fpga"),
@@ -1454,7 +1461,7 @@ _JOBS: dict[str, dict] = {
         "description": Markup(
             "Current-sky strip plot — renders the beam's drift-scan strip with the Sun, "
             "Moon and pointing every 5 minutes, in a day and a night palette; "
-            '<a href="/">also on the landing page</a>.'),
+            '<a href="{root}/">also on the landing page</a>.'),
     },
     # mapmaker rewrites its state file on every run; a run with nothing
     # new to fold in is the normal case between files, so the mtime is
@@ -1466,7 +1473,7 @@ _JOBS: dict[str, dict] = {
             "Drift-scan sky maps — folds each new N&sup2; file into a map of every pass, "
             "shown deconvolved in context on the 408 MHz sky, and a map of the last "
             "sidereal day, frequency as hue from red to violet, calibrated on the "
-            'brightest source transiting the beam. <a href="/files">The data it reads</a>.'),
+            'brightest source transiting the beam. <a href="{root}/files">The data it reads</a>.'),
     },
     # acqnotes rewrites its index only when it measures an acquisition,
     # so the mtime is "last measurement"; between acquisitions an hourly

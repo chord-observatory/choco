@@ -78,8 +78,8 @@
                       ~ (('\nclick to ' ~ ('remove the manual flag' if cell.manual else 'flag it manually')) if clickable else '') -%}
         <td class="feed-{{ 'bad' if cell.bad else 'good' }}{% if cell.manual %} feed-manual{% endif %}" title="{{ tip }}">
         {%- if clickable -%}
-        <form method="post" action="/service/bffs/manual"
-              hx-post="/service/bffs/manual" hx-target="#service-status" hx-swap="innerHTML"
+        <form method="post" action="{{ request.script_root }}/service/bffs/manual"
+              hx-post="{{ request.script_root }}/service/bffs/manual" hx-target="#service-status" hx-swap="innerHTML"
               data-confirm="{{ 'Remove the manual flag on ' ~ cell.label ~ '?' if cell.manual else 'Flag ' ~ cell.label ~ ' as bad manually?' }}">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="label" value="{{ cell.label }}">

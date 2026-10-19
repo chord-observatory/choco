@@ -8,16 +8,16 @@
     <div class="page-actions">
         {{ maint_ctl() }}
         {{ start_ctl() }}
-        <a href="/nodes/edit" role="button" class="secondary outline btn-sm"
+        <a href="{{ request.script_root }}/nodes/edit" role="button" class="secondary outline btn-sm"
            title="Edit nodes.yaml: groups, hosts, ports and which config file each node renders">Edit nodes</a>
-        <a href="/configs" role="button" class="secondary outline btn-sm"
+        <a href="{{ request.script_root }}/configs" role="button" class="secondary outline btn-sm"
            title="The config library: every config file, which nodes render or include it, and its editor">Edit configs</a>
     </div>
 </div>
 
 <div id="dashboard-table"
      hx-ext="morph"
-     hx-get="/partials/dashboard-table"
+     hx-get="{{ request.script_root }}/partials/dashboard-table"
      hx-trigger="every 2s"
      hx-swap="morph:innerHTML">
     {% include "_dashboard_table.html" %}

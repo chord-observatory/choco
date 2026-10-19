@@ -10,14 +10,14 @@
 {# The night render is the dark-theme image: base.html's theme script
    swaps src from data-night-src whenever the theme is dark, on load, on
    toggle and after this partial is re-swapped. #}
-<img src="/skymap.png?v={{ mtime }}" alt="Current-sky strip plot"
-     data-day-src="/skymap.png?v={{ mtime }}"
-     {% if night_mtime %}data-night-src="/skymap-night.png?v={{ night_mtime }}"{% endif %}
+<img src="{{ request.script_root }}/skymap.png?v={{ mtime }}" alt="Current-sky strip plot"
+     data-day-src="{{ request.script_root }}/skymap.png?v={{ mtime }}"
+     {% if night_mtime %}data-night-src="{{ request.script_root }}/skymap-night.png?v={{ night_mtime }}"{% endif %}
      style="width: 100%; border-radius: 4px;">
 {% if night_mtime %}
 <p class="note" style="margin: 0.3em 0 0;">
     Also rendered in a dark palette for wall displays:
-    <a href="/skymap-night.png?v={{ night_mtime }}">night-mode version</a>.
+    <a href="{{ request.script_root }}/skymap-night.png?v={{ night_mtime }}">night-mode version</a>.
 </p>
 {% endif %}
 {% else %}

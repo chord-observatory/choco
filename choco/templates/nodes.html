@@ -88,7 +88,7 @@
 
 <p class="note">Drag the group header to reorder groups. Drag a node to
 reorder within a group or move it between groups. The config field names
-the library file a node renders (see <a href="/configs">Configs</a>);
+the library file a node renders (see <a href="{{ request.script_root }}/configs">Configs</a>);
 leave it blank for the node's own <code>group/name</code> file.</p>
 
 <div id="groups-container">
@@ -117,7 +117,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
 <div class="editor-actions">
     <button type="button" id="add-group-btn" class="secondary outline">Add group</button>
     <button type="button" id="save-btn">Save &amp; Reload</button>
-    <a href="/nodes" role="button" class="secondary outline">Cancel</a>
+    <a href="{{ request.script_root }}/nodes" role="button" class="secondary outline">Cancel</a>
     <span id="save-status"></span>
 </div>
 
@@ -234,7 +234,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
         }
         status.textContent = 'Saving…';
         status.className = '';
-        fetch('/nodes/edit', {
+        fetch('{{ request.script_root }}/nodes/edit', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -245,7 +245,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
             return r.json().then(function (body) { return { ok: r.ok, body: body }; });
         }).then(function (res) {
             if (res.ok) {
-                window.location.href = '/nodes';
+                window.location.href = '{{ request.script_root }}/nodes';
             } else {
                 status.textContent = 'Error: ' + (res.body.error || 'save failed');
                 status.className = 'flash-error';

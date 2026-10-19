@@ -60,7 +60,7 @@
 
 {% block content %}
 <div class="wfv-head page-head">
-    <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>{{ label_a }} × {{ label_b }}</h2>
+    <h2><a href="{{ request.script_root }}/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>{{ label_a }} × {{ label_b }}</h2>
 </div>
 
 <p class="note wfv-note">
@@ -69,9 +69,9 @@
     {{ n_freq }} channel{{ '' if n_freq == 1 else 's' }} ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }}
     {%- if time_axis.start %} · {{ time_axis.start }} → {{ time_axis.end }} {{ time_axis.unit }}{% endif %}
-    · <a href="{{ image_src }}">raw PNG</a>
-    · <a href="/files/{{ root }}/{{ acq }}/triangle">back to the sheet</a>
-    {%- if kind != 'full' %} · <a href="/files/{{ root }}/{{ acq }}/matrix">matrix</a>{% endif %}
+    · <a href="{{ request.script_root }}{{ image_src }}">raw PNG</a>
+    · <a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/triangle">back to the sheet</a>
+    {%- if kind != 'full' %} · <a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/matrix">matrix</a>{% endif %}
     <br>
     {%- if kind == 'coarse' %}
     Every product is kept at chunk resolution: one column per 16-channel chunk (mean |V|), one row per
@@ -100,7 +100,7 @@
                 <span class="t" style="top: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
                 {%- endfor %}
             </div>
-            <img src="{{ image_src }}"
+            <img src="{{ request.script_root }}{{ image_src }}"
                  alt="{{ label_a }} × {{ label_b }} waterfall" decoding="async">
         </div>
         <div class="wfv-cwrap">

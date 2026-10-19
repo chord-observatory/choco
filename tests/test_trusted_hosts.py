@@ -169,7 +169,7 @@ class TestCookieIsBoundToTheAddress:
     def test_re_login_each_request_survives_a_missing_cookie(self, trusted_app):
         client = trusted_app.test_client()
         assert client.get("/nodes").status_code == 200
-        client.delete_cookie("session")
+        client.delete_cookie("choco_session")
         assert client.get("/nodes").status_code == 200
 
 

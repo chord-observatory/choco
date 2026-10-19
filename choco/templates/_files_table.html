@@ -24,7 +24,7 @@
     <button type="button" class="secondary outline btn-sm" popovertarget="{{ tl_id }}"
             title="The curated history of these acquisitions (timeline.yaml)">Timeline</button>
     <div id="{{ tl_id }}" popover class="notes-popover"
-         hx-get="/files/timeline/{{ root_idx }}"
+         hx-get="{{ request.script_root }}/files/timeline/{{ root_idx }}"
          hx-trigger="toggle once" hx-target="find .notes-body" hx-swap="innerHTML">
         <button type="button" class="notes-close" popovertarget="{{ tl_id }}"
                 popovertargetaction="hide" title="Close" aria-label="Close">&times;</button>
@@ -64,7 +64,7 @@
                         title="What is known about this acquisition: times, software, labels, pointing, RFI, flags"
                         aria-label="Notes on {{ d.name }}">Info</button>
                 <div id="{{ pop_id }}" popover class="notes-popover"
-                     hx-get="/files/notes/{{ root_idx }}/{{ d.name }}"
+                     hx-get="{{ request.script_root }}/files/notes/{{ root_idx }}/{{ d.name }}"
                      hx-trigger="toggle once" hx-target="find .notes-body" hx-swap="innerHTML">
                     <button type="button" class="notes-close" popovertarget="{{ pop_id }}"
                             popovertargetaction="hide" title="Close" aria-label="Close">&times;</button>
@@ -82,7 +82,7 @@
             {%- if wf and wf.broken %}
                 <small class="t-warn" title="the acquisition's index could not be read">index unreadable</small>
             {%- elif wf %}
-                <a href="/files/{{ wf.root or rname }}/{{ d.name }}/triangle"
+                <a href="{{ request.script_root }}/files/{{ wf.root or rname }}/{{ d.name }}/triangle"
                    title="{{ wf.products }} products, {{ wf.rows }} scanlines">{{ wf.rendered }}{% if d.files %}/{{ d.files }}{% endif %}</a>
             {%- else %}
                 <small class="muted">&mdash;</small>

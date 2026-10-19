@@ -228,13 +228,13 @@
 {# ▼ sets the nodes idle (grey, the switch's idle colour), ▲ sets them
    started (green). #}
 {% macro start_ctl(group=none) -%}
-{{ group_ctl('start', '/nodes/set-started', group,
+{{ group_ctl('start', request.script_root ~ '/nodes/set-started', group,
              ('off', 'stop', 'Set %s nodes to idle'), ('ok', 'start', 'Set %s nodes to started')) }}
 {%- endmacro %}
 {# ▼ puts the nodes into maintenance (amber, the switch's maintenance
    colour), ▲ takes them out (blue, the switch's normal colour). #}
 {% macro maint_ctl(group=none) -%}
-{{ group_ctl('maint', '/nodes/set-maintenance', group,
+{{ group_ctl('maint', request.script_root ~ '/nodes/set-maintenance', group,
              ('maint', 'on', 'Put %s nodes in maintenance (choco will not push)'),
              ('info', 'off', 'Take %s nodes out of maintenance (choco will push)')) }}
 {%- endmacro %}
@@ -255,9 +255,9 @@
             </select>
         </label>
         <a id="{{ sel_id }}-fullscreen" role="button" class="secondary outline btn-inline"
-           href="/service/{{ service }}/plot?dataset={{ datasets[0].name if datasets }}">full screen ⤢</a>
+           href="{{ request.script_root }}/service/{{ service }}/plot?dataset={{ datasets[0].name if datasets }}">full screen ⤢</a>
         <a role="button" class="secondary outline btn-inline"
-           href="/service/{{ service }}/gain.h5">download .h5</a>
+           href="{{ request.script_root }}/service/{{ service }}/gain.h5">download .h5</a>
     </div>
     {# The same panel the pipeline page opens; only the source differs. #}
     <div id="buffer-plot"></div>
@@ -270,12 +270,12 @@
             function show() {
                 var name = sel.value;
                 var q = encodeURIComponent(name);
-                link.setAttribute("href", "/service/{{ service }}/plot?dataset=" + q);
+                link.setAttribute("href", "{{ request.script_root }}/service/{{ service }}/plot?dataset=" + q);
                 window.chocoPlot.open(
                     window.chocoPlot.urlSource(
-                        "/api/{{ service }}/gain-data?dataset=" + q,
+                        "{{ request.script_root }}/api/{{ service }}/gain-data?dataset=" + q,
                         "{{ service }}-gain|" + name, name,
-                        { page: "/service/{{ service }}/plot?dataset=" + q,
+                        { page: "{{ request.script_root }}/service/{{ service }}/plot?dataset=" + q,
                           pollMs: {{ poll_ms }}, defaultFetch: {{ fetch_bytes }} }),
                     { container: box, noScroll: true });
             }

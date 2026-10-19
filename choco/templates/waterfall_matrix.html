@@ -29,7 +29,7 @@
 
 {% block content %}
 <div class="mx-head page-head">
-    <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>matrix</h2>
+    <h2><a href="{{ request.script_root }}/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>matrix</h2>
 </div>
 
 <p class="note mx-note">
@@ -52,7 +52,7 @@
             <span class="t" style="left: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
             {%- endfor %}
         </div>
-        <img id="matrix-img" src="/waterfall/{{ root }}/{{ acq }}/matrix/{{ band }}/{{ row }}.png"
+        <img id="matrix-img" src="{{ request.script_root }}/waterfall/{{ root }}/{{ acq }}/matrix/{{ band }}/{{ row }}.png"
              alt="element by element coherence, {{ bands[band].label }}, frame {{ row }}" decoding="async">
     </div>
     <div class="mx-side">

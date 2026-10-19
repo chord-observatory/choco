@@ -11,6 +11,7 @@ import hmac
 import ipaddress
 import logging
 import os
+import re
 from functools import wraps
 from urllib.parse import urlencode, urlsplit
 
@@ -102,8 +103,14 @@ def unauthorized() -> Response:
     next_path = None
     if request.headers.get("HX-Request"):
         current = urlsplit(request.headers.get("HX-Current-URL", ""))
-        if current.path.startswith("/"):
-            next_path = current.path + (
+        path = current.path
+        # The browser's URL carries the proxy's prefix; ?next= is relative
+        # to the app root (``_next_target`` puts the prefix back).
+        root = request.script_root
+        if root and (path == root or path.startswith(root + "/")):
+            path = path[len(root):] or "/"
+        if path.startswith("/"):
+            next_path = path + (
                 f"?{current.query}" if current.query else "")
     elif request.method == "GET":
         query = request.query_string.decode()
@@ -197,6 +204,103 @@ def trusted_host_label(trusted: list, remote_addr: str | None) -> str | None:
         if addr.version == net.version and addr in net:
             return label
     return None
+
+
+#: Sent by the reverse proxy with every request it has authenticated; the
+#: value is ``server.proxy_auth.secret``.
+PROXY_SECRET_HEADER = "X-Choco-Proxy-Secret"
+#: Set by Authelia (through the proxy) to the signed-in username.
+PROXY_USER_HEADER = "Remote-User"
+
+_PROXY_PREFIX_RE = re.compile(r"(/[A-Za-z0-9._-]+)+")
+_PROXY_USERNAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+_PROXY_KEYS = {"peer", "secret", "prefix", "logout_url"}
+_MIN_PROXY_SECRET_LEN = 32
+
+
+def parse_proxy_auth(raw, trusted: list) -> dict | None:
+    """Validate ``server.proxy_auth`` into ``{peer, secret, prefix,
+    logout_url}``, or None when it is absent (the default: no proxy).
+
+    The proxy is trusted by address *and* secret: only a request whose TCP
+    peer is ``peer`` and that carries ``secret`` is served under ``prefix``
+    and signed in as the proxy's ``Remote-User``.  The peer may not be
+    loopback (loopback callers already skip login on the API) nor inside
+    ``trusted_hosts`` (every proxied request would be logged in as that
+    host's label).  Raises ``ValueError`` naming the problem, so a typo is
+    a startup error -- called from ``load_config`` and ``init_auth``.
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("server.proxy_auth must be a mapping "
+                         f"({', '.join(sorted(_PROXY_KEYS))})")
+    unknown = set(raw) - _PROXY_KEYS
+    if unknown:
+        raise ValueError(f"server.proxy_auth: unknown key(s) {', '.join(sorted(map(str, unknown)))}")
+    peer = peer_address(str(raw.get("peer") or "").strip())
+    if peer is None:
+        raise ValueError("server.proxy_auth.peer must be the proxy's IP address "
+                         f"as choco sees it, got {raw.get('peer')!r}")
+    if peer.is_loopback:
+        raise ValueError("server.proxy_auth.peer may not be loopback: loopback "
+                         "callers already skip login on the API")
+    label = trusted_host_label(trusted, str(peer))
+    if label:
+        raise ValueError(f"server.proxy_auth.peer {peer} is inside "
+                         f"server.trusted_hosts (as {label!r}), which would log "
+                         "every proxied request in as that host")
+    secret = str(raw.get("secret") or "")
+    if len(secret) < _MIN_PROXY_SECRET_LEN:
+        raise ValueError("server.proxy_auth.secret must be at least "
+                         f"{_MIN_PROXY_SECRET_LEN} characters")
+    prefix = str(raw.get("prefix") or "")
+    if not _PROXY_PREFIX_RE.fullmatch(prefix):
+        raise ValueError("server.proxy_auth.prefix must be a path like /choco "
+                         f"(no trailing slash), got {prefix!r}")
+    logout_url = str(raw.get("logout_url") or "/authelia/logout")
+    if not logout_url.startswith("/") or logout_url.startswith("//"):
+        raise ValueError("server.proxy_auth.logout_url must be a path on the "
+                         f"proxy's site, got {logout_url!r}")
+    return {"peer": peer, "secret": secret, "prefix": prefix,
+            "logout_url": logout_url}
+
+
+class ProxyMiddleware:
+    """WSGI middleware: a request from ``proxy_auth.peer`` carrying the
+    secret is marked proxied (``environ["choco.proxied"]``) and served
+    under the proxy's path prefix (``SCRIPT_NAME``) over HTTPS, so
+    ``url_for`` and ``request.script_root`` build the URLs the browser
+    sees.  ``REMOTE_ADDR`` is never rewritten -- no ``X-Forwarded-For``
+    is read -- so the loopback bypass and ``trusted_hosts`` still judge
+    the real TCP peer.  The secret header is removed from every request.
+    """
+
+    def __init__(self, app, settings: dict):
+        self.app = app
+        self.peer = settings["peer"]
+        self.secret = settings["secret"].encode()
+        self.prefix = settings["prefix"]
+
+    def __call__(self, environ, start_response):
+        supplied = environ.pop("HTTP_" + PROXY_SECRET_HEADER.upper().replace("-", "_"), "")
+        proxied = bool(supplied) and peer_address(environ.get("REMOTE_ADDR")) == self.peer \
+            and hmac.compare_digest(supplied.encode("latin-1"), self.secret)
+        environ["choco.proxied"] = proxied
+        if proxied:
+            environ["SCRIPT_NAME"] = self.prefix
+            path = environ.get("PATH_INFO", "")
+            # nginx strips the prefix (location /choco/ -> proxy_pass .../);
+            # tolerate one that does not.
+            if path == self.prefix or path.startswith(self.prefix + "/"):
+                environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+            environ["wsgi.url_scheme"] = "https"
+        return self.app(environ, start_response)
+
+
+def is_proxied() -> bool:
+    """Whether this request came through the authenticating proxy."""
+    return bool(request.environ.get("choco.proxied"))
 
 
 class LdapAuthenticator:
@@ -368,6 +472,35 @@ def init_auth(app: Flask, config: dict):
             if label:
                 login_user(User(f"trusted:{request.remote_addr}", label,
                                 trusted=True))
+
+    # Proxy sign-in: a request the authenticating reverse proxy vouched for
+    # (ProxyMiddleware: right peer *and* secret) is signed in as the
+    # proxy's Remote-User, a real user in ``_users`` so audit lines name
+    # the person.  The header decides on every request: a session for
+    # someone else is replaced.  Checked after trusted hosts, which can
+    # never match the proxy (parse_proxy_auth refuses that).
+    proxy = parse_proxy_auth((config.get("server") or {}).get("proxy_auth"), trusted)
+    app.config["PROXY_AUTH"] = proxy
+    if proxy:
+        app.wsgi_app = ProxyMiddleware(app.wsgi_app, proxy)
+        logger.info("server.proxy_auth: requests from %s with the proxy secret "
+                    "are served under %s and signed in as %s",
+                    proxy["peer"], proxy["prefix"], PROXY_USER_HEADER)
+
+        @app.before_request
+        def _proxy_login():
+            if not is_proxied():
+                return
+            username = request.headers.get(PROXY_USER_HEADER, "").strip()
+            if not _PROXY_USERNAME_RE.fullmatch(username):
+                abort(403)
+            if (current_user.is_authenticated and not current_user.trusted
+                    and current_user.username == username):
+                return
+            session.clear()
+            authenticator = current_app.config.get("ldap_authenticator")
+            dn = authenticator.user_dn_for(username) if authenticator else f"proxy:{username}"
+            login_user(save_user(dn, username))
 
     # LDAP setup: direct bind, so no service account and no search filter.
     ldap = config.get("ldap", {}) or {}

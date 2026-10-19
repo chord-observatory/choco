@@ -39,7 +39,7 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
 
 {% block content %}
 <div class="tri-head page-head">
-    <h2><a href="/files" class="crumb">Files</a><span class="crumb-sep">/</span><code>{{ acq }}</code></h2>
+    <h2><a href="{{ request.script_root }}/files" class="crumb">Files</a><span class="crumb-sep">/</span><code>{{ acq }}</code></h2>
     <form class="tri-filter action-row" method="get" action="">
         <label for="elements" style="font-size: 0.85em; margin: 0;">Elements</label>
         <input type="text" id="elements" name="elements" value="{{ elements_arg }}"
@@ -53,9 +53,9 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     {{ grid.cells | length }} product{{ '' if grid.cells | length == 1 else 's' }} rendered ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }} folded in
     {%- if index.n_freq %} · {{ index.n_freq }} channels{% endif %}
-    {%- if overview %} · <a href="/files/{{ root }}/{{ acq }}/matrix">element × element matrix</a>{% endif %} ·
+    {%- if overview %} · <a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/matrix">element × element matrix</a>{% endif %} ·
     {%- if strips %} <a href="?layout=triangle">as a triangle</a> ·{% elif overview %} <a href="?layout=strips">as strips</a> ·{% endif %}
-    <a href="/files">back to data files</a>
+    <a href="{{ request.script_root }}/files">back to data files</a>
     <br>
     Frequency across, time down; a thumbnail is one row per source file.
     Click a cell for the full-resolution image with axes.
@@ -67,8 +67,8 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
 <div class="strip">
     {%- for cell in strip.cells %}
     <figure>
-        <a href="{{ cell.view }}" title="{{ cell.title }}">
-            <img src="{{ cell.src }}" loading="lazy" decoding="async" alt="{{ cell.title }}"
+        <a href="{{ request.script_root }}{{ cell.view }}" title="{{ cell.title }}">
+            <img src="{{ request.script_root }}{{ cell.src }}" loading="lazy" decoding="async" alt="{{ cell.title }}"
                  onerror="this.style.visibility='hidden'">
         </a>
         <figcaption>{{ cell.label }}</figcaption>
@@ -95,9 +95,9 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
         {% set cell = grid.cells.get((a, b)) %}
         {% if cell %}
         <td>
-            <a href="/waterfall/{{ root }}/{{ acq }}/view/wf_{{ cell.name }}.png"
+            <a href="{{ request.script_root }}/waterfall/{{ root }}/{{ acq }}/view/wf_{{ cell.name }}.png"
                title="{{ grid.labels.get(a, a) }} × {{ grid.labels.get(b, b) }} (elements {{ a }}, {{ b }}) — {{ cell.rows }} scanlines">
-                <img src="/waterfall/{{ root }}/{{ acq }}/{{ cell.shard }}/th_{{ cell.name }}.png"
+                <img src="{{ request.script_root }}/waterfall/{{ root }}/{{ acq }}/{{ cell.shard }}/th_{{ cell.name }}.png"
                      loading="lazy" decoding="async"
                      alt="{{ grid.labels.get(a, a) }} × {{ grid.labels.get(b, b) }}"
                      onerror="this.style.visibility='hidden'">

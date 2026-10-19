@@ -8,16 +8,16 @@
 {% set img = detail.images %}
 {% if img.context %}
 <figure class="mapmaker-map">
-    <img src="/service/mapmaker/context.png?v={{ img.context }}" alt="Sky map, deconvolved, in context on the 408 MHz sky" style="width: 100%;">
-    <figcaption>Sky map of every pass with the Sun away from the beam, deconvolved (the two-row array's Dec ridge removed by CLEAN against the dirty beam the map was made with, the components restored with one beam per colour bin) and pasted into its band on the 408 MHz all-sky map (Haslam et al. 1982, destriped by Remazeilles et al. 2015; log scale) over every declination that rises. Hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white. <a href="/service/mapmaker/clean-strip.png?v={{ img['clean-strip'] }}">Pixels only</a>.</figcaption>
+    <img src="{{ request.script_root }}/service/mapmaker/context.png?v={{ img.context }}" alt="Sky map, deconvolved, in context on the 408 MHz sky" style="width: 100%;">
+    <figcaption>Sky map of every pass with the Sun away from the beam, deconvolved (the two-row array's Dec ridge removed by CLEAN against the dirty beam the map was made with, the components restored with one beam per colour bin) and pasted into its band on the 408 MHz all-sky map (Haslam et al. 1982, destriped by Remazeilles et al. 2015; log scale) over every declination that rises. Hue is frequency, red the bottom of the band and violet the top, so a source with the calibrator's spectrum is white. <a href="{{ request.script_root }}/service/mapmaker/clean-strip.png?v={{ img['clean-strip'] }}">Pixels only</a>.</figcaption>
 </figure>
 {% elif img.sky %}
 <p class="note">The sky map is waiting for its first deconvolution (<code>choco-mapmaker-clean</code>, every 15 minutes).</p>
 {% endif %}
 {% if img.daily %}
 <figure class="mapmaker-map">
-    <img src="/service/mapmaker/daily.png?v={{ img.daily }}" alt="Last sidereal day" style="width: 100%;">
-    <figcaption>The last sidereal day, Sun included. <a href="/service/mapmaker/daily-strip.png?v={{ img['daily-strip'] }}">Pixels only</a>.</figcaption>
+    <img src="{{ request.script_root }}/service/mapmaker/daily.png?v={{ img.daily }}" alt="Last sidereal day" style="width: 100%;">
+    <figcaption>The last sidereal day, Sun included. <a href="{{ request.script_root }}/service/mapmaker/daily-strip.png?v={{ img['daily-strip'] }}">Pixels only</a>.</figcaption>
 </figure>
 {% endif %}
 {% if not img.sky and not img.daily %}

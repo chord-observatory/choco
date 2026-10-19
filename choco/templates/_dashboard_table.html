@@ -1,6 +1,6 @@
 {% from "_service_macros.html" import maint_ctl, node_status, node_version, start_ctl with context %}
 {% if not nodes %}
-<p>No nodes configured yet. <a href="/nodes/edit">Edit nodes</a> to add kotekan instances.</p>
+<p>No nodes configured yet. <a href="{{ request.script_root }}/nodes/edit">Edit nodes</a> to add kotekan instances.</p>
 {% else %}
 {% for group, group_nodes in nodes.values() | groupby('group') %}
 {# A group that renders one file says so once, in its bar; the Config
@@ -37,9 +37,9 @@
             <td>{{ node_version(node, "ver-pop-" ~ node.group ~ "-" ~ node.name) }}</td>
             {% if not one_file %}<td><code>{{ node.config_filename }}</code></td>{% endif %}
             <td style="white-space: nowrap;">
-                <a href="/pipeline/{{ key }}" role="button" class="secondary outline btn-sm"
+                <a href="{{ request.script_root }}/pipeline/{{ key }}" role="button" class="secondary outline btn-sm"
                    title="The live pipeline graph on {{ key }}">Pipeline</a>
-                <a href="/nodes/edit/{{ key }}" role="button" class="secondary outline btn-sm"
+                <a href="{{ request.script_root }}/nodes/edit/{{ key }}" role="button" class="secondary outline btn-sm"
                    title="Node page: state, maintenance, which config file {{ key }} renders, one-offs and updatable values">Node</a>
             </td>
         </tr>

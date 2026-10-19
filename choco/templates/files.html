@@ -24,7 +24,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
     {% if configured %}
     <div class="page-actions">
         <button class="secondary outline btn-sm"
-                hx-get="/partials/files?refresh=1"
+                hx-get="{{ request.script_root }}/partials/files?refresh=1"
                 hx-target="#files-table"
                 hx-swap="innerHTML"
                 hx-indicator="#files-table">Rescan</button>
@@ -46,7 +46,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
     rendered images; follow it for the upper-triangle contact sheet.
 </p>
 <div id="files-table"
-     hx-get="/partials/files"
+     hx-get="{{ request.script_root }}/partials/files"
      hx-trigger="load"
      hx-swap="innerHTML">
     <p aria-busy="true">Scanning…</p>
@@ -63,12 +63,12 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
    (usually a mount above); a failed one is the renderer itself.</p>
 <div id="service-flash"></div>
 <div id="service-status"
-     hx-get="/partials/service-status/{{ name }}"
+     hx-get="{{ request.script_root }}/partials/service-status/{{ name }}"
      hx-trigger="every 5s"
      hx-swap="innerHTML">
 {% include "_service_status.html" %}
 </div>
-{% set lines_href = '/files' %}{% set lines_anchor = '#waterfall' %}
+{% set lines_href = request.script_root ~ '/files' %}{% set lines_anchor = '#waterfall' %}
 {% include "_service_tail.html" %}
 </section>
 
@@ -82,7 +82,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
    <code>timeline.yaml</code>, every hour.  It measures only new or grown
    acquisitions; a note is rewritten only when its text changes.</p>
 <div id="notes-status"
-     hx-get="/partials/service-status/acqnotes"
+     hx-get="{{ request.script_root }}/partials/service-status/acqnotes"
      hx-trigger="every 30s"
      hx-swap="innerHTML">
 {% with name='acqnotes', job=notes.job, svc=notes.svc, timer=notes.timer, detail=notes.detail, now_ts=notes.now_ts %}

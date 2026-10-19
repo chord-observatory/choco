@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="page-head">
-    <h2><a href="/configs" class="crumb">Configs</a><span class="crumb-sep">/</span><code>{{ entry.path }}</code></h2>
+    <h2><a href="{{ request.script_root }}/configs" class="crumb">Configs</a><span class="crumb-sep">/</span><code>{{ entry.path }}</code></h2>
 </div>
 <p class="note">
 {% if entry.is_vars %}
@@ -22,7 +22,7 @@ A change that would not render on one of them is refused.
               style="font-size: 0.9em; tab-size: 2;">{{ content }}</textarea>
     <div style="display: flex; gap: 0.5em; margin-top: 0.5em;">
         <button type="submit">Save</button>
-        <a href="/configs" role="button" class="secondary outline" title="Back to the config library without saving">Back</a>
+        <a href="{{ request.script_root }}/configs" role="button" class="secondary outline" title="Back to the config library without saving">Back</a>
     </div>
 </form>
 {% endblock %}
