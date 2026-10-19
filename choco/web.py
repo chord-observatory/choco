@@ -213,11 +213,11 @@ def login():
 
         if not username or not password:
             flash("Username and password are required.", "error")
-            return render_template("login.html")
+            return _login_page()
 
         if not current_app.config.get("LDAP_ENABLED"):
             flash("LDAP is not configured. Set ldap.host in config.yaml.", "error")
-            return render_template("login.html")
+            return _login_page()
 
         authenticator = current_app.config["ldap_authenticator"]
         user_dn = authenticator.authenticate(username, password)
@@ -230,7 +230,18 @@ def login():
             logger.warning(f"Login failed for '{username}'")
             flash("Invalid username or password.", "error")
 
-    return render_template("login.html")
+    return _login_page()
+
+
+def _login_page():
+    """The sign-in page.  Behind the site proxy with no ``ldap.host``
+    there is no form: people sign in through the proxy
+    (``proxy_auth.public_url``) and the trusted hosts need no sign-in."""
+    proxy = current_app.config.get("PROXY_AUTH") or {}
+    proxy_only = (not current_app.config.get("LDAP_ENABLED")
+                  and bool(proxy.get("public_url")))
+    return render_template("login.html", proxy_only=proxy_only,
+                           proxy_url=proxy.get("public_url"))
 
 
 @bp.route("/logout")

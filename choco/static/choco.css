@@ -517,6 +517,15 @@ p.note { margin-bottom: 0.75em; }
 .notice-bad { border-color: var(--bad); background: var(--bad-soft); }
 .notice-bad strong { color: var(--bad-text); }
 .notice ul { margin: 0.4em 0 0; }
+/* Read-only users (signed in through the site proxy without a write group):
+   every control that would change something stays visible but inert.  The
+   server refuses the write anyway; this keeps the page honest.  A control
+   that writes from a script is marked .write-control. */
+.read-only [hx-post], .read-only [hx-put], .read-only [hx-patch], .read-only [hx-delete],
+.read-only form[method="post"], .read-only .write-control {
+    pointer-events: none;
+    opacity: 0.45;
+}
 /* In the dark the soft tints are right on a tag but a notice or a flash
    is a large block, and at tag strength it glows against the near-black
    page.  Large surfaces take a faint wash of the tint over the page

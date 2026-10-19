@@ -186,7 +186,7 @@
         }
     </style>
 </head>
-<body>
+<body{% if current_user.read_only %} class="read-only"{% endif %}>
     <div class="pg-header">
         <a href="{{ request.script_root }}/" class="brand">CHOCO</a>
         <a href="{{ request.script_root }}/nodes" class="brand secondary">Nodes</a>

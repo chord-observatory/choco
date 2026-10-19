@@ -196,6 +196,15 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `_users`, replaced when the header names someone else.  The peer may not
   be loopback nor in `trusted_hosts`; logout behind the proxy continues to
   its `logout_url`.
+- Roles exist only through the proxy: with `proxy_auth.write_groups` set, a
+  proxied user in none of those `Remote-Groups` is `read_only`, recomputed
+  every request.  `auth._refuse_read_only_writes` refuses every
+  POST/PUT/PATCH/DELETE for them in one place; never gate a write route by
+  route.  The UI keeps write controls visible but inert under `.read-only`
+  (`choco.css`): anything that writes from a script carries `.write-control`.
+  Trusted hosts and loopback callers are never read-only.  With no
+  `ldap.host` and a `proxy_auth.public_url`, the login page only points to
+  the proxy.
 - Every URL a page builds starts at the app root, so choco works under the
   proxy's prefix: `url_for`, or `{{ request.script_root }}` before a path
   in a template (`request.script_root ~ '/x'` in a Jinja expression), and

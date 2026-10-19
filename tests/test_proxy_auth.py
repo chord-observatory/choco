@@ -260,3 +260,91 @@ def test_sources_build_urls_from_the_root(path):
             if not _PREFIXED.search(line[:m.start()]):
                 bad.append(f"{path.name}:{n}: {line.strip()[:100]}")
     assert not bad, "\n".join(bad)
+
+
+# --- read-only users ----------------------------------------------------------
+
+from tests.helpers import csrf  # noqa: E402
+from tests.test_route_auth import MUTATING  # noqa: E402
+
+PUBLIC_URL = "https://site.example/choco/"
+ROLES = {**PROXY_AUTH, "write_groups": ["choco-users", "choco-admins"],
+         "public_url": PUBLIC_URL}
+CHIVE = "10.222.0.54"
+
+
+@pytest.fixture
+def roles_client(configs_dir):
+    """choco with write groups, a public URL, no LDAP, and chive trusted."""
+    app = create_app(configs_dir=configs_dir, config=_config(
+        configs_dir, proxy_auth=ROLES, trusted_hosts={CHIVE: "chive"}))
+    app.config["TESTING"] = True
+    app.config["state_dir"] = configs_dir / "state"
+    return app.test_client()
+
+
+def _went_through(resp) -> bool:
+    """A permitted toggle: refused would be 403, unauthenticated a login
+    redirect; a plain POST is answered with a redirect back to the page."""
+    return resp.status_code in (200, 302) and not _to_login(resp)
+
+
+class TestRoleConfig:
+    @pytest.mark.parametrize("change, message", [
+        ({"write_groups": "choco-users"}, "write_groups"),
+        ({"write_groups": ["choco-users", ""]}, "write_groups"),
+        ({"public_url": "http://site.example/choco/"}, "public_url"),
+    ])
+    def test_refuses(self, change, message):
+        with pytest.raises(ValueError, match=message):
+            parse_proxy_auth({**ROLES, **change}, [])
+
+    def test_unset_write_groups_means_everyone_may(self, client):
+        token = csrf(client, **_via("alice", groups="chord-users"))
+        resp = client.post("/nodes/toggle-maintenance/cx/cx1",
+                           data={"_csrf_token": token}, **_via("alice", groups="chord-users"))
+        assert _went_through(resp)
+
+
+class TestReadOnly:
+    def test_a_reader_sees_the_pages_marked_read_only(self, roles_client, jobs):
+        page = roles_client.get("/", **_via("rita", groups="chord-users")).get_data(as_text=True)
+        assert "read-only" in page and "Read-only access" in page
+
+    @responses.activate
+    @pytest.mark.parametrize("route", MUTATING, ids=["{0[0]} {0[1]}".format(r) for r in MUTATING])
+    def test_a_reader_changes_nothing(self, roles_client, route):
+        method, _rule, _endpoint, url = route
+        via = _via("rita", groups="chord-users")
+        token = csrf(roles_client, **via)
+        resp = roles_client.open(url, method=method, data={"_csrf_token": token},
+                                 headers={**via["headers"], "X-CSRF-Token": token},
+                                 environ_base=via["environ_base"])
+        assert resp.status_code == 403
+
+    def test_a_choco_user_may_write(self, roles_client):
+        via = _via("cara", groups="chord-users,choco-users")
+        token = csrf(roles_client, **via)
+        resp = roles_client.post("/nodes/toggle-maintenance/cx/cx1",
+                                 data={"_csrf_token": token}, **via)
+        assert _went_through(resp)
+        assert "Read-only access" not in roles_client.get("/nodes", **via).get_data(as_text=True)
+
+    def test_a_group_change_applies_on_the_next_request(self, roles_client):
+        reader = _via("cara", groups="chord-users")
+        token = csrf(roles_client, **reader)
+        url = "/nodes/toggle-maintenance/cx/cx1"
+        assert roles_client.post(url, data={"_csrf_token": token}, **reader).status_code == 403
+        writer = _via("cara", groups="chord-users,choco-admins")
+        assert _went_through(roles_client.post(url, data={"_csrf_token": token}, **writer))
+
+    def test_trusted_hosts_keep_full_access(self, roles_client):
+        chive = {"environ_base": {"REMOTE_ADDR": CHIVE}}
+        token = csrf(roles_client, **chive)
+        resp = roles_client.post("/nodes/toggle-maintenance/cx/cx1",
+                                 data={"_csrf_token": token}, **chive)
+        assert _went_through(resp)
+
+    def test_the_login_page_points_to_the_proxy(self, roles_client):
+        page = roles_client.get("/login", environ_base={"REMOTE_ADDR": "10.0.0.9"}).get_data(as_text=True)
+        assert PUBLIC_URL in page and 'name="password"' not in page

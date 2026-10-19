@@ -7,6 +7,9 @@ main.container { max-width: 400px; margin-top: 10vh; }
 
 {% block content %}
 <h2>Sign in</h2>
+{% if proxy_only %}
+<div class="notice"><p>Sign in through the site: <a href="{{ proxy_url }}">{{ proxy_url }}</a>.</p></div>
+{% else %}
 <form method="post">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     <label for="username">Username</label>
@@ -17,4 +20,5 @@ main.container { max-width: 400px; margin-top: 10vh; }
 
     <button type="submit">Log in</button>
 </form>
+{% endif %}
 {% endblock %}

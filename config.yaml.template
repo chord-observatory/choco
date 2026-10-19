@@ -40,6 +40,13 @@ server:
                                   #     secret: <64 hex characters>
                                   #     prefix: /choco
                                   #     logout_url: /authelia/logout   # the default
+                                  #     write_groups: [choco-users, choco-admins]
+                                  #                    # FreeIPA groups that may change anything;
+                                  #                    # anyone else the proxy signs in is read-only.
+                                  #                    # Unset = everyone may.
+                                  #     public_url: https://ctc.chord-observatory.ca/choco/
+                                  #                    # where the login page sends people when
+                                  #                    # ldap.host is unset (sign-in only via the proxy)
 
 # Path to the directory containing nodes.yaml and per-node config files.
 configs_dir: configs

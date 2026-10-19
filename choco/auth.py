@@ -28,9 +28,14 @@ _users: dict[str, "User"] = {}
 
 class User:
     """Authenticated user backed by LDAP, or -- ``trusted=True`` -- the
-    synthetic user a ``server.trusted_hosts`` peer is logged in as."""
+    synthetic user a ``server.trusted_hosts`` peer is logged in as.
+
+    ``read_only`` is set only for users signed in through the site proxy
+    who are in none of ``proxy_auth.write_groups``: they see everything
+    and change nothing."""
 
     is_authenticated = True
+    read_only = False
 
     def __init__(self, dn: str, username: str, *, trusted: bool = False):
         self.dn = dn
@@ -49,6 +54,7 @@ class _Anonymous:
 
     is_authenticated = False
     trusted = False
+    read_only = False
     username = None
     dn = None
 
@@ -209,18 +215,23 @@ def trusted_host_label(trusted: list, remote_addr: str | None) -> str | None:
 #: Sent by the reverse proxy with every request it has authenticated; the
 #: value is ``server.proxy_auth.secret``.
 PROXY_SECRET_HEADER = "X-Choco-Proxy-Secret"
-#: Set by Authelia (through the proxy) to the signed-in username.
+#: Set by Authelia (through the proxy) to the signed-in username and to the
+#: user's groups (comma-separated).
 PROXY_USER_HEADER = "Remote-User"
+PROXY_GROUPS_HEADER = "Remote-Groups"
 
 _PROXY_PREFIX_RE = re.compile(r"(/[A-Za-z0-9._-]+)+")
 _PROXY_USERNAME_RE = re.compile(r"[A-Za-z0-9._-]+")
-_PROXY_KEYS = {"peer", "secret", "prefix", "logout_url"}
+_PROXY_KEYS = {"peer", "secret", "prefix", "logout_url", "write_groups", "public_url"}
 _MIN_PROXY_SECRET_LEN = 32
 
 
 def parse_proxy_auth(raw, trusted: list) -> dict | None:
     """Validate ``server.proxy_auth`` into ``{peer, secret, prefix,
-    logout_url}``, or None when it is absent (the default: no proxy).
+    logout_url, write_groups, public_url}``, or None when it is absent
+    (the default: no proxy).  ``write_groups`` (the proxy's
+    ``Remote-Groups`` that may change anything) is None when unset:
+    everyone the proxy signs in may.
 
     The proxy is trusted by address *and* secret: only a request whose TCP
     peer is ``peer`` and that carries ``secret`` is served under ``prefix``
@@ -262,8 +273,20 @@ def parse_proxy_auth(raw, trusted: list) -> dict | None:
     if not logout_url.startswith("/") or logout_url.startswith("//"):
         raise ValueError("server.proxy_auth.logout_url must be a path on the "
                          f"proxy's site, got {logout_url!r}")
+    write_groups = raw.get("write_groups")
+    if write_groups is not None:
+        if (not isinstance(write_groups, list)
+                or not all(isinstance(g, str) and g.strip() for g in write_groups)):
+            raise ValueError("server.proxy_auth.write_groups must be a list of "
+                             f"group names, got {write_groups!r}")
+        write_groups = frozenset(g.strip() for g in write_groups)
+    public_url = raw.get("public_url") or None
+    if public_url is not None and not str(public_url).startswith("https://"):
+        raise ValueError("server.proxy_auth.public_url must be an https:// URL "
+                         f"(where people sign in through the proxy), got {public_url!r}")
     return {"peer": peer, "secret": secret, "prefix": prefix,
-            "logout_url": logout_url}
+            "logout_url": logout_url, "write_groups": write_groups,
+            "public_url": public_url}
 
 
 class ProxyMiddleware:
@@ -487,6 +510,8 @@ def init_auth(app: Flask, config: dict):
                     "are served under %s and signed in as %s",
                     proxy["peer"], proxy["prefix"], PROXY_USER_HEADER)
 
+        write_groups = proxy["write_groups"]
+
         @app.before_request
         def _proxy_login():
             if not is_proxied():
@@ -494,13 +519,26 @@ def init_auth(app: Flask, config: dict):
             username = request.headers.get(PROXY_USER_HEADER, "").strip()
             if not _PROXY_USERNAME_RE.fullmatch(username):
                 abort(403)
-            if (current_user.is_authenticated and not current_user.trusted
+            if not (current_user.is_authenticated and not current_user.trusted
                     and current_user.username == username):
-                return
-            session.clear()
-            authenticator = current_app.config.get("ldap_authenticator")
-            dn = authenticator.user_dn_for(username) if authenticator else f"proxy:{username}"
-            login_user(save_user(dn, username))
+                session.clear()
+                authenticator = current_app.config.get("ldap_authenticator")
+                dn = authenticator.user_dn_for(username) if authenticator else f"proxy:{username}"
+                login_user(save_user(dn, username))
+            # The groups decide on every request, so a change in FreeIPA
+            # applies as soon as Authelia's view of the user refreshes.
+            groups = {g.strip() for g in
+                      request.headers.get(PROXY_GROUPS_HEADER, "").split(",")}
+            current_user.read_only = (write_groups is not None
+                                      and not write_groups & groups)
+
+    # A read-only user changes nothing: every write is refused here, in one
+    # place, rather than route by route.  Registered after the logins above
+    # so it sees the user they establish.
+    @app.before_request
+    def _refuse_read_only_writes():
+        if request.method in _WRITES and current_user.read_only:
+            abort(403)
 
     # LDAP setup: direct bind, so no service account and no search filter.
     ldap = config.get("ldap", {}) or {}

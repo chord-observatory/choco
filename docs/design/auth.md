@@ -220,3 +220,18 @@ also checks the template and script sources, because pages that need data
 Flask app.  Both used Flask's default cookie name ``session``, so each would
 overwrite the other's on every visit; choco's is ``choco_session``.  The
 rename logged everyone out once.
+
+**Roles.**  The proxy also passes the user's FreeIPA groups
+(``Remote-Groups``).  With ``proxy_auth.write_groups`` set, a proxied user in
+none of them is read-only: every page, nothing changed.  ``read_only`` is
+recomputed from the header on every request, so a group change applies as
+soon as Authelia refreshes the user (five minutes at most), and the refusal is
+one ``before_request`` for every POST/PUT/PATCH/DELETE rather than a check
+per route -- a new write route is covered without anyone remembering to.
+The pages keep the controls visible but inert (``.read-only`` in
+``choco.css``, plus ``.write-control`` for the one write a script sends) so a
+reader sees what exists.  Roles exist only behind the proxy: choco's own LDAP
+login is a direct bind that never learns the user's groups, so on the site it
+is turned off (no ``ldap.host``) and its login page points to
+``proxy_auth.public_url``.  Trusted hosts and loopback callers keep full
+access, as before.

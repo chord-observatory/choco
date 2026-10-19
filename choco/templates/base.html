@@ -27,7 +27,7 @@
         {% block styles %}{% endblock %}
     </style>
 </head>
-<body{% if wall %} class="wall"{% endif %}>
+<body class="{{ 'wall' if wall }}{{ ' read-only' if current_user.read_only }}">
     {% if config.DEV_AUTH %}
     <div class="dev-banner">
         DEV MODE — no login, no CSRF (server.dev_auth={{ config.DEV_AUTH }})
@@ -60,6 +60,10 @@
         {{ flash(category, message) }}
         {% endfor %}
 
+        {% if current_user.read_only %}
+        <div class="notice"><p>Read-only access: you can look at everything but change nothing.
+            Changes need membership of a choco group in FreeIPA.</p></div>
+        {% endif %}
         {% block content %}{% endblock %}
     </main>
 
