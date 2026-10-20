@@ -38,7 +38,7 @@
 {% elif not root.dirs %}
 <p class="note">No subdirectories.</p>
 {% else %}
-<table class="files">
+<table class="files stack">
     <thead>
         <tr>
             <th>Directory</th>
@@ -53,9 +53,9 @@
     <tbody>
     {% for d in root.dirs %}
         <tr>
-            <td class="name">{{ d.name }}{% if d.error %}
+            <td class="name stack-lead">{{ d.name }}{% if d.error %}
                 <br><small class="err">{{ d.error }}</small>{% endif %}</td>
-            <td class="notes">
+            <td class="notes stack-end">
             {%- if d.notes %}
                 {# The notes load on first open (the popover's toggle event):
                    the table itself never reads a README. #}
@@ -72,13 +72,13 @@
                 </div>
             {%- else %}<small class="muted">&mdash;</small>{%- endif %}
             </td>
-            <td class="num">{{ d.files }}</td>
-            <td class="num">{{ d.bytes | filesize }}</td>
-            <td class="span"><small>{% if d.oldest %}{{ d.oldest | utc_minute }} &rarr; {{ d.newest | utc_minute(short=true) }}{% else %}&mdash;{% endif %}</small></td>
-            <td class="num"><small>{{ since(d.newest, now_ts) }}</small></td>
+            <td class="num" data-label="files">{{ d.files }}</td>
+            <td class="num" data-label="size">{{ d.bytes | filesize }}</td>
+            <td class="span stack-full" data-label="span (UTC)"><small>{% if d.oldest %}{{ d.oldest | utc_minute }} &rarr; {{ d.newest | utc_minute(short=true) }}{% else %}&mdash;{% endif %}</small></td>
+            <td class="num" data-label="newest"><small>{{ since(d.newest, now_ts) }}</small></td>
             {% set wf = rendered.get(root.path.rstrip('/') ~ '/' ~ d.name)
             or rendered.get(rname ~ '/' ~ d.name) %}
-            <td class="num wf">
+            <td class="num wf" data-label="waterfalls">
             {%- if wf and wf.broken %}
                 <small class="t-warn" title="the acquisition's index could not be read">index unreadable</small>
             {%- elif wf %}

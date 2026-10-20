@@ -73,7 +73,7 @@
 /* ---- scale and density -----------------------------------------------
    Pico grows the base font with the viewport (16 px on a phone, 21 px on
    a wide monitor), which suits a marketing page and makes a control panel
-   enormous.  One size at every width -- 125% of the browser's default
+   enormous.  One size from 576 px up -- 125% of the browser's default
    (20 px unless the operator has set otherwise, so font preference, zoom
    and display scaling all still apply; this is what Pico gave at 1280 px,
    and 15, 16 and 18 px all read small on the operators' monitors) -- and
@@ -570,3 +570,67 @@ button.build-toggle {
     margin-bottom: 0.5em;
 }
 .pg-spacer { flex: 1; }
+
+/* ---- narrow screens ----------------------------------------------------
+   The pages are laid out for the operators' monitors.  Below Pico's
+   1024 px container step (phones, tablets, a half-screen window) they
+   reflow instead of scrolling sideways; below 576 px the base size drops
+   to Pico's own phone size as well.  The nav keeps the mark and the icons on one line and gives
+   the strip a line of its own.  A table marked .stack becomes one card
+   per row: .stack-lead (the row's name) and .stack-end (its status or
+   action) share the first line, the plain cells follow inline with
+   their data-label as a caption, and .stack-full cells take a line each
+   at the end; .stack-hide cells are dropped.  Long names, paths and URLs
+   wrap rather than widen the page.  Wide grids (the PDB boards, the feed
+   grid, the journal) keep their .scroll-x. */
+@media (max-width: 1023.98px) {
+    nav { flex-wrap: wrap; }
+    nav > ul:first-of-type { display: contents; }
+    nav > ul:first-of-type > li:first-child { margin-left: calc(var(--pico-nav-element-spacing-horizontal) * -1); }
+    nav .services-strip { order: 1; flex-basis: 100%; padding-left: 0; padding-right: 0; }
+
+    .group-bar { flex-wrap: wrap; }
+    .page-head h2 { flex-wrap: wrap; }
+    h2, h3, td code, dd { overflow-wrap: anywhere; }
+    /* a table that scrolls keeps its words whole */
+    .scroll-x td code { overflow-wrap: normal; }
+    select { max-width: 100%; }
+    .action-row select, .action-row input[type="text"] { min-width: 0; }
+    .action-row label { flex-wrap: wrap; max-width: 100%; }
+
+    table.stack, table.stack tbody { display: block; }
+    table.stack thead { display: none; }
+    table.stack tr {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.3em 1em;
+        padding: 0.6em 0.25em;
+        border-bottom: var(--pico-border-width) solid var(--pico-table-border-color);
+    }
+    /* The break after the first line: lead and end alone on it. */
+    table.stack tr::before { content: ""; order: -1; flex-basis: 100%; margin-top: -0.3em; }
+    /* tr > td: outranks a page's own table.x td padding */
+    table.stack tr > td { display: block; padding: 0; border: 0; text-align: left; }
+    table.stack .stack-lead { order: -3; flex: 1 1 auto; font-weight: 600; }
+    table.stack .stack-end { order: -2; margin-left: auto; }
+    table.stack .stack-full { order: 1; flex-basis: 100%; }
+    table.stack .stack-hide { display: none; }
+    table.stack td[data-label]::before {
+        content: attr(data-label);
+        margin-right: 0.4em;
+        font-size: 0.72em;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--pico-muted-color);
+        vertical-align: middle;
+    }
+    table.stack td[data-label] > label.toggle-switch { vertical-align: middle; }
+    table.services td.timing { font-size: 0.85em; color: var(--pico-muted-color); }
+    table.nodes td.actions { margin-left: auto; }
+}
+/* A phone at Pico's own size (16 px): the 125% pin above is sized for a
+   monitor and leaves a phone about thirty characters a line. */
+@media (max-width: 575.98px) {
+    :root { --pico-font-size: 100%; }
+}

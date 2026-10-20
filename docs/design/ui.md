@@ -361,6 +361,30 @@ and a select by a height formula, and they never matched.  Do not re-enable the
 fluid scale: the sixteen-board PDB grid and a forty-row dashboard are
 sized to this.
 
+**Narrow screens (2026-10).**  Laid out for monitors, every page
+overflowed a phone: at 390 px the landing page was 880 px wide, BFFS
+1290 px, and the nav squeezed the strip into a column one tag wide and
+some 300 px tall.  Below Pico's 1024 px container step (its container is
+700 px between 768 and 1023, 510 px between 576 and 767, so the
+services and files tables overflowed tablets and half-screen windows
+too) the pages reflow instead.  The nav keeps the mark and the icons on
+its first line and gives the strip a line of its own (the first `ul` is
+`display: contents`, so the strip can wrap below the icons).  The four
+wide tables (services, the nodes dashboard, files, configs) are
+`table.stack`: one card per row, the row's name (`.stack-lead`) and its
+status or action (`.stack-end`) on the first line, short facts inline
+with their `data-label` as a small caption in the group-bar style, and
+long ones (`.stack-full`) on a line each.  A card was chosen over
+horizontal scroll because these tables' point is the row: a node's
+toggles, status and actions, or an acquisition's size and waterfalls,
+belong in view together; hiding columns would lose the version and the
+span.  Grids whose point is the two axes (the PDB boards, the feed grid,
+the transitions log, the journal) keep `.scroll-x`, and there `td code`
+keeps its words whole; elsewhere long paths, URLs and crumbs wrap
+anywhere rather than widen the page.  Below 576 px the base size drops
+to 100% (16 px, what Pico gives a phone): the 20 px pin is a monitor
+size, and on a phone it left about thirty characters a line.
+
 **Orientation.**  A page row under the strip naming the four sections
 was tried in the review round and removed the same day: one more line of
 chrome than the pages needed, and the strip's NODES / DATA tags plus the

@@ -21,9 +21,9 @@
 {# A hardware monitor's row; the caller adds the one fact of its own. #}
 {% macro monitor_row(label, href, name, m, hint) %}
         <tr>
-            <td class="svc"><a href="{{ href }}"><strong>{{ label }}</strong></a></td>
-            <td>{{ tag(monitor_tone(m.health), monitor_label(m.health)) }}</td>
-            <td>
+            <td class="svc stack-lead"><a href="{{ href }}"><strong>{{ label }}</strong></a></td>
+            <td class="stack-end">{{ tag(monitor_tone(m.health), monitor_label(m.health)) }}</td>
+            <td class="stack-full">
                 {% if m.configured %}
                 {{ name }} at {{ m.host }}:{{ m.port }}{{ caller() }}
                 {% if m.error %}<br><small class="err">{{ m.error }}</small>{% endif %}
@@ -31,10 +31,10 @@
                 <small>set <code>{{ hint }}</code> in config.yaml</small>
                 {% endif %}
             </td>
-            <td>{{ seen(m) }}</td>
+            <td class="stack-full timing">{{ seen(m) }}</td>
         </tr>
 {%- endmacro %}
-<table class="services">
+<table class="services stack">
     <thead>
         <tr>
             <th>Service</th>
@@ -45,21 +45,21 @@
     </thead>
     <tbody>
         <tr>
-            <td class="svc"><a href="{{ request.script_root }}/service/choco"><strong>CHOCO</strong></a></td>
-            <td>{{ tag('ok', 'up') }}</td>
-            <td>
+            <td class="svc stack-lead"><a href="{{ request.script_root }}/service/choco"><strong>CHOCO</strong></a></td>
+            <td class="stack-end">{{ tag('ok', 'up') }}</td>
+            <td class="stack-full">
                 {% if choco %}
                 configs in <code>{{ choco.configs_dir }}</code>{% if choco.queued %}
                 &middot; {{ choco.queued }} queued change{{ 's' if choco.queued != 1 }}{% endif %}
                 {% endif %}
             </td>
-            <td>{% if choco %}up since {{ choco.started_at }}{% endif %}</td>
+            <td class="stack-full timing">{% if choco %}up since {{ choco.started_at }}{% endif %}</td>
         </tr>
         {% if nodes %}
         <tr>
-            <td class="svc"><a href="{{ request.script_root }}/nodes"><strong>NODES</strong></a></td>
-            <td>{{ tag(monitor_tone(nodes.health), nodes.label) }}</td>
-            <td>
+            <td class="svc stack-lead"><a href="{{ request.script_root }}/nodes"><strong>NODES</strong></a></td>
+            <td class="stack-end">{{ tag(monitor_tone(nodes.health), nodes.label) }}</td>
+            <td class="stack-full">
                 {{ nodes.total }} node{{ 's' if nodes.total != 1 }}
                 &mdash; {{ nodes.started }} started, {{ nodes.idle }} idle,
                 {{ nodes.down }} down{% if nodes.syncing %}, {{ nodes.syncing }} syncing{% endif %}{% if nodes.unknown %}, {{ nodes.unknown }} unknown{% endif %},
@@ -67,7 +67,7 @@
                 &middot; <a href="{{ request.script_root }}/nodes">dashboard</a>
                 &middot; <a href="{{ request.script_root }}/configs">configs</a>
             </td>
-            <td><span class="muted">&mdash;</span></td>
+            <td class="stack-hide"><span class="muted">&mdash;</span></td>
         </tr>
         {% endif %}
         {% if services.fpga %}{% set fpga = services.fpga %}
@@ -88,9 +88,9 @@
         {% if data or wf or notes %}
         {% set d = details.get('waterfall') %}{% set timer = timers.get('waterfall') %}
         <tr>
-            <td class="svc"><a href="{{ request.script_root }}/files"><strong>DATA</strong></a></td>
-            <td>{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</td>
-            <td>
+            <td class="svc stack-lead"><a href="{{ request.script_root }}/files"><strong>DATA</strong></a></td>
+            <td class="stack-end">{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</td>
+            <td class="stack-full">
                 {% if data and data.configured %}
                 {{ data.n_ok }} / {{ data.n_roots }} data root{{ 's' if data.n_roots != 1 }} reachable
                 {% for r in data.root_status if not r.ok %}
@@ -111,7 +111,7 @@
                 {{ job_problems(notes, 'notes') }}
                 {% endif %}
             </td>
-            <td>
+            <td class="stack-full timing">
                 {% if data %}{{ seen(data) }}{% endif %}
                 {% if wf %}{% if data %}<br>{% endif %}{{ svc.waterfall.mtime_label }} {{ since(wf.state_mtime, now) }}
                 {% if timer and timer.next_elapse %}<br><small class="muted">next {{ timer.next_elapse }}</small>{% endif %}{% endif %}
@@ -129,11 +129,11 @@
         {% set parts = folds.get(name, []) %}
         {% set jobs = [['', job]] + parts %}
         <tr>
-            <td class="svc"><a href="{{ request.script_root }}/service/{{ name }}"><strong>{{ label }}</strong></a></td>
-            <td>{{ tag(data_tone(none, jobs), data_word(none, jobs)) }}</td>
+            <td class="svc stack-lead"><a href="{{ request.script_root }}/service/{{ name }}"><strong>{{ label }}</strong></a></td>
+            <td class="stack-end">{{ tag(data_tone(none, jobs), data_word(none, jobs)) }}</td>
             {# The unit name lives on the service page and in the strip's
                tooltip; here only what changed matters. #}
-            <td>
+            <td class="stack-full">
                 {% if name == 'eop' and d %}
                 {{ d.entries }} EOP entries, {{ d.first }} &rarr; {{ d.last }}
                 {% elif name == 'bffs' and d %}
@@ -146,7 +146,7 @@
                 <br>{{ word }}: {{ job_label(j.health, j.running) }}{{ job_problems(j, word) }}
                 {% endfor %}
             </td>
-            <td>
+            <td class="stack-full timing">
                 {% if s.state_file %}{{ s.mtime_label }} {{ since(job.state_mtime, now) }}{% endif %}
                 {% if timer and timer.next_elapse %}{% if s.state_file %}<br>{% endif %}<small class="muted">next {{ timer.next_elapse }}</small>{% endif %}
                 {% if not s.state_file and not (timer and timer.next_elapse) and not parts %}<span class="muted">&mdash;</span>{% endif %}

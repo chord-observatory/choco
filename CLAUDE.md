@@ -238,8 +238,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
   `static/fonts/*` in pyproject's package-data); no page loads anything from
   an outside host.  600 is the site's bold, never 700.  The base size is
-  pinned to 125% of the browser default (20 px) at every width: Pico's fluid scale stays off, the grids
+  pinned to 125% of the browser default (20 px) from 576 px up, 100% below: Pico's fluid scale stays off, the grids
   are sized to it.  Titles are "Page — CHOCO"; deep pages carry a crumb.
+- Below 1024 px nothing scrolls the page sideways: a wide table is a
+  `.stack` (one card per row: `.stack-lead` / `.stack-end` share the first
+  line, `data-label` captions the inline cells, `.stack-full` takes a line)
+  or sits in a `.scroll-x`.  A new wide table picks one.
 
 **Process hygiene**
 - The web process never imports numpy, h5py, astropy or matplotlib (nor

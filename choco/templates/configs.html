@@ -24,7 +24,7 @@ into <code>{{ upstream.into }}/</code> as one set, checked the same way; a file 
 that a node still uses is kept, and the nodes it re-renders are <strong>put in maintenance
 first</strong>, so nothing restarts until you lift it.{% endif %}</p>
 
-<table>
+<table class="stack">
     <thead>
         <tr>
             <th>File</th>
@@ -38,12 +38,12 @@ first</strong>, so nothing restarts until you lift it.{% endif %}</p>
     <tbody>
         {% for f in files %}
         <tr>
-            <td><code>{{ f.path }}</code></td>
-            <td>{{ f.size | filesize if f.size is not none else "—" }}</td>
-            <td>{{ f.modified or "—" }}</td>
-            <td>{% if f.is_vars %}<em>every node (template variables)</em>{% elif f.used_by %}{{ f.used_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
-            <td>{% if f.included_by %}{{ f.included_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
-            <td style="white-space: nowrap;">
+            <td class="stack-lead"><code>{{ f.path }}</code></td>
+            <td data-label="size">{{ f.size | filesize if f.size is not none else "—" }}</td>
+            <td data-label="modified (UTC)">{{ f.modified or "—" }}</td>
+            <td class="stack-full" data-label="rendered by">{% if f.is_vars %}<em>every node (template variables)</em>{% elif f.used_by %}{{ f.used_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td class="stack-full" data-label="included by">{% if f.included_by %}{{ f.included_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td class="stack-end" style="white-space: nowrap;">
                 <a href="{{ request.script_root }}/configs/edit/{{ f.path }}" role="button" class="secondary outline btn-sm"
                    title="Edit {{ f.path }}{% if f.is_vars %} (template variables, read by every node){% elif f.used_by or f.included_by %}; saving re-renders {{ (f.used_by + f.included_by) | join(', ') }}{% else %}; no node uses it yet{% endif %}">Edit</a>
             </td>

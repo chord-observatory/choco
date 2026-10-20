@@ -14,7 +14,7 @@
         {{ start_ctl(group) }}
     </div>
 </div>
-<table style="margin-top: 0.25em;">
+<table class="nodes stack" style="margin-top: 0.25em;">
     <thead>
         <tr>
             <th>Node</th>
@@ -30,13 +30,13 @@
         {% for node in group_nodes %}
         {% set key = node.key %}
         <tr>
-            <td>{{ node.name }}</td>
-            <td>{% include "_toggle_maintenance.html" %}</td>
-            <td>{% include "_toggle_started.html" %}</td>
-            <td>{{ node_status(node) }}</td>
-            <td>{{ node_version(node, "ver-pop-" ~ node.group ~ "-" ~ node.name) }}</td>
-            {% if not one_file %}<td><code>{{ node.config_filename }}</code></td>{% endif %}
-            <td style="white-space: nowrap;">
+            <td class="stack-lead">{{ node.name }}</td>
+            <td data-label="maint">{% include "_toggle_maintenance.html" %}</td>
+            <td data-label="start">{% include "_toggle_started.html" %}</td>
+            <td class="stack-end">{{ node_status(node) }}</td>
+            <td class="stack-full">{{ node_version(node, "ver-pop-" ~ node.group ~ "-" ~ node.name) }}</td>
+            {% if not one_file %}<td class="stack-full" data-label="config"><code>{{ node.config_filename }}</code></td>{% endif %}
+            <td class="actions" style="white-space: nowrap;">
                 <a href="{{ request.script_root }}/pipeline/{{ key }}" role="button" class="secondary outline btn-sm"
                    title="The live pipeline graph on {{ key }}">Pipeline</a>
                 <a href="{{ request.script_root }}/nodes/edit/{{ key }}" role="button" class="secondary outline btn-sm"
