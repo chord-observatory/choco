@@ -236,6 +236,23 @@ def recv_versions(samples):
     return sorted(vs)
 
 
+def _rises(x):
+    """One input's transit rise is significant: above 3 sigma and 2 %."""
+    return bool(x) and x["rms"] > 0 and x["bump"] / x["rms"] > 3 and x["bump"] > 0.02
+
+
+def source_dishes(t, axis):
+    """Physical array dishes that see transit *t*: a feed rises in both 440-460 and 600-620 MHz.
+    One band alone is often a sidelobe or RFI.  With mixed pointing only some dishes see a
+    source, so the array is not the unit of the sky tests."""
+    bands = t["bands"][:2]
+    if len(bands) < 2:
+        return set()
+    return {a["phys"] for i, a in enumerate(axis)
+            if a["dish"] and not a["dish"].startswith("RFI")
+            and all(i < len(b["rows"]) and _rises(b["rows"][i]) for b in bands)}
+
+
 def source_table(tr, axis):
     """Array-level transit response per source."""
     rows = []
@@ -243,6 +260,7 @@ def source_table(tr, axis):
         return rows
     live_idx = [i for i, a in enumerate(axis) if a["dish"] and not a["dish"].startswith("RFI")]
     for t in tr["transits"]:
+        group = len(source_dishes(t, axis))
         r = {"source": t["source"], "dec": t["dec"],
              "transit": datetime.datetime.fromtimestamp(t["transit_unix"], UTC), "bands": []}
         for b in t["bands"]:
@@ -255,14 +273,18 @@ def source_table(tr, axis):
             det = [v for v, s_ in zip(vals, snrs) if s_ > 3 and v > 0.02]
             r["bands"].append({
                 "band": b["band"],
-                "median_rise": median(det) if len(det) >= max(2, len(vals) // 3) else None,
+                "median_rise": median(det) if len(det) >= max(2, len(vals) // 3 if group < 3 else group // 2) else None,
                 "n_detected": len(det), "n": len(vals)})
         rows.append(r)
     return rows
 
 
 def per_element_sky(tr, axis, source="CygA"):
-    """Per element: rise at transit (440-460 / 600-620 MHz) and peak hour angle."""
+    """Per element: rise at transit (440-460 / 600-620 MHz) and peak hour angle.
+
+    Returns ``(rows, source, dec, dishes)``; *dishes* is None when the source is in the beam
+    of the whole array, else the dishes that see it (mixed pointing).  The elements of the
+    other dishes get no values: a dish that points elsewhere and a dead dish look the same."""
     res = [dict(rise=None, snr=None, ha=None, src=None) for _ in axis]
     if not tr:
         return res
@@ -272,16 +294,21 @@ def per_element_sky(tr, axis, source="CygA"):
     order = ["Sun", "CygA"] if tr["acq"] < "acq_20260601" else ["CygA", "Sun"]
     n_array = sum(1 for a in axis if a["dish"] and not a["dish"].startswith("RFI"))
     for t in sorted((t for t in tr["transits"] if t["source"] in order), key=lambda t: order.index(t["source"])):
-        b = t["bands"][0]["rows"]
-        n = sum(1 for x in b if x and x["rms"] > 0 and x["bump"] / x["rms"] > 3 and x["bump"] > 0.02)
+        n = sum(1 for x in t["bands"][0]["rows"] if _rises(x))
         if n >= max(2, 0.4 * n_array):
-            best = (n, t)
+            best = (t, None)
+            break
+        group = source_dishes(t, axis)
+        if len(group) >= 3:
+            best = (t, group)
             break
     if best is None:
         # too few inputs see the in-beam source: the sky test is inconclusive here
         return res
-    t = best[1]
+    t, group = best
     for i in range(len(axis)):
+        if group is not None and axis[i]["phys"] not in group:
+            continue
         rises, snrs, has = [], [], []
         for b in t["bands"][:2]:
             x = b["rows"][i] if i < len(b["rows"]) else None
@@ -292,7 +319,7 @@ def per_element_sky(tr, axis, source="CygA"):
                     has.append(x["ha_peak"])
         if rises:
             res[i] = dict(rise=max(rises), snr=max(snrs), ha=median(has), src=t["source"])
-    return res, t["source"], t["dec"]
+    return res, t["source"], t["dec"], sorted(group, key=_dish_key) if group is not None else None
 
 
 def pol_check(pol, axis, start):
@@ -300,20 +327,40 @@ def pol_check(pol, axis, start):
     if not pol or not pol.get("result"):
         return None
     r = pol["result"]
-    amp, contrast = {}, []
+    amp, con = {}, {}
     for a, b, x, y in zip(r["prod_a"], r["prod_b"], r["amp_on"], r["amp_off"]):
         amp[(a, b)] = amp[(b, a)] = x
         if a != b and x is not None and y and y > 0:
-            contrast.append(x / y)
+            con[(a, b)] = con[(b, a)] = x / y
     by = {}
     for i, a in enumerate(axis):
         if a["phys"] and not a["phys"].startswith("RFI"):
             by.setdefault(a["phys"], {})[a["pol"]] = i
     dishes = [d for d, v in by.items() if "X" in v and "Y" in v]
+
+    def pair_amp(d, k):
+        """On-source fringe amplitude of dishes d and k, the stronger of co-pol and cross-pol
+        (a swapped dish carries the source in cross-pol)."""
+        co = median([amp.get((by[d][p], by[k][p])) for p in "XY"])
+        cr = median([amp.get((by[d][p], by[k][q])) for p, q in ("XY", "YX")])
+        return max((x for x in (co, cr) if x is not None), default=0)
+
+    # The dishes that see the source: their second-strongest partner (one more dish that
+    # sees it) is within 4x of the best dish's.  With mixed pointing the baselines between
+    # the other dishes outnumber them, and an array-wide median would say the source is not
+    # there.  Contrast does not separate them: the other dishes still fringe on the source
+    # against these, through their sidelobes, about 10x weaker.
+    strength = {d: sorted(pair_amp(d, k) for k in dishes if k != d)[-2] for d in dishes} if len(dishes) >= 3 else {}
+    top = max(strength.values(), default=0)
+    seen = [d for d in dishes if top > 0 and strength[d] >= 0.25 * top]
+    if len(seen) < 3:
+        seen = dishes
+    others = sorted(set(dishes) - set(seen), key=_dish_key)
+    contrast = [con.get((by[d][p], by[k][q])) for d in seen for k in seen if k != d for p in "XY" for q in "XY"]
     out = {}
-    for d in dishes:
+    for d in seen:
         co, cr = [], []
-        for k in dishes:
+        for k in seen:
             if k == d:
                 continue
             c1 = [amp.get((by[d]["X"], by[k]["X"])), amp.get((by[d]["Y"], by[k]["Y"]))]
@@ -336,9 +383,26 @@ def pol_check(pol, axis, start):
     conclusive = typical is not None and typical < 0.4 and c is not None and c >= 2
     for d, v in out.items():
         v["live"] = max(v["co"], v["cross"]) > 0.2 * live_co  # a swapped dish has weak co-pol
-        v["swapped"] = conclusive and v["live"] and v["ratio"] is not None and v["ratio"] > 1.0
+        # healthy feeds give 0.07-0.45 and every swap seen so far 4-10; between, say neither
+        v["swapped"] = conclusive and v["live"] and v["ratio"] is not None and v["ratio"] > 2.0
+        v["unclear"] = conclusive and v["live"] and v["ratio"] is not None and 0.5 < v["ratio"] <= 2.0
     return {"source": r["source"], "transit": datetime.datetime.fromtimestamp(r["transit_unix"], UTC),
-            "dishes": out, "contrast": c, "conclusive": conclusive}
+            "dishes": out, "others": others, "contrast": c, "conclusive": conclusive}
+
+
+def pol_checks(pol, axis, start):
+    """One pol_check per measured transit.  A dish is judged by the first conclusive check
+    whose dishes include it (``covered``): with mixed pointing each group of dishes has its
+    own source."""
+    if not pol:
+        return []
+    results = pol.get("results") or ([pol["result"]] if pol.get("result") else [])
+    checks = [c for c in (pol_check({"result": r}, axis, start) for r in results) if c]
+    taken = set()
+    for c in checks:
+        c["covered"] = sorted((d for d in c["dishes"] if d not in taken), key=_dish_key) if c["conclusive"] else []
+        taken |= set(c["covered"])
+    return checks
 
 
 def timeline_for(entries, name, start, end):
@@ -449,10 +513,11 @@ def analyse(name, root, work, entries):
     a["sources"] = source_table(tr, a["axis"]) if a["axis"] else []
     sky = per_element_sky(tr, a["axis"]) if a["axis"] else None
     if isinstance(sky, tuple):
-        a["sky"], a["sky_source"], a["sky_dec"] = sky
+        a["sky"], a["sky_source"], a["sky_dec"], a["sky_dishes"] = sky
     else:
-        a["sky"], a["sky_source"], a["sky_dec"] = [dict(rise=None, snr=None, ha=None, src=None)] * len(a["axis"]), None, None
-    a["pol"] = pol_check(pol, a["axis"], start) if a["axis"] else None
+        a["sky"], a["sky_source"], a["sky_dec"], a["sky_dishes"] = (
+            [dict(rise=None, snr=None, ha=None, src=None)] * len(a["axis"]), None, None, None)
+    a["pols"] = pol_checks(pol, a["axis"], start) if a["axis"] else []
     a["zerovis"] = _load(work, "zerovis", name)
     a["verify"] = _load(work, "verify", name)
     if a["verify"]:
@@ -545,6 +610,7 @@ def verdict(a, st):
     swapped = swapped_dishes(a)
     if swapped:
         notes.append("X/Y are swapped on " + ", ".join(swapped))
+    notes += [e["summary"] for e in a["timeline"] if e.get("summary")]
     fs = {g["do_fringestop"] for g in a["cx_groups"]}
     if "True" in fs and "False" in fs:
         notes.append("only cx47 and cx52 fringestop")
@@ -555,7 +621,8 @@ def verdict(a, st):
         notes.append(p["short"])
     fc = flag_check(a, st)
     if fc["status"] == "correct":
-        notes.append("bad-feed flags agree with the sky")
+        notes.append("bad-feed flags agree with the sky" + (
+            " on the %d dishes that see %s" % (len(a["sky_dishes"]), src_name(a["sky_source"])) if a["sky_dishes"] else ""))
     elif fc["status"] == "wrong":
         if fc["live_flagged"]:
             notes.append("bad-feed mask flags %d live inputs%s" % (
@@ -569,15 +636,15 @@ def verdict(a, st):
 
 
 def swapped_dishes(a):
-    """Physical dishes with swapped feeds: this acquisition's own check when it is conclusive,
-    else the curated history."""
-    if a["pol"] and a["pol"]["conclusive"]:
-        return sorted(d for d, v in a["pol"]["dishes"].items() if v["swapped"])
+    """Physical dishes with swapped feeds: this acquisition's own checks for the dishes they
+    cover, the curated history for the others."""
     out = set()
     for e in a["timeline"]:
         if e["topic"] == "polarization":
             out |= set(e.get("swapped", []))
-    return sorted(out)
+    for c in a["pols"]:
+        out = {d for d in out if d not in c["covered"]} | {d for d in c["covered"] if c["dishes"][d]["swapped"]}
+    return sorted(out, key=_dish_key)
 
 
 def flag_check(a, st):
@@ -616,6 +683,29 @@ def pointing_summary(a):
             return ", near the config value %+.0f (%s)" % (cfg_dec, coel)
         return ", not at the config value %+.0f (%s)" % (cfg_dec, coel)
 
+    if a.get("sky_dishes"):
+        # mixed pointing: only these dishes see the in-beam source
+        dec = a["sky_dec"]
+        ds = dish_ranges(a["sky_dishes"])
+        n = len({el["phys"] for el in a["axis"] if el["phys"] and not el["phys"].startswith("RFI")})
+        # the fringes find a second group where its autocorrelations show nothing (Tau A, 2026-10-18)
+        fr = [c for c in a["pols"] if c["covered"] and c["source"] != a["sky_source"] and c["source"] in src]
+        p = {"dec": "mixed: %s near Dec %+.0f (%s)%s" % (ds, dec, src_name(a["sky_source"]), "".join(
+                 ", %s near Dec %+.0f (%s, fringes only)" % (dish_ranges(c["covered"]), src[c["source"]]["dec"],
+                                                            src_name(c["source"])) for c in fr) or ", the other dishes not known"),
+             "short": "only %d of %d dishes see %s (%s)" % (len(a["sky_dishes"]), n, src_name(a["sky_source"]), ds) + "".join(
+                 "; %d dishes have fringes at the %s transit" % (len(c["covered"]), src_name(c["source"])) for c in fr),
+             "agrees": None,
+             "why": "%s (Dec %+.1f, co-elevation %+.1f) increases the autocorrelations of %s by %s at 440-460 MHz.  "
+                    "The other dishes show no rise.  They point elsewhere or have no signal, and the "
+                    "autocorrelations cannot tell which" % (
+                        src_name(a["sky_source"]), dec, dec - LAT, ds, pct(rise(a["sky_source"])))}
+        for c in fr:
+            d = src[c["source"]]["dec"]
+            p["why"] += (".  The cross-pol check finds fringes at the %s transit (Dec %+.1f, co-elevation %+.1f) on %s, "
+                         "thus these dishes point near it.  Their autocorrelations show no rise at this transit" % (
+                             src_name(c["source"]), d, d - LAT, dish_ranges(c["covered"])))
+        return p
     cyg = rise("CygA")
     sun = rise("Sun")
     sun_dec = src["Sun"]["dec"] if "Sun" in src else None
@@ -755,6 +845,10 @@ def render_readme(a, st, gen_time):
              "records it.\n" % (
                  "file label, mirrored in its group of eight (reversed table)" if rev else "file label",
                  src_name(a["sky_source"]) if a["sky_source"] else "brightest"))
+    if a["sky_dishes"]:
+        L.append("Only %s see the %s transit.  The other dishes have no sky response and no E-W offset in "
+                 "the table.  They point elsewhere or have no signal.\n" % (
+                     dish_ranges(a["sky_dishes"]), src_name(a["sky_source"])))
     L.append("| element | file label | physical | sky response | E-W offset | flagged | auto (rel.) | status |")
     L.append("|---|---|---|---|---|---|---|---|")
     has = [x["ha"] for x, el in zip(st, a["axis"]) if x["ha"] is not None and el["dish"] and not el["dish"].startswith("RFI")]
@@ -779,25 +873,36 @@ def render_readme(a, st, gen_time):
     for e in a["timeline"]:
         if e["topic"] == "polarization":
             L.append("- %s [history: %s]" % (e["text"], e["source"]))
-    if a["pol"] and not a["pol"]["conclusive"]:
+    good = [c for c in a["pols"] if c["covered"]]
+    for c in a["pols"] if not good else []:
         L.append("- Cross-pol check at the %s transit %s: no result.  The on/off fringe contrast is only "
                  "%.1f, thus the source is not dominant at 610 MHz, and co-pol and cross-pol look the same.  "
                  "Use the history above. [sky]" % (
-                     src_name(a["pol"]["source"]), a["pol"]["transit"].strftime("%Y-%m-%d %H:%M UTC"), a["pol"]["contrast"] or 0))
-    elif a["pol"]:
-        sw = sorted(d for d, v in a["pol"]["dishes"].items() if v["swapped"])
-        L.append("- Cross-pol check at the %s transit %s (610 MHz): %s. [sky]" % (
-            src_name(a["pol"]["source"]), a["pol"]["transit"].strftime("%Y-%m-%d %H:%M UTC"),
+                     src_name(c["source"]), c["transit"].strftime("%Y-%m-%d %H:%M UTC"), c["contrast"] or 0))
+    for c in good:
+        sw = [d for d in c["covered"] if c["dishes"][d]["swapped"]]
+        L.append("- Cross-pol check at the %s transit %s (610 MHz), %s: %s. [sky]" % (
+            src_name(c["source"]), c["transit"].strftime("%Y-%m-%d %H:%M UTC"), dish_ranges(c["covered"]),
             ("X/Y are swapped on **" + ", ".join(sw) + "**") if sw else "no dish has swapped feeds"))
+    if good:
         L.append("")
-        L.append("| dish | co-pol amp | cross-pol amp | cross/co | |")
-        L.append("|---|---|---|---|---|")
-        for d in sorted(a["pol"]["dishes"], key=_dish_key):
-            v = a["pol"]["dishes"][d]
-            L.append("| %s | %.3g | %.3g | %.2f | %s |" % (
-                d, v["co"], v["cross"], v["ratio"] if v["ratio"] is not None else float("nan"),
-                "**swapped**" if v["swapped"] else ("no signal" if not v["live"] else "")))
-    else:
+        L.append("| dish | transit | co-pol amp | cross-pol amp | cross/co | |")
+        L.append("|---|---|---|---|---|---|")
+        rows = [(d, c) for c in good for d in c["covered"]]
+        for d, c in sorted(rows, key=lambda x: _dish_key(x[0])):
+            v = c["dishes"][d]
+            L.append("| %s | %s | %.3g | %.3g | %.2f | %s |" % (
+                d, src_name(c["source"]), v["co"], v["cross"], v["ratio"] if v["ratio"] is not None else float("nan"),
+                "**swapped**" if v["swapped"] else "unclear" if v.get("unclear") else "no signal" if not v["live"] else ""))
+        covered = {d for c in good for d in c["covered"]}
+        rest = sorted((set(good[0]["dishes"]) | set(good[0]["others"])) - covered, key=_dish_key)
+        if rest:
+            L.append("")
+            L.append("A check covers only the dishes that have fringes at its transit.  These dishes have fringes "
+                     "more than 4 times weaker or none at %s.  They point elsewhere or have no signal, and the "
+                     "history above applies to them: %s." % (
+                         " and ".join("the %s transit" % src_name(c["source"]) for c in good), dish_ranges(rest)))
+    if not a["pols"]:
         L.append("- This acquisition has no bright transit that is usable for a cross-pol check.")
     L.append("")
 
@@ -920,6 +1025,9 @@ def render_readme(a, st, gen_time):
                      "files): %s.  The table shows the most frequent state. [file]" % ", ".join(
                          _phys(el) for el, _ in changed))
         if a["sky_source"]:
+            if a["sky_dishes"]:
+                L.append("- The sky test covers only the dishes that see the %s transit: %s. [sky]" % (
+                    src_name(a["sky_source"]), dish_ranges(a["sky_dishes"])))
             if not dead_unflagged and not live_flagged:
                 L.append("- Sky test (%s transit): all inputs with no sky signal have a flag, and no healthy "
                          "input has a flag.  **The flags are correct.** [sky]" % src_name(a["sky_source"]))
@@ -991,6 +1099,18 @@ def _na(v):
 def _dish_key(d):
     m = LABEL_RE.match(d)
     return (bool(m.group(1)), m.group(2), int(m.group(3)))
+
+
+def dish_ranges(ds):
+    """``A01-A08, B03, B05-B08``: consecutive dishes of a row as one range."""
+    runs = []
+    for d in sorted(ds, key=_dish_key):
+        k = _dish_key(d)
+        if runs and runs[-1][1][:2] == k[:2] and runs[-1][1][2] + 1 == k[2]:
+            runs[-1][1:] = [k, d]
+        else:
+            runs.append([d, k, d])
+    return ", ".join(r[0] if r[0] == r[2] else "%s-%s" % (r[0], r[2]) for r in runs)
 
 
 element_status_cache = {}

@@ -15,6 +15,8 @@
 #   topic:  labels | polarization | pointing | rfi | fringestop | badfeed | data | software | calibration
 #   source: where the fact comes from, so a reader can judge it.
 #   swapped: (polarization entries) physical dishes whose X/Y feeds are swapped.
+#   summary: (optional) a short note for the README's summary line, for a fact that
+#            `swapped` cannot express (a swap on some frequencies only).
 
 entries:
 
@@ -47,12 +49,22 @@ entries:
     2026-10-09 19:14 UTC.
 - topic: pointing
   from: 2026-10-09T19:14
-  to: null
+  to: 2026-10-17T04:40
   source: "dish_coelev_deg attribute of the files; Cyg A transits 2026-10-10 to 10-12"
   text: >-
     The files record `dish_coelev_deg = -8.6` (Dec +40.7, Cyg A), and `coelev_disp_deg = 0`
     for all dishes.  This agrees with the measured pointing.  The Cyg A transits from
     2026-10-10 increase the autocorrelations by 55-60 %, thus the config and the sky agree.
+- topic: pointing
+  from: 2026-10-17T04:40
+  to: null
+  source: "operator (2026-10-22); Cyg A transits 2026-10-19 and 10-20, Tau A transit 2026-10-18 11:45 UTC (cross-pol check, 610 MHz)"
+  text: >-
+    The dishes do not all point at the same declination.  A01-A08, B03 and B05-B08 point at
+    Cyg A (Dec +40.7).  Most dishes of rows C-H, and B04, point at Tau A (Dec +22.0,
+    co-elevation -27.3).  The files record `dish_coelev_deg = -8.6` for all dishes, thus
+    the attribute is wrong for the Tau A dishes.  At the Tau A transit these dishes have
+    fringes, but their autocorrelations show no rise.
 
 - topic: pointing
   from: 2026-04-14
@@ -175,21 +187,50 @@ entries:
   swapped: [A06, A07, B07]
 - topic: polarization
   from: 2026-09-19
-  to: null
+  to: 2026-10-17T04:40
   source: "this analysis (cross-pol check at the Cyg A transit, 610 MHz)"
   text: >-
     No dish has swapped feeds.  The swap on A6, A7 and B7 was corrected between 2026-09-14
     and 2026-09-19.  The check for this acquisition is below.
 - topic: polarization
   from: 2026-10-17T04:40
-  to: null
-  source: "cabling note 2026-10-17 (crate slot 15 = HX, 16 = HY); kotekan chord crs_board_remap before 26bce6c64"
+  to: 2026-10-17T22:48
+  source: "cabling note 2026-10-17 (crate slot 15 = HX, 16 = HY); crs_board_remap in config_json; this analysis (cross-pol check per channel at the Tau A transit 2026-10-17, 610 MHz)"
   text: >-
-    kotekan's crs_board_remap kept the RFI-antenna order for crate slots 15 and 16, thus the
-    files label row H's X feeds as Y and its Y feeds as X.  For H01-H08, use X as the
-    array's Y, and Y as the array's X.  The config fix is kotekan chord 26bce6c64; it applies
-    from the first X-engine restart after it is pulled.  The other rows are not affected.
+    kotekan's crs_board_remap kept the RFI-antenna order for crate slots 15 and 16.  This
+    swaps the two boards of row H, thus the files label row H's X feeds as Y and its Y feeds
+    as X.  For H01-H08, use X as the array's Y, and Y as the array's X.  At the Tau A
+    transit the cross-pol fringes of H01-H08 are 4.3 times their co-pol fringes on every
+    channel.  The other rows are not affected.
   swapped: [H01, H02, H03, H04, H05, H06, H07, H08]
+- topic: polarization
+  from: 2026-10-17T22:48
+  to: 2026-10-19T21:28
+  source: "crs_board_remap in config_json; this analysis (cross-pol check per channel at the Tau A transit 2026-10-18, 610 MHz)"
+  text: >-
+    The six GNSS-build nodes (cx19, cx27, cx42, cx43, cx44, cx51) run the fixed
+    crs_board_remap (kotekan chord 26bce6c64).  cx47 and cx52 still run the old map.  Thus
+    row H's X and Y are swapped only on the frequencies of cx47 and cx52 (streams 1, 3, 9
+    and 11, frequency index mod 16).  On these frequencies, use H01-H08 X as the array's Y,
+    and Y as the array's X.  On all other frequencies the labels are correct.
+  summary: "X/Y are swapped on H01-H08 on the frequencies of cx47 and cx52 only"
+- topic: polarization
+  from: 2026-10-19T21:28
+  to: null
+  source: "crs_board_remap in config_json; autocorrelations of row H"
+  text: >-
+    All X-engine nodes run the fixed crs_board_remap, thus row H's labels are correct.
+    From 2026-10-19 21:28 the inputs of row H are zero.
+- topic: polarization
+  from: 2026-10-17T04:40
+  to: null
+  source: "this analysis (cross-pol check at the Cyg A transits 2026-10-19 and 10-20 and the Tau A transit 2026-10-18 11:45 UTC, 610 MHz)"
+  text: >-
+    Rows A and B have no swapped feeds.  Dishes C05, D07 and E05 have their X and Y feeds
+    swapped, relative to the rest of the array.  At the Tau A transit their cross-pol
+    fringes are 4-8 times their co-pol fringes.  On these dishes, use X as the array's Y,
+    and Y as the array's X.  The check for this acquisition is below.
+  swapped: [C05, D07, E05]
 
 # ---- RFI --------------------------------------------------------------------------------
 - topic: rfi

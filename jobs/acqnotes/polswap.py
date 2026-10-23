@@ -1,6 +1,6 @@
 """Cross-pol vs co-pol transit amplitude per element pair at a bright transit.
 
-For the best-covered Cyg A transit (else the Sun) in an acquisition, reads all products of
+For the best-covered transit of each bright source in an acquisition, reads all products of
 one frequency chunk (16 channels) near 610 MHz, subtracts the stationary (crosstalk) term estimated off
 source, and records the median |V - c| on source for every product.  A dish whose X and Y
 feeds are swapped relative to the array shows cross-pol (X_i Y_j) amplitudes larger than
@@ -86,13 +86,13 @@ def run(d, source):
 
 
 def analyse(d):
+    """Every bright transit with coverage, the in-beam source first.  With mixed pointing
+    each source is in the beam of only some dishes (2026-10-18: rows A-B on Cyg A, the
+    others on Tau A), so one transit cannot check them all.  ``result`` is the first, as
+    before."""
     acq = os.path.basename(d)
-    r = None
     # before the summer re-pointing the dishes looked near Dec +20, where the Sun is the
     # bright in-beam source; afterwards Cyg A is
-    order = ("Sun", "CygA") if acq < "acq_20260601" else ("CygA", "Sun")
-    for s in order:
-        r = run(d, s)
-        if r:
-            break
-    return {"acq": acq, "result": r}
+    order = ("Sun", "CygA", "TauA") if acq < "acq_20260601" else ("CygA", "TauA", "Sun")
+    results = [r for r in (run(d, s) for s in order) if r]
+    return {"acq": acq, "result": results[0] if results else None, "results": results}

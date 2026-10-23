@@ -19,7 +19,7 @@ hdf5plugin, numpy, astropy, PyYAML).
 | `timeline.yaml` | Curated history: dish-table changes, swaps, deployments, audits.  **Edit this** when something new is learned. |
 | `extract.py` | Metadata of five sampled files per acquisition: attributes, labels, embedded kotekan configs, flags, RFI fractions, autos. |
 | `transit.py` | Autocorrelation rise of every input at the Cyg A, Cas A, Tau A, Vir A and Sun transits (440-460, 600-620, 1400-1420 MHz) and the hour angle of the peak. |
-| `polswap.py` | Cross-pol vs co-pol amplitude of every product at the Cyg A (else Sun) transit, 610 MHz. |
+| `polswap.py` | Cross-pol vs co-pol amplitude of every product at each Cyg A, Tau A and Sun transit, 610 MHz. |
 | `zerovis.py` | Per input, the fraction of its baselines that are zeroed (an applied mask in files that do not record one). |
 | `verify.py` | Reads every file of an acquisition (attributes, all embedded configs, flags at 610 MHz, RFI fractions, gains id), so a mask that changes in a run is given as a fraction.  Files already read are not read again. |
 | `render.py` | Joins the measurements with `timeline.yaml` and renders the notes. |
@@ -78,6 +78,15 @@ backfill is roughly 5-10 min of NFS reads per acquisition).
   absolute peak by a few degrees of hour angle).  Per-dish north-south offsets cannot be
   separated from per-input system temperature with one in-beam source, so a low sky
   response is reported as "weak", not as a pointing number.
+- **Mixed pointing**: from 2026-10-17 the dishes do not all point at the same declination
+  (rows A-B at Cyg A, most of rows C-H at Tau A).  Each sky test therefore works on the
+  dishes that see its transit, not on the array.  The pointing and flag tests use the dishes
+  whose autocorrelations rise at the transit; elsewhere they say nothing, because a dish that
+  points elsewhere and a dead dish look the same.  The cross-pol check takes the dishes
+  whose fringes at a transit are within 4x of the strongest dish's, and judges each dish
+  at the first transit that covers it.  A dish is swapped above cross/co 2 (healthy feeds
+  give 0.07-0.45, swaps 4-10).  At the 2026-10-18 Tau A transit the Tau A dishes have
+  fringes, but their autocorrelations show no rise.
 - **Bad-feed flags**: an input is "dead" when it shows no transit at > 3 sigma while at least
   40 % of the array does; the mask is "correct" when it covers exactly the dead inputs
   (hot inputs excepted).

@@ -250,6 +250,64 @@ class TestRender:
         assert render.GEN_DATE_RE.search(
             "The choco acqnotes job (`jobs/acqnotes/`) wrote these notes on 2026-10-12.")
 
+    def test_dish_ranges(self):
+        assert render.dish_ranges(["B05", "A02", "A01", "A03", "B03", "B06"]) == "A01-A03, B03, B05-B06"
+
+
+class TestPolChecks:
+    """Mixed pointing (2026-10-18): each transit is in the beam of one group of dishes."""
+
+    DISHES = ["A01", "A02", "A03", "A04", "C01", "C02", "C03", "C04", "D01"]
+
+    def axis(self):
+        return [{"file_label": d + p, "dish": d, "pol": p, "phys": d, "note": None}
+                for p in "XY" for d in self.DISHES]
+
+    def result(self, source, group, swapped=()):
+        """Fringes on *group* at 20x the off-source level (cross-pol 10 % of co-pol); the other
+        dishes fringe 20x weaker against them, through their sidelobes; D01 has no signal."""
+        ax = self.axis()
+        r = {"source": source, "transit_unix": 1792375659.0, "coverage": 1.0,
+             "prod_a": [], "prod_b": [], "amp_on": [], "amp_off": []}
+        for i, a in enumerate(ax):
+            for j in range(i, len(ax)):
+                b = ax[j]
+                pa = ("Y" if a["pol"] == "X" else "X") if a["phys"] in swapped else a["pol"]
+                pb = ("Y" if b["pol"] == "X" else "X") if b["phys"] in swapped else b["pol"]
+                n = (a["phys"] in group) + (b["phys"] in group)
+                amp = {2: 1.0, 1: 0.05, 0: 0.05}[n] * (1.0 if pa == pb else 0.1)
+                if "D01" in (a["phys"], b["phys"]):
+                    amp = 0.0
+                r["prod_a"].append(i)
+                r["prod_b"].append(j)
+                r["amp_on"].append(amp if n else 0.05)
+                r["amp_off"].append(0.05)
+        return r
+
+    def test_each_group_is_checked_at_its_own_transit(self):
+        cyg = self.result("CygA", {"A01", "A02", "A03", "A04"})
+        tau = self.result("TauA", {"C01", "C02", "C03", "C04"}, swapped={"C03"})
+        checks = render.pol_checks({"result": cyg, "results": [cyg, tau]}, self.axis(), None)
+        assert [c["conclusive"] for c in checks] == [True, True]
+        assert checks[0]["covered"] == ["A01", "A02", "A03", "A04"]
+        assert checks[1]["covered"] == ["C01", "C02", "C03", "C04"]
+        assert [d for d in checks[1]["covered"] if checks[1]["dishes"][d]["swapped"]] == ["C03"]
+        assert "D01" in checks[0]["others"]
+        a = {"pols": checks, "timeline": []}
+        assert render.swapped_dishes(a) == ["C03"]
+
+    def test_a_group_alone_is_not_diluted_by_the_rest_of_the_array(self):
+        cyg = self.result("CygA", {"A01", "A02", "A03", "A04"})
+        (c,) = render.pol_checks({"result": cyg}, self.axis(), None)  # a measurement from before 2026-10
+        assert c["conclusive"] and c["covered"] == ["A01", "A02", "A03", "A04"]
+        assert c["contrast"] >= 2
+
+    def test_the_history_holds_for_dishes_no_check_covers(self):
+        cyg = self.result("CygA", {"A01", "A02", "A03", "A04"})
+        checks = render.pol_checks({"result": cyg, "results": [cyg]}, self.axis(), None)
+        a = {"pols": checks, "timeline": [{"topic": "polarization", "swapped": ["A02", "C02"]}]}
+        assert render.swapped_dishes(a) == ["C02"]
+
 
 class TestChunkBlocks:
     """Reads are priced per chunk: a chunk of ``vis`` holds every product."""
