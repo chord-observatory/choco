@@ -6,6 +6,8 @@ The fixture mirrors the real layout (``vis`` as
 the live files do, without needing the mount.
 """
 
+import json
+
 import h5py
 import numpy as np
 import pytest
@@ -424,3 +426,54 @@ def test_cube_quantizers():
     lo, hi = np.array([1.0, np.nan]), np.array([100.0, np.nan])
     q = R.quantize_log(np.array([[1.0, 10.0, 100.0, 0.0, np.nan], [5.0] * 5]), lo, hi)
     assert q.tolist() == [[1, 128, 255, 0, 0], [0] * 5]
+
+
+# --- the mask and delivery record ------------------------------------------
+
+def _with_masks(path, n_freq=64, n_elem=4, n_time=6):
+    """Add kotekan's per-feed mask and per-sample fractions to a fixture
+    file: element 1 masked on every stream from bin 2, element 3 on
+    stream 5 only; stream 7 delivers nothing in bin 0."""
+    with h5py.File(path, "r+") as f:
+        flags = np.ones((n_freq, n_elem, n_time), np.float32)
+        flags[:, 1, 2:] = 0
+        flags[5::R.N_STREAMS, 3, :] = 0
+        f.create_dataset("flags", data=flags)
+        frames = f["frames_added"][()]
+        frames[7::R.N_STREAMS, 0] = 0
+        f["frames_added"][...] = frames
+        rfi = np.full((n_freq, n_time), 0.25, np.float32)
+        f.create_dataset("frac_rfi", data=rfi)
+        f.create_dataset("frac_pl", data=np.zeros((n_freq, n_time), np.float32))
+        f.create_dataset("frac_rfi_first_stage_enabled", data=np.ones((n_freq, n_time), np.float32))
+        f.create_dataset("fringestop_enabled", data=np.zeros(n_time, bool))
+        f.create_dataset("digital_gains/update_id", data=np.array([b"gain_a"], object),
+                         dtype=h5py.string_dtype())
+        f.create_dataset("config_json", data=np.array(
+            [json.dumps({"kotekan_version": v, "config": {}}) for v in ("b", "a", "b", "")], object),
+            dtype=h5py.string_dtype())
+
+
+def test_read_diag_counts_masks_per_stream(tmp_path):
+    path = tmp_path / "v.h5"
+    make_file(path)
+    _with_masks(path)
+    d = R.read_diag(path, R.read_axes(path))
+    assert (d["file"], d["n_bin"], d["n_streams"]) == (4202415, 6, R.N_STREAMS)
+    assert d["flag_live"] == [15, 16, 16, 16, 16, 16]
+    # every delivering stream masks A1p1 (element 1) from bin 2; one masks element 3
+    labels = R.read_axes(path).labels
+    assert d["masked"] == {labels[1]: [[2, 6, 16]], labels[3]: [[0, 6, 1]]}
+    assert d["missing"][7][0] == 10000 and d["missing"][7][1] == 0 and d["missing"][0][0] == 0
+    assert d["rfi"][0] == [2500] * 6 and d["pl"][3] == [0] * 6 and d["rfi_on"][1] == [10000] * 6
+    assert d["rfi"][7][0] == -1                                   # nothing live to average
+    assert d["fringestop"] == 0 and d["gains"] == "gain_a" and d["versions"] == ["a", "b"]
+    assert len(d["times"]) == 6
+    json.dumps(d)                                                 # one JSON line
+
+
+def test_read_diag_without_the_datasets_says_less(vis_file):
+    path, _ = vis_file
+    d = R.read_diag(path, R.read_axes(path))
+    assert "masked" not in d and "rfi" not in d and "gains" not in d
+    assert len(d["missing"]) == R.N_STREAMS

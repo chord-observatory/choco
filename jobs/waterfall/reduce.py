@@ -28,6 +28,7 @@ stored, a ~45% surcharge on the I/O that dominates this job.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -687,6 +688,98 @@ def quantize_unit(values: np.ndarray) -> np.ndarray:
     q = np.rint(1.0 + frac * (wfpng.N_LEVELS - 1)).astype(np.uint8)
     q[~ok] = wfpng.MISSING
     return q
+
+
+#: X-engine streams: file channel i comes from stream i mod this (the comb;
+#: checked against ``bad_feed_mask/stream_freq_id`` on the 2026-10-23 files).
+N_STREAMS = 16
+
+#: The fractions in a diag record are integers in units of this.
+DIAG_UNIT = 1e-4
+
+
+def _per_stream(values: np.ndarray, live: np.ndarray, n_streams: int) -> list:
+    """``(n_freq, n_time)`` -> ``n_streams`` lists of per-bin means over
+    each stream's live channels, in :data:`DIAG_UNIT` (-1: none live)."""
+    out = []
+    for s in range(n_streams):
+        v, ok = values[s::n_streams], live[s::n_streams]
+        n = ok.sum(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            m = np.where(n > 0, np.where(ok, v, 0).sum(axis=0) / np.maximum(n, 1), np.nan)
+        out.append([int(round(x / DIAG_UNIT)) if np.isfinite(x) else -1 for x in m])
+    return out
+
+
+def _bin_runs(counts: np.ndarray) -> list:
+    """``[[first, stop, count], ...]`` over the bins where ``counts`` > 0."""
+    runs, start = [], None
+    for b in range(counts.shape[0] + 1):
+        c = int(counts[b]) if b < counts.shape[0] else 0
+        if start is not None and c != int(counts[start]):
+            runs.append([start, b, int(counts[start])])
+            start = None
+        if start is None and c > 0:
+            start = b
+    return runs
+
+
+def read_diag(path, axes: Axes) -> dict:
+    """The file's masks and delivery, one JSON line of ``diag.jsonl``.
+
+    Everything here is small beside ``vis``: one chunk of ``flags`` and
+    the ``(n_freq, n_time)`` datasets, a few MB a file.
+    ``flags[freq, element, time]`` is the per-feed mask kotekan applied
+    (0 = masked: the bad feed mask bffs sets, equal to ``bad_feed_mask``
+    on the 2026-10-23 files).  Channel i is stream i mod
+    :data:`N_STREAMS`, so its first rows give every stream's view;
+    ``masked`` counts, per element and bin, the streams that masked it
+    among those that delivered (``flag_live``), so a stream that missed
+    an update shows as a partial count.  The RFI and packet-loss masks
+    are per sample and averaged over feeds, so the file keeps only their
+    fractions per channel: ``rfi``, ``pl`` and ``rfi_on`` (the RFI
+    mask's first stage was enabled) are per-stream means, ``missing``
+    the share of a stream's channels with no frame.
+    """
+    n_time, ns = axes.n_time, N_STREAMS
+    labels = list(axes.labels) or [str(e) for e in range(axes.n_elements)]
+    rec: dict = {"file": int(axes.file_idx), "n_bin": int(n_time), "n_streams": ns,
+                 "times": ([int(t) for t in axes.times_ns] if axes.times_ns is not None else [])}
+    with h5py.File(path, "r") as f:
+        live = _validity(f, axes.n_freq, n_time)
+        if live is None:
+            live = np.ones((axes.n_freq, n_time), bool)
+        rec["missing"] = _per_stream((~live).astype(np.float32),
+                                     np.ones_like(live), ns)
+        for key, name in (("rfi", "frac_rfi"), ("pl", "frac_pl"),
+                          ("rfi_on", "frac_rfi_first_stage_enabled")):
+            if name in f and f[name].shape == (axes.n_freq, n_time):
+                rec[key] = _per_stream(np.nan_to_num(f[name][()].astype(np.float32)), live, ns)
+        fl = f.get("flags")
+        if fl is not None and fl.shape[1:] == (len(labels), n_time) and fl.shape[0] >= ns:
+            rows = fl[0:ns] == 0                                   # (ns, n_el, n_time)
+            row_live = live[0:ns]                                  # (ns, n_time)
+            counts = (rows & row_live[:, None, :]).sum(axis=0)     # (n_el, n_time)
+            rec["flag_live"] = [int(x) for x in row_live.sum(axis=0)]
+            rec["masked"] = {labels[e]: _bin_runs(counts[e])
+                             for e in range(len(labels)) if counts[e].any()}
+        if "fringestop_enabled" in f:
+            rec["fringestop"] = int(np.asarray(f["fringestop_enabled"][()], bool).sum())
+        if "digital_gains/update_id" in f:
+            ids = [x.decode() if isinstance(x, bytes) else str(x)
+                   for x in f["digital_gains/update_id"][()]]
+            rec["gains"] = ids[-1] if ids else None
+        if "config_json" in f:
+            versions = set()
+            for blob in f["config_json"][()]:
+                try:
+                    v = json.loads(blob).get("kotekan_version")
+                except (ValueError, AttributeError):
+                    continue
+                if v:
+                    versions.add(str(v))
+            rec["versions"] = sorted(versions)
+    return rec
 
 
 def _chunks(d, sel: Selection, axes: Axes):

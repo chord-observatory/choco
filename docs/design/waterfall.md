@@ -297,3 +297,36 @@ chunk spans every bin of its file.  The structural fix stays on the
 recv: a second N² writer behind a 16-channel average would hold every
 product at this resolution in 0.75 GB per file, and the same pass would
 read it in 15 s.
+
+**The feeds panel (2026-10-23).**  The contact sheet showed the data but
+not the flags, and the question the page has to answer is which feeds
+are bad and whether the flags agree.  So the sheet now opens with one row
+per feed (dish rows A–H, X above Y), one column per file, and the value
+is measured without regard to the mask: each feed's median coherence
+with the feeds of its own polarization in one band, computed by the web
+from ``matrix.dat`` (one 16 KB frame per file; the levels are a log
+scale, so the median of the levels is the level of the median).  The
+median and the same-polarization partners are the point: the mean over
+all 127 partners in ``co_eNNNN.png`` is diluted by the cross-polar pairs
+and dragged down by dead partners, and it works on acquisitions rendered
+before the change.  The masks are drawn over the rows, so a masked feed
+keeps its data: a bright hatched row is a stale flag, a dark row with no
+mask a miss.  The masks come from the file, not from bffs: ``flags`` is
+what kotekan applied, and it agreed with ``bad_feed_mask`` exactly on
+the 2026-10-23 files, while bffs's ``history`` records what it sent and
+when, and its ``flag_reasons`` only for the current list (the page
+shows those as "bffs now").  ``flags`` is per channel, and channel i is
+stream i mod 16, so one chunk gives every stream's view of every feed;
+the record counts the streams that masked a feed among those that
+delivered, and a partial count is drawn as its own hatch.  The first
+live record showed why that matters: bffs flagged B01X at 15:15:35 and
+cleared it at 15:22:07 UTC, but the streams applied it between 15:15:44
+and 15:20:03 and dropped it between 15:22:33 and 15:25:12.  The RFI and
+packet-loss masks are per sample and averaged over feeds, so the file
+keeps only their fractions per channel (``frac_rfi``, ``frac_pl``,
+``frac_rfi_first_stage_enabled``); ``frac_lost`` is their sum and adds
+nothing.  They and the per-stream missing channels (``frames_added``)
+run under the rows on the same time axis.  The job writes all of it as
+one JSON line per file (``diag.jsonl``, ~10 KB, read in 0.1 s), appended
+under the index's commit like the cubes; acquisitions folded before the
+change have no record and show their data without masks.

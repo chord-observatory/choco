@@ -64,6 +64,15 @@ baseline inside one file — and is drawn on a log scale from 1e-3 (one
 chunk's noise floor) to 1.  The web renders cube slices with the stdlib;
 no numpy reaches the web process.
 
+**The masks are recorded beside the data.** Each file also gives one
+line of `diag.jsonl` (`reduce.read_diag`, ~10 KB, 0.1 s): per element
+and bin, how many X-engine streams masked it (from one chunk of
+`flags`, since channel i is stream i mod 16) among those that delivered;
+per stream and bin, the RFI and packet-loss fractions, whether the RFI
+mask was on, and the share of channels with no frame; and the file's
+gains update, fringestop state and kotekan builds.  The web joins the
+lines to the files by index, so a file without one is a gap.
+
 **Time is thinned in whole files.** A chunk spans every bin of its file,
 so skipping bins saves nothing; `file_stride` folds one file in N and
 halves the link at 2.
@@ -100,6 +109,7 @@ stays on-scale.
     thumbs.dat      (n_files, n_prod, n_bins) uint8, appended
     coarse.dat      (n_files, n_prod_file, n_chunk) uint8, the overview, appended
     matrix.dat      (n_files, n_band, n_el, n_el) uint8, appended
+    diag.jsonl      one JSON line per file: masks and delivery, appended
     coarse_times.bin, coarse_freq.npy, coarse_scale.npy, palette.bin
     e0000/wf_e0000xe0000.png    th_e0000xe0000.png    co_e0000.png
 ```
@@ -155,6 +165,6 @@ in four):
 - `wfpng.py` — the append-only palette PNG: encode, append, in-place
   palette swap, a strict verifying decoder, quantization, equalization.
 - `reduce.py` — one file to scanlines: axes, value scale, the streaming
-  quantizer, thumbnail rows.
+  quantizer, thumbnail rows, the mask and delivery record.
 - `store.py` — the per-acquisition store and its commit discipline.
 - `waterfall.py` — the job: discovery, budget, state file, exit codes.

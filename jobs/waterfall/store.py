@@ -13,6 +13,7 @@ Layout, mirroring the acquisition it describes::
                             mean |V| per chunk, appended       } the overview,
         matrix.dat          (n_files, n_band, n_el, n_el)      } one row per file
         coarse_times.bin    int64 per overview row             } (reduce.OverviewSpec)
+        diag.jsonl          one JSON line per file: masks and delivery (reduce.read_diag)
         coarse_freq.npy     (n_chunk,) column centres, coarse_scale.npy (n_prod_file, 2)
         palette.bin         the 256 x 3 palette the overview is drawn with
         e0000/wf_e0000xe0000.png
@@ -402,7 +403,8 @@ class AcquisitionStore:
 
     def add_file(self, axes: Axes, indices: np.ndarray,
                  level: int = wfpng.DEFAULT_LEVEL,
-                 overview: FileOverview | None = None) -> None:
+                 overview: FileOverview | None = None,
+                 diag: dict | None = None) -> None:
         """Fold one source file in.
 
         Order matters and is the crash-safety contract: every append
@@ -411,7 +413,9 @@ class AcquisitionStore:
         committed, and re-running redoes exactly the same work.  An
         acquisition with an overview must be given the file's
         (:class:`reduce.FileOverview`): its cubes grow one row per file,
-        in step with the images.
+        in step with the images.  ``diag`` (:func:`reduce.read_diag`) is
+        appended to ``diag.jsonl``; each line names its file, so a file
+        without one leaves a gap rather than misaligning the rest.
         """
         prods = self.index["products"]
         n_prod = len(prods)
@@ -482,6 +486,11 @@ class AcquisitionStore:
                 self.path / "coarse_times.bin", int(self.index["coarse_times_bytes"]),
                 np.array([int(times[0]) if times.size else 0], np.int64).tobytes())
 
+        if diag is not None:
+            cube_bytes["diag_bytes"] = _append_at(
+                self.path / "diag.jsonl", int(self.index.get("diag_bytes") or 0),
+                json.dumps(diag, separators=(",", ":")).encode() + b"\n")
+
         for p, st in enumerate(new_state):
             prods[p].update(st.to_dict())
         self.index["files"] = sorted(self.processed | {int(axes.file_idx)})
@@ -489,6 +498,7 @@ class AcquisitionStore:
         self.index["times_bytes"] = times_bytes
         if cube_bytes:
             self.index.update(cube_bytes)
+        if overview is not None:
             self.index["coarse_rows"] = int(self.index.get("coarse_rows", 0)) + 1
             for e, st in enumerate(coh_state):
                 self.index["elements"][e].update(st.to_dict())

@@ -387,3 +387,23 @@ def test_overview_cubes_grow_one_row_per_file(tmp_path):
     assert st2.overview_spec(axes, sel) is None
     with pytest.raises(ValueError, match="columns"):
         st.overview_spec(R.read_axes(build(tmp_path / "v3.h5", n_freq=32)), R.select(R.read_axes(build(tmp_path / "v3.h5", n_freq=32)), {"autos": True})[0])
+
+
+def test_diag_lines_commit_with_the_file(acq, tmp_path):
+    st, src, axes, (lo, hi) = acq
+    assert not (st.path / "diag.jsonl").exists()                 # none was given
+    src2 = build(tmp_path / "v2.h5", idx=4202416, seed=1)
+    ax2 = R.read_axes(src2)
+    rec = {"file": 4202416, "n_bin": 6, "masked": {}}
+    st.add_file(ax2, R.quantize_file(src2, lo, hi), diag=rec)
+    first = (st.path / "diag.jsonl").read_bytes()
+    assert json.loads(first) == rec and first.endswith(b"\n")
+    assert st.index["diag_bytes"] == len(first)
+    # a torn second append is overwritten from the recorded offset
+    with open(st.path / "diag.jsonl", "ab") as f:
+        f.write(b'{"file": 99')
+    src3 = build(tmp_path / "v3.h5", idx=4202417, seed=2)
+    ax3 = R.read_axes(src3)
+    st.add_file(ax3, R.quantize_file(src3, lo, hi), diag={"file": 4202417})
+    lines = (st.path / "diag.jsonl").read_text().splitlines()
+    assert [json.loads(x)["file"] for x in lines] == [4202416, 4202417]

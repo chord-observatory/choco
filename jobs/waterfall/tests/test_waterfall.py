@@ -526,11 +526,11 @@ class TestDegradedAccounting:
         from store import AcquisitionStore
         real_add = AcquisitionStore.add_file
 
-        def flaky(self, axes, indices, level=6, overview=None):
+        def flaky(self, axes, indices, level=6, overview=None, diag=None):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise OSError("mount went away")
-            return real_add(self, axes, indices, level=level, overview=overview)
+            return real_add(self, axes, indices, level=level, overview=overview, diag=diag)
 
         monkeypatch.setattr(AcquisitionStore, "add_file", flaky)
         rep = W.run(cfg)

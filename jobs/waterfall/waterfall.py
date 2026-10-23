@@ -287,7 +287,12 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
             buf = np.empty((sel.n_prod, axes.n_time, sel.n_freq), np.uint8)
         try:
             _, overview = R.fold_file(path, lo, hi, out=buf, sel=sel, axes=axes, overview=spec)
-            store.add_file(axes, buf, level=cfg["level"], overview=overview)
+            try:
+                diag = R.read_diag(path, axes)
+            except (KeyError, ValueError, TypeError) as exc:
+                log.warning("%s: no mask record (%s)", basename, exc)
+                diag = None
+            store.add_file(axes, buf, level=cfg["level"], overview=overview, diag=diag)
         except OSError as exc:
             # Stop this acquisition but keep what was committed: returning
             # here rather than raising is what keeps the run's budget
