@@ -21,7 +21,6 @@ journalctl allowlist and the buffer-name check already apply.
 from __future__ import annotations
 
 import ast
-import bisect
 import json
 import logging
 import math
@@ -36,7 +35,8 @@ from zoneinfo import ZoneInfo
 
 from gevent.lock import BoundedSemaphore
 
-from .acqtree import COHERENCE_RE, IMAGE_RE, SHARD_RE, product_name, shard_name  # noqa: F401 (re-exported)
+from .acqtree import (ARRAY_IMAGE, ARRAY_SHARD, COHERENCE_RE, IMAGE_RE, SHARD_RE,  # noqa: F401 (re-exported)
+                      product_name, shard_name)
 from .datafiles import run_blocking
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,21 @@ def read_npy_1d(path: str) -> list[float]:
     the raw values — a few lines of ``struct``/``ast`` for the one layout
     ``np.save`` gives our float64 frequency axis.
     """
+    shape, values = _read_npy(path)
+    if len(shape) != 1:
+        raise ValueError(f"{path}: {len(shape)}-D, not 1-D")
+    return values
+
+
+def read_npy_pairs(path: str) -> list[tuple[float, float]]:
+    """An ``(n, 2)`` .npy as n pairs (``coarse_scale.npy``'s lo/hi).  Blocking."""
+    shape, values = _read_npy(path)
+    if len(shape) != 2 or shape[1] != 2:
+        raise ValueError(f"{path}: shape {shape}, not (n, 2)")
+    return list(zip(values[0::2], values[1::2]))
+
+
+def _read_npy(path: str) -> tuple[tuple, list]:
     blob = _read_capped(path)
     if blob[:6] != b"\x93NUMPY":
         raise ValueError(f"{path}: not a .npy file")
@@ -110,12 +125,12 @@ def read_npy_1d(path: str) -> list[float]:
         (hlen,), off = struct.unpack("<I", blob[8:12]), 12
     header = ast.literal_eval(blob[off:off + hlen].decode("latin-1"))
     fmt = {"<f8": "d", "<f4": "f", "<i8": "q"}.get(header.get("descr"))
-    shape = header.get("shape")
-    if fmt is None or header.get("fortran_order") or len(shape) != 1:
+    shape = tuple(int(x) for x in header.get("shape") or ())
+    if fmt is None or header.get("fortran_order") or not shape:
         raise ValueError(f"{path}: unsupported npy layout {header}")
-    n = int(shape[0])
+    n = math.prod(shape)
     data = blob[off + hlen:off + hlen + n * struct.calcsize(fmt)]
-    return list(struct.unpack(f"<{n}{fmt}", data))
+    return shape, list(struct.unpack(f"<{n}{fmt}", data))
 
 
 def read_times(path: str) -> list[int]:
@@ -628,6 +643,8 @@ class WaterfallStore:
         base = self.acquisition_dir(root, acq)
         if base is None:
             return None
+        if shard == ARRAY_SHARD and name == ARRAY_IMAGE:
+            return base, name
         if not SHARD_RE.match(shard or ""):
             return None
         if not (IMAGE_RE.match(name or "") or COHERENCE_RE.match(name or "")):
@@ -758,29 +775,29 @@ class WaterfallStore:
         """The masks and delivery per source file (``diag.jsonl``)."""
         return self._side_file(root, acq, "diag.jsonl", read_diag)
 
-    def feed_levels(self, root: str, acq: str, band: int, pols: list[str]) -> list[bytes] | None:
-        """Per source file, each element's same-polarization median level
-        in one band (:func:`read_feed_levels`), off the hub and cached
-        until the matrix grows."""
+    def coarse_scale(self, root: str, acq: str) -> list | None:
+        """Per product of the file, the coarse cube's frozen ``(lo, hi)``."""
+        return self._side_file(root, acq, "coarse_scale.npy", read_npy_pairs)
+
+    def last_file(self, root: str, acq: str) -> dict | None:
+        """The newest overview row of ``coarse.dat`` (:func:`read_last_rows`),
+        off the hub and cached until it moves."""
         base = self.acquisition_dir(root, acq)
         index = self.index(root, acq)
         ov = overview_of(index) if index is not None else None
-        if base is None or ov is None or not 0 <= band < ov["n_band"]:
+        if base is None or ov is None or ov["rows"] == 0:
             return None
-        key = f"{base}#feeds{band}"
-        stamp = (index.get("matrix_bytes"), ov["rows"], tuple(pols))
+        key = f"{base}#last"
         cached = self._side_cache.get(key)
-        if cached is not None and cached[0] == stamp:
-            self._remember(key, cached, self._side_cache, limit=2 * INDEX_CACHE_MAX)
+        if cached is not None and cached[0] == ov["rows"]:
             return cached[1]
         try:
-            levels = run_blocking(read_feed_levels, str(base / "matrix.dat"), ov["n_el"],
-                                  ov["n_band"], band, ov["rows"], pols, timeout=READ_TIMEOUT_S)
+            last = run_blocking(read_last_rows, str(base), ov, timeout=READ_TIMEOUT_S)
         except Exception as exc:
-            logger.warning(f"waterfalls: feed levels of {base}: {exc}")
+            logger.warning(f"waterfalls: last file of {base}: {exc}")
             return cached[1] if cached else None
-        self._remember(key, (stamp, levels), self._side_cache, limit=2 * INDEX_CACHE_MAX)
-        return levels
+        self._remember(key, (ov["rows"], last), self._side_cache, limit=2 * INDEX_CACHE_MAX)
+        return last
 
     def times(self, root: str, acq: str) -> list[int] | None:
         """UT1 ns since J2000 per scanline (0 = no timestamp)."""
@@ -888,7 +905,7 @@ def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
     index = store.index(root, acq)
     if index is None:
         return None
-    if COHERENCE_RE.match(name or ""):
+    if COHERENCE_RE.match(name or "") or name == ARRAY_IMAGE:
         return coherence_view_context(store, root, acq, name, index, tz=tz)
     m = IMAGE_RE.match(name or "")
     if not m or not name.startswith("wf_"):
@@ -912,9 +929,10 @@ def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
     # index's committed row count, so its own IHDR height wins.
     rows = int(head["height"]) if head and head.get("height") else int(prod["rows"])
     # The image renders at page width, so its on-screen height scales
-    # with rows/width — a squat early-acquisition image has room for a
-    # handful of time labels where a night-long one fits dozens.
-    time_target = max(3, min(40, round(43 * rows / max(n_freq, 1))))
+    # with rows/width — an early acquisition is drawn at its minimum
+    # height (20em) with room for a handful of time labels, where a
+    # night-long one fits dozens.
+    time_target = max(8, min(40, round(43 * rows / max(n_freq, 1))))
     return {
         "root": root, "acq": acq, "shard": shard, "name": name, "kind": "full",
         "image_src": f"/waterfall/{root}/{acq}/{shard}/{name}",
@@ -944,24 +962,29 @@ _UNIT_TICKS = [{"frac": f, "label": lbl} for f, lbl in
 
 def coherence_view_context(store, root: str, acq: str, name: str, index: dict,
                            tz=None) -> dict | None:
-    """The viewer page around one element's coherence image (``co_eNNNN.png``)."""
+    """The viewer page around one element's coherence image (``co_eNNNN.png``)
+    or the array's (``co_array.png``)."""
     m = COHERENCE_RE.match(name or "")
     ov = overview_of(index)
-    if not m or ov is None:
+    if ov is None or not (m or name == ARRAY_IMAGE):
         return None
-    e = int(m.group(1))
-    elements = index.get("elements") or []
-    rec = elements[e] if 0 <= e < len(elements) and isinstance(elements[e], dict) else None
-    if rec is None or not rec.get("rows"):
+    if m:
+        e = int(m.group(1))
+        elements = index.get("elements") or []
+        rec = elements[e] if 0 <= e < len(elements) and isinstance(elements[e], dict) else None
+        shard = shard_name(e)
+    else:
+        e, rec, shard = -1, index.get("array"), ARRAY_SHARD
+    if not isinstance(rec, dict) or not rec.get("rows"):
         return None
-    shard = shard_name(e)
     head = store.image_head(root, acq, shard, name)
     rows = int(head["height"]) if head and head.get("height") else int(rec["rows"])
     label = _label_of(index)
     return {
-        "root": root, "acq": acq, "shard": shard, "name": name, "kind": "coherence",
+        "root": root, "acq": acq, "shard": shard, "name": name,
+        "kind": "coherence" if m else "array",
         "image_src": f"/waterfall/{root}/{acq}/{shard}/{name}",
-        "a": e, "b": e, "label_a": label(e), "label_b": "array",
+        "a": e, "b": e, "label_a": label(e) if m else "array", "label_b": "array",
         "rows": rows, "n_freq": ov["chunks"],
         "freq_axis": freq_ticks(store.coarse_freq(root, acq), ov["chunks"]),
         "time_axis": time_ticks(store.coarse_times(root, acq), rows, target=12, tz=tz),
@@ -1139,16 +1162,15 @@ def strips(index: dict) -> list[dict] | None:
     return out
 
 
-# --- the feeds panel: every feed over time, with its masks ----------------
+# --- the sheet: the array, then every feed on the dish grid ----------------
 #
-# The acquisition's diagnostic view.  Each feed is measured without
-# regard to its mask -- the median coherence with its same-polarization
-# partners, one value per source file, from matrix.dat -- and the masks
-# are drawn over it from the job's diag.jsonl (reduce.read_diag), so a
-# masked feed still shows its data: a hatched row that stays bright is a
-# stale flag, a dark row with no mask a miss.  The per-sample masks (RFI,
-# packet loss) and the per-stream delivery have no feed axis and run
-# along the same time axis underneath.
+# The acquisition page leads with the array's coherence (co_array.png: per
+# chunk and file, the median over the elements of their coherence), then
+# each feed's coherence and autocorrelation laid out as the dishes stand
+# (rows A-H, columns 01-08, X beside Y), a per-dish reading of the last
+# file, and the X-engine streams.  Everything is on the page at once;
+# nothing is switched.  The feed masks are drawn beside the large
+# waterfalls (mask_columns), from the job's diag.jsonl (reduce.read_diag).
 
 #: Most bytes of diag.jsonl read: a line is ~10 KB at 128 elements, so
 #: this is about three weeks of 400 s files.
@@ -1177,26 +1199,32 @@ def read_diag(path: str) -> list[dict]:
     return out
 
 
-def feed_layout(labels: list[str]) -> list[dict]:
-    """The panel's rows: grid rows (A..H) of dishes (A01..A08) of
-    polarizations (X, Y), each dish ``{"name", "rows": [e_X, e_Y]}``
-    (None where a polarization is absent).  Labels off the grid follow
-    as one group, a dish each."""
+def read_last_rows(base: str, ov: dict) -> dict:
+    """The newest file's row of ``coarse.dat``: every product, a level
+    per chunk.  Blocking."""
+    size = ov["n_prod_file"] * ov["chunks"]
+    got = read_cube_rows(os.path.join(base, "coarse.dat"), (ov["rows"] - 1) * size, size, 0, 1)
+    return {"coarse.dat": got[0] if got else None}
+
+
+def dish_grid(labels: list[str]) -> dict:
+    """The dishes as they stand: ``rows`` A..H of ``cells`` over the grid
+    columns in ``cols`` (None where no dish), a dish ``{"name", "x", "y"}``
+    with its elements (None where a polarization is absent).  Elements
+    whose label is not a grid position are listed in ``other``."""
     grid: dict = {}
     other = []
     for e, lab in enumerate(labels):
         m = _FEED_RE.match(lab)
         if m is None:
-            other.append({"name": lab, "rows": [e]})
+            other.append(e)
             continue
         dish = grid.setdefault(m.group(1), {}).setdefault(
-            int(m.group(2)), {"name": f"{m.group(1)}{int(m.group(2)):02d}", "rows": [None, None]})
-        dish["rows"][0 if m.group(3) == "X" else 1] = e
-    groups = [{"name": row, "dishes": [grid[row][c] for c in sorted(grid[row])]}
-              for row in sorted(grid)]
-    if other:
-        groups.append({"name": "other", "dishes": other})
-    return groups
+            int(m.group(2)), {"name": f"{m.group(1)}{int(m.group(2)):02d}", "x": None, "y": None})
+        dish["x" if m.group(3) == "X" else "y"] = e
+    cols = sorted({c for row in grid.values() for c in row})
+    return {"cols": cols, "other": other,
+            "rows": [{"name": r, "cells": [grid[r].get(c) for c in cols]} for r in sorted(grid)]}
 
 
 def _pol_key(label: str) -> str:
@@ -1204,317 +1232,260 @@ def _pol_key(label: str) -> str:
     return m.group(3) if m else "?"
 
 
-def read_feed_levels(path: str, n: int, n_band: int, band: int, n_rows: int,
-                     pols: list[str]) -> list[bytes]:
-    """Per source file, each element's median matrix level over its
-    same-polarization partners in one band (0: none has data).
-    Blocking; the levels are the job's log scale, so the median of the
-    levels is the level of the median."""
-    frames = read_cube_rows(path, band * n * n, n * n, n_band * n * n, n_rows)
-    partners = [[j for j in range(n) if j != e and pols[j] == pols[e]] for e in range(n)]
-    out = []
-    for blob in frames:
-        row = bytearray(n)
+def _median(values: list):
+    """The middle value (the upper one of an even count), None for none."""
+    values = sorted(values)
+    return values[len(values) // 2] if values else None
+
+
+#: The per-dish grids' classes: log2 of a ratio, a class per factor of two,
+#: the middle one within a factor of sqrt(2) of 1.
+_RATIO_EDGES = (-2.5, -1.5, -0.5, 0.5, 1.5, 2.5)
+_RATIO_LABELS = ("≤ ⅛", "¼", "½", "1", "2", "4", "≥ 8")
+
+def _ratio_class(v: float | None) -> int | None:
+    if v is None or v <= 0:
+        return None
+    lg = math.log2(v)
+    return sum(lg > edge for edge in _RATIO_EDGES)
+
+
+def dish_summary(index: dict, ov: dict, last: dict | None, scale: list | None) -> dict:
+    """Per element, from the acquisition's last file: ``auto``, its
+    band-median autocorrelation over the median of its polarization;
+    None where the file holds nothing to compute it from.  The F-engine's
+    digital gains bring most feeds to the same level, a dead one
+    included (2026-10-23 files: 5.6-6.7 against ~90 for the hot C06Y,
+    C08Y), so this finds feeds the gains cannot bring down, not dead ones.
+
+    A cross- over same-polar coherence was tried for X/Y swaps and left
+    out: the band-mean amplitudes of ``matrix.dat`` carry RFI common to
+    both polarizations, and on the same files the swapped C05, D07 and
+    E05 ranked among normal feeds (E01, G01, G02).
+    """
+    n, n_chunk = ov["n_el"], ov["chunks"]
+    label = _label_of(index)
+    pols = [_pol_key(label(e)) for e in range(n)]
+    auto: list = [None] * n
+    coarse = (last or {}).get("coarse.dat")
+    if coarse and scale:
+        power = [None] * n
         for e in range(n):
-            base = e * n
-            vals = sorted(blob[base + j] for j in partners[e])
-            lo = bisect.bisect_right(vals, 0)
-            if lo < len(vals):
-                row[e] = vals[lo + (len(vals) - lo - 1) // 2]
-        out.append(bytes(row))
-    return out
-
-
-def unit_value(level: int) -> float | None:
-    """A level of the job's coherence scale back to coherence."""
-    if level <= 0:
-        return None
-    return 10 ** (-3 + 3 * (level - 1) / 254)
-
-
-#: Panel geometry, in the SVG's own units (px at 1000 wide).
-_FD = {"x0": 52, "w": 660, "mask_x": 724, "text_x": 748, "width": 1000,
-       "top": 26, "sub": 6, "dish_gap": 2, "group_gap": 8,
-       "strip": 10, "stream": 3, "strip_gap": 4}
-
-#: Most sub-columns the time strips draw across the panel.
-_FD_COLS = 600
-
-
-def _bffs_reasons(state: dict | None) -> dict:
-    """``{label: "power: off"}`` for bffs's current bad list."""
-    if not isinstance(state, dict):
-        return {}
-    flagged_by = state.get("flagged_by")
-    reasons = state.get("flag_reasons")
-    reasons = reasons if isinstance(reasons, dict) else {}
-    out = {}
-    for label in state.get("bad_inputs") or []:
-        kinds = flagged_by.get(label) if isinstance(flagged_by, dict) else None
-        why = reasons.get(label) if isinstance(reasons.get(label), dict) else {}
-        out[str(label)] = ", ".join(f"{k}: {why[k]}" if why.get(k) else str(k)
-                                    for k in (kinds or [])) or "bffs"
-    return out
-
-
-def _mask_segments(diag: list[dict], col_of: dict, labels: list[str]) -> dict:
-    """``{e: [segment]}``: each run of bins over which a feed was masked,
-    merged across files, with ``x0``/``x1`` in columns, the partial flag
-    (some delivering streams did not mask it) and its first and end
-    times (UT1 ns since J2000; end None while it lasts)."""
-    index_of = {lab: e for e, lab in enumerate(labels)}
-    segs: dict = {}
-    for rec in diag:
-        c = col_of.get(rec["file"])
-        nb = int(rec.get("n_bin") or 0)
-        masked = rec.get("masked")
-        if c is None or nb <= 0 or not isinstance(masked, dict):
-            continue
-        live = rec.get("flag_live") or [0] * nb
-        times = rec.get("times") or []
-        for lab, runs in masked.items():
-            e = index_of.get(lab)
-            if e is None or not isinstance(runs, list):
+            p = product_row(ov, e, e)
+            if p is None or p >= len(scale):
                 continue
-            for run in runs:
-                try:
-                    b0, b1, cnt = (int(v) for v in run)
-                except (TypeError, ValueError):
-                    continue
-                if not (0 <= b0 < b1 <= nb):
-                    continue
-                partial = cnt < min(live[b0:b1] or [0])
-                x0, x1 = c + b0 / nb, c + b1 / nb
-                t0 = times[b0] if b0 < len(times) else 0
-                mine = segs.setdefault(e, [])
-                if mine and abs(mine[-1]["x1"] - x0) < 1e-9 and mine[-1]["partial"] == partial:
-                    mine[-1]["x1"] = x1
-                    mine[-1]["b1"] = (rec["file"], b1)
-                else:
-                    mine.append({"x0": x0, "x1": x1, "partial": partial, "t0": t0,
-                                 "b0": (rec["file"], b0), "b1": (rec["file"], b1)})
-    return segs
+            lo, hi = scale[p]
+            q = _median([v for v in coarse[p * n_chunk:(p + 1) * n_chunk] if v])
+            if q is None or not (lo > 0 and hi > lo):
+                continue
+            # the coarse cube's log scale (reduce.quantize_log), inverted
+            lg = math.log10(lo) + (q - 1) / 254 * (math.log10(hi) - math.log10(lo))
+            power[e] = 10 ** lg
+        for pol in set(pols):
+            mid = _median([power[e] for e in range(n) if pols[e] == pol and power[e]])
+            for e in range(n):
+                if pols[e] == pol and power[e] and mid:
+                    auto[e] = power[e] / mid
+    return {"auto": auto}
 
 
-def _col_clock(rec: dict | None, start_ns: int, zone) -> list | None:
-    """``[unix_s, bin_s, utc_offset_s, n_bin]`` for one column, so the
-    page's script can name a bin's site-local time without a zone
-    database; from the file's bin times where it has a diag record."""
-    times = [t for t in ((rec or {}).get("times") or []) if t > 0]
-    t0 = times[0] if times else start_ns
-    if not t0 or t0 <= 0:
-        return None
-    n_bin = len(times) if len(times) > 1 else 1
-    bin_s = (times[-1] - times[0]) / (n_bin - 1) / 1e9 if n_bin > 1 else 0
-    dt = _j2000_dt(t0, zone)
-    return [t0 // 1_000_000_000 + _J2000_UNIX_S, round(bin_s, 3),
-            int(dt.utcoffset().total_seconds()) if dt.utcoffset() else 0, n_bin]
+def _stream_table(diag: list[dict], node_versions: dict, zone) -> dict:
+    """The X-engine streams over the acquisition: per stream its node
+    (as recorded for a file that had just landed), that node's kotekan
+    build now, the share of channels it did not deliver (in the last file
+    and over the acquisition), and the bins in which it masked a different number
+    of feeds than most streams; plus the build, gains and fringestop
+    changes between files."""
+    def when(ns):
+        return _j2000_dt(ns, zone).strftime("%m-%d %H:%M:%S") if ns and ns > 0 else None
+
+    n_streams = max([int(r.get("n_streams") or 0) for r in diag] or [0])
+    nodes = next((r["nodes"] for r in reversed(diag) if isinstance(r.get("nodes"), dict)), {})
+    rows = [{"s": s, "node": nodes.get(str(s)), "lost_last": None, "lost_acq": None,
+             "out_of_step": 0, "last_out": None} for s in range(n_streams)]
+    lost_sum, lost_n = [0.0] * n_streams, [0] * n_streams
+    events, prev = [], None
+    for rec in diag:
+        times = rec.get("times") or []
+        missing = rec.get("missing") if isinstance(rec.get("missing"), list) else []
+        for s, per in enumerate(missing[:n_streams]):
+            vals = [v for v in per if isinstance(v, int) and v >= 0] if isinstance(per, list) else []
+            if vals:
+                lost_sum[s] += sum(vals) * 1e-4
+                lost_n[s] += len(vals)
+                if rec is diag[-1]:
+                    rows[s]["lost_last"] = sum(vals) / len(vals) * 1e-4
+        sm = rec.get("stream_masked") if isinstance(rec.get("stream_masked"), list) else []
+        for b in range(int(rec.get("n_bin") or 0)):
+            counts = [per[b] for per in sm if isinstance(per, list) and b < len(per) and per[b] >= 0]
+            if len(counts) < 2:
+                continue
+            usual = max(set(counts), key=counts.count)
+            for s, per in enumerate(sm[:n_streams]):
+                if isinstance(per, list) and b < len(per) and per[b] >= 0 and per[b] != usual:
+                    rows[s]["out_of_step"] += 1
+                    rows[s]["last_out"] = when(times[b] if b < len(times) else 0)
+        if prev is not None:
+            what = []
+            if rec.get("versions") != prev.get("versions"):
+                what.append("kotekan builds: " + ", ".join(rec.get("versions") or []))
+            if rec.get("gains") != prev.get("gains"):
+                what.append(f"gains {rec.get('gains')}")
+            if bool(rec.get("fringestop")) != bool(prev.get("fringestop")):
+                what.append("fringestop " + ("on" if rec.get("fringestop") else "off"))
+            if what:
+                events.append({"when": when(times[0] if times else 0), "what": "; ".join(what)})
+        prev = rec
+    for r in rows:
+        r["build"] = node_versions.get(r["node"]) if r["node"] else None
+        r["lost_acq"] = lost_sum[r["s"]] / lost_n[r["s"]] if lost_n[r["s"]] else None
+    first = diag[0] if diag else {}
+    return {"rows": rows, "events": events, "named": bool(nodes),
+            "builds": first.get("versions") or [], "gains": first.get("gains"),
+            "fringestop": bool(first.get("fringestop"))}
 
 
-def feeds_context(store, root: str, acq: str, band=None, bffs_state=None,
+def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
                   tz=None) -> dict | None:
-    """The feeds panel: the rows, the coherence image, the masks over it,
-    the time strips under it and the mask column beside it."""
+    """Everything the acquisition page draws above the cross products:
+    the array's coherence, the coherence and autocorrelation grids, the
+    autocorrelation levels of the last file and the stream table.  None
+    without an overview (an acquisition rendered before it existed)."""
     index = store.index(root, acq)
     ov = overview_of(index) if index is not None else None
     if ov is None or ov["rows"] == 0:
         return None
-    n, n_band = ov["n_el"], ov["n_band"]
-    try:
-        band = int(band) if band not in (None, "") else n_band // 2
-    except ValueError:
-        return None
-    if not 0 <= band < n_band:
-        return None
+    n = ov["n_el"]
     label = _label_of(index)
     labels = [label(e) for e in range(n)]
-    levels = store.feed_levels(root, acq, band, [_pol_key(lab) for lab in labels])
-    if not levels:
-        return None
-    n_cols = len(levels)
-    files = sorted(int(f) for f in index.get("files") or [])[:n_cols]
-    col_of = {f: c for c, f in enumerate(files)}
-    diag = [r for r in (store.diag(root, acq) or []) if r["file"] in col_of]
-    rec_of = {r["file"]: r for r in diag}
     zone = _tzinfo(tz or DEFAULT_TZ)
+    rendered = {p.get("name") for p in index.get("products") or []
+                if isinstance(p, dict) and p.get("rows")}
+    elements = index.get("elements") or []
+    summary = dish_summary(index, ov, store.last_file(root, acq), store.coarse_scale(root, acq))
+    times = store.coarse_times(root, acq)
 
-    def when(ns) -> str | None:
-        return _j2000_dt(ns, zone).strftime("%m-%d %H:%M:%S") if ns and ns > 0 else None
+    def feed(e):
+        if e is None:
+            return None
+        auto = product_name(e, e)
+        shard = shard_name(e)
+        has_co = e < len(elements) and isinstance(elements[e], dict) and elements[e].get("rows")
+        a = summary["auto"][e]
+        return {
+            "e": e, "label": labels[e],
+            "co": f"/waterfall/{root}/{acq}/{shard}/co_{shard}.png" if has_co else None,
+            "co_view": f"/waterfall/{root}/{acq}/view/co_{shard}.png",
+            "auto": f"/waterfall/{root}/{acq}/{shard}/th_{auto}.png" if auto in rendered else None,
+            "auto_view": f"/waterfall/{root}/{acq}/view/wf_{auto}.png",
+            "auto_ratio": a, "auto_class": _ratio_class(a),
+        }
 
-    g = _FD
-    xs = g["w"] / n_cols
-
-    def px(x: float) -> float:
-        return round(g["x0"] + x * xs, 2)
-
-    # rows: one sub-row per polarization, a gap between dishes and groups
-    groups = feed_layout(labels)
-    y = g["top"]
-    rows, dishes = [], []
-    for gi, grp in enumerate(groups):
-        if gi:
-            y += g["group_gap"]
-        for dish in grp["dishes"]:
-            k_n = len(dish["rows"])
-            d = {"name": dish["name"], "y": y, "h": k_n * g["sub"] + k_n - 1, "rows": []}
-            for k, e in enumerate(dish["rows"]):
-                if e is not None:
-                    r = {"e": e, "label": labels[e], "y": y + k * (g["sub"] + 1), "i": len(rows)}
-                    rows.append(r)
-                    d["rows"].append(r)
-            dishes.append(d)
-            y += d["h"] + g["dish_gap"]
-    heat_bottom = y
-
-    # the masks over the image, and each feed's state at the end
-    segs = _mask_segments(diag, col_of, labels)
-    last = diag[-1] if diag else None
-    end_x = (col_of[last["file"]] + 1) if last else None
-    # the first bin any stream delivered: a mask from there may be older
-    first = next(((rec["file"], b) for rec in diag
-                  for b, n_live in enumerate(rec.get("flag_live") or []) if n_live > 0), None)
-    reasons = _bffs_reasons(bffs_state)
-    overlay, starts, ends = [], {}, {}
-    for r in rows:
-        r["state"], r["since"], r["since_t"], r["why"] = "clear", None, None, None
-        for s in segs.get(r["e"], []):
-            overlay.append({"x": px(s["x0"]), "y": r["y"], "w": round((s["x1"] - s["x0"]) * xs, 2),
-                            "h": g["sub"], "partial": s["partial"]})
-            if s["b0"] != first:
-                starts.setdefault(s["t0"], {})[r["label"]] = "some streams" if s["partial"] else "masked"
-            if end_x is not None and abs(s["x1"] - end_x) < 1e-9:
-                r["state"] = "partial" if s["partial"] else "masked"
-                r["since"] = ("≤ " if s["b0"] == first else "") + (when(s["t0"]) or "?")
-                r["since_t"] = s["t0"]
-                r["why"] = reasons.get(r["label"])
-            else:
-                f, b1 = s["b1"]
-                rec = next((d for d in diag if d["file"] == f), None)
-                times = (rec or {}).get("times") or []
-                nxt = next((d for d in diag if d["file"] > f), None)
-                t1 = (times[b1] if b1 < len(times)
-                      else ((nxt or {}).get("times") or [0])[0])
-                ends.setdefault(t1, {})[r["label"]] = "clear"
-    for d in dishes:
-        masked = [r for r in d["rows"] if r["state"] != "clear"]
-        d["since"] = min(masked, key=lambda r: r["since_t"] or 0)["since"] if masked else None
-        d["why"] = next((r["why"] for r in masked if r["why"]), None)
-
-    # the time strips: per-sample masks and delivery, max over each sub-column
-    sub = max(1, min(int((last or {}).get("n_bin") or 1), _FD_COLS // n_cols))
-    strips = {"rfi": [], "rfi_off": [], "pl": [], "missing": []}
-    events = []
-    prev = None
-    for rec in diag:
-        c, nb = col_of[rec["file"]], int(rec.get("n_bin") or 0)
-        ns = int(rec.get("n_streams") or 0)
-        if nb <= 0:
-            continue
-
-        def mean_over_streams(key, invert=False):
-            per = rec.get(key)
-            if not isinstance(per, list) or not per:
-                return None
-            out = []
-            for b in range(nb):
-                vals = [s[b] for s in per if isinstance(s, list) and b < len(s) and s[b] >= 0]
-                v = sum(vals) / len(vals) * 1e-4 if vals else None
-                out.append(None if v is None else (1 - v if invert else v))
-            return out
-
-        series = {"rfi": mean_over_streams("rfi"), "rfi_off": mean_over_streams("rfi_on", True),
-                  "pl": mean_over_streams("pl")}
-        missing = rec.get("missing") if isinstance(rec.get("missing"), list) else []
-        for k in range(sub):
-            lo, hi = k * nb // sub, (k + 1) * nb // sub
-            if hi <= lo:
-                continue
-            x, w = px(c + lo / nb), round((hi - lo) / nb * xs, 2)
-            for key, vals in series.items():
-                if vals is None:
-                    continue
-                v = max((vals[b] for b in range(lo, hi) if vals[b] is not None), default=None)
-                if v is not None and v > 0:
-                    strips[key].append({"x": x, "w": w, "v": round(min(v, 1.0), 4)})
-            for s in range(min(ns, len(missing))):
-                per = missing[s] if isinstance(missing[s], list) else []
-                v = max((per[b] for b in range(lo, min(hi, len(per)))), default=0) * 1e-4
-                if v > 0:
-                    strips["missing"].append({"x": x, "w": w, "s": s, "v": round(min(v, 1.0), 4)})
-        if prev is not None:
-            what = []
-            if rec.get("versions") != prev.get("versions"):
-                what.append("kotekan build")
-            if rec.get("gains") != prev.get("gains"):
-                what.append("gains")
-            if bool(rec.get("fringestop")) != bool(prev.get("fringestop")):
-                what.append("fringestop")
-            if what:
-                t = (rec.get("times") or [0])[0]
-                events.append({"x": px(c), "what": ", ".join(what), "when": when(t)})
-        prev = rec
-
-    y = heat_bottom + 14
-    layout = {}
-    for key in ("rfi", "rfi_off", "pl"):
-        layout[key] = y
-        y += g["strip"] + g["strip_gap"]
-    layout["missing"] = y
-    n_streams = max([int(r.get("n_streams") or 0) for r in diag] or [0])
-    y += n_streams * g["stream"] + g["strip_gap"] + 6
-    layout["events"] = y
-    height = y + 16
-
-    times = store.coarse_times(root, acq) or []
-    ticks = [{"x": round(g["x0"] + t["frac"] * g["w"], 2), "label": t["label"]}
-             for t in time_ticks(times, n_cols, target=6, tz=tz)["ticks"]]
-    edges = ov["edges"]
+    grid = dish_grid(labels)
+    for row in grid["rows"]:
+        row["cells"] = [None if d is None else {"name": d["name"], "x": feed(d["x"]), "y": feed(d["y"])}
+                        for d in row["cells"]]
+    grid["other"] = [feed(e) for e in grid["other"]]
+    array_rows = int((index.get("array") or {}).get("rows") or 0)
+    # a few files would draw a sliver at page width; a night, a wall
+    array_height = max(140, min(480, array_rows * 3))
+    freq = freq_ticks(store.coarse_freq(root, acq), ov["chunks"], target=10)
+    when = None
+    if isinstance(times, list) and times and times[-1] > 0:
+        when = _j2000_dt(times[-1], zone).strftime("%Y-%m-%d %H:%M:%S %Z")
     return {
-        "root": root, "acq": acq, "band": band, "n_cols": n_cols, "geom": g,
-        "bands": [{"i": i, "label": f"{edges[i]:.0f}–{edges[i + 1]:.0f} MHz"} for i in range(n_band)],
-        "rows": rows, "dishes": dishes, "groups": groups, "overlay": overlay,
-        "heat_top": g["top"], "heat_bottom": heat_bottom, "n_rows": len(rows),
-        "strips": strips, "layout": layout, "n_streams": n_streams, "events": events,
-        "height": height, "ticks": ticks, "has_diag": bool(diag),
-        "diag_from": when((diag[0].get("times") or [0])[0]) if diag else None,
-        "masked_now": [r for r in rows if r["state"] != "clear"],
-        "changes": [{"when": when(t), "changes": sorted({**ends.get(t, {}), **starts.get(t, {})}.items())}
-                    for t in sorted(set(starts) | set(ends), reverse=True)][:40],
-        "image_src": f"/waterfall/{root}/{acq}/feeds/{band}.png",
+        "array": {
+            "src": f"/waterfall/{root}/{acq}/{ARRAY_SHARD}/{ARRAY_IMAGE}",
+            "view": f"/waterfall/{root}/{acq}/view/{ARRAY_IMAGE}",
+            "rows": array_rows,
+            "height": array_height,
+            "freq_axis": {**freq, "ticks": [{**t, "label": f"{float(t['label']):.0f}"}
+                                            for t in freq["ticks"]]} if freq["unit"] == "MHz" else freq,
+            "time_axis": time_ticks(times, array_rows, target=max(2, array_height // 40), tz=tz),
+        } if array_rows else None,
+        "grid": grid, "last_when": when,
+        "ratio_labels": _RATIO_LABELS,
         "gradient": palette_gradient(store.palette(root, acq)),
-        "feeds_data": {
-            "x0": g["x0"], "w": g["w"], "n_cols": n_cols,
-            "rows": [[r["y"], r["label"], r["i"]] for r in rows], "sub": g["sub"],
-            "cols": [_col_clock(rec_of.get(f), times[c] if c < len(times) else 0, zone)
-                     for c, f in enumerate(files)],
-            "levels": [list(row) for row in levels],
-            "masks": {labels[e]: [[round(s["x0"], 4), round(s["x1"], 4), int(s["partial"])]
-                                  for s in ss] for e, ss in segs.items()},
-            "order": [r["e"] for r in rows],
-        },
+        "streams": _stream_table(store.diag(root, acq) or [], node_versions or {}, zone),
     }
 
 
-def feeds_image(store, root: str, acq: str, band) -> bytes | None:
-    """The panel's coherence image: one pixel row per feed in panel
-    order, one column per source file."""
+def mask_columns(store, root: str, acq: str, kind: str, a: int, b: int,
+                 rows: int) -> list[dict] | None:
+    """The columns the viewer draws beside a waterfall, row for row: each
+    feed's mask (masked, or masked on some streams), the RFI mask off,
+    and the channels lost.  A ``full`` image has a row per bin (matched
+    to the record by time); a per-file image (coherence, coarse, the
+    array) a row per file, showing the share of the file's bins.  Each
+    column is a list of runs ``{"y0", "y1", "v", "partial"}`` in rows.
+    None when the acquisition has no record."""
     index = store.index(root, acq)
-    ov = overview_of(index) if index is not None else None
-    if ov is None:
-        return None
-    try:
-        band = int(band)
-    except (TypeError, ValueError):
-        return None
-    if not 0 <= band < ov["n_band"]:
+    diag = store.diag(root, acq) if index is not None else None
+    if not diag or rows <= 0:
         return None
     label = _label_of(index)
-    labels = [label(e) for e in range(ov["n_el"])]
-    levels = store.feed_levels(root, acq, band, [_pol_key(lab) for lab in labels])
-    pal = store.palette(root, acq)
-    if not levels or pal is None:
-        return None
-    order = [e for grp in feed_layout(labels) for d in grp["dishes"]
-             for e in d["rows"] if e is not None]
-    return encode_png(len(levels), [bytes(levels[c][e] for c in range(len(levels)))
-                                    for e in order], pal)
+    feeds = [e for e in dict.fromkeys((a, b)) if e is not None and e >= 0]
+
+    def bin_state(rec, lab, bi):
+        for run in (rec.get("masked") or {}).get(lab) or []:
+            try:
+                b0, b1, cnt = (int(v) for v in run)
+            except (TypeError, ValueError):
+                continue
+            if b0 <= bi < b1:
+                live = rec.get("flag_live") or []
+                return 0.5 if cnt < (live[bi] if bi < len(live) else 0) else 1.0
+        return 0.0
+
+    def mean_streams(rec, key, bi, invert=False):
+        per = rec.get(key) if isinstance(rec.get(key), list) else []
+        vals = [s[bi] for s in per if isinstance(s, list) and bi < len(s) and s[bi] >= 0]
+        if not vals:
+            return None
+        v = sum(vals) / len(vals) * 1e-4
+        return 1 - v if invert else v
+
+    def values(rec, bins):
+        out = []
+        for e in feeds:
+            states = [bin_state(rec, label(e), bi) for bi in bins]
+            out.append(sum(states) / len(states) if states else None)
+        for key, inv in (("rfi_on", True), ("missing", False)):
+            got = [v for v in (mean_streams(rec, key, bi, inv) for bi in bins) if v is not None]
+            out.append(max(got) if got else None)
+        return out
+
+    per_row: list = [None] * rows
+    if kind == "full":
+        at = {}
+        for rec in diag:
+            for bi, t in enumerate(rec.get("times") or []):
+                if t > 0:
+                    at[t] = (rec, bi)
+        times = store.times(root, acq) or []
+        for r in range(min(rows, len(times))):
+            hit = at.get(times[r])
+            if hit:
+                per_row[r] = values(hit[0], [hit[1]])
+    else:
+        files = sorted(int(f) for f in index.get("files") or [])
+        by_file = {rec["file"]: rec for rec in diag}
+        for r, f in enumerate(files[:rows]):
+            rec = by_file.get(f)
+            if rec:
+                per_row[r] = values(rec, range(int(rec.get("n_bin") or 0)))
+    titles = ([f"{label(e)} masked" for e in feeds] + ["RFI mask off", "channels lost"])
+    cols = []
+    for c, title in enumerate(titles):
+        runs: list = []
+        for r, vals in enumerate(per_row):
+            v = vals[c] if vals is not None else None
+            if not v:
+                continue
+            v = float(f"{v:.3g}")
+            if runs and runs[-1]["y1"] == r and runs[-1]["v"] == v:
+                runs[-1]["y1"] = r + 1
+            else:
+                runs.append({"y0": r, "y1": r + 1, "v": v})
+        cols.append({"title": title, "runs": runs, "is_mask": c < len(feeds)})
+    return cols

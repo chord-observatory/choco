@@ -36,37 +36,72 @@ table.tri a { display: block; line-height: 0; }
 table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
                             outline-offset: -2px; }
 
-.fd { position: relative; max-width: 1000px; margin: 0 0 0.6em; }
-.fd svg { display: block; width: 100%; min-width: 720px; height: auto;
-          font-family: var(--pico-font-family-monospace); }
-.fd .lab { font-size: 10px; fill: var(--pico-color); dominant-baseline: middle; }
-.fd .sub { font-size: 10px; fill: var(--pico-muted-color); dominant-baseline: middle; }
-.fd .tick { font-size: 10px; fill: var(--pico-muted-color); text-anchor: middle; }
-.fd .heat { image-rendering: pixelated; }
-.fd .frame { fill: none; stroke: var(--surface-border); }
-.fd .mask-cell { fill: none; stroke: var(--surface-border); }
-.fd .mask-cell.masked { fill: var(--pico-color); stroke: var(--pico-color); }
-.fd .mask-cell.partial { fill: url(#fd-hatch-partial); stroke: var(--pico-color); }
-.fd .ink { fill: var(--pico-color); }
-.fd .event { stroke: var(--pico-muted-color); stroke-dasharray: 2 2; }
-.fd-hatch-a { stroke: var(--pico-background-color); stroke-width: 1.4; }
-.fd-hatch-b { stroke: var(--pico-color); stroke-width: 0.8; }
-.fd-hatch-p { stroke: var(--pico-color); stroke-width: 1; }
-.fd-tip { position: absolute; pointer-events: none; display: none; z-index: 2;
-          background: var(--pico-background-color); border: 1px solid var(--surface-border);
-          padding: 0.2em 0.45em; font-size: 0.72em; white-space: nowrap;
-          font-family: var(--pico-font-family-monospace); }
-.fd-bands { display: flex; flex-wrap: wrap; gap: 0.3em; margin: 0 0 0.5em; }
-.fd-bands a { font-size: 0.8em; padding: 0.15em 0.5em; border-radius: 3px;
-              border: 1px solid var(--pico-muted-border-color, #ccc); text-decoration: none; }
-.fd-bands a.on { background: var(--pico-primary, #1c5a5c); color: #fff; border-color: transparent; }
-.fd-key { display: flex; flex-wrap: wrap; gap: 0.4em 1.4em; align-items: center;
-          font-size: 0.78em; margin: 0 0 1em; }
-.fd-key .bar { display: inline-block; width: 8em; height: 0.7em; vertical-align: middle;
-               border: 1px solid var(--surface-border); }
-.fd-key svg { vertical-align: middle; }
-.fd-changes { font-size: 0.8em; font-family: var(--pico-font-family-monospace); margin: 0 0 1.2em; }
-.fd-changes li { list-style: none; margin: 0; }
+.ar { --railw: 4.6em; margin: 0 0 1.2em; }
+.ar-freq { position: relative; height: 1.5em; margin-left: var(--railw); font-size: 0.72em;
+           color: var(--pico-muted-color); border-bottom: 1px solid var(--pico-muted-border-color); }
+.ar-freq .t { position: absolute; bottom: 0.15em; transform: translateX(-50%); white-space: nowrap; }
+.ar-box { position: relative; margin-left: var(--railw); }
+.ar-box img { display: block; width: 100%; image-rendering: pixelated; }
+.ar-rail { position: absolute; top: 0; bottom: 0; right: 100%; width: var(--railw);
+           border-right: 1px solid var(--pico-muted-border-color); color: var(--pico-muted-color); }
+.ar-rail .t { position: absolute; right: 0.4em; transform: translateY(-50%); white-space: nowrap;
+              font-size: 0.72em; }
+.ar-key { display: flex; gap: 0.5em; align-items: center; font-size: 0.78em; margin: 0.4em 0 0 var(--railw); }
+.ar-key .bar { flex: 0 0 10em; height: 0.7em; border: 1px solid var(--pico-muted-border-color); }
+
+/* The dish grids: rows A-H down, columns 01-08 across, X beside Y. */
+.dg { display: grid; grid-template-columns: 1.6em repeat(var(--cols), minmax(0, 1fr));
+      gap: 0.3em; margin: 0 0 1.2em; }
+.dg .h { font-size: 0.72em; font-weight: 600; text-align: center; align-self: end;
+         font-family: var(--pico-font-family-monospace); }
+.dg .r { font-size: 0.72em; font-weight: 600; align-self: center;
+         font-family: var(--pico-font-family-monospace); }
+.dg .cell { display: flex; gap: 2px; min-width: 0; }
+.dg .cell a, .dg .cell .none { flex: 1 1 0; min-width: 0; display: block; line-height: 0; }
+.dg .cell img { width: 100%; height: var(--imgh, 4.2em); display: block; object-fit: fill;
+                image-rendering: pixelated; background: var(--surface); }
+.dg .cell .none { height: var(--imgh, 4.2em); background: var(--surface); }
+.dg-note { font-size: 0.78em; color: var(--pico-muted-color); margin: -0.8em 0 1.2em; }
+/* One grid at a time: coherence or autocorrelations, chosen by radio tabs. */
+.dg-tabs { margin: 0 0 1.2em; }
+.dg-tabs > input { position: absolute; opacity: 0; pointer-events: none; }
+.dg-tabs > label { display: inline-block; margin: 0 0.3em 0.6em 0; padding: 0.3em 0.7em;
+                   border: 1px solid var(--pico-muted-border-color); border-radius: 3px;
+                   font-size: 0.9em; line-height: 1.2; cursor: pointer; color: var(--pico-muted-color); }
+.dg-tabs > input:checked + label { color: var(--pico-color); font-weight: 600;
+                                   background: var(--surface); border-color: var(--pico-color); }
+.dg-tabs > input:focus-visible + label { outline: 2px solid var(--pico-primary-focus); }
+.dg-tabs > .dg-pane { display: none; }
+#dg-co:checked ~ .dg-pane-co, #dg-auto:checked ~ .dg-pane-auto { display: block; }
+
+/* The autocorrelation levels: a 7-class diverging scale (blue below, red
+   above, grey near 1), validated for both themes. */
+.ds-wrap { display: flex; flex-wrap: wrap; gap: 1.2em 2.4em; margin: 0 0 1.2em; }
+.ds-panel { flex: 1 1 18em; max-width: 26em; }
+.ds-panel h4 { font-size: 0.85em; margin: 0 0 0.3em; }
+.ds { --cols: 8; display: grid; grid-template-columns: 1.4em repeat(var(--cols), minmax(0, 1fr)); gap: 3px; }
+.ds .h, .ds .r { font-size: 0.68em; font-weight: 600; text-align: center;
+                 font-family: var(--pico-font-family-monospace); }
+.ds .cell { display: flex; gap: 1px; height: 1.5em; }
+.ds .cell span { flex: 1 1 0; background: var(--ds-none); }
+.ds-key { display: flex; flex-wrap: wrap; gap: 0.2em 0.6em; font-size: 0.7em; margin: 0.4em 0 0;
+          color: var(--pico-muted-color); }
+.ds-key i { display: inline-block; width: 1em; height: 0.8em; vertical-align: middle; margin-right: 0.25em; }
+.ds { --ds-none: repeating-linear-gradient(45deg, var(--surface) 0 3px, var(--surface-border) 3px 4px); }
+.d0 { background: #1c5cab !important; } .d1 { background: #3987e5 !important; }
+.d2 { background: #86b6ef !important; } .d3 { background: #f0efec !important; }
+.d4 { background: #f2a09c !important; } .d5 { background: #e34948 !important; }
+.d6 { background: #a8302f !important; }
+[data-theme="dark"] .d0 { background: #86b6ef !important; } [data-theme="dark"] .d1 { background: #2a78d6 !important; }
+[data-theme="dark"] .d2 { background: #184f95 !important; } [data-theme="dark"] .d3 { background: #383835 !important; }
+[data-theme="dark"] .d4 { background: #8a2a2a !important; } [data-theme="dark"] .d5 { background: #e34948 !important; }
+[data-theme="dark"] .d6 { background: #f2a09c !important; }
+
+.st { font-size: 0.8em; }
+.st td, .st th { padding: 0.15em 0.6em; }
+.st .num { text-align: right; font-family: var(--pico-font-family-monospace); }
+.st-events { font-size: 0.8em; font-family: var(--pico-font-family-monospace); margin: 0 0 1.2em; padding: 0; }
+.st-events li { list-style: none; }
 {% endblock %}
 
 {% block content %}
@@ -93,114 +128,133 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     Click a cell for the full-resolution image with axes.
 </p>
 
-{% if feeds %}{% set g = feeds.geom %}
-<h3>Feeds</h3>
-<p class="note">
-    Each row is a feed: its median coherence with the other feeds of its polarization, one column per
-    source file.  It is measured whether or not the feed is masked, so a hatched row that stays bright is a
-    flag to check, and a dark row with an empty mask cell is a feed the flags missed.
-    {%- if not feeds.has_diag %} This acquisition has no mask record: the masks are recorded from the
-    files the renderer reads after it was updated.{% elif feeds.diag_from %} Masks recorded from
-    {{ feeds.diag_from }}.{% endif %}
-</p>
-<div class="fd-bands">
-    {%- for b in feeds.bands %}
-    <a href="?band={{ b.i }}" class="{{ 'on' if b.i == feeds.band else '' }}">{{ b.label }}</a>
-    {%- endfor %}
+{% if sheet %}{% set G = sheet.grid %}
+{%- if sheet.array %}{% set A = sheet.array %}
+<h3>Array coherence</h3>
+<div class="ar">
+    <div class="ar-freq">
+        {%- for t in A.freq_axis.ticks %}<span class="t" style="left: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>{% endfor %}
+    </div>
+    <div class="ar-box">
+        <div class="ar-rail">
+            {%- for t in A.time_axis.ticks %}<span class="t" style="top: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>{% endfor %}
+        </div>
+        <a href="{{ request.script_root }}{{ A.view }}" title="open with axes and masks">
+            <img src="{{ request.script_root }}{{ A.src }}" style="height: {{ A.height }}px"
+                 alt="array coherence, frequency across, time down"></a>
+    </div>
+    <div class="ar-key">
+        {%- if sheet.gradient %}<span>0.001</span><span class="bar" style="background: {{ sheet.gradient }}"></span><span>1</span>{% endif %}
+        <span>· per 16-channel chunk and file, the median over all feeds of their coherence with the
+        array · frequency across{% if A.freq_axis.unit == 'MHz' %} (MHz){% endif %}, time down
+        ({{ A.time_axis.unit }}) · black: no data</span>
+    </div>
 </div>
-<div class="scroll-x">
-<div class="fd" id="feeds">
-<svg viewBox="0 0 {{ g.width }} {{ feeds.height }}" role="img"
-     aria-label="Feed coherence over time with the masks, {{ feeds.bands[feeds.band].label }}">
-    <defs>
-        <pattern id="fd-hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-            <line class="fd-hatch-a" x1="1" y1="0" x2="1" y2="4"/><line class="fd-hatch-b" x1="2.3" y1="0" x2="2.3" y2="4"/>
-        </pattern>
-        <pattern id="fd-hatch-open" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(135)">
-            <line class="fd-hatch-a" x1="1" y1="0" x2="1" y2="6"/><line class="fd-hatch-b" x1="2.3" y1="0" x2="2.3" y2="6"/>
-        </pattern>
-        <pattern id="fd-hatch-partial" patternUnits="userSpaceOnUse" width="3" height="3" patternTransform="rotate(45)">
-            <line class="fd-hatch-p" x1="1" y1="0" x2="1" y2="3"/>
-        </pattern>
-    </defs>
-    {%- for t in feeds.ticks %}
-    <text class="tick" x="{{ t.x }}" y="12">{{ t.label }}</text>
-    {%- endfor %}
-    <text class="sub" x="{{ g.mask_x + 8 }}" y="12" text-anchor="middle">mask</text>
-    <text class="sub" x="{{ g.text_x + 6 }}" y="12">why (bffs now) · since</text>
-    {#- one crop of the same image per dish, so the gaps between dishes and rows stay surface #}
-    {%- for d in feeds.dishes %}
-    <text class="lab" x="{{ g.x0 - 6 }}" y="{{ d.y + d.h / 2 }}" text-anchor="end">{{ d.name }}</text>
-    {%- for r in d.rows %}
-    <svg x="{{ g.x0 }}" y="{{ r.y }}" width="{{ g.w }}" height="{{ g.sub }}"
-         viewBox="0 {{ r.i }} {{ feeds.n_cols }} 1" preserveAspectRatio="none">
-        <image class="heat" href="{{ request.script_root }}{{ feeds.image_src }}" x="0" y="0"
-               width="{{ feeds.n_cols }}" height="{{ feeds.n_rows }}" preserveAspectRatio="none"/>
-    </svg>
-    <rect class="mask-cell {{ r.state }}" x="{{ g.mask_x }}" y="{{ r.y + 0.5 }}" width="16" height="{{ g.sub - 1 }}">
-        <title>{{ r.label }}: {{ {'clear': 'not masked', 'masked': 'masked', 'partial': 'masked on some streams'}[r.state] }}{% if r.since %} since {{ r.since }}{% endif %}{% if r.why %} · bffs now: {{ r.why }}{% endif %}</title>
-    </rect>
-    {%- endfor %}
-    {%- if d.since %}
-    <text class="lab" x="{{ g.text_x + 6 }}" y="{{ d.y + d.h / 2 }}">{{ d.why or '—' }} · {{ d.since }}</text>
-    {%- endif %}
-    {%- endfor %}
-    {%- for o in feeds.overlay %}
-    <rect x="{{ o.x }}" y="{{ o.y }}" width="{{ o.w }}" height="{{ g.sub }}"
-          fill="url(#{{ 'fd-hatch-open' if o.partial else 'fd-hatch' }})" pointer-events="none"/>
-    {%- endfor %}
-    <rect class="frame" x="{{ g.x0 - 0.5 }}" y="{{ feeds.heat_top - 0.5 }}" width="{{ g.w + 1 }}"
-          height="{{ feeds.heat_bottom - feeds.heat_top - g.dish_gap + 1 }}"/>
-
-    {%- set L = feeds.layout %}
-    <text class="sub" x="{{ g.x0 - 6 }}" y="{{ L.rfi + g.strip / 2 }}" text-anchor="end">RFI</text>
-    <text class="sub" x="{{ g.x0 - 6 }}" y="{{ L.rfi_off + g.strip / 2 }}" text-anchor="end">RFI off</text>
-    <text class="sub" x="{{ g.x0 - 6 }}" y="{{ L.pl + g.strip / 2 }}" text-anchor="end">PL</text>
-    {%- for key in ('rfi', 'rfi_off', 'pl') %}
-    <rect class="frame" x="{{ g.x0 - 0.5 }}" y="{{ L[key] - 0.5 }}" width="{{ g.w + 1 }}" height="{{ g.strip + 1 }}"/>
-    {%- for c in feeds.strips[key] %}
-    <rect class="ink" x="{{ c.x }}" y="{{ L[key] }}" width="{{ c.w }}" height="{{ g.strip }}"
-          fill-opacity="{{ '%.3f' % (0.12 + 0.88 * c.v ** 0.5) }}"><title>{{ '%.2f' % (c.v * 100) }} %</title></rect>
-    {%- endfor %}
-    {%- endfor %}
-    {%- if feeds.n_streams %}
-    <text class="sub" x="{{ g.x0 - 6 }}" y="{{ L.missing + feeds.n_streams * g.stream / 2 }}" text-anchor="end">lost</text>
-    <rect class="frame" x="{{ g.x0 - 0.5 }}" y="{{ L.missing - 0.5 }}" width="{{ g.w + 1 }}" height="{{ feeds.n_streams * g.stream + 1 }}"/>
-    {%- for c in feeds.strips.missing %}
-    <rect class="ink" x="{{ c.x }}" y="{{ L.missing + c.s * g.stream }}" width="{{ c.w }}" height="{{ g.stream }}"
-          fill-opacity="{{ '%.3f' % (0.12 + 0.88 * c.v ** 0.5) }}"><title>stream {{ c.s }}: {{ '%.2f' % (c.v * 100) }} % of channels without a frame</title></rect>
-    {%- endfor %}
-    {%- endif %}
-    {%- for e in feeds.events %}
-    <line class="event" x1="{{ e.x }}" x2="{{ e.x }}" y1="{{ feeds.heat_top }}" y2="{{ L.events }}"/>
-    <text class="sub" x="{{ e.x }}" y="{{ L.events + 6 }}" text-anchor="middle">▲<title>{{ e.when }}: {{ e.what }} changed</title></text>
-    {%- endfor %}
-</svg>
-<div class="fd-tip" id="feeds-tip"></div>
-</div>
-</div>
-<div class="fd-key">
-    {%- if feeds.gradient %}
-    <span>coherence 0.001 <span class="bar" style="background: {{ feeds.gradient }}"></span> 1 (black: no data)</span>
-    {%- endif %}
-    <span><svg width="22" height="10"><rect width="22" height="10" fill="url(#fd-hatch)"/></svg> masked</span>
-    <span><svg width="22" height="10"><rect width="22" height="10" fill="url(#fd-hatch-open)"/></svg> masked on some streams</span>
-    <span><svg width="14" height="8"><rect class="mask-cell masked" x="0.5" y="0.5" width="13" height="7"/></svg> masked at the end</span>
-    <span>RFI, PL: share of samples masked · RFI off: RFI mask not applied · lost: per stream, channels without a frame (a stronger shade is more)</span>
-    {%- if feeds.events %}<span>▲ kotekan build, gains or fringestop changed</span>{% endif %}
-</div>
-{%- if feeds.changes %}
-<details class="fd-changes">
-    <summary>Mask changes ({{ feeds.changes | length }})</summary>
-    <ul>
-    {%- for ch in feeds.changes %}
-        <li>{{ ch.when }}  {% for lab, state in ch.changes %}{{ lab }} → {{ state }}{{ ' · ' if not loop.last }}{% endfor %}</li>
-    {%- endfor %}
-    </ul>
-</details>
 {%- endif %}
-<script type="application/json" id="feeds-data">{{ feeds.feeds_data | tojson }}</script>
-<script src="{{ url_for('static', filename='waterfall_feeds.js') }}"></script>
+
+{%- macro dish_grid(kind, view) %}
+<div class="dg" style="--cols: {{ G.cols | length }}">
+    <span></span>
+    {%- for c in G.cols %}<span class="h">{{ '%02d' % c }}</span>{% endfor %}
+    {%- for row in G.rows %}
+    <span class="r">{{ row.name }}</span>
+    {%- for d in row.cells %}
+    <div class="cell">
+        {%- if d %}{% for f in (d.x, d.y) %}
+        {%- if f and f[kind] %}
+        <a href="{{ request.script_root }}{{ f[view] }}" title="{{ f.label }}">
+            <img src="{{ request.script_root }}{{ f[kind] }}" loading="lazy" decoding="async" alt="{{ f.label }}"
+                 onerror="this.style.visibility='hidden'"></a>
+        {%- else %}<span class="none" title="{{ f.label if f else 'no feed' }}: nothing rendered"></span>{% endif %}
+        {%- endfor %}{% endif %}
+    </div>
+    {%- endfor %}
+    {%- endfor %}
+</div>
+{%- endmacro %}
+
+<h3>Per feed</h3>
+<div class="dg-tabs">
+    <input type="radio" name="dg-tab" id="dg-co" value="co" checked><label for="dg-co">Coherence</label>
+    <input type="radio" name="dg-tab" id="dg-auto" value="auto"><label for="dg-auto">Autocorrelations</label>
+    <div class="dg-pane dg-pane-co">
+        {{ dish_grid('co', 'co_view') }}
+        <p class="dg-note">Each dish: X left, Y right.  Each image: frequency across, one row per file; the feed's
+            coherence with the array on the same scale as above.  Click for the image with axes and the feed's mask.</p>
+    </div>
+    <div class="dg-pane dg-pane-auto">
+        {{ dish_grid('auto', 'auto_view') }}
+        <p class="dg-note">Each dish: X left, Y right; frequency across, time down.  Click for the full waterfall,
+            with the feed's mask, the RFI mask and the lost channels beside it, row for row.</p>
+    </div>
+</div>
+<script>
+(function () {
+    var k = "chocoDishGrid", t;
+    try { t = localStorage.getItem(k); } catch (e) {}
+    var r = t && document.getElementById("dg-" + t);
+    if (r) r.checked = true;
+    document.querySelectorAll('input[name="dg-tab"]').forEach(function (i) {
+        i.addEventListener("change", function () { try { localStorage.setItem(k, i.value); } catch (e) {} });
+    });
+})();
+</script>
+
+<h3>Autocorrelation level, last file{% if sheet.last_when %} <small>({{ sheet.last_when }})</small>{% endif %}</h3>
+<div class="ds-wrap">
+    <div class="ds-panel">
+        <div class="ds" style="--cols: {{ G.cols | length }}">
+            <span></span>{% for c in G.cols %}<span class="h">{{ '%02d' % c }}</span>{% endfor %}
+            {%- for row in G.rows %}
+            <span class="r">{{ row.name }}</span>
+            {%- for d in row.cells %}
+            <div class="cell">
+                {%- if d %}{% for f in (d.x, d.y) %}
+                <span class="{{ 'd' ~ f.auto_class if f and f.auto_class is not none else '' }}"
+                      title="{{ f.label if f else d.name }}: {{ '%.3g × the median' % f.auto_ratio if f and f.auto_ratio is not none else 'no data' }}"></span>
+                {%- endfor %}{% endif %}
+            </div>
+            {%- endfor %}
+            {%- endfor %}
+        </div>
+        <div class="ds-key">
+            {%- for lbl in sheet.ratio_labels %}<span><i class="d{{ loop.index0 }}"></i>{{ lbl }}</span>{% endfor %}
+            <span><i style="background: repeating-linear-gradient(45deg, var(--surface) 0 3px, var(--surface-border) 3px 4px)"></i>no data</span>
+        </div>
+    </div>
+    <p class="dg-note" style="flex: 1 1 16em; margin: 0">Each dish: X left, Y right.  The band median of each
+        feed’s autocorrelation over the median of its polarization; red is hot.  The F-engine’s digital
+        gains bring most feeds, a dead one included, to the same level, so look for dead feeds in the
+        coherence grid; this one finds the feeds the gains cannot bring down.</p>
+</div>
+
+{%- set S = sheet.streams %}
+{%- if S.rows %}
+<h3>X-engine streams</h3>
+<div class="scroll-x">
+<table class="st">
+    <thead><tr><th>stream</th><th>node</th><th>build</th><th class="num">lost, last file</th>
+        <th class="num">lost, acquisition</th><th class="num">masks out of step</th><th>last out of step</th></tr></thead>
+    <tbody>
+    {%- for r in S.rows %}
+    <tr><td class="num">{{ r.s }}</td><td>{{ r.node or '—' }}</td><td>{{ r.build or '—' }}</td>
+        <td class="num">{{ '%.2f %%' % (r.lost_last * 100) if r.lost_last is not none else '—' }}</td>
+        <td class="num">{{ '%.2f %%' % (r.lost_acq * 100) if r.lost_acq is not none else '—' }}</td>
+        <td class="num">{{ r.out_of_step }} bins</td><td>{{ r.last_out or '—' }}</td></tr>
+    {%- endfor %}
+    </tbody>
+</table>
+</div>
+<p class="dg-note" style="margin-top: 0.3em">Channel i comes from stream i mod {{ S.rows | length }}; a node carries two streams.
+    {%- if not S.named %} The streams are named only for files recorded as they landed.{% endif %}
+    "Out of step": bins in which the stream masked a different number of feeds than most streams (a missed or late flag update).
+    Builds are the nodes' builds now.  At the start: {{ S.builds | join(', ') or 'no record' }}{% if S.gains %}; gains {{ S.gains }}{% endif %}; fringestop {{ 'on' if S.fringestop else 'off' }}.</p>
+{%- if S.events %}
+<ul class="st-events">
+    {%- for e in S.events %}<li>{{ e.when }}  {{ e.what }}</li>{% endfor %}
+</ul>
+{%- endif %}
+{%- endif %}
 {% endif %}
 
 {% if strips %}

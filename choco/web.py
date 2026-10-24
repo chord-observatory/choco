@@ -27,7 +27,7 @@ from . import dishlabels
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
 from .waterfalls import (coarse_image as wf_coarse_image, coarse_view_context as wf_coarse_view_context,
-                         feeds_context as wf_feeds_context, feeds_image as wf_feeds_image,
+                         mask_columns as wf_mask_columns, sheet_context as wf_sheet_context,
                          matrix_context as wf_matrix_context, matrix_image as wf_matrix_image,
                          open_stream, overview_of, parse_elements, rendered_index,
                          strips as wf_strips, triangle as wf_triangle,
@@ -1256,12 +1256,15 @@ def waterfall_triangle(root, acq):
     strips = None if layout == "triangle" else wf_strips(index)
     if layout == "strips" and strips is None:
         strips = wf_strips({**index, "n_elements": 0}) or None
-    feeds = wf_feeds_context(store, root, acq, request.args.get("band"),
-                             bffs_state=read_state_json(_service_registry()["bffs"]["state_file"]),
+    sheet = wf_sheet_context(store, root, acq,
+                             node_versions={n.name: n.version for n in _registry().nodes.values()},
                              tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
+    if sheet is not None and strips:
+        # the sheet's grids show the autos and the coherence images
+        strips = [s for s in strips if s["title"] not in ("Autocorrelations", "Coherence with the array")]
     return render_template(
         "waterfall_triangle.html",
-        root=root, acq=acq, index=index, grid=grid, strips=strips, feeds=feeds,
+        root=root, acq=acq, index=index, grid=grid, strips=strips, sheet=sheet,
         overview=overview_of(index) is not None,
         n_files=len(index.get("files") or []),
         elements_arg=request.args.get("elements") or "",
@@ -1304,17 +1307,6 @@ def waterfall_matrix_image(root, acq, band, row):
     return _png_response(wf_matrix_image(store, root, acq, band, row))
 
 
-@bp.route("/waterfall/<root>/<acq>/feeds/<band>.png")
-@login_required
-def waterfall_feeds_image(root, acq, band):
-    """The feeds panel's coherence image, from ``matrix.dat`` on request
-    (``waterfalls.feeds_image``); the band is parsed and bounded there."""
-    store = _component("waterfall_store")
-    if store is None:
-        abort(404)
-    return _png_response(wf_feeds_image(store, root, acq, band))
-
-
 @bp.route("/waterfall/<root>/<acq>/coarse/<name>")
 @login_required
 def waterfall_coarse_image(root, acq, name):
@@ -1338,6 +1330,8 @@ def waterfall_coarse_view(root, acq, name):
                                      tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
     if context is None:
         abort(404)
+    context["mask_cols"] = wf_mask_columns(store, root, acq, "coarse", context["a"],
+                                           context["b"], context["rows"])
     return render_template("waterfall_view.html", **context)
 
 
@@ -1388,6 +1382,8 @@ def waterfall_view(root, acq, name):
                               tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
     if context is None:
         abort(404)
+    context["mask_cols"] = wf_mask_columns(store, root, acq, context["kind"], context["a"],
+                                           context["b"], context["rows"])
     return render_template("waterfall_view.html", **context)
 
 

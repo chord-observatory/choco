@@ -739,7 +739,8 @@ def read_diag(path, axes: Axes) -> dict:
     are per sample and averaged over feeds, so the file keeps only their
     fractions per channel: ``rfi``, ``pl`` and ``rfi_on`` (the RFI
     mask's first stage was enabled) are per-stream means, ``missing``
-    the share of a stream's channels with no frame.
+    the share of a stream's channels with no frame, and ``stream_masked``
+    how many feeds each stream masked.
     """
     n_time, ns = axes.n_time, N_STREAMS
     labels = list(axes.labels) or [str(e) for e in range(axes.n_elements)]
@@ -761,6 +762,11 @@ def read_diag(path, axes: Axes) -> dict:
             row_live = live[0:ns]                                  # (ns, n_time)
             counts = (rows & row_live[:, None, :]).sum(axis=0)     # (n_el, n_time)
             rec["flag_live"] = [int(x) for x in row_live.sum(axis=0)]
+            # per stream, how many feeds it masked: a stream out of step
+            # with the others missed or lagged a flag update
+            per_stream = rows.sum(axis=1)                          # (ns, n_time)
+            rec["stream_masked"] = [[int(per_stream[s, b]) if row_live[s, b] else -1
+                                     for b in range(n_time)] for s in range(ns)]
             rec["masked"] = {labels[e]: _bin_runs(counts[e])
                              for e in range(len(labels)) if counts[e].any()}
         if "fringestop_enabled" in f:
@@ -780,6 +786,22 @@ def read_diag(path, axes: Axes) -> dict:
                     versions.add(str(v))
             rec["versions"] = sorted(versions)
     return rec
+
+
+def array_levels(levels: np.ndarray) -> np.ndarray:
+    """``(n_el, n_rows, n_chunk)`` coherence levels -> ``(n_rows, n_chunk)``:
+    each cell's median over the elements with data (the lower middle;
+    ``MISSING`` where none has any), the array's coherence.  The levels
+    are a log scale, so the median of the levels is the level of the
+    median."""
+    levels = np.asarray(levels, np.uint8)
+    n_el = levels.shape[0]
+    missing = (levels == wfpng.MISSING).sum(axis=0)
+    have = n_el - missing
+    pick = np.clip(missing + (have - 1) // 2, 0, n_el - 1)
+    out = np.take_along_axis(np.sort(levels, axis=0), pick[None], axis=0)[0]
+    out[have == 0] = wfpng.MISSING
+    return out.astype(np.uint8)
 
 
 def _chunks(d, sel: Selection, axes: Axes):

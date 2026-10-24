@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ label_a }} × {{ label_b }} — {{ acq }} — CHOCO{% endblock %}
+{% set what = 'array coherence' if kind == 'array' else label_a ~ ' × ' ~ label_b %}
+{% block title %}{{ what }} — {{ acq }} — CHOCO{% endblock %}
 
 {% block styles %}
 .wfv-head { display: flex; align-items: baseline; gap: 1em; flex-wrap: wrap;
@@ -33,7 +34,7 @@
    frequency ruler's margin and the two axes share one left edge. */
 .wfv-imgbox { flex: 1 1 auto; min-width: 0; position: relative;
               margin-left: var(--railw); }
-.wfv-imgbox img { width: 100%; height: auto; display: block;
+.wfv-imgbox img { width: 100%; height: auto; min-height: 20em; display: block;
                   image-rendering: pixelated; }
 .wfv-rail { position: absolute; top: 0; bottom: 0; right: 100%;
             width: var(--railw); color: var(--pico-muted-color, #666);
@@ -44,6 +45,12 @@
                       left: calc(100% + 0.05em); width: 5px;
                       border-top: 1px solid currentColor; }
 
+.wfv-masks { position: absolute; top: 0; bottom: 0; left: calc(100% + 0.3em); }
+.wfv-masks svg { display: block; width: 100%; height: 100%; }
+.wfv-masks .m { fill: var(--pico-color); }
+.wfv-masks .lane { fill: var(--surface); }
+.wfv-mkey { font-size: 0.78em; color: var(--pico-muted-color); margin: 0 0 0.5em; }
+.wfv-mkey b { font-weight: 600; color: var(--pico-color); }
 .wfv-cwrap { flex: 0 0 var(--cbarw); }
 .wfv-csticky { position: sticky; top: 2.6em; padding-left: 0.9em; }
 .wfv-ctitle { font-size: 0.78em; color: var(--pico-muted-color, #666);
@@ -60,11 +67,11 @@
 
 {% block content %}
 <div class="wfv-head page-head">
-    <h2><a href="{{ request.script_root }}/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>{{ label_a }} × {{ label_b }}</h2>
+    <h2><a href="{{ request.script_root }}/files" class="crumb">Files</a><span class="crumb-sep">/</span><a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/triangle" class="crumb"><code>{{ acq }}</code></a><span class="crumb-sep">/</span>{{ what }}</h2>
 </div>
 
 <p class="note wfv-note">
-    elements {{ a }}, {{ b }} ·
+    {%- if kind != 'array' %}elements {{ a }}, {{ b }} ·{% endif %}
     {{ rows }} scanline{{ '' if rows == 1 else 's' }} ×
     {{ n_freq }} channel{{ '' if n_freq == 1 else 's' }} ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }}
@@ -79,12 +86,23 @@
     {%- elif kind == 'coherence' %}
     This element's coherence with the array: the mean over its partners of |V<sub>ab</sub>| / √(V<sub>aa</sub> V<sub>bb</sub>),
     one column per 16-channel chunk, one row per source file.
+    {%- elif kind == 'array' %}
+    The array's coherence: per 16-channel chunk and source file, the median over all elements of their
+    coherence with the array.
     {%- endif %}
     Frequency across{% if freq_axis.unit == 'MHz' %} in MHz{% else %} in channel index{% endif %},
     time down{% if time_axis.unit == 'scanline' %} in scanline number{% else %} in local time ({{ time_axis.unit }}){% endif %};
     black is missing data.
 </p>
 
+{%- if mask_cols %}
+<p class="wfv-mkey">Columns right of the image, row for row:
+    {%- for c in mask_cols %} <b>{{ loop.index }}</b> {{ c.title }}{{ ',' if not loop.last }}{% endfor %}.
+    Darker is more: a full mask, or{% if kind == 'full' %} half for a mask on some streams only{% else %} the share of the file's bins{% endif %};
+    for the RFI mask and lost channels, the share of samples or channels.</p>
+{%- elif mask_cols is defined %}
+<p class="wfv-mkey">No mask record for this acquisition: it was rendered before the job recorded masks.</p>
+{%- endif %}
 <div class="wfv">
     <div class="wfv-freq-wrap">
         <div class="wfv-freq">
@@ -94,14 +112,30 @@
         </div>
     </div>
     <div class="wfv-body">
-        <div class="wfv-imgbox">
+        <div class="wfv-imgbox"{% if mask_cols %} style="margin-right: {{ mask_cols | length * 0.9 + 0.6 }}em"{% endif %}>
             <div class="wfv-rail">
                 {%- for t in time_axis.ticks %}
                 <span class="t" style="top: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>
                 {%- endfor %}
             </div>
             <img src="{{ request.script_root }}{{ image_src }}"
-                 alt="{{ label_a }} × {{ label_b }} waterfall" decoding="async">
+                 alt="{{ what }} waterfall" decoding="async">
+            {%- if mask_cols %}
+            <div class="wfv-masks" style="width: {{ mask_cols | length * 0.9 }}em">
+                <svg viewBox="0 0 {{ mask_cols | length }} {{ rows }}" preserveAspectRatio="none" aria-hidden="true">
+                    {%- for c in mask_cols %}{% set x = loop.index0 %}
+                    <rect class="lane" x="{{ x + 0.12 }}" y="0" width="0.76" height="{{ rows }}"><title>{{ loop.index }}: {{ c.title }}</title></rect>
+                    {%- for r in c.runs %}
+                    <rect class="m" x="{{ x + 0.12 }}" y="{{ r.y0 }}" width="0.76" height="{{ r.y1 - r.y0 }}"
+                          fill-opacity="{{ '%.3f' % (r.v if c.is_mask else 0.15 + 0.85 * r.v ** 0.5) }}"><title>{{ c.title }}:
+                          {%- if c.is_mask and kind == 'full' %} {{ 'all streams' if r.v >= 1 else 'some streams' }}
+                          {%- elif c.is_mask %} {{ '%.0f %%' % (r.v * 100) }} of the file's bins
+                          {%- else %} {{ '%.3g %%' % (r.v * 100) }}{% endif %}</title></rect>
+                    {%- endfor %}
+                    {%- endfor %}
+                </svg>
+            </div>
+            {%- endif %}
         </div>
         <div class="wfv-cwrap">
             {%- if gradient %}

@@ -25,17 +25,20 @@ was unavailable — retries self-heal); 1 = config error or bug.
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import os
+import re
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 import yaml
 
 from choco.acqtree import file_index, list_acquisitions, normalize_roots, source_files
-from choco.jobclient import (STATE_NAME, Degraded, job_state_dir, refuse_retired,
+from choco.jobclient import (STATE_NAME, Degraded, get_json, job_state_dir, refuse_retired,
                              setup_logging, single_run, write_json_atomic)
 
 import reduce as R
@@ -63,6 +66,10 @@ DEFAULTS = {
     "file_stride": 1,
     "overview": True,
     "matrix_bands": 8,
+    # choco's API and the node group, to name the X-engine node behind
+    # each stream of a file that has just landed ({url, group}; None: no
+    # names)
+    "choco": None,
     # state.json and the run lock live in the job's state directory
     # (/var/lib/choco/waterfall; --state-dir overrides), not here.
 }
@@ -94,6 +101,8 @@ def load_config(path) -> dict:
     if cfg["matrix_bands"] < 1:
         raise ValueError("matrix_bands must be at least 1")
     cfg["products"] = product_rule(cfg.get("products"))
+    if cfg["choco"] is not None and not isinstance(cfg["choco"], dict):
+        raise ValueError("choco must be a mapping with url and group")
     return cfg
 
 
@@ -152,6 +161,57 @@ def pending_candidates(store, files, file_stride: int = 1) -> list[tuple]:
     return candidates
 
 
+#: A file is live when its last bin is this recent; only then is the
+#: nodes' current stream assignment the file's own.
+LIVE_S = 1800
+
+#: ``time_center_ut1_ns`` counts from J2000 (2000-01-01 12:00 UTC).
+_J2000_UNIX_S = 946_728_000
+
+#: An N2Accumulate gauge in a node's ``/metrics``, labelled with the
+#: frequency it accumulates.
+_FREQ_ID_RE = re.compile(r'^kotekan_N2accumulate_\w+\{[^}]*freq_id="(\d+)"', re.M)
+
+
+def stream_nodes(cfg: dict) -> dict:
+    """``{stream: node}`` for the X-engine nodes now running: each
+    started node of the choco group is asked for its ``/metrics``
+    (read-only), whose N2Accumulate gauges name their ``freq_id``, and
+    stream = freq_id mod ``N_STREAMS``.  Empty without a ``choco`` block
+    or when nothing answers; never a reason to degrade the run."""
+    ch = cfg.get("choco") or {}
+    if not ch.get("url") or not ch.get("group"):
+        return {}
+    try:
+        groups = get_json(ch["url"], "/api/nodes").get("groups") or {}
+    except (OSError, ValueError, AttributeError) as exc:
+        log.warning("choco's node list unavailable (%s); streams stay unnamed", exc)
+        return {}
+    out: dict = {}
+    for n in groups.get(ch["group"]) or []:
+        if not n.get("started") or n.get("status") in ("down", "idle"):
+            continue
+        url = f"http://{n['host']}:{n.get('port', 12048)}/metrics"
+        try:
+            with urllib.request.urlopen(url, timeout=10.0) as resp:
+                text = resp.read().decode("utf-8", "replace")
+        except OSError as exc:
+            log.warning("%s: %s", url, exc)
+            continue
+        for fid in set(_FREQ_ID_RE.findall(text)):
+            s = str(int(fid) % R.N_STREAMS)
+            if out.get(s, n["name"]) != n["name"]:
+                out[s] = f"{out[s]}/{n['name']}"
+            else:
+                out[s] = str(n["name"])
+    return out
+
+
+def _live(diag: dict, now: float) -> bool:
+    times = [t for t in diag.get("times") or [] if t > 0]
+    return bool(times) and now - (times[-1] / 1e9 + _J2000_UNIX_S) < LIVE_S
+
+
 def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
                         report: dict) -> int:
     """Fold up to ``budget`` new files into one acquisition.  Returns how many."""
@@ -161,6 +221,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
     if store.broken:
         report["errors"].append(f"{acq}: unreadable index; skipped")
         return 0
+    store.update_array_coherence(level=cfg["level"])
 
     files = source_files(acq_dir)
     if not files:
@@ -292,6 +353,10 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
             except (KeyError, ValueError, TypeError) as exc:
                 log.warning("%s: no mask record (%s)", basename, exc)
                 diag = None
+            if diag is not None and "stream_nodes" in cfg and _live(diag, time.time()):
+                nodes = cfg["stream_nodes"]()
+                if nodes:
+                    diag["nodes"] = nodes
             store.add_file(axes, buf, level=cfg["level"], overview=overview, diag=diag)
         except OSError as exc:
             # Stop this acquisition but keep what was committed: returning
@@ -441,6 +506,8 @@ def run(cfg: dict, only_acq: str | None = None) -> dict:
               "skipped": 0, "errors": [], "last_acquisition": None,
               "last_file_idx": None, "degraded": False}
     budget = cfg["max_files_per_run"] or 1 << 30
+    # asked once per run, and only if a live file is folded
+    cfg = {**cfg, "stream_nodes": functools.cache(lambda: stream_nodes(cfg))}
 
     for root in cfg["roots"]:
         try:

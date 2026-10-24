@@ -14,6 +14,8 @@ Layout, mirroring the acquisition it describes::
         matrix.dat          (n_files, n_band, n_el, n_el)      } one row per file
         coarse_times.bin    int64 per overview row             } (reduce.OverviewSpec)
         diag.jsonl          one JSON line per file: masks and delivery (reduce.read_diag)
+        co_array.png        the array's coherence: per chunk the median over the elements
+                            of their co_eNNNN.png, a scanline per file
         coarse_freq.npy     (n_chunk,) column centres, coarse_scale.npy (n_prod_file, 2)
         palette.bin         the 256 x 3 palette the overview is drawn with
         e0000/wf_e0000xe0000.png
@@ -50,9 +52,9 @@ import numpy as np
 import wfpng
 from choco.acqtree import shard_name
 from choco.jobclient import atomic_output
-from reduce import (Axes, FileOverview, OverviewSpec, Selection, everything, overview_spec,
-                    quantize_log, quantize_unit, scale_from_sample, selection_from_index,
-                    thumb_rows)
+from reduce import (Axes, FileOverview, OverviewSpec, Selection, array_levels, everything,
+                    overview_spec, quantize_log, quantize_unit, scale_from_sample,
+                    selection_from_index, thumb_rows)
 
 log = logging.getLogger("waterfall.store")
 
@@ -384,6 +386,10 @@ class AcquisitionStore:
     def coherence_path(self, e: int) -> Path:
         return self.path / shard_name(e) / f"co_{shard_name(e)}.png"
 
+    @property
+    def array_path(self) -> Path:
+        return self.path / "co_array.png"
+
     # --- the append -----------------------------------------------------
 
     def counts(self) -> np.ndarray:
@@ -479,6 +485,16 @@ class AcquisitionStore:
                     st = wfpng.append(path, coh[e:e + 1], wfpng.WfState.from_dict(rec),
                                       level=level)
                 coh_state.append(st)
+            # the array's row, while the image is in step with the elements'
+            array_rec = self.index.get("array")
+            done_rows = int(self.index.get("coarse_rows", 0))
+            array_state = None
+            if array_rec and int(array_rec.get("rows", 0)) == done_rows:
+                array_state = wfpng.append(self.array_path, array_levels(coh[:, None, :]),
+                                           wfpng.WfState.from_dict(array_rec), level=level)
+            elif not array_rec and done_rows == 0:
+                array_state = wfpng.create(self.array_path, array_levels(coh[:, None, :]),
+                                           pal_default, level=level)
             cube_bytes["matrix_bytes"] = _append_at(
                 self.path / "matrix.dat", int(self.index["matrix_bytes"]),
                 quantize_unit(overview.matrix).tobytes())
@@ -502,7 +518,33 @@ class AcquisitionStore:
             self.index["coarse_rows"] = int(self.index.get("coarse_rows", 0)) + 1
             for e, st in enumerate(coh_state):
                 self.index["elements"][e].update(st.to_dict())
+            if array_state is not None:
+                self.index["array"] = array_state.to_dict()
         self._save_index()                      # <- the commit
+
+    def update_array_coherence(self, level: int = wfpng.DEFAULT_LEVEL) -> bool:
+        """Rebuild ``co_array.png`` from the elements' images when it is
+        behind them: an acquisition started before it existed.  Cheap (one
+        scanline per file per element, all already rendered) and only
+        when the row counts differ; True if it was rewritten."""
+        if not self.started or not self.has_overview:
+            return False
+        rows = int(self.index.get("coarse_rows") or 0)
+        elements = self.index.get("elements") or []
+        if rows == 0 or int((self.index.get("array") or {}).get("rows", 0)) == rows:
+            return False
+        if any(int(rec.get("rows", 0)) != rows for rec in elements):
+            return False
+        try:
+            stack = np.stack([wfpng.read(self.coherence_path(e))[0][:rows]
+                              for e in range(len(elements))])
+            st = wfpng.create(self.array_path, array_levels(stack), wfpng.palette(), level=level)
+        except (OSError, ValueError) as e:
+            log.warning("%s: array coherence not rebuilt (%s)", self.path, e)
+            return False
+        self.index["array"] = st.to_dict()
+        self._save_index()
+        return True
 
     # --- display --------------------------------------------------------
 

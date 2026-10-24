@@ -330,3 +330,33 @@ run under the rows on the same time axis.  The job writes all of it as
 one JSON line per file (``diag.jsonl``, ~10 KB, read in 0.1 s), appended
 under the index's commit like the cubes; acquisitions folded before the
 change have no record and show their data without masks.
+
+**The sheet as a dish grid (2026-10-24).**  The feeds panel above
+answered the question in the wrong form: what the page needed was the
+waterfalls themselves, arranged as the array is.  It now leads with the
+array's coherence (``co_array.png``: per chunk and file, the median over
+the elements of their coherence images, written by the job beside them
+and rebuilt from them when behind), then each feed's coherence image and
+autocorrelation thumbnail on the 8 × 8 dish grid, X beside Y.  The two
+grids share one place on the page, with a tab for each (the choice is
+remembered per browser); nothing else is switched: no band selector,
+and the band is always whole.  The
+masks moved to the large viewer as columns beside the image, row for
+row (a bin per row for a full waterfall, matched by time; the share of
+the file's bins for a per-file image), with the RFI mask's on state and
+the lost channels.  Two per-dish readings were tried on the 2026-10-23
+files.  The autocorrelation over its polarization's median was kept,
+but the F-engine's digital gains bring a dead feed to the level of the
+rest (5.6–6.7 for D04, B02, E07 against ~90 for the hot C06Y and
+C08Y), so it finds hot feeds, not dead ones; the coherence grid shows
+those.  A cross- over same-polar coherence for X/Y swaps was left out:
+the band-mean amplitudes in ``matrix.dat`` carry RFI common to both
+polarizations, cross-polar coherence came out at 0.9 of same-polar on
+normal feeds, and even over neighbouring dishes only, the swapped C05,
+D07 and E05 (1.15–1.25) ranked among E01, G01 and G02.  A swap test
+needs fringe phase.  The stream table names each stream's node from the
+nodes' own ``/metrics`` when a file has just landed (the files carry no
+host: the sender configs are identical), and counts the bins in which a
+stream masked a different number of feeds than most: on the same files
+streams 1, 3, 9 and 11 (two nodes) were out of step for the B01X
+episode above.

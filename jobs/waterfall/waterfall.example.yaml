@@ -66,6 +66,13 @@ file_stride: 1
 overview: true
 matrix_bands: 8
 
+# choco's API and the X-engine node group, to name the node behind each
+# stream of a file that has just landed (read from each started node's
+# kotekan /metrics, once per run).  Leave out for unnamed streams.
+choco:
+  url: https://localhost:5000
+  group: cx
+
 # Deflate level.  6 is the balance point (level 9 costs 3.5x the CPU for
 # 0.58% fewer bytes); 4 is worth passing for a long backfill.
 level: 6

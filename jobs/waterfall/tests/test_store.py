@@ -407,3 +407,34 @@ def test_diag_lines_commit_with_the_file(acq, tmp_path):
     st.add_file(ax3, R.quantize_file(src3, lo, hi), diag={"file": 4202417})
     lines = (st.path / "diag.jsonl").read_text().splitlines()
     assert [json.loads(x)["file"] for x in lines] == [4202416, 4202417]
+
+
+def test_the_array_image_grows_with_the_elements_and_catches_up(tmp_path):
+    src = build(tmp_path / "v.h5")
+    axes = R.read_axes(src)
+    sel, _ = R.select(axes, {"autos": True})
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(src, sel))
+    o = tmp_path / "o"
+    st = S.AcquisitionStore(o, "acq_x", "subset")
+    st.start(axes, lo, hi, sel, R.overview_spec(axes, sel, 2))
+    out, ov = R.fold_file(src, lo, hi, sel=sel, axes=axes, overview=st.overview_spec(axes, sel))
+    st.add_file(axes, out, overview=ov)
+    rows, _ = wfpng.read(o / "co_array.png")
+    elems = np.stack([wfpng.read(st.coherence_path(e))[0] for e in range(4)])
+    assert rows.shape == (1, 4) and np.array_equal(rows, R.array_levels(elems))
+    assert st.index["array"]["rows"] == 1
+    # an acquisition from before the image: rebuilt from the elements' images
+    (o / "co_array.png").unlink()
+    del st.index["array"]
+    src2 = build(tmp_path / "v2.h5", idx=5, seed=3)
+    ax2 = R.read_axes(src2)
+    out, ov = R.fold_file(src2, lo, hi, sel=sel, axes=ax2, overview=st.overview_spec(ax2, sel))
+    st.add_file(ax2, out, overview=ov)
+    assert not (o / "co_array.png").exists()               # behind: left to the catch-up
+    assert st.update_array_coherence() is True
+    rows, _ = wfpng.read(o / "co_array.png")
+    elems = np.stack([wfpng.read(st.coherence_path(e))[0] for e in range(4)])
+    assert rows.shape == (2, 4) and np.array_equal(rows, R.array_levels(elems))
+    assert st.update_array_coherence() is False             # in step: nothing to do
+    reopened = S.AcquisitionStore(o, "acq_x", "subset")
+    assert reopened.index["array"]["rows"] == 2

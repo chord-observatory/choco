@@ -967,7 +967,10 @@ class TestOverviewRoutes:
 
     def test_sheet_shows_strips_and_the_matrix_link(self, ov_client):
         body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle").data.decode()
-        assert "Autocorrelations" in body and "Coherence with the array" in body
+        # the sheet's grids take the autos and the coherence images; the
+        # reference strips stay
+        assert 'id="dg-co"' in body and 'id="dg-auto"' in body and "Autocorrelations" in body
+        assert "Coherence with the array" not in body and "A0X × the array" in body
         assert f"/files/subset/{OV_ACQ}/matrix" in body and 'class="strip"' in body
         body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle?layout=triangle").data.decode()
         assert 'class="strip"' not in body and 'table class="tri"' in body
@@ -975,114 +978,148 @@ class TestOverviewRoutes:
         assert 'table class="tri"' in body and f"/files/subset/{ACQ}/matrix" not in body
 
 
-# --- the feeds panel -------------------------------------------------------
+# --- the sheet: array, dish grids, per-dish readings, streams, masks -------
 
-FD_ACQ = "acq_20261023_142451_810159661"
-FD_LABELS = ["A01X", "A02X", "B01X", "A01Y", "A02Y", "B01Y"]     # [P][D], 3 dishes
+SH_ACQ = "acq_20261023_142451_810159661"
+SH_LABELS = ["A01X", "A02X", "B01X", "A01Y", "A02Y", "B01Y"]     # [P][D], 3 dishes
 
 
-def _diag_line(file, n_bin=4, masked=None, live=None, gains="g1", rfi=100):
-    return {"file": file, "n_bin": n_bin, "n_streams": 2,
-            "times": [T0_NS + (400 * (file - 1) + 100 * b) * 10**9 for b in range(n_bin)],
-            "flag_live": live or [2] * n_bin, "masked": masked or {},
-            "missing": [[0] * n_bin, [0, 0, 5000, 0][:n_bin]],
-            "rfi": [[rfi] * n_bin, [rfi] * n_bin], "pl": [[0] * n_bin] * 2,
-            "rfi_on": [[10000] * n_bin] * 2, "fringestop": 0, "gains": gains,
-            "versions": ["chord+1"]}
+def _diag_line(file, n_bin=4, masked=None, live=None, gains="g1", stream_masked=None, nodes=None):
+    rec = {"file": file, "n_bin": n_bin, "n_streams": 2,
+           "times": [T0_NS + (400 * (file - 1) + 100 * b) * 10**9 for b in range(n_bin)],
+           "flag_live": live or [2] * n_bin, "masked": masked or {},
+           "missing": [[0] * n_bin, [0, 0, 5000, 0][:n_bin]],
+           "rfi": [[100] * n_bin] * 2, "pl": [[0] * n_bin] * 2,
+           "rfi_on": [[10000] * n_bin, [10000, 0, 10000, 10000]], "fringestop": 0, "gains": gains,
+           "versions": ["chord+1"], "stream_masked": stream_masked or [[1] * n_bin, [1] * n_bin]}
+    if nodes:
+        rec["nodes"] = nodes
+    return rec
 
 
 @pytest.fixture
-def fd_images(tmp_path):
-    """Three files of six feeds.  Matrix level of (i, j) is 10 * (i + j) + band;
-    A02Y has no data.  A01X is masked from the first delivered bin on; B01Y
-    from file 2 bin 2, partially in file 3; the gains change in file 3."""
+def sh_images(tmp_path):
+    """Three files of six feeds.  Autos: level 200 for every product, 100
+    for A01Y, nothing for A02Y.  A01X is masked throughout, B01Y partly in file 3; stream 1
+    masks one feed fewer in file 2 bin 1; the gains change in file 3."""
     root = tmp_path / "waterfalls"
-    path = make_overview_index(root / "subset" / FD_ACQ, n_el=6, labels=FD_LABELS)
-    n, n_band, rows = 6, 2, 3
-    dead = 4
-    (path / "matrix.dat").write_bytes(bytes(
-        0 if dead in (i, j) else (255 if i == j else 10 * (i + j) + b)
-        for r in range(rows) for b in range(n_band) for i in range(n) for j in range(n)))
-    lines = [_diag_line(1, masked={"A01X": [[1, 4, 2]]}, live=[0, 2, 2, 2]),
-             _diag_line(2, masked={"A01X": [[0, 4, 2]], "B01Y": [[2, 4, 2]]}),
-             _diag_line(3, masked={"A01X": [[0, 4, 2]], "B01Y": [[0, 4, 1]]}, gains="g2")]
+    path = make_overview_index(root / "subset" / SH_ACQ, n_el=6, labels=SH_LABELS)
+    n, rows, n_chunk = 6, 3, 4
+    n_prod = n * (n + 1) // 2
+    pairs = [(a, b) for a in range(n) for b in range(a, n)]
+    level = {(3, 3): 100, (4, 4): 0}
+    row = bytes(level.get((a, b), 200) for a, b in pairs for c in range(n_chunk))
+    (path / "coarse.dat").write_bytes(row * rows)
+    (path / "coarse_scale.npy").write_bytes(npy_bytes_2d([[1.0, 1e6]] * n_prod))
+    index = json.loads((path / "index.json").read_text())
+    index["array"] = {"width": n_chunk, "rows": rows, "nbytes": 10, "adler": 1}
+    (path / "index.json").write_text(json.dumps(index))
+    (path / "co_array.png").write_bytes(png_with_palette(n_chunk, rows))
+    sm = [[1, 1, 1, 1], [1, 0, 1, 1]]
+    lines = [_diag_line(1, masked={"A01X": [[0, 4, 2]]}),
+             _diag_line(2, masked={"A01X": [[0, 4, 2]]}, stream_masked=sm),
+             _diag_line(3, masked={"A01X": [[0, 4, 2]], "B01Y": [[2, 4, 1]]}, gains="g2",
+                        nodes={"0": "cx52", "1": "cx19"})]
     (path / "diag.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines) + '{"file": 9')
     return root
 
 
+def npy_bytes_2d(rows):
+    import io
+    header = "{'descr': '<f4', 'fortran_order': False, 'shape': (%d, %d), }" % (len(rows), len(rows[0]))
+    header += " " * (63 - len(header) % 64) + "\n"
+    out = io.BytesIO()
+    out.write(b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header.encode())
+    for r in rows:
+        out.write(struct.pack("<%df" % len(r), *r))
+    return out.getvalue()
+
+
 @pytest.fixture
-def fd_store(fd_images):
-    return WaterfallStore(fd_images, ttl_s=0)
+def sh_store(sh_images):
+    return WaterfallStore(sh_images, ttl_s=0)
 
 
-class TestFeedsPanel:
-    def test_layout_groups_dishes_by_grid_row(self):
-        from choco.waterfalls import feed_layout
-        groups = feed_layout(["A02X", "A01X", "B01X", "A01Y", "RFI1"])
-        assert [g["name"] for g in groups] == ["A", "B", "other"]
-        assert groups[0]["dishes"] == [{"name": "A01", "rows": [1, 3]},
-                                       {"name": "A02", "rows": [0, None]}]
-        assert groups[2]["dishes"] == [{"name": "RFI1", "rows": [4]}]
+class TestSheet:
+    def test_dish_grid_lays_dishes_out_as_they_stand(self):
+        from choco.waterfalls import dish_grid
+        g = dish_grid(["A02X", "A01X", "B01X", "A01Y", "RFI1"])
+        assert g["cols"] == [1, 2] and [r["name"] for r in g["rows"]] == ["A", "B"]
+        assert g["rows"][0]["cells"] == [{"name": "A01", "x": 1, "y": 3},
+                                         {"name": "A02", "x": 0, "y": None}]
+        assert g["rows"][1]["cells"] == [{"name": "B01", "x": 2, "y": None}, None]
+        assert g["other"] == [4]
 
-    def test_levels_are_the_same_pol_median(self, fd_store):
-        levels = fd_store.feed_levels("subset", FD_ACQ, 1, ["X", "X", "X", "Y", "Y", "Y"])
-        assert len(levels) == 3
-        # A01X (0): partners 1, 2 -> 11, 21, median_low 11; A02Y (4) has no data;
-        # A01Y (3): partners 4 (dead), 5 -> 81 alone
-        assert list(levels[0]) == [11, 11, 21, 81, 0, 81]
+    def test_npy_pairs_and_diag_tail(self, sh_store):
+        assert sh_store.coarse_scale("subset", SH_ACQ)[0] == (1.0, 1e6)
+        assert [r["file"] for r in sh_store.diag("subset", SH_ACQ)] == [1, 2, 3]
 
-    def test_diag_drops_an_uncommitted_tail(self, fd_store):
-        assert [r["file"] for r in fd_store.diag("subset", FD_ACQ)] == [1, 2, 3]
+    def test_per_dish_readings_of_the_last_file(self, sh_store):
+        from choco.waterfalls import sheet_context
+        ctx = sheet_context(sh_store, "subset", SH_ACQ, node_versions={"cx52": "+1242"}, tz="UTC")
+        feeds = {f["label"]: f for row in ctx["grid"]["rows"] for d in row["cells"] if d
+                 for f in (d["x"], d["y"]) if f}
+        # the cold Y feed reads below its polarization's median, the rest at 1
+        assert feeds["A01Y"]["auto_ratio"] < 0.1 and feeds["A01Y"]["auto_class"] == 0
+        assert feeds["A01X"]["auto_ratio"] == pytest.approx(1) and feeds["A01X"]["auto_class"] == 3
+        assert feeds["A02Y"]["auto_ratio"] is None and feeds["A02Y"]["auto_class"] is None
+        assert feeds["A01X"]["co"].endswith("/e0000/co_e0000.png")
+        assert feeds["A01X"]["auto_view"].endswith("/view/wf_e0000xe0000.png")
+        assert ctx["array"]["src"].endswith("/array/co_array.png") and ctx["array"]["rows"] == 3
 
-    def test_context_marks_masks_and_their_onset(self, fd_store):
-        from choco.waterfalls import feeds_context
-        bffs = {"bad_inputs": ["A01X"], "flagged_by": {"A01X": ["power"]},
-                "flag_reasons": {"A01X": {"power": "off"}}}
-        ctx = feeds_context(fd_store, "subset", FD_ACQ, bffs_state=bffs, tz="UTC")
-        assert ctx["band"] == 1 and ctx["n_cols"] == 3 and ctx["has_diag"]
-        by = {r["label"]: r for r in ctx["rows"]}
-        # masked from the first bin any stream delivered: older than the record
-        assert by["A01X"]["state"] == "masked" and by["A01X"]["since"].startswith("≤ ")
-        assert by["A01X"]["why"] == "power: off"
-        # the last stretch is partial; its onset is file 3's first bin
-        assert by["B01Y"]["state"] == "partial" and not by["B01Y"]["since"].startswith("≤")
-        assert by["B01Y"]["why"] is None and by["A02X"]["state"] == "clear"
-        assert [r["label"] for r in ctx["rows"]] == ["A01X", "A01Y", "A02X", "A02Y", "B01X", "B01Y"]
-        changes = [(c["when"], c["changes"]) for c in ctx["changes"]]
-        assert [ch for _, ch in changes] == [[("B01Y", "some streams")], [("B01Y", "masked")]]
-        assert len(ctx["overlay"]) == 3
-        assert [e["what"] for e in ctx["events"]] == ["gains"]
-        assert len(ctx["strips"]["rfi"]) == 3 * 4 and ctx["strips"]["rfi"][0]["v"] == 0.01
-        assert [(c["s"], c["v"]) for c in ctx["strips"]["missing"]] == [(1, 0.5)] * 3
-        data = ctx["feeds_data"]
-        assert data["masks"]["B01Y"] == [[1.5, 2.0, 0], [2.0, 3.0, 1]]
-        assert data["cols"][1][1] == 100.0 and data["cols"][1][3] == 4
-        assert feeds_context(fd_store, "subset", FD_ACQ, band="5") is None
-        assert feeds_context(fd_store, "subset", ACQ) is None              # no overview
+    def test_streams_name_nodes_and_count_steps_out(self, sh_store):
+        from choco.waterfalls import sheet_context
+        st = sheet_context(sh_store, "subset", SH_ACQ, node_versions={"cx52": "+1242"}, tz="UTC")["streams"]
+        r0, r1 = st["rows"]
+        assert (r0["node"], r0["build"], r1["node"], r1["build"]) == ("cx52", "+1242", "cx19", None)
+        assert r1["lost_acq"] == pytest.approx(0.125) and r1["lost_last"] == pytest.approx(0.125)
+        assert r0["lost_acq"] == 0
+        assert r1["out_of_step"] == 0          # two streams: no majority to stray from
+        assert [e["what"] for e in st["events"]] == ["gains g2"] and st["named"]
 
-    def test_without_a_record_the_data_still_shows(self, fd_store, fd_images):
-        from choco.waterfalls import feeds_context
-        (fd_images / "subset" / FD_ACQ / "diag.jsonl").unlink()
-        ctx = feeds_context(fd_store, "subset", FD_ACQ)
-        assert not ctx["has_diag"] and not ctx["overlay"] and ctx["n_cols"] == 3
-        assert all(r["state"] == "clear" for r in ctx["rows"])
+    def test_out_of_step_needs_a_majority(self):
+        from choco.waterfalls import _stream_table, _tzinfo
+        rec = _diag_line(1, stream_masked=[[1] * 4, [1] * 4, [1, 0, 1, 1]])
+        rec["n_streams"] = 3
+        rec["missing"].append([0] * 4)
+        rows = _stream_table([rec], {}, _tzinfo("UTC"))["rows"]
+        assert [r["out_of_step"] for r in rows] == [0, 0, 1] and rows[2]["last_out"]
 
-    def test_image_rows_follow_the_panel(self, fd_store):
-        from choco.waterfalls import feeds_image
-        rows = _decode_rows(feeds_image(fd_store, "subset", FD_ACQ, 1))
-        # panel order A01X A01Y A02X A02Y B01X B01Y; one column per file
-        assert [r[0] for r in rows] == [11, 81, 11, 0, 21, 81] and len(rows[0]) == 3
-        assert feeds_image(fd_store, "subset", FD_ACQ, 2) is None
-        assert feeds_image(fd_store, "subset", FD_ACQ, "x") is None
+    def test_mask_columns_row_for_row(self, sh_store):
+        from choco.waterfalls import mask_columns
+        # a full image: a row per bin, matched by time (times.bin covers rows*2 scanlines)
+        idx = sh_store.index("subset", SH_ACQ)
+        times = [T0_NS + (400 * f + 100 * b) * 10**9 for f in range(3) for b in range(4)]
+        (sh_store.acquisition_dir("subset", SH_ACQ) / "times.bin").write_bytes(
+            struct.pack("<%dq" % len(times), *times))
+        cols = mask_columns(sh_store, "subset", SH_ACQ, "full", 5, 5, 12)
+        assert [c["title"] for c in cols] == ["B01Y masked", "RFI mask off", "channels lost"]
+        assert cols[0]["runs"] == [{"y0": 10, "y1": 12, "v": 0.5}]       # some streams
+        assert cols[1]["runs"][0]["y0"] == 1 and cols[1]["runs"][0]["v"] == 0.5
+        cols = mask_columns(sh_store, "subset", SH_ACQ, "full", 0, 5, 12)
+        assert cols[0]["runs"] == [{"y0": 0, "y1": 12, "v": 1.0}] and cols[1]["title"] == "B01Y masked"
+        # a per-file image: the share of each file's bins
+        cols = mask_columns(sh_store, "subset", SH_ACQ, "coherence", 5, 5, 3)
+        assert cols[0]["runs"] == [{"y0": 2, "y1": 3, "v": 0.25}]
+        assert idx is not None
 
-    def test_page_and_image_routes(self, tmp_path, fd_images):
-        app = _app(tmp_path, fd_images)
+    def test_without_a_record_no_columns(self, sh_store, sh_images):
+        from choco.waterfalls import mask_columns
+        (sh_images / "subset" / SH_ACQ / "diag.jsonl").unlink()
+        assert mask_columns(sh_store, "subset", SH_ACQ, "full", 0, 0, 12) is None
+
+    def test_page_viewer_and_array_image(self, tmp_path, sh_images):
+        app = _app(tmp_path, sh_images)
         with app.test_client() as client:
             login(client)
-            body = client.get(f"/files/subset/{FD_ACQ}/triangle?band=0").data.decode()
-            assert 'id="feeds"' in body and f"/waterfall/subset/{FD_ACQ}/feeds/0.png" in body
-            assert "B01Y → some streams" in body
-            resp = client.get(f"/waterfall/subset/{FD_ACQ}/feeds/0.png")
+            body = client.get(f"/files/subset/{SH_ACQ}/triangle").data.decode()
+            assert "Array coherence" in body and f"/waterfall/subset/{SH_ACQ}/array/co_array.png" in body
+            assert 'id="dg-co"' in body and "X-engine streams" in body and "cx52" in body
+            assert 'class="d0"' in body                                      # the cold feed
+            resp = client.get(f"/waterfall/subset/{SH_ACQ}/array/co_array.png")
             assert resp.status_code == 200 and resp.data.startswith(b"\x89PNG")
-            assert client.get(f"/waterfall/subset/{FD_ACQ}/feeds/7.png").status_code == 404
-            assert 'id="feeds"' not in client.get(f"/files/subset/{ACQ}/triangle").data.decode()
+            assert client.get(f"/waterfall/subset/{SH_ACQ}/array/index.json").status_code == 404
+            view = client.get(f"/waterfall/subset/{SH_ACQ}/view/co_array.png").data.decode()
+            assert "median over all elements" in view and 'class="wfv-masks"' in view
+            view = client.get(f"/waterfall/subset/{SH_ACQ}/view/co_e0005.png").data.decode()
+            assert "B01Y masked" in view

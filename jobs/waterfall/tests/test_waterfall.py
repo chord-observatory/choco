@@ -726,3 +726,46 @@ class TestOverview:
         assert W.run(cfg)["files_rendered"] == 0
         with pytest.raises(ValueError, match="file_stride"):
             W.load_config(write_cfg(tmp_path, root, file_stride=0))
+
+
+class TestStreamNodes:
+    METRICS = ('kotekan_N2accumulate_frac_flagged_fpga_ticks_pl{stage_name="/n2_accumulate/accum_0",'
+               'freq_id="1537"} 0 1\n'
+               'kotekan_N2accumulate_frac_flagged_fpga_ticks_pl{stage_name="/n2_accumulate/accum_1",'
+               'freq_id="1545"} 0 1\n'
+               'kotekan_other{freq_id="1540"} 0 1\n')
+
+    def test_without_a_choco_block_no_names(self):
+        assert W.stream_nodes({"choco": None}) == {}
+
+    def test_names_come_from_each_started_node(self, monkeypatch):
+        import io
+        nodes = {"groups": {"cx": [
+            {"name": "cx52", "host": "cx52", "port": 12048, "started": True, "status": "started"},
+            {"name": "cx42", "host": "cx42", "started": True, "status": "down"},
+            {"name": "cx19", "host": "cx19", "started": False}]}}
+        monkeypatch.setattr(W, "get_json", lambda url, path: nodes)
+        asked = []
+
+        def urlopen(url, timeout):
+            asked.append(url)
+            return io.BytesIO(self.METRICS.encode())
+        monkeypatch.setattr(W.urllib.request, "urlopen", urlopen)
+        out = W.stream_nodes({"choco": {"url": "https://localhost:5000", "group": "cx"}})
+        assert out == {"1": "cx52", "9": "cx52"} and asked == ["http://cx52:12048/metrics"]
+
+    def test_an_unreachable_choco_names_nothing(self, monkeypatch):
+        def boom(url, path):
+            raise OSError("refused")
+        monkeypatch.setattr(W, "get_json", boom)
+        assert W.stream_nodes({"choco": {"url": "https://localhost:5000", "group": "cx"}}) == {}
+
+    def test_only_a_live_file_is_named(self):
+        now = 2_000_000_000.0
+        ns = int((now - 60 - W._J2000_UNIX_S) * 1e9)
+        assert W._live({"times": [ns - 10**10, ns]}, now)
+        assert not W._live({"times": [ns - 4000 * 10**9]}, now) and not W._live({"times": [0]}, now)
+
+    def test_a_choco_block_must_be_a_mapping(self, tmp_path):
+        with pytest.raises(ValueError, match="choco"):
+            W.load_config(write_cfg(tmp_path, tmp_path, choco="localhost"))

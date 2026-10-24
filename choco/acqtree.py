@@ -39,6 +39,10 @@ IMAGE_RE = re.compile(r"^(?:wf|th)_e(\d{4})xe(\d{4})\.png$")
 #: One element's coherence image (the overview; one scanline per file).
 COHERENCE_RE = re.compile(r"^co_e(\d{4})\.png$")
 
+#: The array's coherence image, beside the shards (``ARRAY_SHARD`` in a URL).
+ARRAY_IMAGE = "co_array.png"
+ARRAY_SHARD = "array"
+
 
 def file_index(name: str) -> int | None:
     """The source index in a file name, or None if it is not named that way."""

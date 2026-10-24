@@ -464,6 +464,9 @@ def test_read_diag_counts_masks_per_stream(tmp_path):
     # every delivering stream masks A1p1 (element 1) from bin 2; one masks element 3
     labels = R.read_axes(path).labels
     assert d["masked"] == {labels[1]: [[2, 6, 16]], labels[3]: [[0, 6, 1]]}
+    # stream 5 masks element 3 too; stream 7 delivered nothing in bin 0
+    assert d["stream_masked"][0] == [0, 0, 1, 1, 1, 1]
+    assert d["stream_masked"][5] == [1, 1, 2, 2, 2, 2] and d["stream_masked"][7][0] == -1
     assert d["missing"][7][0] == 10000 and d["missing"][7][1] == 0 and d["missing"][0][0] == 0
     assert d["rfi"][0] == [2500] * 6 and d["pl"][3] == [0] * 6 and d["rfi_on"][1] == [10000] * 6
     assert d["rfi"][7][0] == -1                                   # nothing live to average
@@ -477,3 +480,11 @@ def test_read_diag_without_the_datasets_says_less(vis_file):
     d = R.read_diag(path, R.read_axes(path))
     assert "masked" not in d and "rfi" not in d and "gains" not in d
     assert len(d["missing"]) == R.N_STREAMS
+
+
+def test_array_levels_are_the_median_over_elements_with_data():
+    lv = np.array([[[10, 0]], [[30, 0]], [[20, 0]], [[0, 0]]], np.uint8)     # (4 el, 1 row, 2 chunks)
+    out = R.array_levels(lv)
+    assert out.shape == (1, 2) and out[0, 0] == 20 and out[0, 1] == wfpng.MISSING
+    # an even count takes the lower middle
+    assert R.array_levels(np.array([[[10]], [[40]]], np.uint8))[0, 0] == 10

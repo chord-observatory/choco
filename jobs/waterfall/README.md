@@ -69,9 +69,19 @@ line of `diag.jsonl` (`reduce.read_diag`, ~10 KB, 0.1 s): per element
 and bin, how many X-engine streams masked it (from one chunk of
 `flags`, since channel i is stream i mod 16) among those that delivered;
 per stream and bin, the RFI and packet-loss fractions, whether the RFI
-mask was on, and the share of channels with no frame; and the file's
-gains update, fringestop state and kotekan builds.  The web joins the
-lines to the files by index, so a file without one is a gap.
+mask was on, and the share of channels with no frame; how many feeds
+each stream masked (a stream out of step missed or lagged a flag
+update); and the file's gains update, fringestop state and kotekan
+builds.  For a file that has just landed, the line also names the node
+behind each stream: with a `choco:` block in the config, each started
+node's kotekan `/metrics` is read once per run, and stream =
+`freq_id` mod 16.  The web joins the lines to the files by index, so a
+file without one is a gap.
+
+**The array's coherence** (`co_array.png`) is each chunk's median over
+the elements' `co_eNNNN.png`, a scanline per file, appended with them.
+An acquisition started before it existed has it rebuilt from those
+images at the start of the next run.
 
 **Time is thinned in whole files.** A chunk spans every bin of its file,
 so skipping bins saves nothing; `file_stride` folds one file in N and
@@ -110,6 +120,7 @@ stays on-scale.
     coarse.dat      (n_files, n_prod_file, n_chunk) uint8, the overview, appended
     matrix.dat      (n_files, n_band, n_el, n_el) uint8, appended
     diag.jsonl      one JSON line per file: masks and delivery, appended
+    co_array.png    the array's coherence, a scanline per file
     coarse_times.bin, coarse_freq.npy, coarse_scale.npy, palette.bin
     e0000/wf_e0000xe0000.png    th_e0000xe0000.png    co_e0000.png
 ```
