@@ -223,14 +223,34 @@ entries:
     From 2026-10-19 21:28 the inputs of row H are zero.
 - topic: polarization
   from: 2026-10-17T04:40
-  to: null
-  source: "this analysis (cross-pol check at the Cyg A transits 2026-10-19 and 10-20 and the Tau A transit 2026-10-18 11:45 UTC, 610 MHz)"
+  to: 2026-10-23T15:41
+  source: "this analysis (cross-pol check at the Cyg A transits 2026-10-19 and 10-20 and the Tau A transits 2026-10-18 11:45 and 2026-10-23 11:25 UTC, 450 and 610 MHz)"
   text: >-
     Rows A and B have no swapped feeds.  Dishes C05, D07 and E05 have their X and Y feeds
     swapped, relative to the rest of the array.  At the Tau A transit their cross-pol
     fringes are 4-8 times their co-pol fringes.  On these dishes, use X as the array's Y,
     and Y as the array's X.  The check for this acquisition is below.
   swapped: [C05, D07, E05]
+- topic: polarization
+  from: 2026-10-23T11:25
+  to: null
+  source: "this analysis (cross-pol check per XX, YY, XY, YX at the Tau A transits 2026-10-23 11:25 and 2026-10-24 11:21 UTC, 450 and 610 MHz); dish_inputs, crs_board_remap and labels in the files"
+  text: >-
+    Dishes E01, G01 and G02 have their X and Y feeds swapped, relative to the rest of the
+    array.  At the Tau A transit their cross-pol fringes are 5-20 times their co-pol
+    fringes, before and after the site maintenance of 2026-10-23.  The dish table, the
+    board map and the labels did not change, thus the cause is in the cabling.  On these
+    dishes, use X as the array's Y, and Y as the array's X.  No check before 2026-10-23
+    covers these dishes.
+  swapped: [E01, G01, G02]
+- topic: polarization
+  from: 2026-10-23T15:41
+  to: null
+  source: "this analysis (cross-pol check at the Tau A transit 2026-10-24 11:21 UTC, 450 and 610 MHz)"
+  text: >-
+    After the site maintenance of 2026-10-23 (data stop at 15:41 UTC), the feeds of C05,
+    D07 and E05 are no longer swapped.  At the Tau A transit their cross-pol fringes are
+    0.1 times their co-pol fringes, as on the other dishes.
 
 # ---- RFI --------------------------------------------------------------------------------
 - topic: rfi
