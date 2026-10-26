@@ -240,6 +240,34 @@ class TestMain:
         with pytest.raises(ValueError):
             acqnotes.forget(tmp_path, ["../etc"])
 
+    def test_a_request_waits_for_the_lock(self, root, tmp_path, stub_steps, stub_render):
+        old, new = "acq_20261016_000000_1", "acq_20261018_000000_2"
+        make_acq(root, old, ["20261016T_000100"])
+        make_acq(root, new, ["20261018T_000100"])
+        conf = tmp_path / "acqnotes.yaml"
+        conf.write_text(f"root: {root}\n")
+        acqnotes.main(["--config", str(conf)])
+        stub_steps.clear()
+        # queued while the timer's run holds the lock: nothing runs now
+        with acqnotes.single_run(tmp_path / acqnotes.LOCK_FILE):
+            assert acqnotes.main(["--config", str(conf), "--remeasure-from", "acq_20261017"]) == 0
+        assert stub_steps == [] and len(list((tmp_path / "remeasure.d").iterdir())) == 1
+        # the next run takes it
+        acqnotes.main(["--config", str(conf)])
+        assert {c[1] for c in stub_steps} == {new}
+        assert json.loads((tmp_path / "run.json").read_text())["requested"] == [new]
+        assert list((tmp_path / "remeasure.d").iterdir()) == []
+
+    def test_queue_only_queues(self, root, tmp_path, stub_steps, stub_render):
+        conf = tmp_path / "acqnotes.yaml"
+        conf.write_text(f"root: {root}\n")
+        assert acqnotes.main(["--config", str(conf), "--queue", "--remeasure", "acq_20261016_000000_1"]) == 0
+        assert not (tmp_path / "run.json").exists()
+        with pytest.raises(SystemExit):
+            acqnotes.main(["--config", str(conf), "--queue"])
+        with pytest.raises(SystemExit):
+            acqnotes.main(["--config", str(conf), "--remeasure-from", "../etc"])
+
 
 class TestRender:
     def test_file_bins_from_the_vis_shape(self):

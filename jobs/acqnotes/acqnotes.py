@@ -12,6 +12,12 @@ acquisition and step (``meta/``, ``transit/``, ``pol/``, ``zerovis/``,
 ``verify/``), with ``index.json`` recording which files each was taken
 from.  The acquisition being written is re-measured at most every
 ``remeasure_hours``; ``verify`` reads only the files it has not seen.
+
+``--remeasure`` / ``--remeasure-from`` queue a re-measure in the state
+directory (``remeasure.d/``), which the next run takes under its lock: a
+request made while another run holds the lock waits for the next run
+instead of being lost.  ``--queue`` only queues, for a playbook that then
+starts the unit.
 """
 import argparse
 import json
@@ -45,11 +51,14 @@ DEFAULTS = {
 }
 INDEX_FILE = "index.json"
 LOCK_FILE = "run.lock"
+REQUEST_DIR = "remeasure.d"
 # A timer tick lands up to a minute or so either side of the hour, so the
 # re-measure interval is compared with this much slack: otherwise a
 # 3 h interval would wait for the fourth hourly run.
 TICK_SLACK_S = 300
 ACQ_RE = re.compile(r"^acq_\d{8}_\d{6}_\d+$")
+#: --remeasure-from takes an acquisition name or a prefix of one (a day, a minute).
+ACQ_PREFIX_RE = re.compile(r"^acq_\d{8}(_\d{6}(_\d+)?)?$")
 H5_RE = re.compile(r"^vis_\d+_\d{8}T_\d{6}_\d+\.h5$")
 
 # step -> (subdirectory, measure(acq_dir, previous result) -> JSON-able result)
@@ -150,13 +159,14 @@ def run(cfg: dict, work: Path, *, max_acqs: int, out=None) -> dict:
     root = cfg["root"]
     acqs = scan(root)
     index_path = work / INDEX_FILE
+    requested = take_requests(work, acqs)
     index = json.loads(index_path.read_text()) if index_path.exists() else {}
     # "measured" is when this run started, so the next interval counts
     # from the same tick, not from however long the measurement took
     started = time.time()
     todo = due(acqs, index, started, 3600 * cfg["remeasure_hours"])
     report = {"acquisitions": len(acqs), "measured": [], "backlog": max(0, len(todo) - max_acqs),
-              "written": [], "degraded": [], "errors": []}
+              "requested": requested, "written": [], "degraded": [], "errors": []}
     for name in todo[:max_acqs]:
         # One acquisition's failure does not hold up the others: an
         # unreadable mount or file is degraded (retried next run), anything
@@ -204,7 +214,12 @@ def main(argv=None) -> int:
     ap.add_argument("--max-acqs", type=int, default=None,
                     help="override max_acqs_per_run for this run")
     ap.add_argument("--remeasure", nargs="+", metavar="ACQ", default=(),
-                    help="forget these acquisitions' measurements first (e.g. after a script change)")
+                    help="re-measure these acquisitions (e.g. after a script change)")
+    ap.add_argument("--remeasure-from", metavar="ACQ", default=None,
+                    help="re-measure every acquisition from this one on (a name, or a prefix "
+                         "such as acq_20261017)")
+    ap.add_argument("--queue", action="store_true",
+                    help="only queue the re-measure for the next run; do not run")
     ap.add_argument("--out", default=None, metavar="DIR",
                     help="write the notes under DIR (same layout as the root) instead of into "
                          "the acquisition directories, e.g. to review them")
@@ -212,6 +227,16 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     setup_logging(args.verbose, log)
     state_dir = job_state_dir(JOB, args.state_dir)
+    if args.queue and not (args.remeasure or args.remeasure_from):
+        ap.error("--queue needs --remeasure or --remeasure-from")
+    if args.remeasure or args.remeasure_from:
+        try:
+            path = request_remeasure(state_dir, args.remeasure, args.remeasure_from)
+        except ValueError as e:
+            ap.error(str(e))
+        log.info("queued %s", path.name)
+        if args.queue:
+            return EXIT_OK
 
     try:
         cfg = load_config(args.config)
@@ -225,8 +250,6 @@ def main(argv=None) -> int:
             log.info("another run holds the lock; nothing to do")
             return EXIT_OK
         try:
-            if args.remeasure:
-                forget(state_dir, args.remeasure)
             report = run(cfg, state_dir, max_acqs=args.max_acqs or cfg["max_acqs_per_run"],
                          out=args.out)
         except (OSError, ValueError, KeyError) as e:
@@ -244,6 +267,44 @@ def main(argv=None) -> int:
         report["error"] = "; ".join(errors[:3]) + (f" (+{len(errors) - 3} more)" if len(errors) > 3 else "")
     write_run(state_dir, code, **report)
     return code
+
+
+def request_remeasure(state_dir: Path, names=(), since: str | None = None) -> Path:
+    """Queue a re-measure of *names* and of every acquisition from *since* on
+    for the next run.  One file per request, written whole, so the run that
+    takes the queue never sees half of one."""
+    for name in names:
+        if not ACQ_RE.match(name):
+            raise ValueError(f"not an acquisition name: {name!r}")
+    if since is not None and not ACQ_PREFIX_RE.match(since):
+        raise ValueError(f"not an acquisition name or prefix: {since!r}")
+    path = state_dir / REQUEST_DIR / f"{time.time_ns()}-{os.getpid()}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, {"names": list(names), "since": since})
+    return path
+
+
+def take_requests(state_dir: Path, acqs) -> list[str]:
+    """Forget the measurements the queued requests name and remove the
+    requests; the names, for the run record.  A request that arrives while
+    this runs is left for the next run."""
+    files = sorted((state_dir / REQUEST_DIR).glob("*.json"))
+    names: set[str] = set()
+    for p in files:
+        try:
+            req = json.loads(p.read_text())
+        except (OSError, ValueError) as e:
+            log.warning("dropping unreadable request %s: %s", p.name, e)
+            continue
+        names.update(n for n in req.get("names") or () if ACQ_RE.match(str(n)))
+        since = req.get("since")
+        if since:
+            names.update(n for n in acqs if n >= since)
+    if names:
+        forget(state_dir, sorted(names))
+    for p in files:
+        p.unlink(missing_ok=True)
+    return sorted(names)
 
 
 def forget(state_dir: Path, names) -> None:

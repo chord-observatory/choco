@@ -58,12 +58,19 @@ sentences natural and keep technical names as they are.  This applies to the `te
 jobs/run-job.sh acqnotes/acqnotes.py /etc/choco/acqnotes.yaml -v                # one run, as the timer does
 jobs/run-job.sh acqnotes/acqnotes.py /etc/choco/acqnotes.yaml --out /tmp/notes  # render elsewhere to review
 jobs/run-job.sh acqnotes/acqnotes.py /etc/choco/acqnotes.yaml --remeasure acq_20261012_005242_957492261
+jobs/run-job.sh acqnotes/acqnotes.py /etc/choco/acqnotes.yaml --queue --remeasure-from acq_20261017
 ```
 
 After editing `timeline.yaml` or `render.py`, reinstall: the next run rewrites every note
 whose text changed, without re-measuring.  After changing a measurement script, name the
-acquisitions it affects with `--remeasure` (or delete `index.json` to re-measure all; a full
-backfill is roughly 5-10 min of NFS reads per acquisition).
+acquisitions it affects with `--remeasure`, or `--remeasure-from` and a name or a prefix
+(a full backfill is roughly 5-10 min of NFS reads per acquisition).  A request is queued in
+the state directory (`remeasure.d/`) and the next run takes it under its lock, so a request
+made while the timer's run holds the lock is not lost.  Each run measures at most
+`max_acqs_per_run`; the timer works through the rest.  `--queue` only queues.  The
+chord-sysops `choco-setup.yaml` playbook queues one with
+`-e choco_acqnotes_remeasure_from=acq_20261017` (or `choco_acqnotes_remeasure=[...]`) and
+starts the unit.
 
 ## Methods and limits
 

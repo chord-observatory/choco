@@ -57,7 +57,7 @@ entries:
     2026-10-10 increase the autocorrelations by 55-60 %, thus the config and the sky agree.
 - topic: pointing
   from: 2026-10-17T04:40
-  to: null
+  to: 2026-10-23T00:00
   source: "operator (2026-10-22); Cyg A transits 2026-10-19 and 10-20, Tau A transit 2026-10-18 11:45 UTC (cross-pol check, 610 MHz)"
   text: >-
     The dishes do not all point at the same declination.  A01-A08, B03 and B05-B08 point at
@@ -65,6 +65,21 @@ entries:
     co-elevation -27.3).  The files record `dish_coelev_deg = -8.6` for all dishes, thus
     the attribute is wrong for the Tau A dishes.  At the Tau A transit these dishes have
     fringes, but their autocorrelations show no rise.
+- topic: pointing
+  from: 2026-10-23T00:00
+  to: 2026-10-24T00:00
+  source: "operator (2026-10-26)"
+  text: >-
+    On 2026-10-23 the operators moved the dishes to Tau A at different times during the day.
+    Thus in an acquisition of this day the pointing of each dish is not known.
+- topic: pointing
+  from: 2026-10-24T00:00
+  to: null
+  source: "operator (2026-10-26)"
+  text: >-
+    All dishes point at Tau A (Dec +22.0, co-elevation -27.3).  The files record
+    `dish_coelev_deg = -8.6` (Dec +40.7, Cyg A) for all dishes, thus the attribute is wrong
+    for every dish.
 
 - topic: pointing
   from: 2026-04-14
@@ -77,7 +92,7 @@ entries:
     without a usable transit probably has the same pointing.
 - topic: pointing
   from: 2026-07-22
-  to: null
+  to: 2026-10-23T00:00
   source: "this analysis (autocorrelation rise at transits, every acquisition of the period)"
   text: >-
     In this period Cyg A (Dec +40.7) increases the autocorrelations by 30-60 % at
