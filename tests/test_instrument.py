@@ -441,7 +441,8 @@ class TestPage:
         login(client)
         body = client.get("/").data.decode()
         assert "Signal path" in body and 'class="fl"' in body and "slot 3" in body and "B01–B02 X" in body
-        assert "Ethernet12/1 (crate slot 4): down" in body
+        # the link problems are listed on /switch only; here the diagram shows them
+        assert "Ethernet12/1 (crate slot 4): down" not in body
         assert "/pipeline/cx/cx1" in body and "48.1 V" in body
         assert "Processing" in body and "Control" in body and "BFFS" in body
         # the tables live on their own pages; the cards link there

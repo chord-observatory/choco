@@ -1,6 +1,6 @@
-{# The instrument page's live part: problems, facts and the flow diagram
-   (the port tables are on /switch, the servers on /nodes, the outlets on
-   /service/power).  Swapped by the 5 s htmx poll on #instrument. #}
+{# The instrument page's live part: facts and the flow diagram (the link
+   problems and port tables are on /switch, the servers on /nodes, the
+   outlets on /service/power).  Swapped by the 5 s htmx poll on #instrument. #}
 {% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
 {% set now = now_ts %}
 
@@ -9,13 +9,6 @@
     the power and the servers, and to poll the X-engine NICs.</p></div>
 {% elif inst.health == 'down' %}
 <div class="notice"><p>{{ inst.error }}</p></div>
-{% endif %}
-{% if problems or board_problem %}
-<div class="notice"><ul class="problems">
-    {% if board_problem %}<li>Boards: {{ board_problem }}</li>{% endif %}
-    {% for p in problems[:12] %}<li>{{ p }}</li>{% endfor %}
-    {% if problems | length > 12 %}<li>… and {{ problems | length - 12 }} more</li>{% endif %}
-</ul></div>
 {% endif %}
 
 <div class="inst-facts">
