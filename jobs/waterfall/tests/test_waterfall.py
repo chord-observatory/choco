@@ -716,20 +716,32 @@ class TestOverview:
         assert rep["files_rendered"] == 3 and rep["errors"] == []
         out = tmp_path / "wf" / "subset" / self.ACQ
         idx = json.loads((out / "index.json").read_text())
-        assert idx["overview"]["chunks"] == 4 and idx["overview"]["n_el"] == 4
+        # a 16-channel chunk in two columns, a file in two rows (overview_split)
+        assert idx["overview"]["chunks"] == 8 and idx["overview"]["n_el"] == 4
+        assert idx["overview"]["rows_per_file"] == 2 and idx["overview"]["array_full"]
         assert idx["overview"]["prod_order"] == "triangle" and len(idx["overview"]["edges"]) == 9
         assert idx["coarse_rows"] == 1
-        assert (out / "coarse.dat").stat().st_size == 10 * 4 == idx["coarse_bytes"]
-        assert (out / "e0003" / "co_e0003.png").exists() and idx["elements"][3]["rows"] == 1
+        assert (out / "coarse.dat").stat().st_size == 2 * 10 * 8 == idx["coarse_bytes"]
+        assert (out / "e0003" / "co_e0003.png").exists() and idx["elements"][3]["rows"] == 2
+        assert idx["array"]["rows"] == 2 and idx["array_full"]["rows"] == 6
+        assert idx["array_full"]["width"] == 64 and (out / "co_array_full.png").exists()
         assert (out / "matrix.dat").stat().st_size == 8 * 16 == idx["matrix_bytes"]
-        assert (out / "coarse_times.bin").stat().st_size == 8 and (out / "palette.bin").stat().st_size == 768
-        assert len(np.load(out / "coarse_freq.npy")) == 4 and np.load(out / "coarse_scale.npy").shape == (10, 2)
-        # a second file grows every cube by one row
+        assert (out / "coarse_times.bin").stat().st_size == 16 and (out / "palette.bin").stat().st_size == 768
+        assert len(np.load(out / "coarse_freq.npy")) == 8 and np.load(out / "coarse_scale.npy").shape == (10, 2)
+        # a second file grows every cube by its rows, the matrix by a frame
         add_source(root / self.ACQ, 201)
         assert W.run(cfg)["files_rendered"] == 1
         idx = json.loads((out / "index.json").read_text())
-        assert idx["coarse_rows"] == 2 and (out / "coarse.dat").stat().st_size == 80
-        assert idx["elements"][3]["rows"] == 2
+        assert idx["coarse_rows"] == 2 and (out / "coarse.dat").stat().st_size == 320
+        assert idx["elements"][3]["rows"] == 4 and idx["array_full"]["rows"] == 12
+        assert (out / "matrix.dat").stat().st_size == 2 * 8 * 16
+
+    def test_overview_split_one_keeps_a_cell_per_chunk_and_file(self, tree, tmp_path):
+        _, root = tree
+        W.run(W.load_config(write_cfg(tmp_path, root, products={"autos": True}, overview_split=1)))
+        idx = json.loads((tmp_path / "wf" / "subset" / self.ACQ / "index.json").read_text())
+        assert idx["overview"]["chunks"] == 4 and idx["overview"]["rows_per_file"] == 1
+        assert idx["elements"][3]["rows"] == 1 and idx["coarse_bytes"] == 10 * 4
 
     def test_overview_off_keeps_none(self, tree, tmp_path):
         _, root = tree

@@ -463,6 +463,10 @@ def test_the_matrix_image_follows_the_committed_rows(tmp_path):
     upper = np.triu_indices(4, 1)
     want[upper] = R.quantize_unit(np.nanmean(frames[-1], axis=0))[upper]   # the latest file
     assert img.shape == (4, 4) and np.array_equal(img, want)
+    # the palette equalized over the pairs, the diagonal left out
+    counts = np.bincount(want[~np.eye(4, dtype=bool)], minlength=256)
+    pal = wfpng.read(o / "co_matrix.png")[1]
+    assert np.array_equal(pal, wfpng.palette(wfpng.warp_from_counts(counts)))
     # sums ahead of the commit (rows a crashed run left) are rebuilt
     with np.load(o / "matrix_mean.npz") as z:
         np.savez(o / "matrix_mean.npz", total=z["total"] * 9, count=z["count"], rows=np.int64(3))

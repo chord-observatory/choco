@@ -399,3 +399,36 @@ means would otherwise be weighted towards the strongest raw channels.
 A per-channel flattening in the viewer (each channel over its median in
 time) was the other option: it shows what changes in time on any
 acquisition without a job change, and may still be worth adding.
+
+**Finer cells, the full array and an equalized triangle (2026-10-27).**
+At a cell per 16-channel chunk and file the coarse waterfalls and the
+coherence images were 384 columns by a row per 400 s, coarse in the
+viewer.  A chunk is the unit of the *read*, not of the reduction: the
+pass has every channel and bin of it in memory, so a cell can be any
+part of it.  New acquisitions cut each chunk into ``overview_split``
+columns and each file into as many rows (2: 768 columns, 2 rows a
+file); ``coarse.dat`` grows by the square, 12.7 MB a file at 128
+elements against 12 GB of data.  The matrix stays a frame per file, so
+``coarse_rows`` still counts files and the read side multiplies by
+``rows_per_file`` (``overview_of``: ``rows``, ``rpf``, ``img_rows``);
+``coarse_times.bin`` has a time per row, each its first bin's, and a
+mask column row covers its share of the file's bins.  The index records
+``col_width`` and ``rows_per_file``, and an index without them is the
+old layout, so the acquisitions already folded keep theirs.
+
+The array's coherence is also kept at full resolution
+(``co_array_full.png``, a pixel per channel and bin).  The pass already
+had each element's sum over its partners per channel and bin
+(``inc @ flat``) and only averaged it into the cell, so the full image is
+the median over the elements there: about 10 ms a chunk, 4 s a file.
+The page keeps the cell image, since the full one is the size of a
+full-resolution waterfall (6144 × 40 a file) and the page loads 260
+images already; a click opens the full one on the full images' axes.
+
+The triangle's palette is equalized over the pairs, as the waterfalls'
+are over their pixels.  On the 1e-3..1 log scale half the pairs of
+``acq_20261023_142451`` sit between 0.06 and 0.10 (levels 152-169 of
+255; 5 % below 0.003, the dead feeds), so the image was one flat colour
+with dark lines; equalized, the rows and blocks show.  The levels are
+unchanged, only the colour each level gets.  Its key and the array's are horizontal, so each is drawn from its
+own palette with ``palette_gradient(..., direction="to right")``.

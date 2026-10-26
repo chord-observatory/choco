@@ -61,11 +61,14 @@ DEFAULTS = {
     "products": None,
     "freq_stride": 1,
     # fold one file in this many (by kotekan's file index); the overview
-    # (every product at chunk resolution, per-element coherence, the
-    # element x element matrix per band) and its band count
+    # (every product at a cell per column and row, per-element coherence,
+    # the element x element matrix per band, the array's coherence at full
+    # resolution), its band count and its split: a chunk's channels in this
+    # many columns, a file's bins in this many rows
     "file_stride": 1,
     "overview": True,
     "matrix_bands": 8,
+    "overview_split": 2,
     # divide the F-engine's digital gains out of |V| (reduce.gain_weights),
     # fixed per acquisition when it starts
     "divide_gains": True,
@@ -104,6 +107,9 @@ def load_config(path) -> dict:
     cfg["matrix_bands"] = int(cfg["matrix_bands"])
     if cfg["matrix_bands"] < 1:
         raise ValueError("matrix_bands must be at least 1")
+    cfg["overview_split"] = int(cfg["overview_split"])
+    if cfg["overview_split"] < 1:
+        raise ValueError("overview_split must be at least 1")
     cfg["products"] = product_rule(cfg.get("products"))
     if cfg["choco"] is not None and not isinstance(cfg["choco"], dict):
         raise ValueError("choco must be a mapping with url and group")
@@ -333,7 +339,8 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         spec = None
         if cfg["overview"]:
             if first_axes.n_elements > 0:
-                spec = R.overview_spec(first_axes, first_sel, cfg["matrix_bands"])
+                spec = R.overview_spec(first_axes, first_sel, cfg["matrix_bands"],
+                                       split=cfg["overview_split"], array_full=True)
             else:
                 log.warning("%s: no num_elements in the file; no overview for this acquisition", acq)
         store.start(first_axes, lo, hi, first_sel, spec, gains_divided=divided)

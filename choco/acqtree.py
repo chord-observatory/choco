@@ -39,8 +39,10 @@ IMAGE_RE = re.compile(r"^(?:wf|th)_e(\d{4})xe(\d{4})\.png$")
 #: One element's coherence image (the overview; one scanline per file).
 COHERENCE_RE = re.compile(r"^co_e(\d{4})\.png$")
 
-#: The array's coherence image, beside the shards (``ARRAY_SHARD`` in a URL).
+#: The array's coherence image, beside the shards (``ARRAY_SHARD`` in a URL),
+#: and the same at full resolution (a pixel per channel and bin).
 ARRAY_IMAGE = "co_array.png"
+ARRAY_FULL_IMAGE = "co_array_full.png"
 ARRAY_SHARD = "array"
 #: The element x element coherence averaged over every band and file, beside it.
 MATRIX_IMAGE = "co_matrix.png"

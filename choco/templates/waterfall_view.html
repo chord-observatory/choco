@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set what = 'array coherence' if kind == 'array' else label_a ~ ' × ' ~ label_b %}
+{% set what = 'array coherence' if kind in ('array', 'array_full') else label_a ~ ' × ' ~ label_b %}
 {% block title %}{{ what }} — {{ acq }} — CHOCO{% endblock %}
 
 {% block styles %}
@@ -71,7 +71,7 @@
 </div>
 
 <p class="note wfv-note">
-    {%- if kind != 'array' %}elements {{ a }}, {{ b }} ·{% endif %}
+    {%- if kind not in ('array', 'array_full') %}elements {{ a }}, {{ b }} ·{% endif %}
     {{ rows }} scanline{{ '' if rows == 1 else 's' }} ×
     {{ n_freq }} channel{{ '' if n_freq == 1 else 's' }} ·
     {{ n_files }} source file{{ '' if n_files == 1 else 's' }}
@@ -81,14 +81,16 @@
     {%- if kind != 'full' %} · <a href="{{ request.script_root }}/files/{{ root }}/{{ acq }}/matrix">matrix</a>{% endif %}
     <br>
     {%- if kind == 'coarse' %}
-    Every product is kept at chunk resolution: one column per 16-channel chunk (mean |V|), one row per
-    source file.
+    Every product is kept at cell resolution: the mean |V| per {{ cell }}.
     {%- elif kind == 'coherence' %}
     This element's coherence with the array: the mean over its partners of |V<sub>ab</sub>| / √(V<sub>aa</sub> V<sub>bb</sub>),
-    one column per 16-channel chunk, one row per source file.
+    per {{ cell }}.
     {%- elif kind == 'array' %}
-    The array's coherence: per 16-channel chunk and source file, the median over all elements of their
+    The array's coherence: per {{ cell }}, the median over all elements of their
     coherence with the array.
+    {%- elif kind == 'array_full' %}
+    The array's coherence at full resolution: per channel and bin, the median over all elements of
+    their mean coherence with their partners.
     {%- endif %}
     Frequency across{% if freq_axis.unit == 'MHz' %} in MHz{% else %} in channel index{% endif %},
     time down{% if time_axis.unit == 'scanline' %} in scanline number{% else %} in local time ({{ time_axis.unit }}){% endif %};
@@ -98,7 +100,7 @@
 {%- if mask_cols %}
 <p class="wfv-mkey">Columns right of the image, row for row:
     {%- for c in mask_cols %} <b>{{ loop.index }}</b> {{ c.title }}{{ ',' if not loop.last }}{% endfor %}.
-    Darker is more: a full mask, or{% if kind == 'full' %} half for a mask on some streams only{% else %} the share of the file's bins{% endif %};
+    Darker is more: a full mask, or{% if kind in ('full', 'array_full') %} half for a mask on some streams only{% else %} the share of the file's bins{% endif %};
     for the RFI mask and lost channels, the share of samples or channels.</p>
 {%- elif mask_cols is defined %}
 <p class="wfv-mkey">No mask record for this acquisition: it was rendered before the job recorded masks.</p>
@@ -128,7 +130,7 @@
                     {%- for r in c.runs %}
                     <rect class="m" x="{{ x + 0.12 }}" y="{{ r.y0 }}" width="0.76" height="{{ r.y1 - r.y0 }}"
                           fill-opacity="{{ '%.3f' % (r.v if c.is_mask else 0.15 + 0.85 * r.v ** 0.5) }}"><title>{{ c.title }}:
-                          {%- if c.is_mask and kind == 'full' %} {{ 'all streams' if r.v >= 1 else 'some streams' }}
+                          {%- if c.is_mask and kind in ('full', 'array_full') %} {{ 'all streams' if r.v >= 1 else 'some streams' }}
                           {%- elif c.is_mask %} {{ '%.0f %%' % (r.v * 100) }} of the file's bins
                           {%- else %} {{ '%.3g %%' % (r.v * 100) }}{% endif %}</title></rect>
                     {%- endfor %}

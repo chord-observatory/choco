@@ -166,9 +166,9 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     </div>
     <div class="ar-key">
         {%- if sheet.gradient %}<span>0.001</span><span class="bar" style="background: {{ sheet.gradient }}"></span><span>1</span>{% endif %}
-        <span>· per 16-channel chunk and file, the median over all feeds of their coherence with the
+        <span>· per {{ A.cell }}, the median over all feeds of their coherence with the
         array · frequency across{% if A.freq_axis.unit == 'MHz' %} (MHz){% endif %}, time down
-        ({{ A.time_axis.unit }}) · black: no data</span>
+        ({{ A.time_axis.unit }}) · black: no data{% if A.full %} · click for every channel and bin{% endif %}</span>
     </div>
 </div>
 {%- endif %}
@@ -200,7 +200,9 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
             sides.  X × X top left, Y × Y bottom right, X × Y between.  A dead feed is a dark row
             and column.  Ticks name each board's first feed.</p>
         <p class="vt-readout" id="matrix-readout">&nbsp;</p>
-        {%- if sheet.gradient %}<div class="ar-key" style="margin: 0 0 0.6em"><span>0.001</span><span class="bar" style="background: {{ sheet.gradient }}"></span><span>1</span></div>{% endif %}
+        {%- if M.gradient %}<div class="ar-key" style="margin: 0 0 0.6em"><span>0.001</span><span class="bar" style="background: {{ M.gradient }}"></span><span>1</span></div>
+        <p>Colour is spread over the pairs' values (histogram-equalized), so the bar is not even: a
+            narrow band of colour is a range few pairs have.</p>{% endif %}
         <p>Click a cell for that pair's waterfall.  <a href="{{ request.script_root }}{{ M.data.page }}">Per band and file</a>.</p>
     </div>
 </div>

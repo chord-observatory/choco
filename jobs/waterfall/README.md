@@ -52,12 +52,14 @@ the next acquisition.
 
 **The overview sees every product.** The pass opens each chunk whole, so
 every product is in memory for nothing, and three small things are kept
-from it (`reduce.OverviewSpec`): per product the mean |V| over each
-chunk (`coarse.dat`, one row per file; any product renders on request as
-a waterfall at chunk resolution), per element the mean over its partners
-of |V_ab| / √(V_aa V_bb) per chunk (`co_eNNNN.png`, a scanline per file),
-and per band the same coherence as an element × element matrix, one
-frame per file (`matrix.dat`; the matrix page steps through them and a
+from it (`reduce.OverviewSpec`) on a grid of cells, a chunk cut into
+`overview_split` columns by a file cut into `overview_split` rows (2:
+8 channels by half a file; acquisitions before 2026-10-27 have a cell
+per chunk and file): per product the mean |V| over each cell
+(`coarse.dat`; any product renders on request as a waterfall at cell
+resolution), per element the mean over its partners of
+|V_ab| / √(V_aa V_bb) per cell (`co_eNNNN.png`), and per band the same
+coherence as an element × element matrix, one frame per file (`matrix.dat`; the matrix page steps through them and a
 click on a cell opens that product).  Coherence is an amplitude mean,
 not a coherent sum — the sky rotates through the fringes of a long
 baseline inside one file — and is drawn on a log scale from 1e-3 (one
@@ -78,14 +80,21 @@ node's kotekan `/metrics` is read once per run, and stream =
 `freq_id` mod 16.  The web joins the lines to the files by index, so a
 file without one is a gap.
 
-**The array's coherence** (`co_array.png`) is each chunk's median over
-the elements' `co_eNNNN.png`, a scanline per file, appended with them.
-An acquisition started before it existed has it rebuilt from those
-images at the start of the next run.
+**The array's coherence** (`co_array.png`) is each cell's median over
+the elements' `co_eNNNN.png`, appended with them.  An acquisition
+started before it existed has it rebuilt from those images at the start
+of the next run.  `co_array_full.png` is the same per channel and bin:
+the pass already has each element's mean over its partners at every
+channel and bin before it averages them into cells, so the median there
+costs about 10 ms a chunk (4 s a file).  The acquisition page shows the
+cell image; a click opens the full one.
 
 **The visibility triangles** (`co_matrix.png`) are one n_el × n_el
 image: below the diagonal `matrix.dat` averaged linearly over every band
-and file, above it the latest file averaged over the bands.  It is
+and file, above it the latest file averaged over the bands.  Its palette
+is equalized over the pairs (the diagonal left out), as the waterfalls'
+are over their pixels: on the log scale from 1e-3 half the pairs sit in
+a fifth of a decade (0.06-0.10 on `acq_20261023_142451`).  It is
 rewritten after each run that appends (and at the start of a run when
 behind).  The
 running sums and the rows they cover are in `matrix_mean.npz`, so a run
@@ -134,10 +143,12 @@ Acquisitions started before this keep the gains in.
     times.bin       int64 per scanline, appended
     counts.npy      (n_prod, 256) index histogram, drives the equalization
     thumbs.dat      (n_files, n_prod, n_bins) uint8, appended
-    coarse.dat      (n_files, n_prod_file, n_chunk) uint8, the overview, appended
+    coarse.dat      (n_rows, n_prod_file, n_chunk) uint8, the overview, appended
+                    (rows_per_file rows a file)
     matrix.dat      (n_files, n_band, n_el, n_el) uint8, appended
     diag.jsonl      one JSON line per file: masks and delivery, appended
-    co_array.png    the array's coherence, a scanline per file
+    co_array.png    the array's coherence, rows_per_file scanlines a file
+    co_array_full.png  the same per channel and bin
     co_matrix.png   matrix.dat over the bands: below the diagonal the mean of every file
                     (matrix_mean.npz its sums), above it the latest file
     coarse_times.bin, coarse_freq.npy, coarse_scale.npy, palette.bin

@@ -326,15 +326,17 @@ class OverviewSpec:
 
     The pass over a file opens every selected chunk whole, so every
     product is in memory for nothing, and three small cubes are kept
-    beside the selected images: per product the mean |V| over each chunk
-    (``coarse``: any of the 8256 products as a waterfall, one row per
-    file, one column per chunk), per element the mean normalized
-    amplitude |V_ab| / sqrt(V_aa V_bb) over its partners per chunk
-    (``coherence``), and per band the same coherence as an element x
-    element matrix (``matrix``), one frame per file.  Columns are the
-    chunks the selection keeps (``chunk_freq``, their centres), bands
-    are ``edges`` in MHz and a chunk belongs to the band its centre
-    falls in.
+    beside the selected images: per product the mean |V| over each cell
+    (``coarse``: any of the 8256 products as a waterfall), per element
+    the mean normalized amplitude |V_ab| / sqrt(V_aa V_bb) over its
+    partners per cell (``coherence``), and per band the same coherence
+    as an element x element matrix (``matrix``), one frame per file.  A
+    cell is ``col_width`` channels of one chunk (``chunk_freq``, their
+    centres) by one of ``rows_per_file`` equal parts of the file's bins;
+    acquisitions from before 2026-10-27 have a cell per chunk and file.
+    Bands are ``edges`` in MHz and a column belongs to the band its
+    centre falls in.  With ``array_full`` the array's coherence is also
+    kept at full resolution, a pixel per channel and bin.
     """
 
     n_el: int
@@ -344,6 +346,9 @@ class OverviewSpec:
     edges: list[float]           # (n_band + 1,)
     input_a: np.ndarray          # the file's product axis
     input_b: np.ndarray
+    col_width: int = 0           # channels a column (0: a chunk)
+    rows_per_file: int = 1
+    array_full: bool = False
 
     @property
     def n_chunk(self) -> int:
@@ -352,6 +357,13 @@ class OverviewSpec:
     @property
     def n_band(self) -> int:
         return max(1, len(self.edges) - 1)
+
+    @property
+    def width(self) -> int:
+        return max(1, min(int(self.col_width or self.chunk_rows), int(self.chunk_rows)))
+
+    def parts(self, n_time: int) -> list[tuple[int, int]]:
+        return row_parts(n_time, self.rows_per_file)
 
     def band_of(self, freq_mhz: float) -> int | None:
         if freq_mhz < self.edges[0] or freq_mhz > self.edges[-1]:
@@ -366,6 +378,8 @@ class OverviewSpec:
 
     def to_index(self) -> dict:
         d = {"chunks": self.n_chunk, "chunk_rows": int(self.chunk_rows),
+             "col_width": self.width, "rows_per_file": int(self.rows_per_file),
+             "array_full": bool(self.array_full),
              "edges": [round(e, 3) for e in self.edges], "n_el": int(self.n_el),
              "prod_order": "triangle" if self.is_triangle else "list"}
         if d["prod_order"] == "list":
@@ -373,33 +387,49 @@ class OverviewSpec:
         return d
 
 
+def row_parts(n_time: int, rows_per_file: int) -> list[tuple[int, int]]:
+    """The ``(first, stop)`` bins of each of a file's overview rows."""
+    r = max(1, int(rows_per_file))
+    return [(j * n_time // r, (j + 1) * n_time // r) for j in range(r)]
+
+
 def overview_spec(axes: Axes, sel: Selection, n_bands: int = 8,
-                  edges: list[float] | None = None) -> OverviewSpec:
-    """The overview columns for this selection: one per chunk-sized group
-    of consecutive selected channels, their centre frequencies, and the
-    bands over the file's range (or the ``edges`` an acquisition recorded)."""
+                  edges: list[float] | None = None, split: int = 1,
+                  col_width: int | None = None, rows_per_file: int | None = None,
+                  array_full: bool = False) -> OverviewSpec:
+    """The overview columns for this selection: each chunk-sized group of
+    consecutive selected channels cut into ``split`` columns (or columns
+    of ``col_width`` channels), their centre frequencies, and the bands
+    over the file's range (or the ``edges`` an acquisition recorded); a
+    file's bins cut into ``split`` rows (or ``rows_per_file``)."""
     cs = max(1, int(axes.chunk_rows))
+    split = max(1, int(split))
+    w = max(1, min(int(col_width or -(-cs // split)), cs))
     starts, centres = [], []
     offset = 0
     for lo, hi in _runs(sel.freq_idx):
         for c0 in range(lo, hi, cs):
             c1 = min(c0 + cs, hi)
-            starts.append(offset)
-            centres.append(float(axes.freq_mhz[c0:c1].mean()))
-            offset += c1 - c0
+            for s0 in range(c0, c1, w):
+                s1 = min(s0 + w, c1)
+                starts.append(offset)
+                centres.append(float(axes.freq_mhz[s0:s1].mean()))
+                offset += s1 - s0
     return OverviewSpec(n_el=int(axes.n_elements or 0), chunk_rows=cs,
                         chunk_starts=np.array(starts, int), chunk_freq=np.array(centres),
                         edges=[float(e) for e in edges] if edges else band_edges(axes.freq_mhz, n_bands),
-                        input_a=axes.input_a, input_b=axes.input_b)
+                        input_a=axes.input_a, input_b=axes.input_b, col_width=w,
+                        rows_per_file=max(1, int(rows_per_file or split)), array_full=bool(array_full))
 
 
 @dataclass
 class FileOverview:
     """One file's overview, before quantization (the store scales it)."""
 
-    coarse: np.ndarray       # (n_prod_file, n_chunk) float32 mean |V|, nan where no data
-    coherence: np.ndarray    # (n_el, n_chunk) float32 in 0..1, nan where no data
+    coarse: np.ndarray       # (rows_per_file, n_prod_file, n_chunk) float32 mean |V|, nan where no data
+    coherence: np.ndarray    # (n_el, rows_per_file, n_chunk) float32 in 0..1, nan where no data
     matrix: np.ndarray       # (n_band, n_el, n_el) float32 in 0..1, nan where no data
+    array: np.ndarray | None = None   # (n_time, n_freq) uint8 quantize_unit levels, with array_full
 
 
 def _incidence(n_el: int, input_a: np.ndarray, input_b: np.ndarray) -> np.ndarray:
@@ -675,12 +705,15 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
         a_auto = np.where(has_auto, auto_of[axes.input_a], 0)
         b_auto = np.where(has_auto, auto_of[axes.input_b], 0)
         inc = _incidence(n_el, axes.input_a, axes.input_b)       # (n_el, n_prod)
-        partners = inc.sum(axis=1)
-        coarse = np.full((n_pf, overview.n_chunk), np.nan, np.float32)
-        coh = np.full((n_el, overview.n_chunk), np.nan, np.float32)
+        r = int(overview.rows_per_file)
+        parts = overview.parts(n_time)
+        coarse = np.full((r, n_pf, overview.n_chunk), np.nan, np.float32)
+        coh = np.full((n_el, r, overview.n_chunk), np.nan, np.float32)
+        array = (np.full((n_time, n_freq), wfpng.MISSING, np.uint8) if overview.array_full else None)
         band_sum = np.zeros((overview.n_band, n_pf), np.float64)
         band_cnt = np.zeros((overview.n_band, n_pf), np.float64)
         col_of = {int(c): k for k, c in enumerate(overview.chunk_starts)}
+        width = overview.width
         take = None if sel.is_all_products(axes) else sel.prod_idx
 
     with h5py.File(path, "r") as f:
@@ -715,32 +748,45 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
             sel_mag = mag if take is None else mag[:, take, :]
             sel_ok = (live if take is None else live[:, take, :]) & keep
             out[:, :, i:i + blk.shape[0]] = _quantize(sel_mag, sel_ok, lo_l, span).transpose(1, 2, 0)
-            k = col_of.get(int(i))
-            if k is None:
-                continue                                           # not a column start (cannot happen)
-            cnt = live.sum(axis=(0, 2))                            # (n_prod_file,)
-            tot = np.where(live, mag, 0).sum(axis=(0, 2))
-            with np.errstate(invalid="ignore", divide="ignore"):
-                coarse[:, k] = np.where(cnt > 0, tot / np.maximum(cnt, 1), np.nan)
+            nc = blk.shape[0]
+            # the chunk's columns: (k, first, stop) channels within it
+            cols = [(col_of[i + c0], c0, min(c0 + width, nc)) for c0 in range(0, nc, width)
+                    if i + c0 in col_of]
+            tot_all = np.where(live, mag, 0)
+            for k, c0, c1 in cols:
+                for j, (t0, t1) in enumerate(parts):
+                    cnt = live[c0:c1, :, t0:t1].sum(axis=(0, 2))   # (n_prod_file,)
+                    tot = tot_all[c0:c1, :, t0:t1].sum(axis=(0, 2))
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        coarse[j, :, k] = np.where(cnt > 0, tot / np.maximum(cnt, 1), np.nan)
             if gains is not None:
                 mag, live = raw, raw_live
-                cnt = live.sum(axis=(0, 2))
-                tot = np.where(live, mag, 0).sum(axis=(0, 2))
-            band = overview.band_of(float(overview.chunk_freq[k]))
-            if band is not None:
-                band_sum[band] += tot
-                band_cnt[band] += cnt
+                tot_all = np.where(live, mag, 0)
+            for k, c0, c1 in cols:
+                band = overview.band_of(float(overview.chunk_freq[k]))
+                if band is not None:
+                    band_sum[band] += tot_all[c0:c1].sum(axis=(0, 2))
+                    band_cnt[band] += live[c0:c1].sum(axis=(0, 2))
             # normalized amplitude per cross product, averaged per element
             denom = np.sqrt(mag[:, a_auto, :] * mag[:, b_auto, :])
             norm_ok = live & has_auto[None, :, None] & (denom > 0)
             norm = np.where(norm_ok, mag / np.where(norm_ok, denom, 1.0), 0.0).astype(np.float32)
             flat = norm.transpose(1, 0, 2).reshape(n_pf, -1)        # (n_prod, nc*nt)
             flat_ok = norm_ok.transpose(1, 0, 2).reshape(n_pf, -1).astype(np.float32)
-            esum = inc @ flat                                      # (n_el, nc*nt)
-            ecnt = inc @ flat_ok
-            with np.errstate(invalid="ignore", divide="ignore"):
-                coh[:, k] = np.where(ecnt.sum(axis=1) > 0,
-                                     esum.sum(axis=1) / np.maximum(ecnt.sum(axis=1), 1), np.nan)
+            esum = (inc @ flat).reshape(n_el, nc, n_time)          # per channel and bin
+            ecnt = (inc @ flat_ok).reshape(n_el, nc, n_time)
+            for k, c0, c1 in cols:
+                for j, (t0, t1) in enumerate(parts):
+                    s_ = esum[:, c0:c1, t0:t1].sum(axis=(1, 2))
+                    n_ = ecnt[:, c0:c1, t0:t1].sum(axis=(1, 2))
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        coh[:, j, k] = np.where(n_ > 0, s_ / np.maximum(n_, 1), np.nan)
+            if array is not None:
+                # the array's coherence per channel and bin: the median
+                # over the elements of each one's mean over its partners
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    each = np.where(ecnt > 0, esum / np.maximum(ecnt, 1), np.nan)
+                array[:, i:i + nc] = array_levels(quantize_unit(each).transpose(0, 2, 1))
     if overview is None:
         return out, None
     # the matrix: band means of |V_ab| normalized by the band means of the autos
@@ -756,8 +802,7 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
             c = np.where(np.isfinite(m) & np.isfinite(den) & (den > 0), m / den, np.nan)
         matrix[bi, axes.input_a, axes.input_b] = c
         matrix[bi, axes.input_b, axes.input_a] = c
-    del partners
-    return out, FileOverview(coarse=coarse, coherence=coh, matrix=matrix)
+    return out, FileOverview(coarse=coarse, coherence=coh, matrix=matrix, array=array)
 
 
 def quantize_log(values: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:

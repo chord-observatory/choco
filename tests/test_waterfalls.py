@@ -790,9 +790,10 @@ from choco.waterfalls import (coarse_image, coarse_view_context, encode_png, mat
 OV_ACQ = "acq_20260725_000000_000000000"
 
 
-def make_overview_index(path, n_el=3, n_chunk=4, n_band=2, rows=3, labels=None):
+def make_overview_index(path, n_el=3, n_chunk=4, n_band=2, rows=3, labels=None, rpf=None):
     """An acquisition with a selection (autos + element 0's crosses) and an
-    overview: the cubes hold recognisable values, one row per file."""
+    overview: the cubes hold recognisable values, one row per file (or
+    ``rpf`` rows a file, the layout from 2026-10-27, with the full array)."""
     n_prod_file = n_el * (n_el + 1) // 2
     pairs = [(a, b) for a in range(n_el) for b in range(a, n_el)]
     rendered = [(a, b) for a, b in pairs if a == b or a == 0]
@@ -804,27 +805,33 @@ def make_overview_index(path, n_el=3, n_chunk=4, n_band=2, rows=3, labels=None):
     index["n_freq_file"] = 64
     index["overview"] = {"chunks": n_chunk, "chunk_rows": 16, "edges": [600.0, 650.0, 700.0][:n_band + 1],
                          "n_el": n_el, "prod_order": "triangle"}
+    r_ = rpf or 1
+    if rpf:
+        index["overview"].update(col_width=8, rows_per_file=rpf, array_full=True)
+        index["array_full"] = {"width": 64, "rows": rows * 6, "nbytes": 100, "adler": 1}
+        (path / "co_array_full.png").write_bytes(png_with_palette(64, rows * 6))
     index["coarse_rows"] = rows
-    index["coarse_bytes"] = rows * n_prod_file * n_chunk
+    index["coarse_bytes"] = rows * r_ * n_prod_file * n_chunk
     index["matrix_bytes"] = rows * n_band * n_el * n_el
-    index["coarse_times_bytes"] = rows * 8
-    index["elements"] = [{"e": e, "name": f"e{e:04d}", "width": n_chunk, "rows": rows,
+    index["coarse_times_bytes"] = rows * r_ * 8
+    index["elements"] = [{"e": e, "name": f"e{e:04d}", "width": n_chunk, "rows": rows * r_,
                           "nbytes": 100, "adler": 1} for e in range(n_el)]
     (path / "index.json").write_text(json.dumps(index))
     # coarse: value = product index + 1 for every chunk, so a slice is recognisable
     (path / "coarse.dat").write_bytes(bytes(
-        p + 1 for r in range(rows) for p in range(n_prod_file) for c in range(n_chunk)))
+        p + 1 for r in range(rows * r_) for p in range(n_prod_file) for c in range(n_chunk)))
     # matrix: value = 10 * band + row + 1, diagonal 255
     (path / "matrix.dat").write_bytes(bytes(
         255 if i == j else 10 * b + r + 1
         for r in range(rows) for b in range(n_band) for i in range(n_el) for j in range(n_el)))
-    (path / "coarse_times.bin").write_bytes(struct.pack("<%dq" % rows, *(T0_NS + 400 * 10**9 * r for r in range(rows))))
+    (path / "coarse_times.bin").write_bytes(struct.pack("<%dq" % (rows * r_), *(
+        T0_NS + 400 * 10**9 * r // r_ for r in range(rows * r_))))
     (path / "coarse_freq.npy").write_bytes(npy_bytes([600.0 + 25.0 * c for c in range(n_chunk)]))
     (path / "palette.bin").write_bytes(bytes(b for i in range(256) for b in (i, i, i)))
     for e in range(n_el):
         shard = path / f"e{e:04d}"
         shard.mkdir(exist_ok=True)
-        (shard / f"co_e{e:04d}.png").write_bytes(png_with_palette(n_chunk, rows))
+        (shard / f"co_e{e:04d}.png").write_bytes(png_with_palette(n_chunk, rows * r_))
     return path
 
 
@@ -955,9 +962,31 @@ class TestOverviewRoutes:
         resp = ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0001xe0002.png")
         assert resp.status_code == 200 and _decode_rows(resp.data)[0] == bytes([5] * 4)
         body = ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse-view/wf_e0001xe0002.png").data.decode()
-        assert "chunk resolution" in body and f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0001xe0002.png" in body
+        assert "cell resolution" in body and "16 channels by a file" in body
+        assert f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0001xe0002.png" in body
         assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0000xe0009.png").status_code == 404
         assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse-view/th_e0000xe0001.png").status_code == 404
+
+    def test_two_rows_a_file_and_the_full_array(self, tmp_path):
+        root = tmp_path / "waterfalls"
+        make_overview_index(root / "subset" / OV_ACQ, rpf=2)
+        store = WaterfallStore(root, ttl_s=0)
+        index = store.index("subset", OV_ACQ)
+        ov = overview_of(index)
+        assert ov["rows"] == 3 and ov["rpf"] == 2 and ov["img_rows"] == 6
+        assert ov["cell"] == "8 channels by half a file"
+        assert len(_decode_rows(coarse_image(store, "subset", OV_ACQ, "wf_e0001xe0002.png"))) == 6
+        assert coarse_view_context(store, "subset", OV_ACQ, "wf_e0001xe0002.png")["rows"] == 6
+        # a matrix frame is a file: its time is the file's first row's, as
+        # in the one-row layout
+        make_overview_index(tmp_path / "old" / "subset" / OV_ACQ)
+        old = WaterfallStore(tmp_path / "old", ttl_s=0)
+        assert matrix_context(store, "subset", OV_ACQ, 0, 1)["when"] == \
+            matrix_context(old, "subset", OV_ACQ, 0, 1)["when"] is not None
+        last = store.last_file("subset", OV_ACQ)["coarse.dat"]
+        assert len(last) == 2
+        full = view_context(store, "subset", OV_ACQ, "co_array_full.png")
+        assert full["kind"] == "array_full" and full["rows"] == 18 and full["n_freq"] == 64
 
     def test_visibility_triangle_under_the_array(self, ov_images, ov_client):
         acq_dir = ov_images / "subset" / OV_ACQ
@@ -967,6 +996,8 @@ class TestOverviewRoutes:
         assert body.index("Visibility triangles") < body.index('id="dg-co"')
         assert "below: <b>mean of" in body and "above: <b>latest file" in body
         assert '"halves": {"lower": "mean of' in body
+        # the key is horizontal and drawn from the triangle's own (equalized) palette
+        assert "linear-gradient(to right, rgb(1,1,1)" in body and "histogram-equalized" in body
         resp = ov_client.get(f"/waterfall/subset/{OV_ACQ}/array/co_matrix.png")
         assert resp.status_code == 200 and resp.data.startswith(b"\x89PNG")
         # the wrong size for the acquisition: left out rather than mislabelled

@@ -9,16 +9,19 @@ Layout, mirroring the acquisition it describes::
         times.bin           int64 per scanline, appended
         counts.npy          (n_prod, 256) index histogram, for the equalization
         thumbs.dat          (n_files, n_prod, n_bins) uint8, appended
-        coarse.dat          (n_files, n_prod_file, n_chunk) uint8: every product,
-                            mean |V| per chunk, appended       } the overview,
-        matrix.dat          (n_files, n_band, n_el, n_el)      } one row per file
-        coarse_times.bin    int64 per overview row             } (reduce.OverviewSpec)
+        coarse.dat          (n_rows, n_prod_file, n_chunk) uint8: every product,
+                            mean |V| per cell, appended        } the overview,
+        matrix.dat          (n_files, n_band, n_el, n_el)      } rows_per_file rows
+        coarse_times.bin    int64 per overview row             } per file, one matrix
+                                                               } frame (reduce.OverviewSpec)
         diag.jsonl          one JSON line per file: masks and delivery (reduce.read_diag)
-        co_array.png        the array's coherence: per chunk the median over the elements
-                            of their co_eNNNN.png, a scanline per file
+        co_array.png        the array's coherence: per cell the median over the elements
+                            of their co_eNNNN.png, rows_per_file scanlines per file
+        co_array_full.png   the same per channel and bin (overview ``array_full``)
         co_matrix.png       (n_el, n_el) the element x element coherence: below the diagonal
                             averaged over every band and file so far (matrix_mean.npz
-                            its running sums), above it the latest file's
+                            its running sums), above it the latest file's; the palette
+                            equalized over both
         coarse_freq.npy     (n_chunk,) column centres, coarse_scale.npy (n_prod_file, 2)
         palette.bin         the 256 x 3 palette the overview is drawn with
         e0000/wf_e0000xe0000.png
@@ -56,7 +59,7 @@ import wfpng
 from choco.acqtree import shard_name
 from choco.jobclient import atomic_output
 from reduce import (Axes, FileOverview, OverviewSpec, Selection, array_levels, everything,
-                    overview_spec, quantize_log, quantize_unit, scale_from_sample,
+                    overview_spec, quantize_log, quantize_unit, row_parts, scale_from_sample,
                     selection_from_index, thumb_rows, unquantize_unit)
 
 log = logging.getLogger("waterfall.store")
@@ -308,6 +311,8 @@ class AcquisitionStore:
             self.index["elements"] = [
                 {"e": e, "name": shard_name(e), "width": 0, "rows": 0, "nbytes": 0, "adler": 0}
                 for e in range(overview.n_el)]
+            if overview.array_full:
+                self.index["array_full"] = {"width": 0, "rows": 0, "nbytes": 0, "adler": 0}
             np.save(self.path / "coarse_freq.npy", np.asarray(overview.chunk_freq, np.float64))
             _atomic_write(self.path / "palette.bin", wfpng.palette().astype(np.uint8).tobytes())
         self._coarse_scale = None
@@ -355,7 +360,8 @@ class AcquisitionStore:
         rec = self.index.get("overview")
         if not isinstance(rec, dict):
             return None
-        spec = overview_spec(axes, sel, edges=rec.get("edges"))
+        spec = overview_spec(axes, sel, edges=rec.get("edges"), col_width=rec.get("col_width"),
+                             rows_per_file=rec.get("rows_per_file"), array_full=bool(rec.get("array_full")))
         if spec.n_chunk != int(rec.get("chunks") or 0) or spec.n_el != int(rec.get("n_el") or 0):
             raise ValueError(f"the overview has {rec.get('chunks')} columns for "
                              f"{rec.get('n_el')} elements, this file gives {spec.n_chunk} "
@@ -402,6 +408,15 @@ class AcquisitionStore:
     @property
     def array_path(self) -> Path:
         return self.path / "co_array.png"
+
+    @property
+    def array_full_path(self) -> Path:
+        return self.path / "co_array_full.png"
+
+    @property
+    def rows_per_file(self) -> int:
+        """Overview rows a file (1 before 2026-10-27)."""
+        return max(1, int((self.index.get("overview") or {}).get("rows_per_file") or 1))
 
     @property
     def matrix_mean_path(self) -> Path:
@@ -480,16 +495,21 @@ class AcquisitionStore:
             rec = self.index["overview"]
             n_chunk, n_el = int(rec["chunks"]), int(rec["n_el"])
             n_band = max(1, len(rec["edges"]) - 1)
-            if (overview.coarse.shape != (int(self.index["n_prod_file"]), n_chunk)
-                    or overview.coherence.shape != (n_el, n_chunk)
+            r, n_pf = self.rows_per_file, int(self.index["n_prod_file"])
+            full_rec = self.index.get("array_full")
+            if (overview.coarse.shape != (r, n_pf, n_chunk)
+                    or overview.coherence.shape != (n_el, r, n_chunk)
                     or overview.matrix.shape != (n_band, n_el, n_el)
+                    or (full_rec is not None and overview.array is None)
                     or len(self.index.get("elements") or []) != n_el):
                 raise ValueError("the file's overview does not have the acquisition's shape")
-            lo, hi = self.coarse_scale(overview.coarse)
+            by_prod = overview.coarse.transpose(1, 0, 2)              # (n_pf, r, n_chunk)
+            lo, hi = self.coarse_scale(by_prod)
+            q = quantize_log(by_prod.reshape(n_pf, -1), lo, hi).reshape(n_pf, r, n_chunk)
             cube_bytes["coarse_bytes"] = _append_at(
                 self.path / "coarse.dat", int(self.index["coarse_bytes"]),
-                quantize_log(overview.coarse, lo, hi).tobytes())
-            coh = quantize_unit(overview.coherence)                  # (n_el, n_chunk)
+                np.ascontiguousarray(q.transpose(1, 0, 2)).tobytes())
+            coh = quantize_unit(overview.coherence)                  # (n_el, r, n_chunk)
             elements = self.index["elements"]
             coh_state = []
             for e in range(n_el):
@@ -497,27 +517,38 @@ class AcquisitionStore:
                 path = self.coherence_path(e)
                 if rec["rows"] == 0:
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    st = wfpng.create(path, coh[e:e + 1], pal_default, level=level)
+                    st = wfpng.create(path, coh[e], pal_default, level=level)
                 else:
-                    st = wfpng.append(path, coh[e:e + 1], wfpng.WfState.from_dict(rec),
+                    st = wfpng.append(path, coh[e], wfpng.WfState.from_dict(rec),
                                       level=level)
                 coh_state.append(st)
-            # the array's row, while the image is in step with the elements'
+            # the array's rows, while the image is in step with the elements'
             array_rec = self.index.get("array")
             done_rows = int(self.index.get("coarse_rows", 0))
             array_state = None
-            if array_rec and int(array_rec.get("rows", 0)) == done_rows:
-                array_state = wfpng.append(self.array_path, array_levels(coh[:, None, :]),
+            if array_rec and int(array_rec.get("rows", 0)) == done_rows * r:
+                array_state = wfpng.append(self.array_path, array_levels(coh),
                                            wfpng.WfState.from_dict(array_rec), level=level)
             elif not array_rec and done_rows == 0:
-                array_state = wfpng.create(self.array_path, array_levels(coh[:, None, :]),
+                array_state = wfpng.create(self.array_path, array_levels(coh),
                                            pal_default, level=level)
+            full_state = None
+            if full_rec is not None:
+                if int(full_rec.get("rows", 0)) == 0:
+                    full_state = wfpng.create(self.array_full_path, overview.array,
+                                              pal_default, level=level)
+                else:
+                    full_state = wfpng.append(self.array_full_path, overview.array,
+                                              wfpng.WfState.from_dict(full_rec), level=level)
             cube_bytes["matrix_bytes"] = _append_at(
                 self.path / "matrix.dat", int(self.index["matrix_bytes"]),
                 quantize_unit(overview.matrix).tobytes())
+            # each row's time: its first bin's
+            row_times = [int(times[t0]) if t0 < times.size else 0
+                         for t0, _ in row_parts(int(times.size), r)]
             cube_bytes["coarse_times_bytes"] = _append_at(
                 self.path / "coarse_times.bin", int(self.index["coarse_times_bytes"]),
-                np.array([int(times[0]) if times.size else 0], np.int64).tobytes())
+                np.array(row_times, np.int64).tobytes())
 
         if diag is not None:
             cube_bytes["diag_bytes"] = _append_at(
@@ -537,6 +568,8 @@ class AcquisitionStore:
                 self.index["elements"][e].update(st.to_dict())
             if array_state is not None:
                 self.index["array"] = array_state.to_dict()
+            if full_state is not None:
+                self.index["array_full"] = full_state.to_dict()
         self._save_index()                      # <- the commit
 
     def update_array_coherence(self, level: int = wfpng.DEFAULT_LEVEL) -> bool:
@@ -546,7 +579,7 @@ class AcquisitionStore:
         when the row counts differ; True if it was rewritten."""
         if not self.started or not self.has_overview:
             return False
-        rows = int(self.index.get("coarse_rows") or 0)
+        rows = int(self.index.get("coarse_rows") or 0) * self.rows_per_file
         elements = self.index.get("elements") or []
         if rows == 0 or int((self.index.get("array") or {}).get("rows", 0)) == rows:
             return False
@@ -567,7 +600,7 @@ class AcquisitionStore:
         """Bring ``co_matrix.png`` up to the committed rows of
         ``matrix.dat``: below the diagonal each pair's coherence averaged
         (linearly) over every band and file, above it the latest file's,
-        averaged over the bands.  The running sums and the rows they cover
+        averaged over the bands; its palette equalized over the pairs.  The running sums and the rows they cover
         live in ``matrix_mean.npz``, so a run reads only the new rows; a sum
         ahead of the commit (a crashed run's rows, truncated since) is
         rebuilt.  True if the image was rewritten."""
@@ -609,8 +642,12 @@ class AcquisitionStore:
                 last = np.where(last_count > 0, last_total / np.maximum(last_count, 1), np.nan)
             upper = np.triu_indices(n, 1)
             image[upper] = last[upper]
+            q = quantize_unit(image)
+            # colour spent where the pairs are: equalized over both halves,
+            # the diagonal (each element with itself) left out
+            counts = np.bincount(q[~np.eye(n, dtype=bool)], minlength=256)
             with atomic_output(self.matrix_mean_path, fsync=True) as tmp:
-                wfpng.create(tmp, quantize_unit(image), wfpng.palette(), level=level)
+                wfpng.create(tmp, q, wfpng.palette(wfpng.warp_from_counts(counts)), level=level)
         except (OSError, ValueError) as e:
             log.warning("%s: mean matrix not updated (%s)", self.path, e)
             return False

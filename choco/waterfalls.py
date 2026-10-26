@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 from gevent.lock import BoundedSemaphore
 
-from .acqtree import (ARRAY_IMAGE, ARRAY_SHARD, COHERENCE_RE, IMAGE_RE, MATRIX_IMAGE, SHARD_RE,  # noqa: F401 (re-exported)
+from .acqtree import (ARRAY_FULL_IMAGE, ARRAY_IMAGE, ARRAY_SHARD, COHERENCE_RE, IMAGE_RE, MATRIX_IMAGE, SHARD_RE,  # noqa: F401 (re-exported)
                       product_name, shard_name)
 from .datafiles import run_blocking
 
@@ -176,6 +176,7 @@ def overview_of(index: dict) -> dict | None:
         chunks, n_el = int(rec.get("chunks") or 0), int(rec.get("n_el") or 0)
         edges = [float(e) for e in rec.get("edges") or []]
         rows = int(index.get("coarse_rows") or 0)
+        rpf = max(1, int(rec.get("rows_per_file") or 1))
         n_prod_file = int(index.get("n_prod_file") or 0)
     except (TypeError, ValueError):
         return None
@@ -185,8 +186,16 @@ def overview_of(index: dict) -> dict | None:
     pairs = rec.get("prod_pairs") if order == "list" else None
     if order == "list" and not isinstance(pairs, list):
         return None
+    try:
+        width = int(rec.get("col_width") or rec.get("chunk_rows") or 16)
+    except (TypeError, ValueError):
+        return None
+    rows = max(0, min(rows, CUBE_ROWS_MAX // rpf))
+    # rows: files (matrix.dat frames); img_rows: coarse.dat rows and the
+    # cell images' scanlines, rpf a file (1 before 2026-10-27)
     return {"chunks": chunks, "n_el": n_el, "edges": edges, "n_band": len(edges) - 1,
-            "rows": max(0, min(rows, CUBE_ROWS_MAX)), "n_prod_file": n_prod_file,
+            "rows": rows, "rpf": rpf, "img_rows": rows * rpf, "n_prod_file": n_prod_file,
+            "cell": f"{width} channels by {'a file' if rpf == 1 else 'half a file' if rpf == 2 else f'1/{rpf} of a file'}",
             "prod_order": "triangle" if order != "list" else "list", "prod_pairs": pairs}
 
 
@@ -399,8 +408,9 @@ def value_ticks(lo, hi, target: int = 6) -> list[dict]:
     return ticks
 
 
-def palette_gradient(pal, stops: int = 33) -> str | None:
-    """The palette's data levels (1..255) as a CSS gradient, lo at bottom.
+def palette_gradient(pal, stops: int = 33, direction: str = "to top") -> str | None:
+    """The palette's data levels (1..255) as a CSS gradient, lo first
+    (at the bottom; ``direction="to right"`` for a horizontal key).
 
     The equalization warp is baked into the palette, so sampling it in
     index order *is* the value->colour curve the pixels use.
@@ -412,7 +422,7 @@ def palette_gradient(pal, stops: int = 33) -> str | None:
         f = k / (stops - 1)
         r, g, b = pal[1 + round(f * 254)]
         parts.append(f"rgb({r},{g},{b}) {f * 100:.1f}%")
-    return "linear-gradient(to top, " + ", ".join(parts) + ")"
+    return f"linear-gradient({direction}, " + ", ".join(parts) + ")"
 
 
 def summarize_dir(path: str) -> dict | None:
@@ -643,7 +653,7 @@ class WaterfallStore:
         base = self.acquisition_dir(root, acq)
         if base is None:
             return None
-        if shard == ARRAY_SHARD and name in (ARRAY_IMAGE, MATRIX_IMAGE):
+        if shard == ARRAY_SHARD and name in (ARRAY_IMAGE, ARRAY_FULL_IMAGE, MATRIX_IMAGE):
             return base, name
         if not SHARD_RE.match(shard or ""):
             return None
@@ -780,7 +790,7 @@ class WaterfallStore:
         return self._side_file(root, acq, "coarse_scale.npy", read_npy_pairs)
 
     def last_file(self, root: str, acq: str) -> dict | None:
-        """The newest overview row of ``coarse.dat`` (:func:`read_last_rows`),
+        """The newest file's rows of ``coarse.dat`` (:func:`read_last_rows`),
         off the hub and cached until it moves."""
         base = self.acquisition_dir(root, acq)
         index = self.index(root, acq)
@@ -905,7 +915,7 @@ def view_context(store, root: str, acq: str, name: str, tz=None) -> dict | None:
     index = store.index(root, acq)
     if index is None:
         return None
-    if COHERENCE_RE.match(name or "") or name == ARRAY_IMAGE:
+    if COHERENCE_RE.match(name or "") or name in (ARRAY_IMAGE, ARRAY_FULL_IMAGE):
         return coherence_view_context(store, root, acq, name, index, tz=tz)
     m = IMAGE_RE.match(name or "")
     if not m or not name.startswith("wf_"):
@@ -963,31 +973,40 @@ _UNIT_TICKS = [{"frac": f, "label": lbl} for f, lbl in
 def coherence_view_context(store, root: str, acq: str, name: str, index: dict,
                            tz=None) -> dict | None:
     """The viewer page around one element's coherence image (``co_eNNNN.png``)
-    or the array's (``co_array.png``)."""
+    or the array's (``co_array.png``, or ``co_array_full.png`` at full
+    resolution, on the axes of the full images)."""
     m = COHERENCE_RE.match(name or "")
     ov = overview_of(index)
-    if ov is None or not (m or name == ARRAY_IMAGE):
+    if ov is None or not (m or name in (ARRAY_IMAGE, ARRAY_FULL_IMAGE)):
         return None
+    full = name == ARRAY_FULL_IMAGE
     if m:
         e = int(m.group(1))
         elements = index.get("elements") or []
         rec = elements[e] if 0 <= e < len(elements) and isinstance(elements[e], dict) else None
         shard = shard_name(e)
     else:
-        e, rec, shard = -1, index.get("array"), ARRAY_SHARD
+        e, rec, shard = -1, index.get("array_full" if full else "array"), ARRAY_SHARD
     if not isinstance(rec, dict) or not rec.get("rows"):
         return None
     head = store.image_head(root, acq, shard, name)
     rows = int(head["height"]) if head and head.get("height") else int(rec["rows"])
     label = _label_of(index)
+    if full:
+        n_freq = int(index.get("n_freq") or rec.get("width") or 0)
+        freq_axis = freq_ticks(store.freq_axis(root, acq), n_freq)
+        time_axis = time_ticks(store.times(root, acq), rows, target=max(8, min(40, round(43 * rows / max(n_freq, 1)))),
+                               tz=tz)
+    else:
+        n_freq = ov["chunks"]
+        freq_axis = freq_ticks(store.coarse_freq(root, acq), n_freq)
+        time_axis = time_ticks(store.coarse_times(root, acq), rows, target=12, tz=tz)
     return {
         "root": root, "acq": acq, "shard": shard, "name": name,
-        "kind": "coherence" if m else "array",
+        "kind": "coherence" if m else "array_full" if full else "array", "cell": ov["cell"],
         "image_src": f"/waterfall/{root}/{acq}/{shard}/{name}",
         "a": e, "b": e, "label_a": label(e) if m else "array", "label_b": "array",
-        "rows": rows, "n_freq": ov["chunks"],
-        "freq_axis": freq_ticks(store.coarse_freq(root, acq), ov["chunks"]),
-        "time_axis": time_ticks(store.coarse_times(root, acq), rows, target=12, tz=tz),
+        "rows": rows, "n_freq": n_freq, "freq_axis": freq_axis, "time_axis": time_axis,
         "value_ticks": _UNIT_TICKS, "value_title": "coherence",
         "gradient": palette_gradient(head["palette"] if head else None),
         "n_files": len(index.get("files") or []),
@@ -1009,12 +1028,12 @@ def coarse_view_context(store, root: str, acq: str, name: str, tz=None) -> dict 
         return None
     label = _label_of(index)
     return {
-        "root": root, "acq": acq, "shard": shard_name(a), "name": name, "kind": "coarse",
+        "root": root, "acq": acq, "shard": shard_name(a), "name": name, "kind": "coarse", "cell": ov["cell"],
         "image_src": f"/waterfall/{root}/{acq}/coarse/{name}",
         "a": a, "b": b, "label_a": label(a), "label_b": label(b),
-        "rows": ov["rows"], "n_freq": ov["chunks"],
+        "rows": ov["img_rows"], "n_freq": ov["chunks"],
         "freq_axis": freq_ticks(store.coarse_freq(root, acq), ov["chunks"]),
-        "time_axis": time_ticks(store.coarse_times(root, acq), ov["rows"], target=12, tz=tz),
+        "time_axis": time_ticks(store.coarse_times(root, acq), ov["img_rows"], target=12, tz=tz),
         "value_ticks": [], "value_title": "|V|",
         "gradient": palette_gradient(store.palette(root, acq)),
         "n_files": len(index.get("files") or []),
@@ -1036,7 +1055,7 @@ def coarse_image(store, root: str, acq: str, name: str) -> bytes | None:
         return None
     rows = store.cube_rows(root, acq, "coarse.dat", offset=p * ov["chunks"],
                            row_bytes=ov["chunks"], stride=ov["n_prod_file"] * ov["chunks"],
-                           n_rows=ov["rows"])
+                           n_rows=ov["img_rows"])
     if not rows:
         return None
     return encode_png(ov["chunks"], rows, pal)
@@ -1088,8 +1107,9 @@ def matrix_context(store, root: str, acq: str, band, row, tz=None) -> dict | Non
     ticks = [{"frac": (e + 0.5) / n, "label": label(e)} for e in _spread(n, 9)]
     times = store.coarse_times(root, acq)
     when = None
-    if isinstance(times, list) and row < len(times) and times[row] > 0:
-        when = _j2000_dt(times[row], _tzinfo(tz or DEFAULT_TZ)).strftime("%Y-%m-%d %H:%M:%S %Z")
+    at = row * ov["rpf"]                    # the file's first overview row
+    if isinstance(times, list) and at < len(times) and times[at] > 0:
+        when = _j2000_dt(times[at], _tzinfo(tz or DEFAULT_TZ)).strftime("%Y-%m-%d %H:%M:%S %Z")
     page = f"/files/{root}/{acq}/matrix"
     return {
         "root": root, "acq": acq, "band": band, "row": row, "n_rows": n_rows, "n_el": n,
@@ -1200,11 +1220,12 @@ def read_diag(path: str) -> list[dict]:
 
 
 def read_last_rows(base: str, ov: dict) -> dict:
-    """The newest file's row of ``coarse.dat``: every product, a level
-    per chunk.  Blocking."""
+    """The newest file's rows of ``coarse.dat``: every product, a level
+    per column.  Blocking."""
     size = ov["n_prod_file"] * ov["chunks"]
-    got = read_cube_rows(os.path.join(base, "coarse.dat"), (ov["rows"] - 1) * size, size, 0, 1)
-    return {"coarse.dat": got[0] if got else None}
+    got = read_cube_rows(os.path.join(base, "coarse.dat"), (ov["img_rows"] - ov["rpf"]) * size,
+                         size, size, ov["rpf"])
+    return {"coarse.dat": got or None}
 
 
 def dish_grid(labels: list[str]) -> dict:
@@ -1270,7 +1291,7 @@ def dish_summary(index: dict, ov: dict, last: dict | None, scale: list | None) -
     label = _label_of(index)
     pols = [_pol_key(label(e)) for e in range(n)]
     auto: list = [None] * n
-    coarse = (last or {}).get("coarse.dat")
+    coarse = (last or {}).get("coarse.dat") or []
     if coarse and scale:
         power = [None] * n
         for e in range(n):
@@ -1278,7 +1299,7 @@ def dish_summary(index: dict, ov: dict, last: dict | None, scale: list | None) -
             if p is None or p >= len(scale):
                 continue
             lo, hi = scale[p]
-            q = _median([v for v in coarse[p * n_chunk:(p + 1) * n_chunk] if v])
+            q = _median([v for row in coarse for v in row[p * n_chunk:(p + 1) * n_chunk] if v])
             if q is None or not (lo > 0 and hi > lo):
                 continue
             # the coarse cube's log scale (reduce.quantize_log), inverted
@@ -1407,6 +1428,8 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
         # a tick at each board's first element: eight feeds a board
         step = 8 if n >= 32 else 1
         matrix = {"src": f"/waterfall/{root}/{acq}/{ARRAY_SHARD}/{MATRIX_IMAGE}",
+                  # equalized over the pairs (the job), so its own palette
+                  "gradient": palette_gradient(head.get("palette"), direction="to right"),
                   "ticks": [{"frac": e / n, "label": labels[e]} for e in range(0, n, step)],
                   "data": {"n_el": n, "labels": labels, "band": 0, "page": f"/files/{root}/{acq}/matrix",
                            "coarse_view": f"/waterfall/{root}/{acq}/coarse-view",
@@ -1416,8 +1439,11 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
     return {
         "matrix": matrix,
         "array": {
+            "cell": ov["cell"],
+            "full": bool((index.get("array_full") or {}).get("rows")),
             "src": f"/waterfall/{root}/{acq}/{ARRAY_SHARD}/{ARRAY_IMAGE}",
-            "view": f"/waterfall/{root}/{acq}/view/{ARRAY_IMAGE}",
+            "view": f"/waterfall/{root}/{acq}/view/"
+                    f"{ARRAY_FULL_IMAGE if (index.get('array_full') or {}).get('rows') else ARRAY_IMAGE}",
             "rows": array_rows,
             "height": array_height,
             "freq_axis": {**freq, "ticks": [{**t, "label": f"{float(t['label']):.0f}"}
@@ -1427,7 +1453,7 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
         "grid": grid, "last_when": when,
         "gains_divided": index.get("gains") == "divided",
         "ratio_labels": _RATIO_LABELS,
-        "gradient": palette_gradient(store.palette(root, acq)),
+        "gradient": palette_gradient(store.palette(root, acq), direction="to right"),
         "streams": _stream_table(store.diag(root, acq) or [], node_versions or {}, zone),
     }
 
@@ -1436,9 +1462,10 @@ def mask_columns(store, root: str, acq: str, kind: str, a: int, b: int,
                  rows: int) -> list[dict] | None:
     """The columns the viewer draws beside a waterfall, row for row: each
     feed's mask (masked, or masked on some streams), the RFI mask off,
-    and the channels lost.  A ``full`` image has a row per bin (matched
-    to the record by time); a per-file image (coherence, coarse, the
-    array) a row per file, showing the share of the file's bins.  Each
+    and the channels lost.  A ``full`` image (and ``array_full``) has a
+    row per bin (matched to the record by time); a per-file image
+    (coherence, coarse, the array) the overview's rows a file, each
+    showing the share of its part of the file's bins.  Each
     column is a list of runs ``{"y0", "y1", "v", "partial"}`` in rows.
     None when the acquisition has no record."""
     index = store.index(root, acq)
@@ -1478,7 +1505,7 @@ def mask_columns(store, root: str, acq: str, kind: str, a: int, b: int,
         return out
 
     per_row: list = [None] * rows
-    if kind == "full":
+    if kind in ("full", "array_full"):
         at = {}
         for rec in diag:
             for bi, t in enumerate(rec.get("times") or []):
@@ -1492,10 +1519,13 @@ def mask_columns(store, root: str, acq: str, kind: str, a: int, b: int,
     else:
         files = sorted(int(f) for f in index.get("files") or [])
         by_file = {rec["file"]: rec for rec in diag}
-        for r, f in enumerate(files[:rows]):
-            rec = by_file.get(f)
+        # rpf rows a file, each over its share of the bins (reduce.row_parts)
+        rpf = (overview_of(index) or {}).get("rpf", 1)
+        for r in range(min(rows, len(files) * rpf)):
+            rec = by_file.get(files[r // rpf])
             if rec:
-                per_row[r] = values(rec, range(int(rec.get("n_bin") or 0)))
+                n_bin, j = int(rec.get("n_bin") or 0), r % rpf
+                per_row[r] = values(rec, range(j * n_bin // rpf, (j + 1) * n_bin // rpf))
     titles = ([f"{label(e)} masked" for e in feeds] + ["RFI mask off", "channels lost"])
     cols = []
     for c, title in enumerate(titles):

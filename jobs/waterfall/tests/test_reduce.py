@@ -391,7 +391,8 @@ def test_fold_file_overview_cubes(vis_file):
     lo, hi = R.scale_from_sample(R.sample_magnitudes(path, sel))
     out, ov = R.fold_file(path, lo, hi, sel=sel, axes=ax, overview=spec)
     np.testing.assert_array_equal(out, R.quantize_file(path, lo, hi, sel=sel, axes=ax))
-    assert ov.coarse.shape == (10, 4) and ov.coherence.shape == (4, 4) and ov.matrix.shape == (2, 4, 4)
+    assert ov.coarse.shape == (1, 10, 4) and ov.coherence.shape == (4, 1, 4) and ov.matrix.shape == (2, 4, 4)
+    assert ov.array is None
     with h5py.File(path) as f:
         mag = np.abs(f["vis"][()])
         live = (mag > 0) & (f["frames_added"][()][:, None, :] > 0)
@@ -399,7 +400,7 @@ def test_fold_file_overview_cubes(vis_file):
     for k in range(4):
         c = slice(16 * k, 16 * k + 16)
         m = np.where(live[c], mag[c], 0).sum(axis=(0, 2)) / live[c].sum(axis=(0, 2))
-        np.testing.assert_allclose(ov.coarse[:, k], m, rtol=1e-5)
+        np.testing.assert_allclose(ov.coarse[0, :, k], m, rtol=1e-5)
     # coherence of element 0 in chunk 0: its partners' |V_0b| / sqrt(V_00 V_bb), averaged
     auto = {0: 0, 1: 4, 2: 7, 3: 9}
     vals = []
@@ -407,7 +408,7 @@ def test_fold_file_overview_cubes(vis_file):
         with np.errstate(invalid="ignore", divide="ignore"):
             n = mag[0:16, p, :] / np.sqrt(mag[0:16, 0, :] * mag[0:16, auto[b], :])
         vals.append(n[live[0:16, p, :]])
-    assert ov.coherence[0, 0] == pytest.approx(np.concatenate(vals).mean(), rel=1e-4)
+    assert ov.coherence[0, 0, 0] == pytest.approx(np.concatenate(vals).mean(), rel=1e-4)
     assert np.nanmin(ov.coherence) >= 0 and np.nanmax(ov.coherence) <= 1.0 + 1e-6
     # the matrix: band means, normalized by the autos' band means, symmetric, unit diagonal
     band0 = slice(0, 32)                              # chunks 0 and 1 (centres below the band edge)
@@ -417,6 +418,40 @@ def test_fold_file_overview_cubes(vis_file):
     assert ov.matrix[0, 0, 1] == pytest.approx(expect, rel=1e-4) and ov.matrix[0, 1, 0] == ov.matrix[0, 0, 1]
     assert np.allclose(np.diagonal(ov.matrix[0]), 1.0)
     assert np.allclose(ov.matrix[1], ov.matrix[1].T, equal_nan=True)
+
+
+def test_fold_file_splits_cells_and_keeps_the_array_at_full_resolution(vis_file):
+    import h5py
+    path, _ = vis_file
+    ax = R.read_axes(path)                            # 64 channels in chunks of 16, 6 bins
+    sel, _ = R.select(ax, {"autos": True})
+    spec = R.overview_spec(ax, sel, 2, split=2, array_full=True)
+    assert spec.n_chunk == 8 and spec.chunk_starts.tolist() == list(range(0, 64, 8))
+    assert spec.to_index()["col_width"] == 8 and spec.to_index()["rows_per_file"] == 2
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(path, sel))
+    _, ov = R.fold_file(path, lo, hi, sel=sel, axes=ax, overview=spec)
+    assert ov.coarse.shape == (2, 10, 8) and ov.coherence.shape == (4, 2, 8) and ov.array.shape == (6, 64)
+    with h5py.File(path) as f:
+        mag = np.abs(f["vis"][()])
+        live = (mag > 0) & (f["frames_added"][()][:, None, :] > 0)
+    # the second half of the second chunk, the second half of the bins
+    c, t = slice(24, 32), slice(3, 6)
+    m = np.where(live[c, :, t], mag[c, :, t], 0).sum(axis=(0, 2)) / live[c, :, t].sum(axis=(0, 2))
+    np.testing.assert_allclose(ov.coarse[1, :, 3], m, rtol=1e-5)
+    # the array at channel 5, bin 2: the median over the elements of each one's
+    # mean coherence with its partners there
+    auto = {0: 0, 1: 4, 2: 7, 3: 9}
+    pairs = {(a, b): p for p, (a, b) in enumerate(zip(ax.input_a, ax.input_b))}
+    each = []
+    for e in range(4):
+        v = [mag[5, pairs[min(e, b), max(e, b)], 2] / np.sqrt(mag[5, auto[e], 2] * mag[5, auto[b], 2])
+             for b in range(4) if b != e]
+        each.append(np.mean(v))
+    levels = np.sort(R.quantize_unit(np.array(each)))
+    assert ov.array[2, 5] == levels[1]                # the lower middle of four
+    # the old layout from an index without the new keys
+    old = R.overview_spec(ax, sel, edges=spec.edges)
+    assert old.n_chunk == 4 and old.rows_per_file == 1 and not old.array_full
 
 
 def add_gains(path, gain, remap=(1, 0), freq_step=1.0, exp=None):
