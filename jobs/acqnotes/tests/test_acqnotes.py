@@ -336,6 +336,17 @@ class TestPolChecks:
         a = {"pols": checks, "timeline": [{"topic": "polarization", "swapped": ["A02", "C02"]}]}
         assert render.swapped_dishes(a) == ["C02"]
 
+    def test_fringes_place_the_dishes_when_the_autos_cannot(self):
+        # Tau A raises no autocorrelation; Cyg A's 18 % is a sidelobe (2026-10-26)
+        tau = self.result("TauA", {"A01", "A02", "A03", "A04", "C01", "C02", "C03", "C04"})
+        checks = render.pol_checks({"result": tau, "results": [tau]}, self.axis(), None)
+        a = {"pols": checks, "axis": self.axis(), "attrs": {"dish_coelev_deg": -27.3},
+             "sources": [{"source": "CygA", "dec": 40.7, "bands": [{"median_rise": 0.18}]},
+                         {"source": "TauA", "dec": 22.0, "bands": [{"median_rise": None}]}]}
+        p = render.pointing_summary(a)
+        assert p["short"].startswith("8 of ") and "Tau A transit (Dec +22)" in p["short"]
+        assert "near the config value +22" in p["short"] and p["agrees"]
+
 
 class TestChunkBlocks:
     """Reads are priced per chunk: a chunk of ``vis`` holds every product."""

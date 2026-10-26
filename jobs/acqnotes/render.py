@@ -726,6 +726,20 @@ def pointing_summary(a):
                 "why": "the Sun (Dec %+.1f) increases the autocorrelations %.0f times at 440-460 MHz, thus it is in "
                        "the main beam.  Cyg A (+40.7) gives only %s, from a sidelobe or from the diffuse "
                        "Cygnus emission" % (sun_dec, sun, pct(cyg))}
+    # Tau A raises no autocorrelation (2026-10-24 on), but its fringes place the dishes
+    fr = [c for c in a["pols"] if c["covered"] and c["source"] in src]
+    n = len({el["phys"] for el in a["axis"] if el["phys"] and not el["phys"].startswith("RFI")})
+    if fr and 2 * len(fr[0]["covered"]) >= n:
+        c = fr[0]
+        d = src[c["source"]]["dec"]
+        return {"dec": "%+.0f (%s, from fringes), co-elevation about %+.1f" % (d, src_name(c["source"]), d - LAT),
+                "short": "%d of %d dishes have fringes at the %s transit (Dec %+.0f)" % (
+                    len(c["covered"]), n, src_name(c["source"]), d) + vs_config(d),
+                "agrees": cfg_dec is not None and abs(cfg_dec - d) < 3,
+                "why": "the cross-pol check finds fringes at the %s transit (Dec %+.1f, co-elevation %+.1f) on %s, "
+                       "thus these dishes point near it.  %s gives %s rise of the autocorrelations" % (
+                           src_name(c["source"]), d, d - LAT, dish_ranges(c["covered"]), src_name(c["source"]),
+                           pct(rise(c["source"])) if rise(c["source"]) else "no")}
     if cyg is not None and cyg >= 0.12 and (sun is None or sun_dec is None or sun_dec < 8):
         return {"dec": "undetermined", "short": "pointing is not known (Cyg A gives only %s)" % pct(cyg),
                 "why": "Cyg A increases the autocorrelations by only %s.  No other source gives a "

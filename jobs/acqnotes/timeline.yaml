@@ -74,12 +74,21 @@ entries:
     Thus in an acquisition of this day the pointing of each dish is not known.
 - topic: pointing
   from: 2026-10-24T00:00
-  to: null
+  to: 2026-10-25T18:59
   source: "operator (2026-10-26)"
   text: >-
     All dishes point at Tau A (Dec +22.0, co-elevation -27.3).  The files record
     `dish_coelev_deg = -8.6` (Dec +40.7, Cyg A) for all dishes, thus the attribute is wrong
     for every dish.
+- topic: pointing
+  from: 2026-10-25T18:59
+  to: null
+  source: "operator (2026-10-26); dish_coelev_deg attribute of the files; Tau A fringes 2026-10-26 11:13 UTC"
+  text: >-
+    All dishes point at Tau A (Dec +22.0, co-elevation -27.3).  From the acquisition of
+    2026-10-25 18:59 the files record `dish_coelev_deg = -27.3`, thus the attribute is
+    correct.  Tau A gives no rise of the autocorrelations, but most dishes have fringes at
+    its transit.
 
 - topic: pointing
   from: 2026-04-14
@@ -231,7 +240,7 @@ entries:
   summary: "X/Y are swapped on H01-H08 on the frequencies of cx47 and cx52 only"
 - topic: polarization
   from: 2026-10-19T21:28
-  to: null
+  to: 2026-10-22T22:48
   source: "crs_board_remap in config_json; autocorrelations of row H"
   text: >-
     All X-engine nodes run the fixed crs_board_remap, thus row H's labels are correct.
@@ -248,7 +257,7 @@ entries:
   swapped: [C05, D07, E05]
 - topic: polarization
   from: 2026-10-23T11:25
-  to: null
+  to: 2026-10-25T00:00
   source: "this analysis (cross-pol check per XX, YY, XY, YX at the Tau A transits 2026-10-23 11:25 and 2026-10-24 11:21 UTC, 450 and 610 MHz); dish_inputs, crs_board_remap and labels in the files"
   text: >-
     Dishes E01, G01 and G02 have their X and Y feeds swapped, relative to the rest of the
@@ -266,6 +275,36 @@ entries:
     After the site maintenance of 2026-10-23 (data stop at 15:41 UTC), the feeds of C05,
     D07 and E05 are no longer swapped.  At the Tau A transit their cross-pol fringes are
     0.1 times their co-pol fringes, as on the other dishes.
+- topic: polarization
+  from: 2026-10-25T00:00
+  to: 2026-10-25T23:31
+  source: "this analysis (cross-pol check at the Tau A transits 2026-10-24 11:21 and 2026-10-26 11:13 UTC, 450-800 MHz); dish_inputs, crs_board_remap and labels in the files"
+  summary: "X/Y of E01, G01, G02 not known (swap removed on 2026-10-25)"
+  text: >-
+    The X/Y swap of E01, G01 and G02 stops between the Tau A transits of 2026-10-24 and
+    2026-10-26.  The dish table, the board map and the labels did not change, thus the
+    cabling changed.  The time of the change is not known.  The acquisitions of
+    2026-10-25 have no Tau A transit, thus for these dishes the X/Y order is not known.
+- topic: polarization
+  from: 2026-10-25T23:31
+  to: null
+  source: "this analysis (cross-pol check at the Tau A transit 2026-10-26 11:13 UTC, 450-800 MHz)"
+  text: >-
+    The feeds of E01, G01 and G02 are no longer swapped.  At the Tau A transit their
+    cross-pol fringes are 0.08-0.27 times their co-pol fringes.  The other dishes have
+    0.06-0.15.  G02 has the highest value.
+- topic: polarization
+  from: 2026-10-19T21:28
+  to: null
+  source: "this analysis (coherence of the X and Y feeds of E03 and E04 in every acquisition from 2026-10-19; fringe rates at the Tau A transit 2026-10-26 11:13 UTC, 450-800 MHz)"
+  summary: "the Y feeds of E03 and E04 are swapped between the two dishes"
+  text: >-
+    The Y inputs of E03 and E04 are swapped between the two dishes.  `E03Y` comes from dish
+    E04, and `E04Y` comes from dish E03.  The X inputs are correct.  The coherence of E03X
+    with `E04Y` is 0.15-0.22, as for the X and Y feeds of one dish.  The coherence of E03X
+    with `E03Y` is 0.05-0.09, as for two different dishes.  At the Tau A transit the fringe
+    rates put `E03Y` at column 04 and `E04Y` at column 03.  Use `E03Y` as E04's Y, and
+    `E04Y` as E03's Y.  Before 2026-10-19 the Y inputs of row E have no data.
 
 # ---- RFI --------------------------------------------------------------------------------
 - topic: rfi
@@ -350,7 +389,7 @@ entries:
     for some minutes, until bffs sends it again.
 - topic: badfeed
   from: 2026-10-17
-  to: null
+  to: 2026-10-18T12:53
   source: "switch port status 2026-10-17 (Et14, Et19, Et21, Et24 down); n2_buffer frame on cx52; bffs manual list"
   text: >-
     Four CRS boards send no data: boards 9 and 10 (E01-E04 and F01-F04, both polarizations),
@@ -358,6 +397,14 @@ entries:
     These inputs are flagged by hand in the bffs manual list; the dish table does not mark
     them.  Board 8 (C05-D08, Y) drops its link for a few seconds now and then; the
     packet-loss mask covers these gaps.
+- topic: badfeed
+  from: 2026-10-18T12:53
+  to: 2026-10-19T21:28
+  source: "this analysis (coherence of the board inputs in the files)"
+  text: >-
+    From 2026-10-18 12:53 UTC boards 9 and 10 (E01-E04 and F01-F04) send data again.
+    Boards 12 (E05-E08 and F05-F08, Y) and 13 (G01-G08, X) send no data.  From the
+    acquisition of 2026-10-19 21:28 all four boards send data.
 
 # ---- data / software ----------------------------------------------------------------
 - topic: data
