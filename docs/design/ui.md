@@ -1,11 +1,12 @@
-# Landing page, service strip, service pages and monitoring endpoints
+# Front page, service strip, service pages and monitoring endpoints
 
 Design rationale moved out of CLAUDE.md (2026-09).  Historical: the
 measurements and dates are from when each part was built.
 
-## Landing page & URL layout
+## Front page & URL layout
 
-``/`` is a services overview (the landing page), not the node dashboard: node
+``/`` is the instrument page (since 2026-10-26; see
+[instrument.md](instrument.md)), not the node dashboard: node
 management lives under ``/nodes/*`` — the dashboard at ``/nodes``, the
 ``nodes.yaml`` registry editor at ``/nodes/edit``, the node page at
 ``/nodes/edit/<key>``, the started/maintenance toggles, and the node-status
@@ -29,30 +30,18 @@ file name on the node page, "Edit" per row on the library page, "Edit
 nodes" / "Edit configs" in the dashboard header — never a bare clickable
 name.  The dashboard table itself only names each node's file: a per-row
 editor button made the page too busy, and the header button is one click
-away.  The landing table's NODES row links the library beside the dashboard.
-``landing.html`` renders one table row per header badge (CHOCO itself plus
-NODES / FPGA / PDB / DATA / EOP / BFFS / EIGENCAL / MAP, the waterfall
-renderer and the acquisition notes riding in the DATA row and the skymap in
-the MAP row) with the detail the
-strip only carries in a tooltip: monitor host:port and error, job unit and
-failure result, a one-line state-file summary (``web._service_detail`` — the
-same tolerant summariser the service pages use, so corrupt state degrades to
-no summary), and the timer's next run (``jobstatus.timer_status``, systemd's
-own strings, displayed never parsed).  The table is htmx-refreshed every 30 s
-via ``/partials/landing-services`` — the cadence of the strip whose data it
-mirrors; each refresh costs four ``systemctl show`` and four state-file reads,
-the price the service pages already pay at 5 s.  Below the table sits the sky-
-map card (see the sky-map bullet), refreshed every 5 min and rendered only
-when the ``skymap:`` block is configured.  Login lands on ``/`` and the CHOCO
+away.  Until 2026-10-26 ``/`` was a services table (``landing.html``, one row per
+header badge with the timer's next run and the sky-map card); the
+instrument flowchart replaced it, carrying each badge's state on its stage
+or card, and the sky map stayed on the MAP page.  Login lands on ``/`` and the CHOCO
 brand mark links there; the way to the dashboard is the strip's NODES badge
-(see the service-status-strip bullet) — plus the landing table's NODES row
-and, on the standalone pipeline/plot pages, which have no strip, a plain Nodes
+(see the service-status-strip bullet) — plus the X-engine lane and, on the standalone pipeline/plot pages, which have no strip, a plain Nodes
 nav link (``.brand.secondary``); the dashboard table only names each
 node and its file, with the Pipeline and Node buttons per row.  One
 test-visible consequence: the CSRF
 token is seeded lazily by the ``csrf_token`` context processor, so a session
 is established by fetching a page that renders a CSRF form (the dashboard),
-not the landing page.
+not the front page.
 
 ## Service status strip
 
@@ -206,7 +195,7 @@ tag (``source_tone``: ok, degraded/skipped warn), the counts it
 flagged and judged, its reason, and a one-line per-kind digest of its detail
 (``_bffs_source_summary``; unknown kinds fall back to ``key=value``).  Either
 file may be missing; the page renders what it has.  The same reasons reach
-the strip's badge tooltip ("why: …") and the landing table's job row via
+the strip's badge tooltip ("why: …") and the front page's job card tooltip via
 ``_services_health`` → ``_run_reasons``, attached only when systemd's verdict
 is degraded or failed, so the badge colour and its explanation cannot
 disagree.  ``/api/nodes`` entries carry the sync loop's live ``status``
@@ -392,9 +381,9 @@ dashboard's Edit nodes / Edit configs buttons already reach everything.
 Deep pages carry a breadcrumb inside the title
 (``.crumb`` / ``.crumb-sep``): Nodes / cx47, Configs / path, Services /
 BFFS, Files / acq / A01X × B02Y.  ``<title>`` is "Page — CHOCO" everywhere
-(it was four formats).  ``?wall=1`` on the landing page is the wall-display
-mode the night sky map hinted at: ``body.wall`` hides the nav and the
-notes, widens the container and enlarges the table and its tags.
+(it was four formats).  ``?wall=1`` on the front page is the wall-display
+mode: ``body.wall`` hides the nav, the notes and the tables under the
+diagram, and widens the container.
 
 **The dashboard says what is wrong.**  A banner announcing cluster-wide
 maintenance with a "Lift maintenance on all" button was added in the

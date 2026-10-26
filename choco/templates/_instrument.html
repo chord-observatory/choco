@@ -1,0 +1,225 @@
+{# The instrument page's live part: problems, facts, the flow diagram, the
+   node NIC and switch port tables, the wiring table's state.  Swapped by
+   the 10 s htmx poll on #instrument. #}
+{% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
+{% set now = now_ts %}
+{% macro gbps(v) -%}{% if v is number %}{{ '%.1f' % (v / 1e9) }} Gb/s{% else %}—{% endif %}{%- endmacro %}
+{% macro kpps(v) -%}{% if v is number %}{{ '%.0f' % (v / 1e3) }} kpps{% else %}—{% endif %}{%- endmacro %}
+{% macro per_s(v) -%}{% if v is number %}{{ '%.3g' % v if v else '0' }}{% else %}—{% endif %}{%- endmacro %}
+{% macro flag(v) -%}{% if v is number %}{{ 'yes' if v else 'no' }}{% else %}—{% endif %}{%- endmacro %}
+{% macro short(port) -%}{{ 'Et' ~ port[8:].split('/')[0] if port else '—' }}{%- endmacro %}
+{% macro node_tag(st) -%}
+{%- if st -%}
+{%- set t = 'ok' if st.status == 'started' else 'bad' if st.status == 'down' else 'off' if st.status == 'unknown' else 'warn' -%}
+{{ tag('maint' if st.maintenance and t == 'ok' else t, st.status ~ (' · maint' if st.maintenance else '')) }}
+{%- else -%}{{ tag('off', 'not in nodes.yaml') }}{%- endif -%}
+{%- endmacro %}
+{% set V = view %}
+
+{% if not inst.configured %}
+<div class="notice"><p>Set <code>instrument.prometheus_url</code> in config.yaml to read the switch,
+    the power and the servers, and to poll the X-engine NICs.</p></div>
+{% elif inst.health == 'down' %}
+<div class="notice"><p>{{ inst.error }}</p></div>
+{% endif %}
+{% if problems or board_problem %}
+<div class="notice"><ul class="problems">
+    {% if board_problem %}<li>Boards: {{ board_problem }}</li>{% endif %}
+    {% for p in problems[:12] %}<li>{{ p }}</li>{% endfor %}
+    {% if problems | length > 12 %}<li>… and {{ problems | length - 12 }} more</li>{% endif %}
+</ul></div>
+{% endif %}
+
+<div class="inst-facts">
+    <span>{{ tag(monitor_tone(inst.health), monitor_label(inst.health)) }}
+        <small>polled {{ since(inst.last_polled, now) }}</small></span>
+    {% set S = inst.sources %}
+    {% if S.kotekan %}<span><b>NICs</b> kotekan on {{ S.kotekan.n }}{% if S.kotekan.of %} / {{ S.kotekan.of }}{% endif %} nodes</span>{% endif %}
+    <span><b>Switch</b> {% if S.switch %}{{ 'eAPI' if S.switch.ok else '<span class="err">eAPI failed</span>' | safe }}{% else %}via Prometheus (no switch account){% endif %}</span>
+    {% if S.prometheus %}<span><b>Prometheus</b> {{ 'answering' if S.prometheus.ok else '<span class="err">not answering</span>' | safe }} <small>(power, iDRACs, dish supply, every 30 s)</small></span>{% endif %}
+</div>
+
+<h3>Signal path</h3>
+{% set F = flow %}
+<div class="scroll-x">
+<svg class="fl" viewBox="0 0 {{ F.width }} {{ F.height }}" role="img"
+     aria-label="Signal path from the power supplies and feeds through the CRS boards, the switch and the X-engines to the receiver and the files">
+    <defs>
+        {% for t in ('ok', 'warn', 'bad', 'off') %}
+        <marker id="fl-arrow-{{ t }}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="11" markerHeight="11"
+                markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" class="ah ah-{{ t }}"/></marker>
+        {% endfor %}
+    </defs>
+    {# the crate and the switch, behind their links #}
+    {% if F.crate %}{% set C = F.crate %}
+    <rect x="{{ C.x }}" y="{{ C.y }}" width="{{ C.w }}" height="{{ C.h }}" rx="8" class="frame"/>{% endif %}
+    {% set W = F.switch %}
+    <rect x="{{ W.x }}" y="{{ W.y }}" width="{{ W.w }}" height="{{ W.h }}" rx="10" class="swbox"/>
+    {% for d in W.mesh %}<path d="{{ d }}" class="mesh"/>{% endfor %}
+    <text x="{{ W.cx }}" y="{{ W.cy }}" text-anchor="middle" class="swrate swname">{{ W.label }}</text>
+    {% if F.bus %}<path d="{{ F.bus.d }}" class="ln ln-{{ F.bus.tone }} bus"/>{% endif %}
+    {# links #}
+    {% for l in F.links %}
+    <g><title>{{ l.title }}</title>
+        <path d="{{ l.d }}" class="ln ln-{{ l.tone }}"{% if l.w %} style="stroke-width: {{ l.w }}px"{% endif %} marker-end="url(#fl-arrow-{{ l.tone if l.tone in ('ok', 'warn', 'bad') else 'off' }})"/>
+        {% if l.label %}<text x="{{ l.lx }}" y="{{ l.ly }}" text-anchor="middle" class="lbl">{{ l.label }}</text>{% endif %}
+    </g>
+    {% endfor %}
+    {# devices #}
+    {% for c in F.cards %}
+    {% if c.href %}<a href="{{ c.href }}">{% endif %}
+    <g><title>{{ c.title }}</title>
+        {% if c.folder %}
+        <path d="M{{ c.x }},{{ c.y + 8 }} q0,-8 8,-8 h{{ c.w * 0.3 }} l8,8 h{{ c.w * 0.7 - 24 }} q8,0 8,8 v{{ c.h - 16 }} q0,8 -8,8 h{{ -c.w + 16 }} q-8,0 -8,-8 z" class="bx"/>
+        {% else %}
+        <rect x="{{ c.x }}" y="{{ c.y }}" width="{{ c.w }}" height="{{ c.h }}" rx="5" class="bx"/>
+        <rect x="{{ c.x + 1 }}" y="{{ c.y }}" width="{{ c.w - 2 }}" height="3" rx="1.5" class="acc acc-{{ c.tone }}"/>
+        {% endif %}
+        {% for ln in c.lines %}
+        <text x="{{ c.tx }}" y="{{ c.y + ln.dy }}" text-anchor="middle" class="{{ ln.cls }}">{{ ln.text }}{% if ln.sub %}<tspan class="fl-sm muted" dx="6">{{ ln.sub }}</tspan>{% endif %}</text>
+        {% endfor %}
+    </g>
+    {% if c.href %}</a>{% endif %}
+    {% endfor %}
+    {# switch and NIC ports #}
+    {% for t in F.ticks %}
+    <g>{% if t.title %}<title>{{ t.title }}</title>{% endif %}
+        <rect x="{{ t.x - 6 }}" y="{{ t.y - 3 }}" width="12" height="6" rx="1.5" class="tick tick-{{ t.tone }}"/>
+        <text x="{{ t.x }}" y="{{ t.ly }}" text-anchor="middle" class="fl-sm mono muted">{{ t.label }}</text>
+    </g>
+    {% endfor %}
+    {# feeds, by PDB power #}
+    {% for f in F.feeds %}
+    <g><title>{{ f.title }}</title>
+        <circle cx="{{ f.x - 15 }}" cy="{{ f.y - 3.5 }}" r="3.5" class="fd fd-{{ f.tone }}"/>
+        <text x="{{ f.x - 8 }}" y="{{ f.y }}" class="fd-t mono{{ ' muted' if f.tone != 'ok-on' }}">{{ f.text }}</text>
+    </g>
+    {% endfor %}
+    {% for t in F.texts %}<text x="{{ t.x }}" y="{{ t.y }}" class="{{ t.cls }}">{{ t.text }}</text>{% endfor %}
+    {# stage lanes #}
+    {% for s in F.lanes %}
+    {% if s.href %}<a href="{{ s.href }}">{% endif %}
+    <g class="hd"><title>{{ s.title }}{{ ': ' ~ s.word if s.word }}</title>
+        <text x="8" y="{{ s.y + 13 }}" class="ht">{{ s.title }}</text>
+        {% if s.word %}
+        <rect x="8" y="{{ s.y + 20 }}" width="{{ s.pill_w }}" height="18" rx="3" class="pill pill-{{ s.tone }}"/>
+        <circle cx="17" cy="{{ s.y + 29 }}" r="3" class="pd pd-{{ s.tone }}"/>
+        <text x="25" y="{{ s.y + 33 }}" class="pt pt-{{ s.tone }}">{{ s.word }}</text>
+        {% endif %}
+        {% for n in s.notes %}
+        <text x="8" y="{{ s.y + (52 if s.word else 28) + loop.index0 * 13 }}" class="fl-sm muted">{{ n }}</text>
+        {% endfor %}
+    </g>
+    {% if s.href %}</a>{% endif %}
+    {% endfor %}
+</svg>
+</div>
+
+<div class="inst-tables">
+{% if V.unmapped %}
+<p class="note">NIC ports with data that the wiring table does not place:
+    {% for k in V.unmapped %}<code>{{ k[0] }}·{{ k[1] }}</code>{{ ', ' if not loop.last }}{% endfor %}.</p>
+{% endif %}
+
+<h3>Servers</h3>
+<table class="ports stack">
+    <thead><tr><th>Node</th><th>kotekan</th><th>Branch</th><th>Commit</th><th>Host</th><th>iDRAC</th>
+        <th>PSUs</th><th>Inlet</th><th>CPU</th><th>GPU</th><th>PDU</th></tr></thead>
+    <tbody>
+    {% for h in V.hosts.values() %}
+    <tr>
+        <td class="stack-lead mono">{{ h.name }}</td>
+        <td class="stack-end">{{ node_tag(h) }}</td>
+        <td data-label="branch" class="mono">{{ h.branch or '—' }}</td>
+        <td data-label="commit" class="mono" title="{{ h.version or '' }}">{{ (h.commit or '')[:10] or '—' }}</td>
+        <td data-label="host">{% if h.host_up is number %}{{ tag('ok' if h.host_up else 'bad', 'up' if h.host_up else 'no answer') }}{% else %}—{% endif %}</td>
+        <td data-label="iDRAC">{{ tag(h.idrac_tone, h.idrac_word) }}</td>
+        <td data-label="PSUs">{% for n, v in h.psu | dictsort %}{{ tag('ok' if v == 3 else 'warn', n | replace(' Status', '')) }} {% else %}—{% endfor %}</td>
+        <td class="num" data-label="inlet">{{ '%.0f °C' % h.temps.inlet if h.temps.inlet is number else '—' }}</td>
+        <td class="num" data-label="CPU">{{ '%.0f °C' % h.temps.cpu if h.temps.cpu is number else '—' }}</td>
+        <td class="num" data-label="GPU">{{ '%.0f °C' % h.temps.gpu if h.temps.gpu is number else '—' }}</td>
+        <td class="num" data-label="PDU">{{ '%.0f W' % h.watts if h.watts is number else '—' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h3>X-engine NIC ports</h3>
+<table class="ports stack">
+    <thead><tr><th>Node</th><th>Port</th><th>Switch port</th><th>State</th><th>Rx</th>
+        <th>Switch sends</th><th>Missed/s</th><th>Ring full/s</th><th>Errors/s</th></tr></thead>
+    <tbody>
+    {% for x in V.nics %}
+    <tr>
+        <td class="stack-lead mono">{{ x.node }}</td>
+        <td data-label="port" class="mono">{{ x.nic_port }}</td>
+        <td data-label="switch" class="mono">{{ short(x.port) }}</td>
+        <td class="stack-end">{{ tag(x.nic_tone, x.nic_word) }}</td>
+        <td class="num" data-label="rx">{{ kpps(x.nic.pps) }}</td>
+        <td class="num" data-label="switch sends">{{ kpps(x.sw.out_pps) }}</td>
+        <td class="num" data-label="missed/s">{{ per_s(x.nic.missed) }}</td>
+        <td class="num" data-label="ring full/s">{{ per_s(x.nic.ring_full) }}</td>
+        <td class="num" data-label="errors/s">{{ per_s(x.nic.errors) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h3 id="switch-ports">Switch ports</h3>
+<p class="note">All Ethernet ports the switch monitor reports, read-only.  In and out are as the switch
+    counts them; FEC and error counts are per second over 5 min.
+    {%- if not (V.switch_ports | selectattr('stats.rx_dbm', 'number') | list) %}  Optical receive
+    power appears once the switch monitor exports it.{% endif %}</p>
+<div class="scroll-x">
+<table class="ports">
+    <thead><tr><th>Port</th><th>Carries</th><th>State</th><th>Type</th><th>Signal</th><th>FEC lock</th>
+        <th>Rx dBm</th><th>In</th><th>Out</th><th>FEC corr/s</th><th>FEC uncorr/s</th>
+        <th>Errors/s</th><th>Discards/s</th></tr></thead>
+    <tbody>
+    {% for p in V.switch_ports %}
+    {% set s = p.stats %}
+    <tr class="{{ 'unwired' if not p.role }}">
+        <td class="mono">{{ p.name }}</td>
+        <td>{{ p.role or '—' }}</td>
+        <td>{{ tag(p.tone, p.word) }}</td>
+        <td>{{ s.type or '—' }}</td>
+        <td>{{ flag(s.signal) }}</td>
+        <td>{{ flag(s.fec_lock) }}</td>
+        <td class="num">{{ '%.1f' % s.rx_dbm if s.rx_dbm is number else '—' }}</td>
+        <td class="num">{{ gbps(s.in_bps) }}</td>
+        <td class="num">{{ gbps(s.out_bps) }}</td>
+        <td class="num">{{ per_s(s.fec_corr) }}</td>
+        <td class="num">{{ per_s(s.fec_unc) }}</td>
+        <td class="num">{{ per_s(s.errors) }}</td>
+        <td class="num">{{ per_s((s.in_discards or 0) + (s.out_discards or 0)) if s.in_discards is number or s.out_discards is number else '—' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<h3 id="power">PDU outlets</h3>
+{% if devices.outlets %}
+<p class="note">Active power per outlet, as the PDU reports it ({{ '%.1f' % (devices.inlet_w / 1e3) if devices.inlet_w is number else '—' }} kW at the inlet).
+    Servers have two supplies on two outlets; the second idles at a few watts.</p>
+<div class="scroll-x">
+<table class="ports">
+    <thead><tr><th>PDU</th><th>Outlet</th><th>Label</th><th>Power</th></tr></thead>
+    <tbody>
+    {% for o in devices.outlets %}
+    <tr><td class="mono">{{ o.pdu }}</td><td class="num">{{ o.outlet }}</td><td>{{ o.name or '—' }}</td>
+        <td class="num">{{ '%.0f W' % o.watts }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p class="note">No PDU outlet series in Prometheus.</p>
+{% endif %}
+
+<p class="note">Wiring table: <code>{{ wiring.path or 'not configured' }}</code>
+    ({{ wiring.rows | length }} ports){% if wiring.errors %}; {{ wiring.errors | length }} rows refused,
+    listed above{% endif %}.  Rows marked "inferred" were matched from link changes and should be
+    confirmed on site or from the switch's static multicast MAC table.</p>
+</div>

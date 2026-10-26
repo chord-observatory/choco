@@ -24,6 +24,9 @@ from .jobclient import MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT
 from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
                         run_blocking, timeline_rows, utc_minute)
 from . import dishlabels
+from .instrument import (CRATE_OUTLET, PAGE_POLL_S, SWITCH_OUTLET, worst_tone, ago, board_layout, flow_diagram,
+                         health_tone, job_tone, job_word, node_tone, outlet_watts,
+                         overview as instrument_overview)
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
 from .waterfalls import (coarse_image as wf_coarse_image, coarse_view_context as wf_coarse_view_context,
@@ -158,7 +161,7 @@ def _note_presence():
 _PAGE_NAMES = (("/nodes/edit/", "node"), ("/nodes/edit", "edit nodes"),
                ("/nodes", "nodes"), ("/configs", "configs"), ("/files", "files"),
                ("/waterfall", "waterfall"), ("/pipeline/", "pipeline"), ("/plot/", "plot"),
-               ("/service/", "service"), ("/", "services"))
+               ("/service/", "service"), ("/", "instrument"))
 
 
 def _page_name(path: str | None) -> str:
@@ -227,53 +230,17 @@ def logout():
 
 # --- Main routes (all require login) ---
 
-def _landing_context() -> dict:
-    """Everything the landing page's service table shows.
-
-    The same health snapshots as the header strip, plus the per-service
-    facts the strip only carries in a tooltip: timer schedules and the
-    state-file summaries (both already tolerant of missing systemd or
-    unusable state files).
-    """
-    svc_registry = _service_registry()
-    services = _services_health(svc_registry)
-    timers = {}
-    details = {}
-    for name, svc in svc_registry.items():
-        if svc["kind"] != "job":
-            continue
-        timers[name] = timer_status(svc["timer"])
-        details[name] = _service_detail(name, svc)
-    return {
-        "services": services,
-        "svc": svc_registry,
-        "folds": {host: [[n, services[n]] for n in names]
-                  for host, names in _folded(svc_registry).items()},
-        "timers": timers,
-        "details": details,
-        "choco": _service_detail("choco", svc_registry["choco"]),
-        "nodes": _nodes_health(),
-        "now_ts": time.time(),
-    }
-
-
 @bp.route("/")
 @login_required
 def landing():
-    """CHOCO landing page: the services overview table.
-
-    Node management lives under /nodes/*; this page is the front door.
+    """The front door: the instrument flowchart, the signal path with every
+    service on it, and the hardware tables below.
     """
-    # ?wall=1: a wall display -- no chrome, larger tags (base.html / css).
-    return render_template("landing.html", wall=request.args.get("wall") == "1",
-                           **_landing_context())
-
-
-@bp.route("/partials/landing-services")
-@login_required
-def partial_landing_services():
-    """The landing page's service table, htmx-refreshed in place."""
-    return render_template("_landing_services.html", **_landing_context())
+    # ?wall=1: a wall display -- no chrome, the diagram alone (base.html / css).
+    monitor = current_app.config["instrument_monitor"]
+    monitor.poll_if_stale(PAGE_POLL_S)
+    return render_template("instrument.html", wall=request.args.get("wall") == "1",
+                           **_instrument_context())
 
 
 def _state_root() -> Path:
@@ -1539,9 +1506,11 @@ def _services_health(registry: dict | None = None) -> dict:
     fpga = current_app.config.get("fpga_monitor")
     pdb = current_app.config.get("pdb_monitor")
     data = current_app.config.get("datafile_scan")
+    inst = current_app.config.get("instrument_monitor")
     health = {
         "fpga": fpga.to_dict() if fpga is not None else None,
         "pdb": pdb.to_dict() if pdb is not None else None,
+        "instrument": inst.to_dict() if inst is not None and inst.configured else None,
         "data": data.to_dict() if data is not None else None,
     }
     for name, svc in (registry or _service_registry()).items():
@@ -1639,6 +1608,7 @@ def partial_services():
         nodes=_nodes_health(),
         fpga=services["fpga"],
         pdb=services["pdb"],
+        instrument=services["instrument"],
         data=services["data"],
         services=services,
         svc=registry,
@@ -1986,6 +1956,241 @@ def _pdb_cross_check(pdb_map: PdbMap) -> dict:
         return result
     result.update(cross_check(pdb_map, labels), available=True)
     return result
+
+
+# ---- the instrument page ---------------------------------------------------
+
+def _instrument_boards() -> tuple[list[dict], str | None]:
+    """The boards and their feeds from a kotekan group's rendered config
+    (``instrument.kotekan_group``, else the first group)."""
+    cfg = current_app.config.get("instrument_cfg") or {}
+    registry = _registry()
+    group = cfg.get("kotekan_group") or next((n.group for n in registry.nodes.values()), None)
+    if not group:
+        return [], "no node groups in nodes.yaml"
+    sample = next((n for n in registry.nodes.values() if n.group == group), None)
+    if sample is None:
+        return [], f"group '{group}' is not in nodes.yaml"
+    if sample.rendered_config is None:
+        return [], sample.config_problem or f"the {group} config did not render"
+    return board_layout(sample.rendered_config)
+
+
+def _feed_power() -> dict:
+    """Feed label -> its PDB channel's state (None: the controller has not
+    reported that board), for every feed the PDB table names."""
+    monitor = current_app.config.get("pdb_monitor")
+    if monitor is None or not monitor.configured:
+        return {}
+    by_bus = {b["bus"]: b["by_board"] for b in _pdb_buses(monitor)}
+    out = {}
+    for e in current_app.config["pdb_map"].get().entries.values():
+        chips = by_bus.get(e.bus, {}).get(e.board)
+        row = chips.get(e.chip) if chips else None
+        out[e.dish_input] = row["channels"][e.channel] if row else None
+    return out
+
+
+def _feed_flags() -> dict | None:
+    """Feed label -> why bffs flags it (its sources and reasons), for the
+    flagged feeds; None when bffs has no state to read."""
+    registry = _service_registry()
+    d = _service_detail("bffs", registry["bffs"]) if "bffs" in registry else None
+    if not d or not d.get("has_state"):
+        return None
+    return {label: d["flagged_by"].get(label, "") for label in d["bad_inputs"]}
+
+
+def _instrument_context() -> dict:
+    monitor = current_app.config["instrument_monitor"]
+    wiring = monitor.wiring.get()
+    boards, board_problem = _instrument_boards()
+    nodes = {n.name: {"status": n.status.value, "maintenance": n.maintenance,
+                      "version": n.version, "group": n.group,
+                      "branch": (n.version_info or {}).get("branch"),
+                      "commit": (n.version_info or {}).get("git_commit_hash")}
+             for n in _registry().nodes.values()}
+    pdb = current_app.config.get("pdb_monitor")
+    data = current_app.config.get("datafile_scan")
+    fpga = current_app.config.get("fpga_monitor")
+    view = instrument_overview(boards, wiring, monitor.switch, monitor.nics, _feed_power(), nodes,
+                               monitor.devices, _feed_flags())
+    stages = _instrument_stages(view, monitor, pdb, fpga, data)
+    return {
+        "inst": monitor.to_dict(),
+        "view": view,
+        "flow": flow_diagram(view, stages, request.script_root),
+        "board_problem": board_problem,
+        "problems": monitor.problems,
+        "wiring": wiring,
+        "devices": monitor.devices,
+        "now_ts": time.time(),
+    }
+
+
+def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
+    """Each flowchart lane's label (title, tone, one word, notes, link) and
+    the power cards."""
+    root = request.script_root
+    now = time.time()
+    devices = monitor.devices or {}
+
+    def links_word(rows, tone_key):
+        live = [r for r in rows if r[tone_key] != "off"]
+        up = sum(1 for r in live if r[tone_key] == "ok")
+        tone = "off" if not live else "ok" if up == len(live) else \
+            "bad" if any(r[tone_key] == "bad" for r in live) else "warn"
+        return tone, f"{up}/{len(live)} ok"
+
+    def watts(name):
+        w = outlet_watts(devices, name)
+        return f"{w:.0f} W" if w is not None else None
+
+    stages: dict = {}
+    psu = monitor.psu
+    if psu and psu.get("up"):
+        supply = {"tone": "bad" if psu.get("fault") else "ok" if psu.get("output_on") else "warn",
+                  "line": f"{'on' if psu.get('output_on') else 'OUTPUT OFF'} · {psu.get('volts', 0):.1f} V · "
+                          f"{psu.get('amps', 0):.1f} A" + (" · fault" if psu.get("fault") else "")}
+    else:
+        supply = {"tone": "bad" if psu else "off", "line": "not answering" if psu else "no data"}
+    cards = [{"name": "Dish supply", "sub": "Keysight N8732A", "title": "DC supply for the dishes' analog chain",
+              **supply}]
+    if pdb is not None and pdb.configured:
+        pline = (f"answering · polled {ago(pdb.last_seen, now)}" if pdb.health == "ok"
+                 else f"{pdb.health} · {pdb.error or ''}"[:60])
+        cards.append({"name": "PDB controller", "sub": f"power_db {pdb.host}", "line": pline,
+                      "tone": health_tone(pdb.health), "href": root + "/service/pdb",
+                      "title": f"power_db at {pdb.host}:{pdb.port}: {pdb.health}"
+                               + (f" ({pdb.error})" if pdb.error else "")})
+        stages["pdb"] = {"title": "Feeds", "tone": health_tone(pdb.health),
+                         "word": f"{pdb.n_on}/{pdb.n_channels} on" if pdb.n_channels else pdb.health,
+                         "href": root + "/service/pdb", "notes": ["filled: powered", "red: bffs flagged"]}
+    else:
+        cards.append({"name": "PDB controller", "sub": "power_db", "line": "not configured", "tone": "off"})
+        stages["pdb"] = {"title": "Feeds", "tone": "off", "word": "no PDB"}
+    if devices.get("inlet_w") is not None:
+        n = len(devices.get("outlets", []))
+        cards.append({"name": "Rack PDU", "sub": ", ".join(sorted({o["pdu"] for o in devices["outlets"]})),
+                      "line": f"{devices['inlet_w'] / 1e3:.1f} kW in · {n} outlets", "tone": "ok",
+                      "href": "#power", "title": "AC power for the switch, the crate and the servers"})
+    stages["power"] = {"title": "Power"}
+    stages["power_cards"] = cards
+
+    fstate = fpga.to_dict() if fpga is not None else {}
+    crate = devices.get("crate") or {}
+    btone, bword = links_word(view["boards"], "tone")
+    notes = ["fpga_master " + (fstate.get("state") or fstate.get("health") or "—")]
+    if crate.get("boards") is not None:
+        notes.append(f"{crate['boards']:.0f} boards seen")
+    if watts(CRATE_OUTLET):
+        notes.append(watts(CRATE_OUTLET))
+    stages["fpga"] = {"title": "CRS boards", "word": bword, "href": root + "/service/fpga", "notes": notes,
+                      "tone": btone if fstate.get("health") in ("ok", None) else health_tone(fstate.get("health"))}
+    mon = monitor.switch_monitor or {}
+    eapi = (monitor.sources or {}).get("switch")
+    live = eapi["ok"] if eapi else bool(mon.get("up"))
+    stone, sword = links_word(view["nics"], "sw_tone")
+    discards = sum((p["stats"].get("in_discards") or 0) + (p["stats"].get("out_discards") or 0)
+                   for p in view["switch_ports"])
+    stages["switch"] = {"title": "Switch", "tone": stone if live else "bad",
+                        "word": sword if live else ("eAPI failed" if eapi else "monitor down"),
+                        "href": "#switch-ports",
+                        "notes": ["Arista 7060CX", "eAPI, live" if eapi else
+                                  f"monitor {ago(mon.get('last_success'), now)}"]
+                                 + ([watts(SWITCH_OUTLET)] if watts(SWITCH_OUTLET) else []),
+                        "label": f"{view['in_gbps']:.0f} Gb/s in  →  {view['out_gbps']:.0f} Gb/s out"
+                                 + (f"  ·  {discards:.0f} discards/s" if discards else "  ·  no discards")}
+    names = {n["node"]: n["node_state"] for n in view["nics"]}
+    started = sum(1 for st in names.values() if (st or {}).get("status") == "started")
+    xw = [outlet_watts(devices, n) for n in names]
+    stages["xengine"] = {"title": "X-engines", "word": f"{started}/{len(names)} started",
+                         "tone": "off" if not names else "ok" if started == len(names) else
+                         "bad" if not started else "warn", "href": root + "/nodes",
+                         "notes": ([f"{sum(w for w in xw if w) / 1e3:.1f} kW"] if any(xw) else [])
+                                  + [f"iDRAC ok {sum(1 for n in names if view['hosts'].get(n, {}).get('idrac_tone') == 'ok')}"
+                                     f"/{len(names)}"]}
+    rx = view["downstream"][0] if view["downstream"] else None
+    stages["recv"] = {"title": "Receiver", "tone": node_tone(rx), "word": (rx or {}).get("status") or "—",
+                      "href": root + "/nodes"}
+    stages.update(_instrument_jobs(root))
+    d = data.to_dict() if data is not None else None
+    stages["files"] = {"title": "Files", "tone": health_tone(d["health"]) if d and d["configured"] else "off",
+                       "word": (d["health"] if d and d["configured"] else "—"), "href": root + "/files",
+                       "line": f"full · subset · {d['n_ok']}/{d['n_roots']} roots readable" if d and d["configured"]
+                       else "full · subset"}
+    return stages
+
+
+def _instrument_jobs(root: str) -> dict:
+    """The flowchart's services: what choco pushes to the X-engines
+    (``control_cards``) and the jobs that read the files (``job_cards``,
+    lane ``processing``), each with its landing-page tone and one fact."""
+    registry = _service_registry()
+    health = _services_health(registry)
+
+    def detail(name):
+        return _service_detail(name, registry[name]) if name in registry else None
+
+    def job(name, line="", fold=()):
+        if name not in registry:
+            return None
+        parts = [(name, health[name])] + [(f, health[f]) for f in fold if f in health]
+        tones = [job_tone(h["health"], h.get("running")) for _, h in parts]
+        tone = worst_tone(tones)
+        word = next(job_word(h["health"], h.get("running")) for (_, h), t in zip(parts, tones) if t == tone)
+        why = [f"{registry[n]['label']} result: {h['result']}" + (f" (exit {h['exit_status']})" if h.get("exit_status") else "")
+               for n, h in parts if h.get("result") and h["result"] != "success"]
+        why += [r for _, h in parts for r in h.get("reasons") or []]
+        return {"name": registry[name]["label"], "sub": word, "line": line, "tone": tone,
+                "href": root + (registry[name].get("page") or f"/service/{name}"),
+                "title": " · ".join(f"{registry[n]['label']}: {job_word(h['health'], h.get('running'))}"
+                                    for n, h in parts) + "".join(f"\n{w}" for w in why)}
+
+    c = detail("choco") or {}
+    control = [{"name": "CHOCO", "sub": "up", "tone": "ok", "href": root + "/service/choco",
+                "line": f"configs · {c.get('queued', 0)} queued change{'s' if c.get('queued') != 1 else ''}",
+                "title": "choco pushes each node's config and starts it"}]
+    e = detail("eop") or {}
+    control.append(job("eop", f"table to {e['last'][:10]}" if e.get("last") else "EOP table"))
+    b = detail("bffs") or {}
+    control.append(job("bffs", f"{len(b['bad_inputs'])} feeds flagged" if b.get("bad_inputs") is not None
+                       else "bad-feed flags"))
+    w = detail("waterfall") or {}
+    n = detail("acqnotes") or {}
+    g = detail("eigencal") or {}
+    m = detail("mapmaker") or {}
+    jobs = [
+        job("waterfall", "waterfalls" + (f" · backlog {w['backlog']}" if w.get("backlog") else "")),
+        job("acqnotes", f"{n['n_with_notes']}/{n['acquisitions']} acquisitions" if n.get("acquisitions") is not None
+            else "acquisition notes"),
+        job("eigencal", f"last transit {g['transit_time'][:16]}" if g.get("transit_time") else "gains"),
+        job("mapmaker", "sky map" + (f" · Dec {m['pointing_dec_deg']:g}" if m.get("pointing_dec_deg") is not None
+                                    else ""), fold=("skymap",)),
+    ]
+    jobs = [j for j in jobs if j]
+    tones = [j["tone"] for j in jobs]
+    out = {"control_cards": [cc for cc in control if cc], "job_cards": jobs}
+    if jobs:
+        out["processing"] = {"title": "Processing", "tone": worst_tone(tones),
+                             "word": f"{tones.count('ok')}/{len(jobs)} ok"}
+    return out
+
+
+@bp.route("/instrument")
+@login_required
+def instrument_page():
+    """Where the flowchart was before it became the front door."""
+    return redirect(url_for("web.landing"))
+
+
+@bp.route("/partials/instrument")
+@login_required
+def partial_instrument():
+    """The diagram and the tables (htmx poll every PAGE_POLL_S)."""
+    monitor = current_app.config["instrument_monitor"]
+    monitor.poll_if_stale(PAGE_POLL_S)
+    return render_template("_instrument.html", **_instrument_context())
 
 
 @bp.route("/partials/service-pdb")

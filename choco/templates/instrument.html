@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Instrument — CHOCO{% endblock %}
+
+{% block styles %}
+/* The flowchart: one SVG, positions from instrument.flow_diagram, colour
+   from the tone tokens so it follows the theme. */
+svg.fl { display: block; width: 100%; max-width: 1240px; min-width: 900px; height: auto; margin: 0 0 1em;
+         font-family: var(--pico-font-family-sans-serif); color: var(--pico-color); }
+svg.fl text { fill: currentColor; text-decoration: none; }
+svg.fl a { text-decoration: none; color: inherit; }
+svg.fl .ht { font-size: 13px; font-weight: 600; }
+svg.fl .fl-t { font-size: 11.5px; }
+svg.fl .fl-b { font-size: 12.5px; font-weight: 600; }
+svg.fl .fl-sm { font-size: 10px; }
+svg.fl .mono { font-family: var(--pico-font-family-monospace); }
+svg.fl .muted { fill: var(--pico-muted-color); }
+svg.fl .lbl { font-size: 9.5px; fill: var(--pico-muted-color); font-family: var(--pico-font-family-monospace);
+              paint-order: stroke; stroke: var(--pico-background-color); stroke-width: 3px; }
+svg.fl .bx { fill: var(--surface); stroke: var(--surface-border); stroke-width: 1; }
+svg.fl .swbox { fill: var(--surface); stroke: var(--surface-border); stroke-width: 1.2; }
+svg.fl .swrate { font-size: 14px; font-weight: 600; white-space: pre; }
+svg.fl .swname { letter-spacing: 0.04em; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
+svg.fl .frame { fill: none; stroke: var(--surface-border); stroke-width: 1; stroke-dasharray: 4 3; }
+svg.fl .bus { stroke-width: 1.5; marker-end: none; }
+svg.fl .fd-t { font-size: 9.5px; }
+svg.fl .mesh { stroke: var(--pico-muted-color); stroke-width: 0.5; opacity: 0.07; fill: none; }
+svg.fl .ln { fill: none; stroke-width: 2; stroke-linecap: round; }
+svg.fl .ln-ok { stroke: var(--ok); }
+svg.fl .ln-warn { stroke: var(--warn); stroke-dasharray: 6 4; }
+svg.fl .ln-bad { stroke: var(--bad); stroke-dasharray: 2 4; }
+svg.fl .ln-off, svg.fl .ln-none { stroke: var(--off); opacity: 0.45; }
+svg.fl .ah-ok { fill: var(--ok); } svg.fl .ah-warn { fill: var(--warn); }
+svg.fl .ah-bad { fill: var(--bad); } svg.fl .ah-off { fill: var(--off); opacity: 0.5; }
+svg.fl .acc-ok, svg.fl .tick-ok, svg.fl .pd-ok { fill: var(--ok); }
+svg.fl .acc-warn, svg.fl .tick-warn, svg.fl .pd-warn { fill: var(--warn); }
+svg.fl .acc-bad, svg.fl .tick-bad, svg.fl .pd-bad { fill: var(--bad); }
+svg.fl .acc-off, svg.fl .tick-off, svg.fl .pd-off, svg.fl .acc-maint { fill: var(--off); opacity: 0.6; }
+svg.fl .pill { stroke-width: 1; }
+svg.fl .pill-ok { fill: var(--ok-soft); } svg.fl .pt-ok { fill: var(--ok-text); }
+svg.fl .pill-warn { fill: var(--warn-soft); } svg.fl .pt-warn { fill: var(--warn-text); }
+svg.fl .pill-bad { fill: var(--bad-soft); } svg.fl .pt-bad { fill: var(--bad-text); }
+svg.fl .pill-info { fill: var(--info-soft); } svg.fl .pt-info { fill: var(--info-text); }
+svg.fl .acc-info, svg.fl .pd-info { fill: var(--info); } svg.fl .ln-info { stroke: var(--info); }
+svg.fl .pill-off { fill: var(--off-soft); } svg.fl .pt-off { fill: var(--off-text); }
+svg.fl .pt { font-size: 10.5px; }
+/* a feed's dot: the colour is the bffs flag (green good, red flagged, grey
+   unknown), the fill its PDB power (solid on, hollow off, pale unknown) */
+svg.fl .fd { stroke-width: 1.4; }
+svg.fl .fd-ok-on { fill: var(--ok); stroke: var(--ok); }
+svg.fl .fd-bad-on { fill: var(--bad); stroke: var(--bad); }
+svg.fl .fd-none-on { fill: var(--off); stroke: var(--off); }
+svg.fl .fd-ok-off, svg.fl .fd-bad-off, svg.fl .fd-none-off { fill: var(--pico-background-color); }
+svg.fl .fd-ok-none, svg.fl .fd-bad-none, svg.fl .fd-none-none { fill: var(--off-soft); }
+svg.fl .fd-ok-off, svg.fl .fd-ok-none { stroke: var(--ok); }
+svg.fl .fd-bad-off, svg.fl .fd-bad-none { stroke: var(--bad); }
+svg.fl .fd-none-off, svg.fl .fd-none-none { stroke: var(--off); }
+svg.fl a:hover .bx { stroke: var(--pico-primary); }
+svg.fl a:hover .ht { fill: var(--pico-primary); }
+.downstream { display: flex; flex-wrap: wrap; gap: 0.6em; align-items: center; margin: 0 0 1.4em;
+              font-size: 0.85em; }
+.inst-facts { display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; font-size: 0.85em; margin: 0 0 1em; }
+.inst-facts b { font-weight: 600; }
+table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.5em; white-space: nowrap; }
+table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
+table.ports tr.unwired td { color: var(--pico-muted-color); }
+.problems li { font-size: 0.85em; }
+body.wall .inst-tables { display: none; }
+body.wall svg.fl { max-width: none; }
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h2>Instrument</h2>
+</div>
+<p class="note">The signal path from the power supplies to the files, top to bottom.  Each CRS
+    board receives one polarization of eight dishes and sends every frequency to the switch; the
+    switch sends each frequency stream to one X-engine NIC port.  Feeds show their PDB power;
+    links show the live rate (their width too) and their state.  Everything here is read from Prometheus, choco's
+    own monitors, kotekan and kotekan's config, every 5 s while the page is open; nothing that
+    changes anything is sent to the devices.</p>
+<div id="instrument"
+     hx-get="{{ request.script_root }}/partials/instrument"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+    {% include "_instrument.html" %}
+</div>
+{% endblock %}

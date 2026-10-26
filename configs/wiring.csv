@@ -1,0 +1,37 @@
+# Switch wiring for the instrument page (/instrument).  One row per
+# switch port: crate_slot for a port that receives a CRS board, node and
+# nic_port (kotekan's DPDK port, 0 or 1 = NUMA half) for a port that feeds an
+# X-engine node.  The page checks the table against the live packet rates.
+switch_port,crate_slot,node,nic_port,notes
+Ethernet9/1,1,,,
+Ethernet10/1,2,,,
+Ethernet11/1,3,,,
+Ethernet12/1,4,,,
+Ethernet13/1,5,,,
+Ethernet14/1,13,,,
+Ethernet15/1,6,,,
+Ethernet16/1,7,,,
+Ethernet17/1,8,,,
+Ethernet18/1,14,,,
+Ethernet19/1,9,,,
+Ethernet20/1,15,,,
+Ethernet21/1,10,,,
+Ethernet22/1,16,,,
+Ethernet23/1,11,,,
+Ethernet24/1,12,,,
+Ethernet1/1,,cx27,0,
+Ethernet32/1,,cx27,1,
+Ethernet2/1,,cx52,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet31/1,,cx52,1,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet3/1,,cx44,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet30/1,,cx44,1,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet4/1,,cx47,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet29/1,,cx47,1,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet5/1,,cx19,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet26/1,,cx19,1,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet6/1,,cx42,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet28/1,,cx42,1,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet7/1,,cx43,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet25/1,,cx43,1,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet8/1,,cx51,0,inferred from link changes 2026-10-17..25; port order assumed
+Ethernet27/1,,cx51,1,inferred from link changes 2026-10-17..25; port order assumed

@@ -64,6 +64,7 @@ choco/
 ├── http.py         # fetch(): the one HTTP request helper (retries, OSError) for state, fpga, powerdb, upstream
 ├── hosttool.py     # run_tool(): systemctl / journalctl / dot, the one way
 ├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check + power_db wire conventions (stdlib; shared with bffs)
+├── instrument.py   # / (front page): wiring.csv, boards from dish_inputs + crs_board_remap, InstrumentMonitor (kotekan /metrics, switch eAPI, Prometheus), flow_diagram
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
@@ -85,7 +86,7 @@ jobs/               # One dir per job: systemd units, code, tests; run-job.sh ru
 ├── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
 ├── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
 └── acqnotes/       # Per-acquisition README + acq_info.yaml written into subset/ (hourly); timeline.yaml is curated history
-configs/            # nodes.yaml, vars.yaml, pdb_map.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
+configs/            # nodes.yaml, vars.yaml, pdb_map.csv, wiring.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
 tests/              # pytest; test_<module>.py per module, test_web_<area>.py for routes, test_route_auth.py sweeps every route's exposure
 docs/design/        # Design rationale, one file per subsystem (see the end of this file)
 ```
@@ -168,6 +169,20 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `pipeline_svg.sanitize_pipeline_svg` (whitelist reconstruction; unknown
   elements are unwrapped, never copied).  Plot panel DOM is built with
   `createElement`/`textContent`, never `innerHTML`.
+
+**The instrument page** ([instrument.md](docs/design/instrument.md)) — the front page, `/`
+- Read-only, and direct where choco can: the NIC counters from each node's
+  kotekan `/metrics`; the switch over eAPI only with a `show`-only account,
+  and `SwitchEapi` refuses any command that is not a `show` before sending
+  it — never add another verb.  The PDU, the iDRACs, the dish supply and
+  node_exporter come from Prometheus (at most every 30 s); a detail it lacks
+  is added to its exporter in chord-sysops.
+- The page polls every 5 s while open (`PAGE_POLL_S`); the 30 s background
+  loop is for the header badge.  Overlapping polls are skipped, not queued.
+- Feeds are placed on boards from kotekan's own `dish_inputs` and
+  `crs_board_remap`, never from a table of choco's; only the switch wiring,
+  which nothing reports, is kept by hand (`wiring.csv`, deployment data like
+  `pdb_map.csv`) and is checked against the live rates, never trusted silently.
 
 **Auth and exposure** ([auth.md](docs/design/auth.md), [ui.md](docs/design/ui.md))
 - Every route requires login except `/metrics`, `/skymap.png` and
@@ -394,8 +409,9 @@ names) rather than coin new ones.  This file holds the rules for agents;
 - [sync.md](docs/design/sync.md) — config model, config library and includes, workers, maintenance, one-offs, drift, load resilience
 - [cli.md](docs/design/cli.md) — the `choco` command
 - [auth.md](docs/design/auth.md) — config.yaml, the site proxy and roles, trusted hosts, dev mode
-- [ui.md](docs/design/ui.md) — landing page, service strip, service pages, `/api/status`, `/metrics`
+- [ui.md](docs/design/ui.md) — URL layout, service strip, service pages, `/api/status`, `/metrics`
 - [fpga-pdb.md](docs/design/fpga-pdb.md) — gain archive, FPGA/PDB controls, master PDB map
+- [instrument.md](docs/design/instrument.md) — the signal-path page: Prometheus as the only source, the switch wiring table and how it was first inferred
 - [pipeline.md](docs/design/pipeline.md) — pipeline page, frame peeks, `bufferplot.js`
 - [datafiles.md](docs/design/datafiles.md) — `/files` and the DATA badge
 - [waterfall.md](docs/design/waterfall.md) — the append-only PNG renderer and its read side

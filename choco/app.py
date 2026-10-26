@@ -19,6 +19,7 @@ from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
 from .waterfalls import WaterfallStore
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .fpga import FileArchive, FpgaMonitor, GainArchive, newest_file
+from .instrument import DEFAULT_WIRING_FILENAME, InstrumentMonitor, SwitchEapi, WiringFile
 from .powerdb import PdbMonitor
 from .state import Registry
 from .sync import Orchestrator
@@ -53,6 +54,7 @@ _DEFAULT_CONFIG = {
     "upstream": dict(_UPSTREAM_DEFAULTS),
     "fpga_master": {},
     "pdb": {},
+    "instrument": {},
     "eop": {},
     "bffs": {},
     "eigencal": {},
@@ -300,6 +302,24 @@ def create_app(
     pdb_map_path = (map_file if map_file.is_absolute()
                     else configs_dir / map_file)
 
+    # The instrument page reads the X-engine NICs from kotekan, the switch
+    # from its eAPI given a read-only account (else Prometheus), the rest
+    # from Prometheus, and the hand-kept switch wiring beside nodes.yaml,
+    # like the PDB map.
+    inst_cfg = config.get("instrument") or {}
+    wiring_file = Path(inst_cfg.get("wiring_file") or DEFAULT_WIRING_FILENAME)
+    eapi_cfg = inst_cfg.get("switch_eapi") or {}
+    instrument_monitor = InstrumentMonitor(
+        inst_cfg.get("prometheus_url") or None,
+        switch_instance=inst_cfg.get("switch_instance") or None,
+        wiring=WiringFile(wiring_file if wiring_file.is_absolute() else configs_dir / wiring_file),
+        timeout=float(inst_cfg.get("timeout") or 5.0),
+        nodes=lambda: [(n.name, f"http://{n.host}:{n.port}") for n in registry.nodes.values()],
+        switch_eapi=SwitchEapi(eapi_cfg["url"], eapi_cfg["username"], eapi_cfg["password"],
+                               timeout=float(inst_cfg.get("timeout") or 5.0))
+        if eapi_cfg.get("url") and eapi_cfg.get("username") else None,
+    )
+
     # Store on app for access in routes
     app.config["registry"] = registry
     app.config["orchestrator"] = orchestrator
@@ -314,6 +334,8 @@ def create_app(
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)
+    app.config["instrument_monitor"] = instrument_monitor
+    app.config["instrument_cfg"] = inst_cfg
     app.config["state_dir"] = Path(config.get("state_dir") or _DEFAULT_CONFIG["state_dir"])
     # Each job's block, as the registry and its page read it.
     for name in _JOBS:
@@ -342,6 +364,8 @@ def create_app(
         gevent.spawn(pdb_monitor.run)
     if datafile_scan.configured:
         gevent.spawn(datafile_scan.run)
+    if instrument_monitor.configured:
+        gevent.spawn(instrument_monitor.run)
 
     return app
 

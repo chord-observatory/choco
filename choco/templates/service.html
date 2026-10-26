@@ -10,7 +10,7 @@
 {% block content %}
 <div class="page-head">
     <h2>
-        <a href="{{ request.script_root }}/" class="crumb">Services</a><span class="crumb-sep">/</span>{{ name | upper }}
+        <a href="{{ request.script_root }}/" class="crumb">Instrument</a><span class="crumb-sep">/</span>{{ name | upper }}
         {{ tag(job_tone(job.health, job.running), job_label(job.health, job.running)) }}
     </h2>
 </div>

@@ -61,6 +61,9 @@
 {% if pdb %}
 {{ monitor_tag('PDB', 'power_db', pdb, ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else ''), request.script_root ~ '/service/pdb') }}
 {% endif %}
+{% if instrument %}
+{{ monitor_tag('PATH', 'Prometheus (switch, NICs, dish supply)', instrument, ('\nlink problems: ' ~ instrument.n_problems if instrument.n_problems else ''), request.script_root ~ '/') }}
+{% endif %}
 {# DATA is the mounts and the jobs that read them (the waterfall
    renderer, the acquisition notes), one tag (data_tone / data_word pick
    the worst part); the jobs have no badges of their own (their registry

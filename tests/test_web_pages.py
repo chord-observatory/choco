@@ -14,39 +14,31 @@ from choco.state import NodeStatus
 from tests.helpers import JOB_STUB as _JOB_STUB, job_dir, login
 
 
-# --- Landing page (/) ---
+# --- Front page (/) ---
 
-class TestLandingPage:
-    def test_renders_service_table(self, client):
+class TestFrontPage:
+    def test_draws_every_service_on_the_signal_path(self, client):
         login(client)
         body = client.get("/").data.decode()
-        # One row per badge: choco itself, the cluster, and the jobs.
-        for label in ("CHOCO", "NODES", "DATA", "EOP", "BFFS", "EIGENCAL", "MAP"):
-            assert label in body
-        assert "/service/mapmaker" in body
-        # The waterfall renderer rides in the DATA row (one badge, one
-        # page), never a row of its own; the skymap in the MAP row.
-        assert "waterfalls:" in body
-        assert ">WF<" not in body and "/service/waterfall" not in body
-        assert "skymap:" in body
-        assert ">SKYMAP<" not in body and "/service/skymap" not in body
-        # The nodes row summarizes the registry (3 seeded nodes).
-        assert "3 nodes" in body
-        # The door to node management, now that the dashboard left /.
-        assert 'href="/nodes"' in body
+        assert 'class="fl"' in body and "instrument.prometheus_url" in body
+        # the control column and the processing lane: one card per badge
+        # that is not hardware; the skymap rides in MAP, the waterfall is WF
+        for label in ("CHOCO", "EOP", "BFFS", "EIGENCAL", "MAP", "WF", "NOTES"):
+            assert f">{label}<" in body
+        assert ">SKYMAP<" not in body
+        assert 'id="skymap"' not in body          # the sky map is on the MAP page
 
-    def test_dashboard_no_longer_at_root(self, client):
+    def test_dashboard_not_at_root(self, client):
         login(client)
-        body = client.get("/").data.decode()
-        assert "dashboard-table" not in body
-        # The dashboard still answers at /nodes.
-        nodes_body = client.get("/nodes").data.decode()
-        assert "dashboard-table" in nodes_body
+        assert "dashboard-table" not in client.get("/").data.decode()
+        assert "dashboard-table" in client.get("/nodes").data.decode()
 
-    def test_partial_refreshes_table(self, client):
+    def test_the_services_table_is_gone(self, client):
         login(client)
-        body = client.get("/partials/landing-services").data.decode()
-        assert "<table" in body and "EOP" in body
+        assert client.get("/services").status_code == 404
+        assert client.get("/partials/landing-services").status_code == 404
+        r = client.get("/instrument")
+        assert r.status_code == 302 and r.headers["Location"].endswith("/")
 
 
 class TestVendoredFonts:
@@ -78,7 +70,7 @@ class TestPageChrome:
 
     def test_titles_name_the_page_then_the_site(self, client, app):
         login(client)
-        for url, title in [("/", "Services — CHOCO"), ("/nodes", "Nodes — CHOCO"),
+        for url, title in [("/", "Instrument — CHOCO"), ("/nodes", "Nodes — CHOCO"),
                            ("/nodes/edit", "Edit nodes — CHOCO"), ("/nodes/edit/cx/cx1", "cx/cx1 — CHOCO"),
                            ("/configs", "Configs — CHOCO"), ("/files", "Data files — CHOCO"),
                            ("/service/eop", "EOP — CHOCO"), ("/pipeline/cx/cx1", "cx/cx1 pipeline — CHOCO")]:
@@ -115,18 +107,7 @@ class TestPageChrome:
         plain = client.get("/").data.decode()
         wall = client.get("/?wall=1").data.decode()
         assert '<body class="wall">' in wall and '<body class="wall">' not in plain
-        assert "landing-services" in wall and 'id="skymap"' in wall
-
-    def test_landing_table_has_one_timing_column_and_no_unit_names(self, client):
-        login(client)
-        stub = dict(_JOB_STUB, unit="choco-eop-broadcast.service", state_mtime=time.time() - 120)
-        with patch("choco.web.job_status", return_value=stub), \
-             patch("choco.web.timer_status", return_value={"unit": "x.timer", "next_elapse": "Mon 2026-10-05 06:00:00 UTC"}):
-            body = client.get("/partials/landing-services").data.decode()
-        heads = re.findall(r"<th>([^<]*)</th>", body)
-        assert heads == ["Service", "Status", "Detail", "Timing"]
-        assert "choco-eop-broadcast.service" not in body
-        assert "next Mon 2026-10-05 06:00:00 UTC" in body
+        assert 'class="fl"' in wall and "inst-tables" in wall
 
 
 class TestPresence:
@@ -272,11 +253,9 @@ class TestSkymap:
         body = client.get("/partials/skymap").data.decode()
         assert "No sky map rendered yet" in body
 
-    def test_landing_card_always_present(self, client, app, tmp_path):
+    def test_card_always_present(self, client, app, tmp_path):
         # the job is part of the install, so the card is unconditional:
         # it says "not rendered yet" until the first PNG lands
-        login(client)
-        assert 'id="skymap"' in client.get("/").data.decode()
         login(client)
         body = client.get("/partials/skymap").data.decode()
         assert "No sky map rendered yet" in body

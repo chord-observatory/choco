@@ -106,35 +106,41 @@ check_config() {
     fi
 }
 
-# The deployed master PDB channel map (dish input <-> power board/chip/
-# channel). It may be the only authoritative record of that wiring, so it
-# is treated like config.yaml rather than like a kotekan config: seeded
-# once, never replaced by an install, and if the repo copy differs it is
-# staged alongside for the operator to merge.
-PDB_MAP_NAME="pdb_map.csv"
+# The deployed wiring tables: the master PDB channel map (dish input <->
+# power board/chip/channel) and the switch wiring (switch port <-> crate
+# slot or node NIC port). They may be the only authoritative record of
+# that wiring, so they are treated like config.yaml rather than like a
+# kotekan config: seeded once, never replaced by an install, and if the
+# repo copy differs it is staged alongside for the operator to merge.
+WIRING_TABLES="pdb_map.csv wiring.csv"
 
 copy_repo_configs() {
-    # tar rather than cp -r so the map can be excluded.  configs/.updatable
+    # tar rather than cp -r so the tables can be excluded.  configs/.updatable
     # is runtime state and untracked, so a checkout has none to copy.
-    tar -C "$SCRIPT_DIR/configs" --exclude="./$PDB_MAP_NAME" -cf - . \
+    local excludes=() name
+    for name in $WIRING_TABLES; do excludes+=(--exclude="./$name"); done
+    tar -C "$SCRIPT_DIR/configs" "${excludes[@]}" -cf - . \
         | tar -C "$CONFIG_DIR/configs" -xf -
 }
 
-deploy_pdb_map() {
-    local src="$SCRIPT_DIR/configs/$PDB_MAP_NAME"
-    local dest="$CONFIG_DIR/configs/$PDB_MAP_NAME"
-    [ -f "$src" ] || return 0
+deploy_wiring_tables() {
+    local name src dest
     mkdir -p "$CONFIG_DIR/configs"
-    if [ ! -f "$dest" ]; then
-        cp "$src" "$dest"
-        echo "Seeded $dest -- fill in the real dish-input wiring before use"
-    elif cmp -s "$src" "$dest"; then
-        rm -f "$dest.new"
-    else
-        cp "$src" "$dest.new"
-        echo "Kept existing $dest (the master PDB channel map, deployment data);"
-        echo "  the repo copy is at $dest.new -- merge by hand if you want it."
-    fi
+    for name in $WIRING_TABLES; do
+        src="$SCRIPT_DIR/configs/$name"
+        dest="$CONFIG_DIR/configs/$name"
+        [ -f "$src" ] || continue
+        if [ ! -f "$dest" ]; then
+            cp "$src" "$dest"
+            echo "Seeded $dest -- check it against the real wiring before use"
+        elif cmp -s "$src" "$dest"; then
+            rm -f "$dest.new"
+        else
+            cp "$src" "$dest.new"
+            echo "Kept existing $dest (a wiring table, deployment data);"
+            echo "  the repo copy is at $dest.new -- merge by hand if you want it."
+        fi
+    done
 }
 
 # --- Commands ---
@@ -288,10 +294,10 @@ PY
         echo "      Create it (useradd -r -m -s /usr/sbin/nologin choco) or edit the units."
     fi
 
-    # Seed or overwrite kotekan configs from repo.  pdb_map.csv is excluded
-    # from every copy here and handled separately below -- it is deployment
-    # data, not a repo artifact, so even an explicit --overwrite-configs
-    # must not replace it.
+    # Seed or overwrite kotekan configs from repo.  The wiring tables are
+    # excluded from every copy here and handled separately below -- they are
+    # deployment data, not repo artifacts, so even an explicit
+    # --overwrite-configs must not replace them.
     if [ -d "$SCRIPT_DIR/configs" ]; then
         if [ -z "$(ls -A "$CONFIG_DIR/configs" 2>/dev/null)" ]; then
             copy_repo_configs
@@ -312,7 +318,7 @@ PY
             fi
         fi
     fi
-    deploy_pdb_map
+    deploy_wiring_tables
 
     # Network
     ensure_iptables

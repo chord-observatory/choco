@@ -786,14 +786,13 @@ class TestBffsRunFile:
         body = client.get("/partials/services").data.decode()
         assert "why:" not in body
 
-    def test_landing_table_carries_the_reasons(self, client, app, tmp_path):
+    def test_front_page_cards_carry_the_reasons(self, client, app, tmp_path):
         login(client)
         (job_dir(app, "bffs") / "run.json").write_text(json.dumps(self.RUN))
         degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
-        with patch("choco.web.job_status", return_value=degraded), \
-             patch("choco.web.timer_status", return_value=None):
-            body = client.get("/partials/landing-services").data.decode()
-        assert "rfi: 2 of 14 /sk endpoints unreachable" in body
+        with patch("choco.web.job_status", return_value=degraded):
+            body = client.get("/partials/instrument").data.decode()
+        assert "rfi: 2 of 14 /sk endpoints unreachable" in body and "BFFS result: exit-code (exit 2)" in body
 
     def test_failed_run_error_is_a_reason(self, client, app, tmp_path):
         login(client)

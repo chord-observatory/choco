@@ -108,6 +108,32 @@ pdb:
   # against.  Unset: the first group in nodes.yaml.
   # kotekan_group: cx
 
+# The instrument page (/, the front page): the signal path from the power
+# and the feeds through the CRS boards, the switch and the X-engines to the
+# files, with every service on it.  The X-engine NICs come from each node's
+# kotekan /metrics, the switch from switch_eapi when set; the power, the
+# iDRACs, the dish supply and (without switch_eapi) the switch from
+# Prometheus.  Unset prometheus_url and switch_eapi: the page has no live
+# hardware data.
+instrument:
+  prometheus_url: http://10.222.0.40:9090
+  switch_instance: 10.222.0.21      # the switch monitor's instance label
+  timeout: 5                        # HTTP request timeout (seconds)
+  # Which switch port carries which crate slot, and which feeds which node
+  # NIC port.  Relative paths resolve against configs_dir.
+  wiring_file: wiring.csv
+  # Node group whose kotekan config places the feeds on the boards
+  # (dish_inputs, crs_board_remap).  Unset: the first group in nodes.yaml.
+  # kotekan_group: cx
+  # The switch's eAPI, read directly every 5 s while the page is open, given
+  # an account whose EOS role allows only `show` (choco also refuses to send
+  # anything else).  Unset: the switch comes from Prometheus (the switch
+  # monitor, every 30 s).
+  # switch_eapi:
+  #   url: https://10.222.0.21/command-api
+  #   username: choco-ro
+  #   password: ...
+
 # Earth Orientation Parameter service settings.
 eop:
   # The job's own settings live in /etc/choco/eop.yaml (jobs/eop/eop.example.yaml).

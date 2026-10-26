@@ -189,12 +189,10 @@ nav li { display: inline-flex; align-items: center; }
 .page-head h2 .crumb { color: var(--pico-muted-color); text-decoration: none; font-weight: 500; }
 .page-head h2 .crumb:hover { color: var(--pico-color); }
 .page-head h2 .crumb-sep { color: var(--pico-muted-color); font-weight: 400; margin: 0 0.1em; }
-/* ?wall=1 on the landing page: a wall display.  No chrome, a wider
-   container, larger status tags and table text. */
+/* ?wall=1 on the front page: a wall display.  No chrome, a wider
+   container, the diagram without the tables. */
 body.wall nav, body.wall .note { display: none; }
 body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
-body.wall table.services { font-size: 1.15em; }
-body.wall td .tag { font-size: 1em; }
 
 /* The nav's who-is-here line (base.html polls /partials/presence). */
 .presence { cursor: default; }
