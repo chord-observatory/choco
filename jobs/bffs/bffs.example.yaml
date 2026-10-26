@@ -98,6 +98,25 @@ sources:
     # about them as feeds.  Without the config every element is judged.
     # exclude_types: [RFIDish]
 
+  - kind: spectral-shape         # autocorrelation spectrum tilted or changing shape
+    # Each feed's log spectrum over its polarization's median, fitted
+    # with a line in log2(frequency): the slope in dex per octave.  The
+    # gains flatten the bandpass, so a working feed's slope sits within
+    # ~0.01 of the median.  48 chunk-aligned blocks over 320-1450 MHz
+    # (2 GB, ~20 s a file); 16 blocks put RFI into single feeds' slopes.
+    blocks: 48
+    freq_lo: 320.0
+    freq_hi: 1450.0
+    chunk: 40                     # time rows: a whole 400 s file
+    nsigma: 8.0                   # tilt: robust sigmas from the median ...
+    min_slope: 0.05               # ... and at least this many dex/octave
+    max_change: 0.04              # unstable: slope moved this much ...
+    change_lag: 3                 # ... since this many files earlier
+    clear_after: 6                # a flag holds until this many files pass
+    min_blocks: 12                # fewer blocks with data: abstain
+    min_feeds: 8                  # fewer fitted feeds in a polarization: abstain there
+    # exclude_types: [RFIDish, Missing]
+
   # External-service sources (provisional until the hardware is live).
   # - kind: power                # feeds whose amplifier is unpowered (power_db)
   #   url: http://10.222.0.30:5000

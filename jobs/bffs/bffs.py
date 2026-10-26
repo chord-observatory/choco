@@ -33,7 +33,7 @@ Each source is one module under ``sources/`` exposing
 ``mask(src, labels, kotekan_file)`` — a good-mask, or ``(mask, report)`` with
 a ``sources.common.report`` saying how the measurement went; ``combine_sources``
 dispatches via ``sources.get(kind)``. Built-in kinds: ``manual``,
-``dish-type``, ``power-outlier``, ``power``, ``fpga``, ``rfi`` (see
+``dish-type``, ``power-outlier``, ``spectral-shape``, ``power``, ``fpga``, ``rfi`` (see
 ``sources/``).  A source
 that cannot measure abstains (leaves feeds good) and reports ``degraded``
 rather than flagging; the run then exits 2 with the reason on record.

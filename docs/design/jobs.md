@@ -102,6 +102,14 @@ the next one lands, so the same read repeated 13 times for one answer.  The
 report's ``cached`` flag says which it was; a changed parameter or
 ``dish_types`` map is a miss.
 
+The ``spectral-shape`` source (2026-10-26) reads more: 48 blocks over
+320-1450 MHz, 2 GB and ~20 s a file, once per file through its history
+file (``spectral_shape.json``).  A slope over 16 blocks varied by 0.05-0.09
+for single feeds whenever a block landed in RFI that one feed saw more
+than its partners (B03Y read -0.09 against -0.02 at 48 blocks); at 48 a
+working feed's slope varies by ~0.003 between files, against the 0.04 the
+instability test flags.
+
 **Abstain, never flag for lack of data.**  Measured 2026-10-01 against the
 state history: the stopped-acquisition tail file (20 rows, frames in 1 of
 6145 channels) had twice flagged all 128 elements bad (09-19 02:30, 09-20

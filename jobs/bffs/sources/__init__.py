@@ -22,6 +22,7 @@ _KINDS = {
     "manual": "manual",
     "dish-type": "dish_type",
     "power-outlier": "power_outlier",
+    "spectral-shape": "spectral_shape",
     "power": "power",
     "fpga": "fpga",
     "rfi": "rfi",

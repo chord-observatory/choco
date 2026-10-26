@@ -427,6 +427,17 @@ def bffs_source_summary(kind: str, d: dict) -> str:
             parts.append(f"{int(d['n_excluded'])} {named} elements not compared")
         if d.get("file"):
             parts.append(Path(str(d["file"])).name)
+    elif kind == "spectral-shape":
+        pols = d.get("pols")
+        if isinstance(pols, dict):
+            for pol, s in pols.items():
+                if isinstance(s, dict) and s.get("limit") is not None:
+                    parts.append(f"{pol}: {int(s.get('n') or 0)} feeds, "
+                                 f"limit ±{float(s['limit']):.3f} dex/octave")
+        if d.get("n_held"):
+            parts.append(f"{int(d['n_held'])} held from earlier files")
+        if d.get("file"):
+            parts.append(Path(str(d["file"])).name)
     elif kind == "dish-type":
         counts = d.get("type_counts")
         if isinstance(counts, dict) and counts:

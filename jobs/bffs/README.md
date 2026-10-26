@@ -175,6 +175,7 @@ nothing.
 | `manual` | a watched override file (`bad_inputs:` list of labels), edited by hand or by clicking choco's BFFS element grid | feeds an operator marked bad |
 | `dish-type` | the kotekan config's `dish_inputs` `type` per dish, via choco | every element of a `Missing` dish — a slot with no dish behind it is bad by construction (`bad_types`; RFI antennas are not flagged) |
 | `power-outlier` | kotekan N² output (`hdf5N2write`) → per-feed band-averaged power | main-array feeds whose power is an outlier across the other main-array feeds (`RFIDish` elements are neither compared nor flagged) |
+| `spectral-shape` | kotekan N² output → the slope of each feed's autocorrelation spectrum against its polarization's median | feeds whose spectrum tilts (C02X) or changes shape between files (B05Y); a flag holds for `clear_after` files |
 | `power` | the power controller's live `/channel_states` (power_db) joined to choco's master PDB table | feeds whose amplifier is unpowered, and feeds the table has no channel for at all (not installed: flagged *absent*) |
 | `fpga` *(provisional)* | the F-engine `raw_acq` metrics (pychfpga) | feeds with FFT overflow, no frames, or out-of-range ADC RMS |
 | `rfi` *(provisional)* | kotekan's per-feed spectral kurtosis (RfiSKMetrics `/sk` endpoints) | feeds whose SK sits persistently away from 1 (RFI or a broken signal chain) |
@@ -273,6 +274,31 @@ file's own `flags` do not).  The verdict on a file is cached beside `run.json`
 source's parameters): a kotekan file never changes once it has landed and the
 timer fires some 13 times between files, so each file is read once.  The
 report's `cached` says which it was.
+
+`spectral-shape` judges the shape of the spectrum, which `power-outlier`
+cannot see: a band average can stay inside its bounds while the spectrum
+tilts.  The F-engine's digital gains flatten each feed's bandpass, so in the
+file every working feed has nearly the shape of the others of its
+polarization.  Per file the source reads `blocks` (default 48)
+chunk-aligned blocks over 320–1450 MHz, takes per feed and block the median
+over the channels of the time-averaged autocorrelation (a few RFI channels
+do not move a median), divides by the polarization's median feed, and fits
+a line in log2(frequency); one pass drops blocks more than `clip` robust
+sigmas off the line.  A feed is bad when its slope is more than `nsigma`
+(8) robust sigmas **and** `min_slope` (0.05 dex/octave) from the median, or
+when its slope moved more than `max_change` (0.04) since `change_lag` (3)
+files earlier.  A flag holds until `clear_after` (6) files pass.  The
+recent files' slopes and verdicts are kept beside `run.json`
+(`spectral_shape.json`, by file index); this history is also the cache, so
+each file is read once.  Measured on `acq_20261025_233145` (128 elements,
+gains in): the slopes' robust sigma is 0.009–0.015 a file and a working
+feed's slope varies by ~0.003 between files; C02X sits at −0.36 (its gain
+table) in every file and B05Y moves between 0 and +0.13.  With 16 blocks
+instead of 48 a block that lands in RFI tilts single feeds by 0.05–0.09
+(B03Y read −0.09 against −0.02), so the read is 2 GB a file (~20 s).  The
+source abstains below `min_blocks` blocks with data or an octave of span,
+and per polarization below `min_feeds` fitted feeds; dead, unmeasured,
+`RFIDish` and `Missing` elements are not fitted and stay good.
 
 ### State & change history
 

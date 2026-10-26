@@ -330,7 +330,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   [waterfall.md](docs/design/waterfall.md)).  bffs also takes validity
   and weight from `frames_added`, not `vis_weight`, and caches the
   power-outlier verdict per file (`power_outlier.json`: path, mtime,
-  size, parameters) because a landed file never changes.
+  size, parameters) because a landed file never changes; spectral-shape's
+  history of recent files (`spectral_shape.json`) is its cache the same way.
 - bffs joins the file to the flag axis by label, never by position: a
   file label the config does not know sidelines the file like a stale
   one (file sources skipped), it does not fail the run.  The config's

@@ -827,6 +827,12 @@ class TestBffsRunFile:
         assert line("power-outlier", {"rows": 16, "n_excluded": 16,
                                       "exclude_types": ["RFIDish"]}) == (
             "16 rows · 16 RFIDish elements not compared")
+        assert line("spectral-shape", {
+            "pols": {"X": {"n": 64, "median": 0.0, "sigma": 0.012, "limit": 0.0972},
+                     "Y": {"n": 63, "median": 0.002, "sigma": 0.011, "limit": 0.05}},
+            "n_held": 2, "file": "/a/b/vis_0001.h5"}) == (
+            "X: 64 feeds, limit ±0.097 dex/octave · Y: 63 feeds, limit ±0.050 dex/octave · "
+            "2 held from earlier files · vis_0001.h5")
         assert line("dish-type", {"type_counts": {"ArrayDish": 32, "Missing": 80,
                                                   "RFIDish": 16},
                                   "bad_types": ["Missing"], "n_untyped": 0}) == (
