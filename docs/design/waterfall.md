@@ -338,8 +338,9 @@ array's coherence (``co_array.png``: per chunk and file, the median over
 the elements of their coherence images, written by the job beside them
 and rebuilt from them when behind), then each feed's coherence image and
 autocorrelation thumbnail on the 8 × 8 dish grid, X beside Y.  The two
-grids share one place on the page, with a tab for each (the choice is
-remembered per browser); nothing else is switched: no band selector,
+grids share one place on the page, with a tab for each (autocorrelations
+by default since 2026-10-26; the URL's ``#coherence`` or
+``#autocorrelations`` picks one, and a click writes it back); nothing else is switched: no band selector,
 and the band is always whole.  The
 masks moved to the large viewer as columns beside the image, row for
 row (a bin per row for a full waterfall, matched by time; the share of

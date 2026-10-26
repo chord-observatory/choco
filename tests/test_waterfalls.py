@@ -1015,6 +1015,7 @@ class TestOverviewRoutes:
         # the sheet's grids take the autos and the coherence images, and no
         # reference strips follow it
         assert 'id="dg-co"' in body and 'id="dg-auto"' in body and "Autocorrelations" in body
+        assert 'id="dg-auto" value="autocorrelations" checked' in body     # the default; #coherence picks the other
         assert "A0X × the array" not in body and 'class="strip"' not in body and 'table class="tri"' not in body
         assert f"/files/subset/{OV_ACQ}/matrix" in body
         # no mean matrix rendered yet: no triangle

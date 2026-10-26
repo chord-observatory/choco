@@ -83,7 +83,7 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
                 image-rendering: pixelated; background: var(--surface); }
 .dg .cell .none { height: var(--imgh, 4.2em); background: var(--surface); }
 .dg-note { font-size: 0.78em; color: var(--pico-muted-color); margin: -0.8em 0 1.2em; }
-/* One grid at a time: coherence or autocorrelations, chosen by radio tabs. */
+/* One grid at a time: autocorrelations or coherence, chosen by radio tabs. */
 .dg-tabs { margin: 0 0 1.2em; }
 .dg-tabs > input { position: absolute; opacity: 0; pointer-events: none; }
 .dg-tabs > label { display: inline-block; margin: 0 0.3em 0.6em 0; padding: 0.3em 0.7em;
@@ -233,27 +233,31 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
 
 <h3>Per feed</h3>
 <div class="dg-tabs">
-    <input type="radio" name="dg-tab" id="dg-co" value="co" checked><label for="dg-co">Coherence</label>
-    <input type="radio" name="dg-tab" id="dg-auto" value="auto"><label for="dg-auto">Autocorrelations</label>
-    <div class="dg-pane dg-pane-co">
-        {{ dish_grid('co', 'co_view') }}
-        <p class="dg-note">Each dish: X left, Y right.  Each image: frequency across, one row per file; the feed's
-            coherence with the array on the same scale as above.  Click for the image with axes and the feed's mask.</p>
-    </div>
+    <input type="radio" name="dg-tab" id="dg-auto" value="autocorrelations" checked><label for="dg-auto">Autocorrelations</label>
+    <input type="radio" name="dg-tab" id="dg-co" value="coherence"><label for="dg-co">Coherence</label>
     <div class="dg-pane dg-pane-auto">
         {{ dish_grid('auto', 'auto_view') }}
         <p class="dg-note">Each dish: X left, Y right; frequency across, time down.  Click for the full waterfall,
             with the feed's mask, the RFI mask and the lost channels beside it, row for row.</p>
     </div>
+    <div class="dg-pane dg-pane-co">
+        {{ dish_grid('co', 'co_view') }}
+        <p class="dg-note">Each dish: X left, Y right.  Each image: frequency across, one row per file; the feed's
+            coherence with the array on the same scale as above.  Click for the image with axes and the feed's mask.</p>
+    </div>
 </div>
 <script>
+/* The URL's #autocorrelations or #coherence picks the grid; a tab click writes it back. */
 (function () {
-    var k = "chocoDishGrid", t;
-    try { t = localStorage.getItem(k); } catch (e) {}
-    var r = t && document.getElementById("dg-" + t);
-    if (r) r.checked = true;
-    document.querySelectorAll('input[name="dg-tab"]').forEach(function (i) {
-        i.addEventListener("change", function () { try { localStorage.setItem(k, i.value); } catch (e) {} });
+    var tabs = document.querySelectorAll('input[name="dg-tab"]');
+    function fromHash() {
+        var h = location.hash.slice(1);
+        tabs.forEach(function (i) { if (i.value === h) i.checked = true; });
+    }
+    fromHash();
+    window.addEventListener("hashchange", fromHash);
+    tabs.forEach(function (i) {
+        i.addEventListener("change", function () { history.replaceState(null, "", "#" + i.value); });
     });
 })();
 </script>
