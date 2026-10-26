@@ -58,14 +58,17 @@ svg.fl a:hover .bx { stroke: var(--pico-primary); }
 svg.fl a:hover .ht { fill: var(--pico-primary); }
 .downstream { display: flex; flex-wrap: wrap; gap: 0.6em; align-items: center; margin: 0 0 1.4em;
               font-size: 0.85em; }
-.inst-facts { display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; font-size: 0.85em; margin: 0 0 1em; }
+.inst-facts { display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; font-size: 0.85em; margin: 1em 0 0.6em; }
 .inst-facts b { font-weight: 600; }
 body.wall svg.fl { max-width: none; }
 {% endblock %}
 
 {% block content %}
-<div class="page-head">
-    <h2>Instrument</h2>
+<div id="instrument"
+     hx-get="{{ request.script_root }}/partials/instrument"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+    {% include "_instrument.html" %}
 </div>
 <p class="note">The signal path from the power supplies to the files, top to bottom.  Each CRS
     board receives one polarization of eight dishes and sends every frequency to the switch; the
@@ -76,10 +79,4 @@ body.wall svg.fl { max-width: none; }
     <a href="{{ request.script_root }}/switch">switch</a> page, the servers on
     <a href="{{ request.script_root }}/nodes">nodes</a> and the outlets on
     <a href="{{ request.script_root }}/service/power">power</a>.</p>
-<div id="instrument"
-     hx-get="{{ request.script_root }}/partials/instrument"
-     hx-trigger="every 5s"
-     hx-swap="innerHTML">
-    {% include "_instrument.html" %}
-</div>
 {% endblock %}

@@ -1,4 +1,4 @@
-{# The instrument page's live part: facts and the flow diagram (the link
+{# The instrument page's live part: the flow diagram, then the facts (the link
    problems and port tables are on /switch, the servers on /nodes, the
    outlets on /service/power).  Swapped by the 5 s htmx poll on #instrument. #}
 {% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
@@ -11,14 +11,6 @@
 <div class="notice"><p>{{ inst.error }}</p></div>
 {% endif %}
 
-<div class="inst-facts">
-    <span>{{ tag(monitor_tone(inst.health), monitor_label(inst.health)) }}
-        <small>polled {{ since(inst.last_polled, now) }}</small></span>
-    {% set S = inst.sources %}
-    {% if S.kotekan %}<span><b>NICs</b> kotekan on {{ S.kotekan.n }}{% if S.kotekan.of %} / {{ S.kotekan.of }}{% endif %} nodes</span>{% endif %}
-    <span><b>Switch</b> {% if S.switch %}{{ 'eAPI' if S.switch.ok else '<span class="err">eAPI failed</span>' | safe }}{% else %}via Prometheus (no switch account){% endif %}</span>
-    {% if S.prometheus %}<span><b>Prometheus</b> {{ 'answering' if S.prometheus.ok else '<span class="err">not answering</span>' | safe }} <small>(power, iDRACs, dish supply, every 30 s)</small></span>{% endif %}
-</div>
 
 <h3>Signal path</h3>
 {% set F = flow %}
@@ -95,4 +87,13 @@
     {% if s.href %}</a>{% endif %}
     {% endfor %}
 </svg>
+</div>
+
+<div class="inst-facts">
+    <span>{{ tag(monitor_tone(inst.health), monitor_label(inst.health)) }}
+        <small>polled {{ since(inst.last_polled, now) }}</small></span>
+    {% set S = inst.sources %}
+    {% if S.kotekan %}<span><b>NICs</b> kotekan on {{ S.kotekan.n }}{% if S.kotekan.of %} / {{ S.kotekan.of }}{% endif %} nodes</span>{% endif %}
+    <span><b>Switch</b> {% if S.switch %}{{ 'eAPI' if S.switch.ok else '<span class="err">eAPI failed</span>' | safe }}{% else %}via Prometheus (no switch account){% endif %}</span>
+    {% if S.prometheus %}<span><b>Prometheus</b> {{ 'answering' if S.prometheus.ok else '<span class="err">not answering</span>' | safe }} <small>(power, iDRACs, dish supply, every 30 s)</small></span>{% endif %}
 </div>
