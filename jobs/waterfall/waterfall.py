@@ -66,6 +66,9 @@ DEFAULTS = {
     "file_stride": 1,
     "overview": True,
     "matrix_bands": 8,
+    # divide the F-engine's digital gains out of |V| (reduce.gain_weights),
+    # fixed per acquisition when it starts
+    "divide_gains": True,
     # choco's API and the node group, to name the X-engine node behind
     # each stream of a file that has just landed ({url, group}; None: no
     # names)
@@ -97,6 +100,7 @@ def load_config(path) -> dict:
     if cfg["file_stride"] < 1:
         raise ValueError("file_stride must be at least 1")
     cfg["overview"] = bool(cfg["overview"])
+    cfg["divide_gains"] = bool(cfg["divide_gains"])
     cfg["matrix_bands"] = int(cfg["matrix_bands"])
     if cfg["matrix_bands"] < 1:
         raise ValueError("matrix_bands must be at least 1")
@@ -222,6 +226,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         report["errors"].append(f"{acq}: unreadable index; skipped")
         return 0
     store.update_array_coherence(level=cfg["level"])
+    store.update_matrix_mean(level=cfg["level"])
 
     files = source_files(acq_dir)
     if not files:
@@ -302,7 +307,12 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
                      "setting scale from %s", acq, sel.n_prod, axes.n_prod, sel.n_freq,
                      axes.n_freq, axes.n_time, os.path.basename(path))
             try:
-                sample = R.sample_magnitudes(path, sel, axes=axes)
+                gains = None
+                if cfg["divide_gains"]:
+                    gains, why = R.gain_weights(path, axes, sel)
+                    if gains is None:
+                        log.warning("%s: gains not divided out (%s)", acq, why)
+                sample = R.sample_magnitudes(path, sel, axes=axes, gains=gains)
             except OSError as exc:
                 report["errors"].append(f"{path}: {exc}")
                 report["degraded"] = True
@@ -311,11 +321,11 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
             if int(np.isfinite(lo).sum()) == 0:
                 drop(os.path.basename(path), "no product has usable data")
                 continue
-            scaled = (path, axes, sel, lo, hi)
+            scaled = (path, axes, sel, lo, hi, gains is not None)
             break
         if scaled is None:
             return 0
-        first_path, first_axes, first_sel, lo, hi = scaled
+        first_path, first_axes, first_sel, lo, hi, divided = scaled
         n_scaled = int(np.isfinite(lo).sum())
         if n_scaled < first_sel.n_prod:
             log.warning("%s: %d of %d products have no usable data",
@@ -326,7 +336,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
                 spec = R.overview_spec(first_axes, first_sel, cfg["matrix_bands"])
             else:
                 log.warning("%s: no num_elements in the file; no overview for this acquisition", acq)
-        store.start(first_axes, lo, hi, first_sel, spec)
+        store.start(first_axes, lo, hi, first_sel, spec, gains_divided=divided)
         # the files dropped above are behind the scale file; never fold them
         pending = [p for p in pending if os.path.basename(p[1]) not in store.skipped]
 
@@ -344,10 +354,23 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         except ValueError as exc:
             drop(basename, str(exc))
             continue
+        gains = None
+        if store.gains_divided:
+            try:
+                gains, why = R.gain_weights(path, axes, sel)
+            except OSError as exc:
+                report["errors"].append(f"{path}: {exc}")
+                report["degraded"] = True
+                break
+            if gains is None:
+                # its rows would sit on another scale than the rest
+                drop(basename, f"the acquisition divides the gains out; {why}")
+                continue
         if buf is None or buf.shape != (sel.n_prod, axes.n_time, sel.n_freq):
             buf = np.empty((sel.n_prod, axes.n_time, sel.n_freq), np.uint8)
         try:
-            _, overview = R.fold_file(path, lo, hi, out=buf, sel=sel, axes=axes, overview=spec)
+            _, overview = R.fold_file(path, lo, hi, out=buf, sel=sel, axes=axes, overview=spec,
+                                      gains=gains)
             try:
                 diag = R.read_diag(path, axes)
             except (KeyError, ValueError, TypeError) as exc:
@@ -378,6 +401,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         store.refresh_palettes()
         store.update_thumbnails(level=cfg["level"])
         store.refresh_thumbnail_palettes()
+        store.update_matrix_mean(level=cfg["level"])
         report["backlog"] -= written
     return written
 

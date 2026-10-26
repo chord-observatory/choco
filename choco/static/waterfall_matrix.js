@@ -1,7 +1,8 @@
-// The element x element matrix page: the cell under the pointer is
-// named, a click opens that product's coarse waterfall, and the row
-// slider navigates.  The DOM is read, never built: labels go through
-// textContent and the links are computed from element indices.
+// The element x element matrix (its page, and the acquisition page's
+// visibility triangles): the cell under the pointer is named, with its half
+// when the image has two, a click opens that product's coarse waterfall,
+// and the row slider navigates.  The DOM is read, never built: labels go
+// through textContent and the links are computed from element indices.
 (function () {
     "use strict";
     var img = document.getElementById("matrix-img");
@@ -25,7 +26,8 @@
     img.addEventListener("mousemove", function (ev) {
         var c = cell(ev);
         if (!c || !readout) return;
-        readout.textContent = (labels[c[0]] || c[0]) + " \u00d7 " + (labels[c[1]] || c[1])
+        var half = !cfg.halves || c[0] === c[1] ? "" : (c[0] > c[1] ? cfg.halves.lower : cfg.halves.upper) + ": ";
+        readout.textContent = half + (labels[c[0]] || c[0]) + " \u00d7 " + (labels[c[1]] || c[1])
             + "  (elements " + c[0] + ", " + c[1] + ")";
     });
     img.addEventListener("click", function (ev) {

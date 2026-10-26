@@ -438,3 +438,40 @@ def test_the_array_image_grows_with_the_elements_and_catches_up(tmp_path):
     assert st.update_array_coherence() is False             # in step: nothing to do
     reopened = S.AcquisitionStore(o, "acq_x", "subset")
     assert reopened.index["array"]["rows"] == 2
+
+
+def test_the_matrix_image_follows_the_committed_rows(tmp_path):
+    src = build(tmp_path / "v.h5")
+    axes = R.read_axes(src)
+    sel, _ = R.select(axes, {"autos": True})
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(src, sel))
+    o = tmp_path / "o"
+    st = S.AcquisitionStore(o, "acq_x", "subset")
+    st.start(axes, lo, hi, sel, R.overview_spec(axes, sel, 2))
+    assert st.update_matrix_mean() is False                 # nothing committed yet
+    frames = []
+    for i, seed in enumerate((1, 3)):
+        s = src if i == 0 else build(tmp_path / f"v{i}.h5", idx=5 + i, seed=seed)
+        ax = R.read_axes(s)
+        out, ov = R.fold_file(s, lo, hi, sel=sel, axes=ax, overview=st.overview_spec(ax, sel))
+        st.add_file(ax, out, overview=ov)
+        frames.append(R.unquantize_unit(R.quantize_unit(ov.matrix)))
+        assert st.update_matrix_mean() is True
+    assert st.update_matrix_mean() is False                 # in step: nothing to do
+    img, _ = wfpng.read(o / "co_matrix.png")
+    want = R.quantize_unit(np.nanmean(np.stack(frames), axis=(0, 1)))
+    upper = np.triu_indices(4, 1)
+    want[upper] = R.quantize_unit(np.nanmean(frames[-1], axis=0))[upper]   # the latest file
+    assert img.shape == (4, 4) and np.array_equal(img, want)
+    # sums ahead of the commit (rows a crashed run left) are rebuilt
+    with np.load(o / "matrix_mean.npz") as z:
+        np.savez(o / "matrix_mean.npz", total=z["total"] * 9, count=z["count"], rows=np.int64(3))
+    (o / "co_matrix.png").unlink()
+    assert st.update_matrix_mean() is True
+    assert np.array_equal(wfpng.read(o / "co_matrix.png")[0], want)
+
+
+def test_unquantize_inverts_quantize_to_within_a_level():
+    v = np.array([1e-3, 0.01, 0.2, 1.0, np.nan], np.float32)
+    back = R.unquantize_unit(R.quantize_unit(v))
+    assert np.isnan(back[-1]) and np.allclose(back[:-1], v[:-1], rtol=0.03)

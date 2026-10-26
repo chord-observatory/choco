@@ -10,7 +10,7 @@ import yaml
 
 import waterfall as W
 import wfpng
-from test_reduce import make_file
+from test_reduce import add_gains, make_file
 
 
 def add_source(acq_dir, idx, **kw):
@@ -160,6 +160,36 @@ def test_a_shape_change_is_reported_not_fatal(tree, tmp_path):
     rep = W.run(cfg)
     assert rep["files_rendered"] == 0
     assert any("cannot be widened" in e for e in rep["errors"])
+
+
+def test_an_acquisition_with_gains_divides_them_out(tmp_path):
+    root = tmp_path / "subset"
+    acq = root / "acq_20260303_000000_000000000"
+    gain = np.tile([2.0, 3.0, 5.0, 7.0], (512, 1))
+    add_gains(add_source(acq, 300), gain)
+    cfg = W.load_config(write_cfg(tmp_path, root))
+    rep = W.run(cfg)
+    assert rep["files_rendered"] == 1 and not rep["errors"]
+    index = json.loads((tmp_path / "wf" / "subset" / acq.name / "index.json").read_text())
+    assert index["gains"] == "divided"
+    # the A0X auto (element 0, gain input 2) on the divided scale
+    with h5py.File(acq / "vis_0000000300_20260723T_000000_000000000.h5") as f:
+        auto = np.abs(f["vis"][:, 0, :])
+    assert index["products"][0]["hi"] < auto.max() / 25 * 10
+    # a later file without gains would sit on another scale: skipped
+    add_source(acq, 301)
+    rep = W.run(cfg)
+    assert rep["files_rendered"] == 0
+    assert any("divides the gains out; the file carries no digital gains" in e for e in rep["errors"])
+
+
+def test_divide_gains_off_keeps_the_data_as_written(tmp_path):
+    root = tmp_path / "subset"
+    acq = root / "acq_20260303_000000_000000000"
+    add_gains(add_source(acq, 300), np.tile([2.0, 3.0, 5.0, 7.0], (512, 1)))
+    rep = W.run(W.load_config(write_cfg(tmp_path, root, divide_gains=False)))
+    assert rep["files_rendered"] == 1
+    assert "gains" not in json.loads((tmp_path / "wf" / "subset" / acq.name / "index.json").read_text())
 
 
 def test_a_file_without_an_index_is_skipped(tree, tmp_path):

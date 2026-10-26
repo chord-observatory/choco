@@ -1259,12 +1259,12 @@ def waterfall_triangle(root, acq):
     sheet = wf_sheet_context(store, root, acq,
                              node_versions={n.name: n.version for n in _registry().nodes.values()},
                              tz=(current_app.config.get("waterfall_cfg") or {}).get("timezone"))
-    if sheet is not None and strips:
-        # the sheet's grids show the autos and the coherence images
-        strips = [s for s in strips if s["title"] not in ("Autocorrelations", "Coherence with the array")]
+    if sheet is not None and layout != "strips":
+        # the sheet's grids and triangle stand for the strips
+        strips = None
     return render_template(
         "waterfall_triangle.html",
-        root=root, acq=acq, index=index, grid=grid, strips=strips, sheet=sheet,
+        root=root, acq=acq, index=index, grid=grid, strips=strips, sheet=sheet, layout=layout,
         overview=overview_of(index) is not None,
         n_files=len(index.get("files") or []),
         elements_arg=request.args.get("elements") or "",

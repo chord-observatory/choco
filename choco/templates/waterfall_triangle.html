@@ -46,6 +46,27 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
            border-right: 1px solid var(--pico-muted-border-color); color: var(--pico-muted-color); }
 .ar-rail .t { position: absolute; right: 0.4em; transform: translateY(-50%); white-space: nowrap;
               font-size: 0.72em; }
+/* the visibility triangle: the mean coherence of every pair, the lower
+   half of the symmetric matrix (the clip also stops the pointer there) */
+.vt { display: flex; gap: 1.4em; flex-wrap: wrap; align-items: flex-start; margin: 0 0 1.4em; }
+.vt-fig { display: grid; grid-template-columns: 3.4em minmax(0, 520px); flex: 0 1 calc(520px + 3.4em); }
+.vt-rows, .vt-cols { position: relative; font-size: 0.68em; color: var(--pico-muted-color);
+                     font-family: var(--pico-font-family-monospace); }
+.vt-rows .t { position: absolute; right: 0.5em; transform: translateY(-50%); white-space: nowrap; }
+.vt-cols { grid-column: 2; height: 3.4em; }
+.vt-cols .t { position: absolute; top: 0.4em; transform: translateX(-50%) rotate(180deg);
+              writing-mode: vertical-rl; white-space: nowrap; }
+.vt-img { position: relative; aspect-ratio: 1; }
+.vt-img img { width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
+.vt-cap { grid-column: 2; display: flex; justify-content: space-between; gap: 1em; font-size: 0.78em;
+          color: var(--pico-muted-color); margin: 0 0 0.3em; white-space: nowrap; }
+.vt-cap b { font-weight: 600; color: var(--pico-color); }
+.vt-img svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.vt-img svg line { stroke: var(--pico-background-color); stroke-width: 0.6; }
+.vt-img svg line.diag { stroke-width: 0.5; }
+.vt-side { flex: 1 1 16em; font-size: 0.85em; }
+.vt-side p { margin: 0 0 0.6em; }
+.vt-readout { font-family: var(--pico-font-family-monospace); min-height: 1.4em; }
 .ar-key { display: flex; gap: 0.5em; align-items: center; font-size: 0.78em; margin: 0.4em 0 0 var(--railw); }
 .ar-key .bar { flex: 0 0 10em; height: 0.7em; border: 1px solid var(--pico-muted-border-color); }
 
@@ -151,6 +172,41 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     </div>
 </div>
 {%- endif %}
+{%- if sheet.matrix %}{% set M = sheet.matrix %}
+<h3>Visibility triangles</h3>
+<div class="vt">
+    <div class="vt-fig">
+        <div class="vt-cap"><span>◣ below: <b>{{ M.data.halves.lower }}</b></span>
+            <span>above: <b>{{ M.halves_short }}</b> ◥</span></div>
+        <div class="vt-rows">
+            {%- for t in M.ticks %}<span class="t" style="top: {{ '%.3f' % ((t.frac + 4 / M.data.n_el) * 100) }}%">{{ t.label }}</span>{% endfor %}
+        </div>
+        <div class="vt-img">
+            <img id="matrix-img" src="{{ request.script_root }}{{ M.src }}" decoding="async"
+                 alt="coherence of every pair of feeds: the mean below the diagonal, the latest file above">
+            {#- the X | Y blocks of the [P][D] element axis #}
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                <line x1="50" y1="0" x2="50" y2="100"/><line x1="0" y1="50" x2="100" y2="50"/>
+                <line class="diag" x1="0" y1="0" x2="100" y2="100"/></svg>
+        </div>
+        <div class="vt-cols">
+            {%- for t in M.ticks %}<span class="t" style="left: {{ '%.3f' % ((t.frac + 4 / M.data.n_el) * 100) }}%">{{ t.label }}</span>{% endfor %}
+        </div>
+    </div>
+    <div class="vt-side">
+        <p>Each pair's coherence, |V<sub>ab</sub>| / √(V<sub>aa</sub>V<sub>bb</sub>), averaged over
+            the band.  Below the diagonal, the mean over every file of the acquisition; above it,
+            the latest file alone, so a feed that changed shows as a row that differs on the two
+            sides.  X × X top left, Y × Y bottom right, X × Y between.  A dead feed is a dark row
+            and column.  Ticks name each board's first feed.</p>
+        <p class="vt-readout" id="matrix-readout">&nbsp;</p>
+        {%- if sheet.gradient %}<div class="ar-key" style="margin: 0 0 0.6em"><span>0.001</span><span class="bar" style="background: {{ sheet.gradient }}"></span><span>1</span></div>{% endif %}
+        <p>Click a cell for that pair's waterfall.  <a href="{{ request.script_root }}{{ M.data.page }}">Per band and file</a>.</p>
+    </div>
+</div>
+<script type="application/json" id="matrix-data">{{ M.data | tojson }}</script>
+<script src="{{ url_for('static', filename='waterfall_matrix.js') }}"></script>
+{%- endif %}
 
 {%- macro dish_grid(kind, view) %}
 <div class="dg" style="--cols: {{ G.cols | length }}">
@@ -223,9 +279,12 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
         </div>
     </div>
     <p class="dg-note" style="flex: 1 1 16em; margin: 0">Each dish: X left, Y right.  The band median of each
-        feed’s autocorrelation over the median of its polarization; red is hot.  The F-engine’s digital
-        gains bring most feeds, a dead one included, to the same level, so look for dead feeds in the
-        coherence grid; this one finds the feeds the gains cannot bring down.</p>
+        feed’s autocorrelation over the median of its polarization; red is hot, blue cold.
+        {%- if sheet.gains_divided %}  The F-engine’s digital gains are divided out, so this is the
+        power at the ADCs: a dead feed is blue.
+        {%- else %}  The F-engine’s digital gains are left in (an acquisition from before they were
+        divided out) and bring most feeds, a dead one included, to the same level, so look for dead
+        feeds in the coherence grid; this one finds the feeds the gains cannot bring down.{% endif %}</p>
 </div>
 
 {%- set S = sheet.streams %}
@@ -272,6 +331,8 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     {%- endfor %}
 </div>
 {%- endfor %}
+{% elif sheet and layout != 'triangle' %}
+{#- the sheet stands for the thumbnails; ?layout=triangle still shows them #}
 {% elif not grid.elements %}
 <p>Nothing rendered for this acquisition yet.</p>
 {% else %}

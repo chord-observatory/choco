@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 from gevent.lock import BoundedSemaphore
 
-from .acqtree import (ARRAY_IMAGE, ARRAY_SHARD, COHERENCE_RE, IMAGE_RE, SHARD_RE,  # noqa: F401 (re-exported)
+from .acqtree import (ARRAY_IMAGE, ARRAY_SHARD, COHERENCE_RE, IMAGE_RE, MATRIX_IMAGE, SHARD_RE,  # noqa: F401 (re-exported)
                       product_name, shard_name)
 from .datafiles import run_blocking
 
@@ -643,7 +643,7 @@ class WaterfallStore:
         base = self.acquisition_dir(root, acq)
         if base is None:
             return None
-        if shard == ARRAY_SHARD and name == ARRAY_IMAGE:
+        if shard == ARRAY_SHARD and name in (ARRAY_IMAGE, MATRIX_IMAGE):
             return base, name
         if not SHARD_RE.match(shard or ""):
             return None
@@ -1253,10 +1253,13 @@ def _ratio_class(v: float | None) -> int | None:
 def dish_summary(index: dict, ov: dict, last: dict | None, scale: list | None) -> dict:
     """Per element, from the acquisition's last file: ``auto``, its
     band-median autocorrelation over the median of its polarization;
-    None where the file holds nothing to compute it from.  The F-engine's
-    digital gains bring most feeds to the same level, a dead one
-    included (2026-10-23 files: 5.6-6.7 against ~90 for the hot C06Y,
-    C08Y), so this finds feeds the gains cannot bring down, not dead ones.
+    None where the file holds nothing to compute it from.  Where the job
+    divided the F-engine's digital gains out (index ``gains: "divided"``)
+    it is the power at the ADCs.  Left in, they bring most feeds to the
+    same level, a dead one included (2026-10-23 files: 5.6-6.7 against
+    ~90 for the hot C06Y and C08Y; C08's gains were 18 times the
+    median on 2026-10-26), so it finds feeds the gains cannot bring
+    down, not dead ones.
 
     A cross- over same-polar coherence was tried for X/Y swaps and left
     out: the band-mean amplitudes of ``matrix.dat`` carry RFI common to
@@ -1347,8 +1350,9 @@ def _stream_table(diag: list[dict], node_versions: dict, zone) -> dict:
 
 def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
                   tz=None) -> dict | None:
-    """Everything the acquisition page draws above the cross products:
-    the array's coherence, the coherence and autocorrelation grids, the
+    """Everything the acquisition page draws: the array's coherence, the
+    visibility triangles (``co_matrix.png``: the job's mean over bands and
+    files below the diagonal, the latest file above), the coherence and autocorrelation grids, the
     autocorrelation levels of the last file and the stream table.  None
     without an overview (an acquisition rendered before it existed)."""
     index = store.index(root, acq)
@@ -1390,10 +1394,27 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
     # a few files would draw a sliver at page width; a night, a wall
     array_height = max(140, min(480, array_rows * 3))
     freq = freq_ticks(store.coarse_freq(root, acq), ov["chunks"], target=10)
-    when = None
+    when = short = None
     if isinstance(times, list) and times and times[-1] > 0:
         when = _j2000_dt(times[-1], zone).strftime("%Y-%m-%d %H:%M:%S %Z")
+        short = _j2000_dt(times[-1], zone).strftime("%m-%d %H:%M %Z")
+    # an acquisition the job has not reached since the image existed has none
+    resolved = store.image_file(root, acq, ARRAY_SHARD, MATRIX_IMAGE)
+    head = store.image_head(root, acq, ARRAY_SHARD, MATRIX_IMAGE) \
+        if resolved and (resolved[0] / resolved[1]).is_file() else None
+    matrix = None
+    if head and head.get("width") == n:
+        # a tick at each board's first element: eight feeds a board
+        step = 8 if n >= 32 else 1
+        matrix = {"src": f"/waterfall/{root}/{acq}/{ARRAY_SHARD}/{MATRIX_IMAGE}",
+                  "ticks": [{"frac": e / n, "label": labels[e]} for e in range(0, n, step)],
+                  "data": {"n_el": n, "labels": labels, "band": 0, "page": f"/files/{root}/{acq}/matrix",
+                           "coarse_view": f"/waterfall/{root}/{acq}/coarse-view",
+                           "halves": {"lower": f"mean of {ov['rows']} file{'s' if ov['rows'] != 1 else ''}",
+                                      "upper": f"latest file{f', {when}' if when else ''}"}},
+                  "halves_short": f"latest file{f', {short}' if short else ''}"}
     return {
+        "matrix": matrix,
         "array": {
             "src": f"/waterfall/{root}/{acq}/{ARRAY_SHARD}/{ARRAY_IMAGE}",
             "view": f"/waterfall/{root}/{acq}/view/{ARRAY_IMAGE}",
@@ -1404,6 +1425,7 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
             "time_axis": time_ticks(times, array_rows, target=max(2, array_height // 40), tz=tz),
         } if array_rows else None,
         "grid": grid, "last_when": when,
+        "gains_divided": index.get("gains") == "divided",
         "ratio_labels": _RATIO_LABELS,
         "gradient": palette_gradient(store.palette(root, acq)),
         "streams": _stream_table(store.diag(root, acq) or [], node_versions or {}, zone),

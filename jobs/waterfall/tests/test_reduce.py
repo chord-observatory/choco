@@ -419,6 +419,72 @@ def test_fold_file_overview_cubes(vis_file):
     assert np.allclose(ov.matrix[1], ov.matrix[1].T, equal_nan=True)
 
 
+def add_gains(path, gain, remap=(1, 0), freq_step=1.0, exp=None):
+    """Give a make_file file the F-engine's gain archive and a sender
+    config: ``gain`` is ``(n_gfreq, n_input)``, on centres ``freq_step``
+    apart from 0 MHz; dishes A0, A1 as in make_file's labels."""
+    with h5py.File(path, "r+") as f:
+        n_el = int(f.attrs["num_elements"])
+        g = f.create_group("digital_gains")
+        g.create_dataset("gain_coeff", data=np.asarray(gain, np.complex64)[None])
+        g.create_dataset("gain_exp", data=np.zeros((1, gain.shape[1]), np.int32) if exp is None
+                         else np.asarray(exp, np.int32)[None])
+        g.create_dataset("index_map/freq", data=np.array(
+            [(i * freq_step, freq_step) for i in range(gain.shape[0])],
+            dtype=[("centre", "<f8"), ("width", "<f8")]))
+        g.attrs["selected_update_idx"] = 0
+        config = {"telescope": {"crs_board_remap": list(remap), "dish_inputs": [
+            {"dish_idx": d, "type": "ArrayDish", "label": f"A{d}"} for d in range(n_el // 2)]}}
+        f.create_dataset("config_json", data=[json.dumps(config).encode()])
+
+
+def test_gain_weights_place_each_element_on_its_board(vis_file):
+    path, _ = vis_file
+    ax = R.read_axes(path)
+    sel = R.everything(ax)
+    assert R.gain_weights(path, ax, sel) == (None, "the file carries no digital gains")
+    # two boards of two ADCs; remap (1, 0): the X board is source_id 1,
+    # so element e (pol, dish) reads gain input remap[pol] * 2 + dish
+    gain = np.tile([2.0, 3.0, 5.0, 7.0], (512, 1))
+    gain[310, 3] = 0.0                                     # input 3 off at 310 MHz
+    add_gains(path, gain, exp=[0, 0, 1, 0])
+    w, why = R.gain_weights(path, ax, sel)
+    assert why is None and w.shape == (64, 4)
+    # element 0 = A0X -> input 2 (5 x 2**1), 1 = A1X -> 3, 2 = A0Y -> 0, 3 = A1Y -> 1
+    np.testing.assert_allclose(w[0], [1 / 10, 1 / 7, 1 / 2, 1 / 3])
+    assert np.isnan(w[10, 1]) and np.isfinite(w[10, [0, 2, 3]]).all()
+
+
+def test_gain_weights_refuse_a_layout_that_does_not_fit(vis_file):
+    path, _ = vis_file
+    add_gains(path, np.ones((512, 6)))                     # 3 inputs a board, 2 dishes a board
+    w, why = R.gain_weights(path, R.read_axes(path), R.everything(R.read_axes(path)))
+    assert w is None and "3 gain inputs a board" in why
+
+
+def test_fold_divides_the_gains_out_of_pixels_and_coarse_only(vis_file):
+    path, _ = vis_file
+    ax = R.read_axes(path)
+    sel, _ = R.select(ax, {"autos": True})
+    spec = R.overview_spec(ax, sel, 2)
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(path, sel))
+    _, plain = R.fold_file(path, lo, hi, sel=sel, axes=ax, overview=spec)
+    add_gains(path, np.tile([2.0, 3.0, 5.0, 7.0], (512, 1)))
+    w, _ = R.gain_weights(path, ax, sel)
+    pw = w[0, ax.input_a] * w[0, ax.input_b]               # the same in every channel
+    sample = R.sample_magnitudes(path, sel, gains=w)
+    np.testing.assert_allclose(sample, R.sample_magnitudes(path, sel) * pw[sel.prod_idx, None], rtol=1e-6)
+    out, ov = R.fold_file(path, lo * pw[sel.prod_idx], hi * pw[sel.prod_idx], sel=sel, axes=ax,
+                          overview=spec, gains=w)
+    np.testing.assert_allclose(ov.coarse, plain.coarse * pw[:, None], rtol=1e-5)
+    # on a scale divided the same way, the pixels do not move
+    plain_px = R.quantize_file(path, lo, hi, sel=sel, axes=ax)
+    assert (np.abs(out.astype(int) - plain_px.astype(int)) <= 1).all()
+    # the gains cancel in the coherence and the matrix, which use the data as written
+    np.testing.assert_array_equal(ov.coherence, plain.coherence)
+    np.testing.assert_array_equal(ov.matrix, plain.matrix)
+
+
 def test_cube_quantizers():
     # coherence: log scale from the floor (1e-3 -> 1) to 1 (-> 255); nothing -> 0
     np.testing.assert_array_equal(R.quantize_unit(np.array([[1e-3, 1e-2, 0.1, 1.0, np.nan, 2.0, 0.0, 1e-5]])),

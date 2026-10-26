@@ -42,6 +42,8 @@ COHERENCE_RE = re.compile(r"^co_e(\d{4})\.png$")
 #: The array's coherence image, beside the shards (``ARRAY_SHARD`` in a URL).
 ARRAY_IMAGE = "co_array.png"
 ARRAY_SHARD = "array"
+#: The element x element coherence averaged over every band and file, beside it.
+MATRIX_IMAGE = "co_matrix.png"
 
 
 def file_index(name: str) -> int | None:

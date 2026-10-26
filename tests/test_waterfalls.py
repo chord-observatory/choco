@@ -959,19 +959,45 @@ class TestOverviewRoutes:
         assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse/wf_e0000xe0009.png").status_code == 404
         assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/coarse-view/th_e0000xe0001.png").status_code == 404
 
+    def test_visibility_triangle_under_the_array(self, ov_images, ov_client):
+        acq_dir = ov_images / "subset" / OV_ACQ
+        (acq_dir / "co_matrix.png").write_bytes(encode_png(3, [bytes([9, 8, 7])] * 3, [(i, i, i) for i in range(256)]))
+        body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle").data.decode()
+        assert "Visibility triangles" in body and 'id="matrix-img"' in body and "waterfall_matrix.js" in body
+        assert body.index("Visibility triangles") < body.index('id="dg-co"')
+        assert "below: <b>mean of" in body and "above: <b>latest file" in body
+        assert '"halves": {"lower": "mean of' in body
+        resp = ov_client.get(f"/waterfall/subset/{OV_ACQ}/array/co_matrix.png")
+        assert resp.status_code == 200 and resp.data.startswith(b"\x89PNG")
+        # the wrong size for the acquisition: left out rather than mislabelled
+        (acq_dir / "co_matrix.png").write_bytes(encode_png(2, [bytes([9, 8])] * 2, [(i, i, i) for i in range(256)]))
+        assert "Visibility triangles" not in ov_client.get(f"/files/subset/{OV_ACQ}/triangle").data.decode()
+
     def test_coherence_image_and_view(self, ov_client):
         assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/e0002/co_e0002.png").status_code == 200
         body = ov_client.get(f"/waterfall/subset/{OV_ACQ}/view/co_e0002.png").data.decode()
         assert "coherence with the array" in body and "A2X" in body
         assert ov_client.get(f"/waterfall/subset/{OV_ACQ}/e0002/co_e0007.png").status_code == 404
 
-    def test_sheet_shows_strips_and_the_matrix_link(self, ov_client):
+    def test_sheet_stands_for_the_strips_and_links_the_matrix(self, ov_client):
         body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle").data.decode()
-        # the sheet's grids take the autos and the coherence images; the
-        # reference strips stay
+        # the sheet's grids take the autos and the coherence images, and no
+        # reference strips follow it
         assert 'id="dg-co"' in body and 'id="dg-auto"' in body and "Autocorrelations" in body
-        assert "Coherence with the array" not in body and "A0X × the array" in body
-        assert f"/files/subset/{OV_ACQ}/matrix" in body and 'class="strip"' in body
+        assert "A0X × the array" not in body and 'class="strip"' not in body and 'table class="tri"' not in body
+        assert f"/files/subset/{OV_ACQ}/matrix" in body
+        # no mean matrix rendered yet: no triangle
+        assert "Visibility triangles" not in body
+        assert "gains are left in" in body and "gains are divided out" not in body
+
+    def test_sheet_says_when_the_gains_are_divided_out(self, ov_images, ov_client):
+        path = ov_images / "subset" / OV_ACQ / "index.json"
+        index = json.loads(path.read_text())
+        path.write_text(json.dumps({**index, "gains": "divided"}))
+        body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle").data.decode()
+        assert "gains are divided out, so this is the\n        power at the ADCs" in body
+        body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle?layout=strips").data.decode()
+        assert "A0X × the array" in body and 'class="strip"' in body
         body = ov_client.get(f"/files/subset/{OV_ACQ}/triangle?layout=triangle").data.decode()
         assert 'class="strip"' not in body and 'table class="tri"' in body
         body = ov_client.get(f"/files/subset/{ACQ}/triangle").data.decode()

@@ -360,3 +360,42 @@ host: the sender configs are identical), and counts the bins in which a
 stream masked a different number of feeds than most: on the same files
 streams 1, 3, 9 and 11 (two nodes) were out of step for the B01X
 episode above.
+
+**The visibility triangle (2026-10-26).**  The reference strips ("A01X ×
+the array": one element's cross products as thumbnails) repeated what the
+grids show and told little; the page now has, under the array's
+coherence, every pair at once: ``matrix.dat`` averaged over its bands and
+every file, kept by the job as running sums (``matrix_mean.npz``) so each
+run reads only the new rows, and drawn as one n_el × n_el image
+(``co_matrix.png``).  The upper triangle, a mirror of the lower one, at
+first was clipped away and left a blank half square; it now holds the
+latest file alone (averaged over the bands), so the image reads as now
+against the whole acquisition: a feed that died partway through is dark
+above the diagonal and lit below.  The caption over the image and the
+hover readout name the half.  The readout and the click (the pair's
+coarse waterfall, rendered on request from ``coarse.dat``: about 3 ms
+after the first, nothing kept per pair) reuse the matrix page's script.  The mean is linear
+over the quantized levels' values, not over the levels: a log mean would
+let one dead band pull a live pair down a decade.  ``?layout=strips``
+still shows the strips.  On ``acq_20261023_142451`` the dead feeds are
+dark rows and columns at a glance, and the X × Y block carries a bright
+diagonal: each dish's X and Y are more coherent with each other than with
+any other feed.
+
+**The gains divided out (2026-10-26).**  The F-engine's digital gains
+level every input, so the waterfalls showed a flat band and a dead feed
+at the level of the rest (the autocorrelation table could only find the
+hot ones).  The job now divides them out per channel: |V_ab| / |g_a g_b|,
+the power at the ADCs.  The gains come from the file, not from
+fpga_master: a file keeps the archive it was taken with, so an old file
+is folded with its own gains.  The archive's input axis is the
+F-engine's stream order, ``source_id × 8 + ADC``; that was not written
+down, and was checked against the archive of 2026-10-23 21:28: the 12
+inputs whose gains are 15-21 times the median are both pols of B01, B02,
+C08, D04, E07 and F01, the feeds dark in the files, always in X/Y pairs.
+The coherence and the matrix stay on the data as written, since the
+gains cancel in |V_ab| / √(V_aa V_bb) per channel and the matrix's band
+means would otherwise be weighted towards the strongest raw channels.
+A per-channel flattening in the viewer (each channel over its median in
+time) was the other option: it shows what changes in time on any
+acquisition without a job change, and may still be worth adding.

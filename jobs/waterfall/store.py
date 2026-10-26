@@ -16,6 +16,9 @@ Layout, mirroring the acquisition it describes::
         diag.jsonl          one JSON line per file: masks and delivery (reduce.read_diag)
         co_array.png        the array's coherence: per chunk the median over the elements
                             of their co_eNNNN.png, a scanline per file
+        co_matrix.png       (n_el, n_el) the element x element coherence: below the diagonal
+                            averaged over every band and file so far (matrix_mean.npz
+                            its running sums), above it the latest file's
         coarse_freq.npy     (n_chunk,) column centres, coarse_scale.npy (n_prod_file, 2)
         palette.bin         the 256 x 3 palette the overview is drawn with
         e0000/wf_e0000xe0000.png
@@ -54,7 +57,7 @@ from choco.acqtree import shard_name
 from choco.jobclient import atomic_output
 from reduce import (Axes, FileOverview, OverviewSpec, Selection, array_levels, everything,
                     overview_spec, quantize_log, quantize_unit, scale_from_sample,
-                    selection_from_index, thumb_rows)
+                    selection_from_index, thumb_rows, unquantize_unit)
 
 log = logging.getLogger("waterfall.store")
 
@@ -136,6 +139,11 @@ class AcquisitionStore:
     def processed(self) -> set:
         """Source-file indices already folded in."""
         return set(self.index.get("files", []))
+
+    @property
+    def gains_divided(self) -> bool:
+        """Whether |V| has the digital gains divided out (``start``)."""
+        return self.index.get("gains") == "divided"
 
     @property
     def committed(self) -> bool:
@@ -228,7 +236,8 @@ class AcquisitionStore:
     # --- creation -------------------------------------------------------
 
     def start(self, axes: Axes, lo: np.ndarray, hi: np.ndarray,
-              sel: Selection | None = None, overview: OverviewSpec | None = None) -> None:
+              sel: Selection | None = None, overview: OverviewSpec | None = None,
+              gains_divided: bool = False) -> None:
         """Record the acquisition's shape and its frozen value scale.
 
         The scale is fixed here for the acquisition's whole life: it is
@@ -243,6 +252,8 @@ class AcquisitionStore:
         :class:`reduce.OverviewSpec` (recorded in the index as
         ``overview``; their column frequencies in ``coarse_freq.npy``,
         the palette the web renders them with in ``palette.bin``).
+        ``gains_divided`` records that |V| has the digital gains divided
+        out (``gains: "divided"``), which every later file must match.
         """
         if sel is None:
             sel = everything(axes)
@@ -280,6 +291,8 @@ class AcquisitionStore:
                 for p in range(sel.n_prod)
             ],
         }
+        if gains_divided:
+            self.index["gains"] = "divided"
         # the file shape this acquisition accepts; the selection within it
         self.index["n_prod_file"] = int(axes.n_prod)
         self.index["n_freq_file"] = int(axes.n_freq)
@@ -389,6 +402,10 @@ class AcquisitionStore:
     @property
     def array_path(self) -> Path:
         return self.path / "co_array.png"
+
+    @property
+    def matrix_mean_path(self) -> Path:
+        return self.path / "co_matrix.png"
 
     # --- the append -----------------------------------------------------
 
@@ -544,6 +561,59 @@ class AcquisitionStore:
             return False
         self.index["array"] = st.to_dict()
         self._save_index()
+        return True
+
+    def update_matrix_mean(self, level: int = wfpng.DEFAULT_LEVEL) -> bool:
+        """Bring ``co_matrix.png`` up to the committed rows of
+        ``matrix.dat``: below the diagonal each pair's coherence averaged
+        (linearly) over every band and file, above it the latest file's,
+        averaged over the bands.  The running sums and the rows they cover
+        live in ``matrix_mean.npz``, so a run reads only the new rows; a sum
+        ahead of the commit (a crashed run's rows, truncated since) is
+        rebuilt.  True if the image was rewritten."""
+        if not self.started or not self.has_overview:
+            return False
+        rec = self.index["overview"]
+        n, n_band = int(rec["n_el"]), max(1, len(rec["edges"]) - 1)
+        rows = int(self.index.get("coarse_rows") or 0)
+        if rows == 0:
+            return False
+        acc = self.path / "matrix_mean.npz"
+        total, count, have = np.zeros((n, n)), np.zeros((n, n)), 0
+        try:
+            with np.load(acc) as z:
+                if z["total"].shape == (n, n) and int(z["rows"]) <= rows:
+                    total, count, have = z["total"], z["count"], int(z["rows"])
+        except (OSError, ValueError, KeyError):
+            pass
+        if have == rows and self.matrix_mean_path.exists():
+            return False
+        def mean_of(v, axis):
+            ok = np.isfinite(v)
+            return np.where(ok, v, 0.0).sum(axis=axis), ok.sum(axis=axis)
+
+        try:
+            data = np.memmap(self.path / "matrix.dat", np.uint8, mode="r",
+                             shape=(rows, n_band, n, n))
+            for lo in range(have, rows, 64):             # ~8 MB a block at 128 elements
+                t, c = mean_of(unquantize_unit(np.asarray(data[lo:min(rows, lo + 64)])), (0, 1))
+                total, count = total + t, count + c
+            last_total, last_count = mean_of(unquantize_unit(np.asarray(data[rows - 1])), 0)
+            del data
+            import io
+            buf = io.BytesIO()
+            np.savez(buf, total=total, count=count, rows=np.int64(rows))
+            _atomic_write(acc, buf.getvalue())
+            with np.errstate(invalid="ignore", divide="ignore"):
+                image = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+                last = np.where(last_count > 0, last_total / np.maximum(last_count, 1), np.nan)
+            upper = np.triu_indices(n, 1)
+            image[upper] = last[upper]
+            with atomic_output(self.matrix_mean_path, fsync=True) as tmp:
+                wfpng.create(tmp, quantize_unit(image), wfpng.palette(), level=level)
+        except (OSError, ValueError) as e:
+            log.warning("%s: mean matrix not updated (%s)", self.path, e)
+            return False
         return True
 
     # --- display --------------------------------------------------------

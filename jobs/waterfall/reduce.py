@@ -10,9 +10,12 @@ selection (:class:`Selection`) says which products become images and
 which chunks are read at all (``freq_stride``), and the pass reads each
 chosen chunk once.  One pass, never a product loop.
 
-Magnitude only — gains are deliberately *not* divided out, so |V| carries
-the raw instrumental scale and a mid-acquisition gain change shows up as a
-step rather than being normalised away.
+Magnitude only.  The F-engine's digital gains are divided out per
+channel when the file says what they were (:func:`gain_weights`), so |V|
+is the power at the ADCs: a dead feed is dark, not brought up to the
+level of the rest, and a gain update is no step.  The coherence and the
+matrix are computed from the visibilities as written, where the gains
+cancel.
 
 Quantization happens inside the streaming loop rather than after it: the
 intermediate ``(n_prod, n_time, n_freq)`` array is 260 MB as float32 for a
@@ -42,6 +45,7 @@ log = logging.getLogger("waterfall.reduce")
 
 from choco import n2file  # noqa: E402
 from choco.acqtree import product_name  # noqa: E402
+from choco.dishlabels import dish_table, find_key  # noqa: E402
 
 
 def _element_labels(f) -> list:
@@ -455,9 +459,84 @@ def _validity(f, n_freq: int, n_time: int) -> np.ndarray | None:
     return fa > 0
 
 
+def gain_weights(path, axes: Axes, sel: Selection) -> tuple[np.ndarray | None, str | None]:
+    """``(1 / |g_e(f)|, None)`` per selected channel and element, shaped
+    ``(sel.n_freq, n_el)`` float32 (nan where the gain is zero or has no
+    channel), or ``(None, why)``.
+
+    The gains are the file's own: kotekan copies the F-engine's gain
+    archive into ``/digital_gains`` (``gain_coeff[update, freq, input]``
+    times ``2 ** gain_exp[update, input]``, the update in
+    ``selected_update_idx``).  Its input axis is the F-engine's stream
+    order, board ``source_id`` times the inputs a board, plus the ADC
+    (checked on 2026-10-26: the high gains fall on both pols of B01, B02,
+    C08, D04, E07 and F01, the feeds dark in the files).  An element is
+    placed on its board as the X-engine places it, from the sender's
+    ``dish_inputs`` and ``crs_board_remap`` in ``config_json``: element
+    ``pol * n_dish + dish``, dish group ``dish // per_board`` and ADC
+    ``dish % per_board``, board slot ``pol * n_group + group``, source_id
+    ``crs_board_remap[slot]``.
+    """
+    with h5py.File(path, "r") as f:
+        g = f.get("digital_gains")
+        if g is None or "gain_coeff" not in g or "index_map/freq" not in g:
+            return None, "the file carries no digital gains"
+        blobs = f["config_json"][()] if "config_json" in f else []
+        if not len(blobs):
+            return None, "the file carries no config_json"
+        try:
+            config = json.loads(blobs[0])
+        except (TypeError, ValueError):
+            return None, "config_json does not parse"
+        coeff = g["gain_coeff"]
+        u = int(g.attrs.get("selected_update_idx", coeff.shape[0] - 1))
+        if not 0 <= u < coeff.shape[0]:
+            return None, f"selected_update_idx {u} is outside the archive"
+        gain = np.abs(coeff[u]).astype(np.float64)                  # (n_gfreq, n_input)
+        if "gain_exp" in g:
+            gain *= 2.0 ** g["gain_exp"][u].astype(np.float64)[None, :]
+        gfreq = g["index_map/freq"]["centre"][()].astype(float)
+    try:
+        table = dish_table(config)
+    except ValueError as exc:
+        return None, str(exc)
+    remap = find_key(config, "crs_board_remap")
+    if table is None or not isinstance(remap, list) or not remap:
+        return None, "config_json has no dish_inputs or crs_board_remap"
+    n_dish, npol = len(table[0]), table[2]
+    n_board, n_input = len(remap), gain.shape[1]
+    n_el = axes.n_elements
+    if n_el != n_dish * npol or n_board % npol or n_dish % (n_board // npol) or n_input % n_board:
+        return None, (f"{n_el} elements, {n_dish} dishes x {npol} pols, {n_board} boards and "
+                      f"{n_input} gain inputs do not fit together")
+    n_group = n_board // npol
+    per_board = n_dish // n_group
+    if n_input // n_board != per_board:
+        return None, f"{n_input // n_board} gain inputs a board, {per_board} dishes a board"
+    pol, dish = np.divmod(np.arange(n_el), n_dish)
+    group, adc = np.divmod(dish, per_board)
+    source = np.asarray(remap, int)[pol * n_group + group]
+    inp = source * per_board + adc
+    # each selected channel's gain channel, by centre frequency
+    fsel = sel.freq_mhz
+    near = np.clip(np.searchsorted(gfreq, fsel), 1, len(gfreq) - 1)
+    near -= (fsel - gfreq[near - 1]) < (gfreq[near] - fsel)
+    width = np.median(np.diff(gfreq)) if len(gfreq) > 1 else np.inf
+    found = np.abs(gfreq[near] - fsel) <= width / 4
+    amp = gain[near][:, inp]                                       # (n_freq_sel, n_el)
+    with np.errstate(divide="ignore"):
+        w = np.where(found[:, None] & (amp > 0), 1.0 / np.where(amp > 0, amp, 1.0), np.nan)
+    return w.astype(np.float32), None
+
+
+def _product_weights(w: np.ndarray, input_a: np.ndarray, input_b: np.ndarray) -> np.ndarray:
+    """``(n_chan, n_prod, 1)`` 1 / |g_a g_b| from per-element weights."""
+    return (w[:, input_a] * w[:, input_b])[:, :, None]
+
+
 def sample_magnitudes(path, sel: Selection | None = None,
                       block_stride: int = SAMPLE_BLOCK_STRIDE,
-                      axes: Axes | None = None) -> np.ndarray:
+                      axes: Axes | None = None, gains: np.ndarray | None = None) -> np.ndarray:
     """|V| for every selected product over a chunk-aligned slice of the band.
 
     Used once per acquisition to set the value scale.  Reads one
@@ -467,15 +546,21 @@ def sample_magnitudes(path, sel: Selection | None = None,
     survive the parts of the band that are unfed.
 
     Returns ``(n_prod, n_sample)`` float32, zeros included; the caller
-    decides what counts as valid.
+    decides what counts as valid.  ``gains`` (:func:`gain_weights`)
+    divides the gains out, as the fold will.
     """
     if axes is None:
         axes = read_axes(path)
     if sel is None:
         sel = everything(axes)
     with h5py.File(path, "r") as f:
-        out = [np.abs(blk).transpose(1, 0, 2).reshape(sel.n_prod, -1)
-               for _, blk in _blocks(f["vis"], sel, axes, every=max(1, int(block_stride)))]
+        out = []
+        for i, blk in _blocks(f["vis"], sel, axes, every=max(1, int(block_stride))):
+            mag = np.abs(blk)
+            if gains is not None:
+                mag = np.nan_to_num(mag * _product_weights(gains[i:i + blk.shape[0]],
+                                                           sel.input_a, sel.input_b))
+            out.append(mag.transpose(1, 0, 2).reshape(sel.n_prod, -1))
     if not out:
         return np.zeros((0, 0), np.float32)
     return np.concatenate(out, axis=1).astype(np.float32, copy=False)
@@ -552,9 +637,12 @@ def _quantize(mag: np.ndarray, ok: np.ndarray, lo_l, span) -> np.ndarray:
 
 def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = None,
               sel: Selection | None = None, axes: Axes | None = None,
-              overview: OverviewSpec | None = None) -> tuple[np.ndarray, FileOverview | None]:
+              overview: OverviewSpec | None = None,
+              gains: np.ndarray | None = None) -> tuple[np.ndarray, FileOverview | None]:
     """One pass over the file: the selected products' pixels and, with an
-    ``overview``, the three cubes of :class:`OverviewSpec`.
+    ``overview``, the three cubes of :class:`OverviewSpec`.  ``gains``
+    (:func:`gain_weights`) divides the gains out of the pixels and the
+    coarse means; a channel whose gain is unknown is missing there.
 
     With an overview the pass reads one chunk at a time with every
     product in it (the overview needs them all); without, the selected
@@ -608,6 +696,9 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
             if overview is None:
                 mag = np.abs(blk)
                 ok = (mag > 0) & keep
+                if gains is not None:
+                    mag = mag * _product_weights(gains[i:i + blk.shape[0]], sel.input_a, sel.input_b)
+                    ok &= np.isfinite(mag)
                 if valid is not None:
                     ok &= valid[i:i + blk.shape[0], None, :]
                 out[:, :, i:i + blk.shape[0]] = _quantize(mag, ok, lo_l, span).transpose(1, 2, 0)
@@ -617,6 +708,10 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
             cell = (valid[i:i + blk.shape[0], None, :] if valid is not None
                     else np.ones((blk.shape[0], 1, n_time), bool))
             live = (mag > 0) & cell
+            raw, raw_live = mag, live                              # as written: the gains cancel
+            if gains is not None:
+                mag = mag * _product_weights(gains[i:i + blk.shape[0]], axes.input_a, axes.input_b)
+                live = live & np.isfinite(mag)
             sel_mag = mag if take is None else mag[:, take, :]
             sel_ok = (live if take is None else live[:, take, :]) & keep
             out[:, :, i:i + blk.shape[0]] = _quantize(sel_mag, sel_ok, lo_l, span).transpose(1, 2, 0)
@@ -627,6 +722,10 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
             tot = np.where(live, mag, 0).sum(axis=(0, 2))
             with np.errstate(invalid="ignore", divide="ignore"):
                 coarse[:, k] = np.where(cnt > 0, tot / np.maximum(cnt, 1), np.nan)
+            if gains is not None:
+                mag, live = raw, raw_live
+                cnt = live.sum(axis=(0, 2))
+                tot = np.where(live, mag, 0).sum(axis=(0, 2))
             band = overview.band_of(float(overview.chunk_freq[k]))
             if band is not None:
                 band_sum[band] += tot
@@ -688,6 +787,15 @@ def quantize_unit(values: np.ndarray) -> np.ndarray:
     q = np.rint(1.0 + frac * (wfpng.N_LEVELS - 1)).astype(np.uint8)
     q[~ok] = wfpng.MISSING
     return q
+
+
+def unquantize_unit(q: np.ndarray) -> np.ndarray:
+    """Coherence values back from :func:`quantize_unit`'s indices (to the
+    middle of each level), nan where there is no value."""
+    q = np.asarray(q)
+    frac = (q.astype(np.float32) - 1.0) / (wfpng.N_LEVELS - 1)
+    v = np.power(10.0, np.log10(COHERENCE_FLOOR) * (1.0 - frac), dtype=np.float32)
+    return np.where(q == wfpng.MISSING, np.nan, v)
 
 
 #: X-engine streams: file channel i comes from stream i mod this (the comb;

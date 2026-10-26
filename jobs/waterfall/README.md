@@ -83,6 +83,14 @@ the elements' `co_eNNNN.png`, a scanline per file, appended with them.
 An acquisition started before it existed has it rebuilt from those
 images at the start of the next run.
 
+**The visibility triangles** (`co_matrix.png`) are one n_el × n_el
+image: below the diagonal `matrix.dat` averaged linearly over every band
+and file, above it the latest file averaged over the bands.  It is
+rewritten after each run that appends (and at the start of a run when
+behind).  The
+running sums and the rows they cover are in `matrix_mean.npz`, so a run
+reads only the new rows; sums ahead of the commit are rebuilt.
+
 **Time is thinned in whole files.** A chunk spans every bin of its file,
 so skipping bins saves nothing; `file_stride` folds one file in N and
 halves the link at 2.
@@ -99,11 +107,20 @@ equalization, re-derived from an accumulated index histogram and
 rewritten in place in constant time. Measured against true equalization:
 ΔE mean 0.7–1.5, about the just-noticeable-difference threshold.
 
-**Gains are not divided out.** |V| carries the raw instrumental scale, so
-a mid-acquisition gain update draws as a visible step rather than being
-normalised away. Because the value scale is frozen per acquisition from
-its first file (padded outward by half the observed log span), that step
-stays on-scale.
+**The gains are divided out** (`divide_gains`, on by default; fixed per
+acquisition, recorded as `gains: "divided"` in the index). The F-engine
+sets its digital gains to bring every input to the same level, a dead one
+included, so |V| as written hides the bandpass and the dead feeds. Each
+file carries the gains it was taken with (`/digital_gains`, kotekan's
+copy of the F-engine's archive), and `reduce.gain_weights` places each
+element on its board from the file's `config_json` (`dish_inputs`,
+`crs_board_remap`). The pixels and `coarse.dat` are then |V_ab| /
+|g_a g_b| per channel: the power at the ADCs, apart from where the
+F-engine's 4-bit requantization clips. A gain update is then no step.
+The coherence and the matrix use |V| as written; the gains cancel there.
+A file of a divided acquisition without usable gains is skipped (its rows
+would sit on another scale). About 7 s of numpy per 128-element file.
+Acquisitions started before this keep the gains in.
 
 **Newest acquisition first, capped work per run.** A full backfill is
 ~24 h; the live acquisition must never wait behind it.
@@ -121,6 +138,8 @@ stays on-scale.
     matrix.dat      (n_files, n_band, n_el, n_el) uint8, appended
     diag.jsonl      one JSON line per file: masks and delivery, appended
     co_array.png    the array's coherence, a scanline per file
+    co_matrix.png   matrix.dat over the bands: below the diagonal the mean of every file
+                    (matrix_mean.npz its sums), above it the latest file
     coarse_times.bin, coarse_freq.npy, coarse_scale.npy, palette.bin
     e0000/wf_e0000xe0000.png    th_e0000xe0000.png    co_e0000.png
 ```
