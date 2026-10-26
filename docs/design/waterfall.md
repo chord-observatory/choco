@@ -433,3 +433,20 @@ are over their pixels.  On the 1e-3..1 log scale half the pairs of
 with dark lines; equalized, the rows and blocks show.  The levels are
 unchanged, only the colour each level gets.  Its key and the array's are horizontal, so each is drawn from its
 own palette with ``palette_gradient(..., direction="to right")``.
+
+**Same-polarization autos on one scale (2026-10-26).**  Each product's
+``(lo, hi)`` and palette were its own, so an autocorrelation image showed
+its feed's structure but no two could be compared: a hot or a dead feed
+looked like the rest.  New acquisitions put the autos of each
+polarization (the label's last letter) on one scale, from the pooled
+sample of the group (``reduce.auto_groups``, ``pool_scale``), and one
+palette, equalized to the group's pooled histogram
+(``palette_counts``); the index lists the groups as ``scale_groups``.
+With the gains divided out, the dish grid then shows the power at the
+ADCs feed against feed.  An acquisition without ``scale_groups`` keeps
+its per-product scales.
+
+The palettes and thumbnails are also refreshed after each file, not once
+at the end of a run: a backfill run of 40 files (about 4 min each at 128
+elements) otherwise showed no autocorrelation thumbnails for over two
+hours.

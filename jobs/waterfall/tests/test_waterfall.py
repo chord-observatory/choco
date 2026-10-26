@@ -104,6 +104,34 @@ def test_run_renders_every_pending_file(tree, tmp_path):
     assert (wf / "e0000" / "th_e0000xe0000.png").exists()
 
 
+def test_same_pol_autos_share_one_scale_and_palette(tree, tmp_path):
+    _, root = tree
+    cfg = W.load_config(write_cfg(tmp_path, root, products={"autos": True}))
+    W.run(cfg)
+    wf = tmp_path / "wf" / "subset" / "acq_20260101_000000_000000000"
+    index = json.loads((wf / "index.json").read_text())
+    names = {p["name"]: p for p in index["products"]}
+    assert [[index["products"][p]["name"] for p in g] for g in index["scale_groups"]] == \
+        [["e0000xe0000", "e0001xe0001"], ["e0002xe0002", "e0003xe0003"]]
+    x0, x1, y0 = names["e0000xe0000"], names["e0001xe0001"], names["e0002xe0002"]
+    assert (x0["lo"], x0["hi"]) == (x1["lo"], x1["hi"])
+    for kind in ("wf", "th"):
+        _, pal0 = wfpng.read(wf / "e0000" / f"{kind}_e0000xe0000.png")
+        _, pal1 = wfpng.read(wf / "e0001" / f"{kind}_e0001xe0001.png")
+        assert (pal0 == pal1).all()
+
+
+def test_thumbnails_keep_up_file_by_file(tree, tmp_path, monkeypatch):
+    _, root = tree
+    calls = []
+    orig = W.AcquisitionStore.update_thumbnails
+    monkeypatch.setattr(W.AcquisitionStore, "update_thumbnails",
+                        lambda self, **kw: calls.append(self.n_rows) or orig(self, **kw))
+    W.run(W.load_config(write_cfg(tmp_path, root)))
+    # a call after each of the three files, not one per acquisition at the end
+    assert len(calls) == 3
+
+
 def test_a_second_run_does_nothing(tree, tmp_path):
     _, root = tree
     cfg = W.load_config(write_cfg(tmp_path, root))

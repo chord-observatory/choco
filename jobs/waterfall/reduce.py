@@ -632,6 +632,31 @@ def scale_from_sample(sample: np.ndarray, pct=(0.5, 99.5),
     return lo, hi
 
 
+def auto_groups(sel: Selection, labels) -> list[list[int]]:
+    """The selected autocorrelations by polarization (the label's last
+    letter): each group shares one scale and one palette, so the feeds'
+    levels compare across images.  Empty without labels, since an index
+    alone does not say the polarization."""
+    labels = [str(lbl) for lbl in (labels or [])]
+    groups: dict[str, list[int]] = {}
+    for p, (a, b) in enumerate(zip(sel.input_a, sel.input_b)):
+        if a == b and 0 <= a < len(labels):
+            groups.setdefault(labels[a][-1:], []).append(p)
+    return [g for _, g in sorted(groups.items()) if len(g) > 1]
+
+
+def pool_scale(sample: np.ndarray, lo: np.ndarray, hi: np.ndarray,
+               groups: list[list[int]]) -> tuple[np.ndarray, np.ndarray]:
+    """``(lo, hi)`` with each group's products on the scale of their
+    pooled sample (:func:`scale_from_sample` over the group as one)."""
+    lo, hi = lo.copy(), hi.copy()
+    for g in groups:
+        glo, ghi = scale_from_sample(sample[g].reshape(1, -1))
+        if np.isfinite(glo[0]):
+            lo[g], hi[g] = glo[0], ghi[0]
+    return lo, hi
+
+
 def quantize_file(path, lo: np.ndarray, hi: np.ndarray,
                   out: np.ndarray | None = None, sel: Selection | None = None,
                   axes: Axes | None = None) -> np.ndarray:

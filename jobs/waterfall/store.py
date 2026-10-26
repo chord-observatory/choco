@@ -240,7 +240,7 @@ class AcquisitionStore:
 
     def start(self, axes: Axes, lo: np.ndarray, hi: np.ndarray,
               sel: Selection | None = None, overview: OverviewSpec | None = None,
-              gains_divided: bool = False) -> None:
+              gains_divided: bool = False, scale_groups: list | None = None) -> None:
         """Record the acquisition's shape and its frozen value scale.
 
         The scale is fixed here for the acquisition's whole life: it is
@@ -257,6 +257,8 @@ class AcquisitionStore:
         the palette the web renders them with in ``palette.bin``).
         ``gains_divided`` records that |V| has the digital gains divided
         out (``gains: "divided"``), which every later file must match.
+        ``scale_groups`` (``reduce.auto_groups``) lists products that
+        share one ``(lo, hi)`` and one palette (``palette_counts``).
         """
         if sel is None:
             sel = everything(axes)
@@ -296,6 +298,8 @@ class AcquisitionStore:
         }
         if gains_divided:
             self.index["gains"] = "divided"
+        if scale_groups:
+            self.index["scale_groups"] = [[int(p) for p in g] for g in scale_groups]
         # the file shape this acquisition accepts; the selection within it
         self.index["n_prod_file"] = int(axes.n_prod)
         self.index["n_freq_file"] = int(axes.n_freq)
@@ -423,6 +427,19 @@ class AcquisitionStore:
         return self.path / "co_matrix.png"
 
     # --- the append -----------------------------------------------------
+
+    def palette_counts(self) -> np.ndarray:
+        """The histograms the palettes equalize to: each product's own,
+        pooled over its ``scale_groups`` group, so a group's images share
+        one palette as they share one scale."""
+        counts = self.counts()
+        groups = self.index.get("scale_groups")
+        if not groups:
+            return counts
+        counts = counts.copy()
+        for g in groups:
+            counts[g] = counts[g].sum(axis=0)
+        return counts
 
     def counts(self) -> np.ndarray:
         if self._counts is None:
@@ -662,7 +679,7 @@ class AcquisitionStore:
         display tracks the whole acquisition even though the pixels were
         written days apart.
         """
-        counts = self.counts()
+        counts = self.palette_counts()
         done = 0
         for p in range(self.index["n_prod"]):
             if self.index["products"][p]["rows"] == 0:
@@ -703,7 +720,7 @@ class AcquisitionStore:
 
         data = np.memmap(raw, np.uint8, mode="r", shape=(n_src, n_prod, bins))
         lo, hi = have * stride, complete * stride     # only the sources we need
-        counts = self.counts()
+        counts = self.palette_counts()
         prods = self.index["products"]
         done = 0
         for p in range(n_prod):
@@ -732,7 +749,7 @@ class AcquisitionStore:
 
     def refresh_thumbnail_palettes(self) -> int:
         """Re-derive the thumbnails' equalization, as for the full images."""
-        counts = self.counts()
+        counts = self.palette_counts()
         done = 0
         for p, rec in enumerate(self.index["products"]):
             if not rec.get("th"):

@@ -183,6 +183,28 @@ def test_scale_is_nan_for_a_product_with_no_signal(tmp_path):
     assert np.isfinite(lo[0])
 
 
+def test_autos_are_grouped_by_polarization(vis_file):
+    path, pairs = vis_file
+    ax = R.read_axes(path)
+    sel, _ = R.select(ax, {"autos": True})
+    # elements A0X A1X A0Y A1Y: the X autos together, the Y autos together
+    groups = R.auto_groups(sel, ax.labels)
+    assert [[(int(sel.input_a[p]), int(sel.input_b[p])) for p in g] for g in groups] == \
+        [[(0, 0), (1, 1)], [(2, 2), (3, 3)]]
+    assert R.auto_groups(sel, []) == []         # no labels, no polarization
+
+
+def test_a_group_shares_the_scale_of_its_pooled_sample(vis_file):
+    path, _ = vis_file
+    s = R.sample_magnitudes(path)
+    s[1] *= 30                                   # one feed 30x hotter than its partner
+    lo, hi = R.scale_from_sample(s)
+    plo, phi = R.pool_scale(s, lo, hi, [[0, 1]])
+    assert plo[0] == plo[1] and phi[0] == phi[1]
+    assert plo[0] < lo[0] and phi[0] > hi[0]     # wide enough for both
+    assert (plo[2:] == lo[2:]).all() and (phi[2:] == hi[2:]).all()
+
+
 def test_headroom_zero_is_a_tight_range(vis_file):
     path, _ = vis_file
     s = R.sample_magnitudes(path)

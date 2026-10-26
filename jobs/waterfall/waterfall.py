@@ -327,11 +327,13 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
             if int(np.isfinite(lo).sum()) == 0:
                 drop(os.path.basename(path), "no product has usable data")
                 continue
-            scaled = (path, axes, sel, lo, hi, gains is not None)
+            groups = R.auto_groups(sel, axes.labels)
+            lo, hi = R.pool_scale(sample, lo, hi, groups)
+            scaled = (path, axes, sel, lo, hi, gains is not None, groups)
             break
         if scaled is None:
             return 0
-        first_path, first_axes, first_sel, lo, hi, divided = scaled
+        first_path, first_axes, first_sel, lo, hi, divided, groups = scaled
         n_scaled = int(np.isfinite(lo).sum())
         if n_scaled < first_sel.n_prod:
             log.warning("%s: %d of %d products have no usable data",
@@ -343,7 +345,8 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
                                        split=cfg["overview_split"], array_full=True)
             else:
                 log.warning("%s: no num_elements in the file; no overview for this acquisition", acq)
-        store.start(first_axes, lo, hi, first_sel, spec, gains_divided=divided)
+        store.start(first_axes, lo, hi, first_sel, spec, gains_divided=divided,
+                    scale_groups=groups)
         # the files dropped above are behind the scale file; never fold them
         pending = [p for p in pending if os.path.basename(p[1]) not in store.skipped]
 
@@ -400,16 +403,16 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
         report["last_acquisition"] = acq
         report["last_file_idx"] = int(idx)
         log.info("%s: folded %s (%d rows total)", acq, basename, store.n_rows)
-
-    if written:
         # The display tracks the whole acquisition even though the pixels
         # were written minutes or days apart -- neither call reads a
-        # visibility or rewrites a pixel.
+        # visibility or rewrites a pixel -- and keeps up file by file, so
+        # a backfill run of hours shows its thumbnails as it goes.
         store.refresh_palettes()
         store.update_thumbnails(level=cfg["level"])
         store.refresh_thumbnail_palettes()
         store.update_matrix_mean(level=cfg["level"])
-        report["backlog"] -= written
+
+    report["backlog"] -= written
     return written
 
 

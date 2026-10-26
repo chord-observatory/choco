@@ -115,6 +115,8 @@ hold a linear log stretch and the 256-entry `PLTE` carries the
 equalization, re-derived from an accumulated index histogram and
 rewritten in place in constant time. Measured against true equalization:
 ΔE mean 0.7–1.5, about the just-noticeable-difference threshold.
+The autocorrelations of one polarization share one scale and one
+palette (`scale_groups` in the index), so their levels compare.
 
 **The gains are divided out** (`divide_gains`, on by default; fixed per
 acquisition, recorded as `gains: "divided"` in the index). The F-engine
