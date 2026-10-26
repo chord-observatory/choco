@@ -6,8 +6,28 @@ files, with the state of every hop.  It runs top to bottom, because pages
 scroll vertically: one column per board above the switch and one per NIC
 port below it, so every link is a straight drop and each feed has room for
 its label.  It started (2026-10-25) as a switch
-monitoring page and grew into an overview that may later absorb the PDB
-page and the nodes table.
+monitoring page and grew into an overview.
+
+## The tables on their own pages (2026-10-26)
+
+The front page keeps the diagram; each table moved to the page of the
+thing it describes, and the diagram's cards link there:
+
+- `/switch`: the board links, the X-engine links end to end (the switch
+  port's send rate and discards beside the NIC's receive rate and drops,
+  so a wiring or drop problem reads along one row), the ports the wiring
+  table does not name, and the wiring table's state.  It shares the
+  front page's view (`web._instrument_view`) and its 5 s poll.  Its
+  badge, SWITCH, replaced PATH: the CHOCO mark already leads to the
+  front page.
+- `/nodes`: each node's server (node_exporter, iDRAC, PSUs, temperatures,
+  outlet power; `instrument.host_health`) as extra columns, from the
+  monitor's last Prometheus read, so the 2 s table poll costs no query.
+- `/service/power` (was `/service/pdb`, which redirects; the controls keep
+  their `/service/pdb/set*` URLs): the dish supply and the PDU outlets
+  below the PDB grid.  Its badge, POWER, is the PDB controller's health,
+  made worse when the dish supply reports a fault, output off or no
+  answer.
 
 ## The devices where choco can, Prometheus for the rest
 

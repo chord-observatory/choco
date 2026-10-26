@@ -107,7 +107,7 @@ class TestPageChrome:
         plain = client.get("/").data.decode()
         wall = client.get("/?wall=1").data.decode()
         assert '<body class="wall">' in wall and '<body class="wall">' not in plain
-        assert 'class="fl"' in wall and "inst-tables" in wall
+        assert 'class="fl"' in wall
 
 
 class TestPresence:
@@ -300,11 +300,11 @@ class TestServicesPartial:
         # Monitor badges are only rendered if a monitor is set on
         # app.config.  The test app installs both (unconfigured).
         assert "FPGA" in body
-        assert "PDB" in body
+        assert "POWER" in body
         # Badges link to the service pages.
         assert '/service/eop' in body
         assert '/service/fpga' in body
-        assert '/service/pdb' in body
+        assert '/service/power' in body
         # The cluster itself is a badge too, linking to the dashboard.
         assert "NODES" in body
 

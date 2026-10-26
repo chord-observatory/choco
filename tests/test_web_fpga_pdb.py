@@ -323,7 +323,7 @@ class TestPdbControl:
                                data=self._form(token),
                                follow_redirects=False)
         assert resp.status_code == 302
-        assert resp.headers["Location"].endswith("/service/pdb")
+        assert resp.headers["Location"].endswith("/service/power")
         sc.assert_called_once_with(0, 0, "A", 3, True)
 
     def test_verify_failure_flashes_error(self, client, app):
@@ -340,7 +340,7 @@ class TestPdbControl:
     def test_grid_buttons_when_control_enabled(self, client, app):
         self._configure(app)
         login(client)
-        resp = client.get("/service/pdb")
+        resp = client.get("/service/power")
         body = resp.data.decode()
         assert '/service/pdb/set' in body
         assert body.count("<button") >= 16
@@ -349,7 +349,7 @@ class TestPdbControl:
     def test_grid_readonly_when_control_disabled(self, client, app):
         self._configure(app, control=False)
         login(client)
-        resp = client.get("/service/pdb")
+        resp = client.get("/service/power")
         body = resp.data.decode()
         assert '/service/pdb/set' not in body
         assert '<span class="chan' in body
@@ -424,7 +424,7 @@ class TestPdbGridLayout:
         monitor.boards = {0: 16}
         monitor.channels = {0: [{"board": b, "chip": c, "channels": [False] * 8}
                                 for b in range(16) for c in "AB"]}
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         heads = re.findall(r'class="boardhead[^"]*"[^>]*>board (\d+)<', body)
         assert heads == [str(b) for b in range(15, 7, -1)] + [str(b) for b in range(8)]
         chips = re.findall(r'class="chiphead[^"]*">([AB])<', body)
@@ -447,7 +447,7 @@ class TestPdbGridLayout:
         monitor.boards = {0: 2}
         monitor.channels = {0: [{"board": b, "chip": c, "channels": [False] * 8}
                                 for b in (0, 1) for c in "AB"]}
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         heads = re.findall(r'class="boardhead( absent)?"[^>]*>board (\d+)<', body)
         assert [h[1] for h in heads] == [str(b) for b in range(8)]
         assert [bool(h[0]) for h in heads] == [False, False] + [True] * 6
@@ -470,7 +470,7 @@ class TestPdbDishLayout:
     def test_dish_layout_renders_the_field(self, client, app, configs_dir):
         self._configure(app, configs_dir)
         login(client)
-        body = client.get("/service/pdb?layout=dish").data.decode()
+        body = client.get("/service/power?layout=dish").data.decode()
         assert 'class="dish-grid"' in body and 'class="pdb-grid"' not in body
         assert re.findall(r'class="rowhead">([^<]*)<', body) == list("ABCDEFGH") + ["RFI"]
         assert re.findall(r'class="dish-name">([^<]*)<', body) == ["A01", "A02", "RFIA1"]
@@ -485,7 +485,7 @@ class TestPdbDishLayout:
     def test_bulkhead_is_the_default_and_the_fallback(self, client, app, configs_dir):
         self._configure(app, configs_dir)
         login(client)
-        for url in ("/service/pdb", "/service/pdb?layout=nope"):
+        for url in ("/service/power", "/service/power?layout=nope"):
             body = client.get(url).data.decode()
             assert 'class="pdb-grid"' in body and 'class="dish-grid"' not in body
             assert "hx-vals='{\"layout\": \"bulkhead\"}'" in body
@@ -499,7 +499,7 @@ class TestPdbDishLayout:
     def test_row_power_buttons_per_pol(self, client, app, configs_dir):
         self._configure(app, configs_dir)
         login(client)
-        body = client.get("/service/pdb?layout=dish").data.decode()
+        body = client.get("/service/power?layout=dish").data.decode()
         assert "/service/pdb/set-row" in body
         # rows A and RFI have both pols mapped; empty rows get no buttons
         assert body.count(">X on<") == 2 and body.count(">X off<") == 2
@@ -623,7 +623,7 @@ class TestPdbGroupControl:
     def test_buttons_rendered_at_each_scope(self, client, app):
         self._configure(app)
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert '/service/pdb/set-group' in body
         assert "bus all on" in body and "bus all off" in body
         # one chip-level pair per chip; no per-board button (the chip
@@ -635,7 +635,7 @@ class TestPdbGroupControl:
     def test_no_bulk_buttons_when_control_disabled(self, client, app):
         self._configure(app, control=False)
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert '/service/pdb/set-group' not in body
 
 
@@ -660,7 +660,7 @@ class TestPdbChannelMap:
     def test_grid_cells_carry_the_dish_input(self, client, app, configs_dir):
         self._configure(app, configs_dir, map_text=self.MAP)
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "A1X" in body and "A1Y" in body
         # mapped cells lose the "unmapped" styling; unmapped ones keep it
         assert 'class="chan on"' in body
@@ -670,7 +670,7 @@ class TestPdbChannelMap:
         self._configure(app, configs_dir,
                         map_text=self.MAP + "0,0,C,0,BAD,,\n")
         login(client)
-        resp = client.get("/service/pdb")
+        resp = client.get("/service/power")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "1 bad row in the channel map" in body
@@ -683,7 +683,7 @@ class TestPdbChannelMap:
             {"dish_idx": 0, "label": "A1", "type": "ArrayDish"},
         ])
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "agreed" in body
 
     def test_cross_check_reports_disagreements(self, client, app,
@@ -694,7 +694,7 @@ class TestPdbChannelMap:
             {"dish_idx": 0, "label": "A2", "type": "ArrayDish"},
         ])
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "disagreements" in body
         assert "2 in kotekan but not in the map" in body
         assert "2 in the map but not in kotekan" in body
@@ -709,7 +709,7 @@ class TestPdbChannelMap:
             {"dish_idx": 0, "label": "A1", "type": "Fake"},
         ])
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "agreed" in body
 
     def test_old_style_table_reports_a_migration_reason(self, client, app,
@@ -720,7 +720,7 @@ class TestPdbChannelMap:
             {"dish_idx": 1, "label": "A1Y"},
         ])
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "Not cross-checked against kotekan" in body
         assert "migrate the config" in body
 
@@ -729,7 +729,7 @@ class TestPdbChannelMap:
         """The stock test config has no dish_inputs table."""
         self._configure(app, configs_dir, map_text=self.MAP)
         login(client)
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "Not cross-checked against kotekan" in body
         assert "has no dish_inputs table" in body
 
@@ -759,7 +759,7 @@ class TestPdbChannelMap:
                                                    configs_dir):
         self._configure(app, configs_dir)      # no CSV written
         login(client)
-        resp = client.get("/service/pdb")
+        resp = client.get("/service/power")
         assert resp.status_code == 200
         assert "FileNotFoundError" in resp.data.decode()
 
@@ -767,9 +767,9 @@ class TestPdbChannelMap:
                                                  configs_dir):
         self._configure(app, configs_dir, map_text=self.MAP)
         login(client)
-        assert "A1X" in client.get("/service/pdb").data.decode()
+        assert "A1X" in client.get("/service/power").data.decode()
         (configs_dir / "pdb_map.csv").write_text(
             "spi_bus,board,chip,channel,dish_input\n0,0,A,0,RENAMED\n")
-        body = client.get("/service/pdb").data.decode()
+        body = client.get("/service/power").data.decode()
         assert "RENAMED" in body
         assert "A1X" not in body

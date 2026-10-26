@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_service_macros.html" import monitor_tone, monitor_label, tag %}
 
-{% block title %}PDB — CHOCO{% endblock %}
+{% block title %}Power — CHOCO{% endblock %}
 
 {% block styles %}
 /* The grid is the frame as mounted: two rows of eight boards, each board
@@ -78,17 +78,21 @@ table.dish-grid form { margin: 0; display: inline; }
 .map-note { font-size: 0.9em; margin: 0.25em 0; }
 .map-tags { font-size: 0.9em; }
 .map-tags code { margin-right: 0.4em; }
+table.ports { width: auto; }
+table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.8em; white-space: nowrap; }
+table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
 {% endblock %}
 
 {% block content %}
 <div class="page-head">
     <h2>
-        <a href="{{ request.script_root }}/" class="crumb">Instrument</a><span class="crumb-sep">/</span>PDB
-        {{ tag(monitor_tone(pdb.health), monitor_label(pdb.health)) }}
+        <a href="{{ request.script_root }}/" class="crumb">Instrument</a><span class="crumb-sep">/</span>Power
     </h2>
 </div>
-<p class="note">The power distribution boards (power_db) — Infineon high-side switches powering
-the feed amplifiers, one channel per output.</p>
+<p class="note">The power distribution boards (power_db), the dish supply and the rack PDU.</p>
+
+<h3>PDB {{ tag(monitor_tone(pdb.health), monitor_label(pdb.health)) }}</h3>
+<p class="note">Infineon high-side switches powering the feed amplifiers, one channel per output.</p>
 
 {# Control outcomes land here as an out-of-band swap, so they survive the
    grid's 5s refresh and don't require a page reload to be seen. #}
@@ -104,6 +108,13 @@ the feed amplifiers, one channel per output.</p>
 </div>
 
 {% include "_pdb_map_section.html" %}
+
+<div id="power-devices"
+     hx-get="{{ request.script_root }}/partials/power-devices"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML">
+{% include "_power_devices.html" %}
+</div>
 {% endblock %}
 
 {% block scripts %}

@@ -1,7 +1,7 @@
 """The power distribution boards: power_db's monitor and power controls.
 
 ``PdbMonitor`` polls the power_db controller (a Pi fronting the PDB SPI
-buses) for the PDB badge and the ``/service/pdb`` page, and switches
+buses) for the POWER badge and the ``/service/power`` page, and switches
 channels: one channel, an arbitrary set (a dish row in one
 polarization), or whole chips, boards and buses.  Every write is the
 same read-modify-write-verify (:meth:`PdbMonitor._write_masks`); the
@@ -75,7 +75,7 @@ class PdbMonitor(HttpMonitor):
     Hits ``/status`` and ``/channel_states`` on a slow interval and
     decodes the per-channel power state.  Same shape as
     :class:`~choco.fpga.FpgaMonitor`: latest result held in attributes,
-    surfaced by the services strip and the ``/service/pdb`` page.
+    surfaced by the services strip and the ``/service/power`` page.
 
     Health levels:
       * ``ok``        — both endpoints responded and decoded.

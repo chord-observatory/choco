@@ -368,6 +368,16 @@ def host_temps(h: dict | None) -> dict:
     return out
 
 
+def host_health(name: str, devices: dict | None) -> dict:
+    """A server's iDRAC state, PSUs, temperatures, PDU power and
+    node_exporter reachability, from :func:`parse_devices`."""
+    h = (devices or {}).get("hosts", {}).get(name)
+    tone, word = idrac_state(h)
+    return {"idrac_tone": tone, "idrac_word": word, "temps": host_temps(h),
+            "watts": outlet_watts(devices, name), "host_up": (h or {}).get("up"),
+            "rx_bps": (h or {}).get("rx_bps"), "psu": (h or {}).get("psu", {})}
+
+
 #: kotekan /metrics lines the NIC rows are made of, by the field they fill.
 _NIC_METRICS = {
     "kotekan_dpdk_nic_link_up": "up",
@@ -826,14 +836,8 @@ def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
             tone, word = out_port_state(stats)
         table.append({"name": name, "role": roles.get(name, ""), "tone": tone, "word": word,
                       "stats": stats or {}})
-    hosts = {}
-    for name, st in sorted(nodes.items(), key=lambda kv: port_key(kv[0])):
-        h = (devices or {}).get("hosts", {}).get(name)
-        tone, word = idrac_state(h)
-        hosts[name] = {**st, "name": name, "idrac_tone": tone, "idrac_word": word,
-                       "temps": host_temps(h), "watts": outlet_watts(devices, name),
-                       "host_up": (h or {}).get("up"), "rx_bps": (h or {}).get("rx_bps"),
-                       "psu": (h or {}).get("psu", {})}
+    hosts = {name: {**st, "name": name, **host_health(name, devices)}
+             for name, st in sorted(nodes.items(), key=lambda kv: port_key(kv[0]))}
     return {
         "boards": left, "nics": right, "unmapped": unmapped, "downstream": downstream,
         "hosts": hosts, "switch_ports": table,

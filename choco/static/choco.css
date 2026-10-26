@@ -218,6 +218,10 @@ table { margin-top: 1em; }
 }
 .group-bar h3 { margin: 0; }
 .group-bar .group-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em 1.5em; }
+/* the nodes table's server columns (Prometheus: iDRAC, temperatures, PDU) */
+table.nodes td.num { text-align: right; font-family: var(--pico-font-family-monospace); font-size: 0.85em;
+                     white-space: nowrap; }
+table.nodes td.server-tags { white-space: nowrap; }
 /* The group-wide controls: a caption ("maint", "start") and a pair of
    glyph buttons whose *text* takes the tone of the switch state it sets
    (amber into maintenance, blue out; green started, grey idle), matching

@@ -95,12 +95,12 @@ fpga_master:
   control: true                     # show Start/Stop controls on /service/fpga
 
 # Power distribution boards (power_db) — Infineon high-side switches on a
-# Raspberry Pi, REST on port 5000.  Feeds the PDB badge and /service/pdb.
+# Raspberry Pi, REST on port 5000.  Feeds the POWER badge and /service/power.
 pdb:
   host: 10.222.0.30
   port: 5000
   timeout: 5                        # HTTP request timeout (seconds)
-  control: true                     # allow power toggles on /service/pdb
+  control: true                     # allow power toggles on /service/power
   # Master dish-input <-> channel table; relative paths resolve against
   # configs_dir.  Default: <configs_dir>/pdb_map.csv.
   map_file: pdb_map.csv

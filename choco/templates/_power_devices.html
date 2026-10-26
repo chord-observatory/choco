@@ -1,0 +1,44 @@
+{# The power page's other supplies: the dish supply and the PDU outlets,
+   from Prometheus through the instrument monitor (30 s htmx poll on
+   #power-devices). #}
+{% from "_service_macros.html" import tag %}
+<h3 id="supply">Dish supply</h3>
+{% if not power_source %}
+<p class="note">Set <code>instrument.prometheus_url</code> in config.yaml to read the dish supply and the PDU.</p>
+{% elif not psu %}
+<p class="note">No dish supply series in Prometheus.</p>
+{% else %}
+<p class="note">The Keysight N8732A DC supply for the dishes' analog chain, read-only here.  After a
+    protection trip, <code>OUTP:PROT:CLE</code> on its SCPI port clears it.</p>
+<table class="ports">
+    <thead><tr><th>State</th><th>Output</th><th>Voltage</th><th>Current</th><th>Power</th></tr></thead>
+    <tbody><tr>
+        <td>{% if not psu.up %}{{ tag('bad', 'not answering') }}{% elif psu.fault %}{{ tag('bad', 'fault') }}{% else %}{{ tag('ok', 'answering') }}{% endif %}</td>
+        <td>{% if psu.up %}{{ tag('ok' if psu.output_on else 'warn', 'on' if psu.output_on else 'off') }}{% else %}—{% endif %}</td>
+        <td class="num">{{ '%.2f V' % psu.volts if psu.volts is number else '—' }}</td>
+        <td class="num">{{ '%.2f A' % psu.amps if psu.amps is number else '—' }}</td>
+        <td class="num">{{ '%.0f W' % (psu.volts * psu.amps) if psu.volts is number and psu.amps is number else '—' }}</td>
+    </tr></tbody>
+</table>
+{% endif %}
+
+{% if power_source %}
+<h3 id="outlets">PDU outlets</h3>
+{% if devices.outlets %}
+<p class="note">Active power per outlet, as the PDU reports it ({{ '%.1f' % (devices.inlet_w / 1e3) if devices.inlet_w is number else '—' }} kW at the inlet).
+    Servers have two supplies on two outlets; the second idles at a few watts.</p>
+<div class="scroll-x">
+<table class="ports">
+    <thead><tr><th>PDU</th><th>Outlet</th><th>Label</th><th>Power</th></tr></thead>
+    <tbody>
+    {% for o in devices.outlets %}
+    <tr><td class="mono">{{ o.pdu }}</td><td class="num">{{ o.outlet }}</td><td>{{ o.name or '—' }}</td>
+        <td class="num">{{ '%.0f W' % o.watts }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p class="note">No PDU outlet series in Prometheus.</p>
+{% endif %}
+{% endif %}

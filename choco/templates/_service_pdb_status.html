@@ -31,11 +31,11 @@ before writing and will fail while it's unreachable.</div>
    it changes. #}
 <div class="layout-switch" role="group" aria-label="Grid layout">
     <span class="muted">Layout</span>
-    <a href="{{ request.script_root }}/service/pdb?layout=bulkhead" role="button"
+    <a href="{{ request.script_root }}/service/power?layout=bulkhead" role="button"
        class="secondary{% if layout != 'bulkhead' %} outline{% endif %} btn-sm"
        {% if layout == 'bulkhead' %}aria-current="page"{% endif %}
        title="Boards, chips and channels as they come through the bulkhead into the computing chamber">Bulkhead</a>
-    <a href="{{ request.script_root }}/service/pdb?layout=dish" role="button"
+    <a href="{{ request.script_root }}/service/power?layout=dish" role="button"
        class="secondary{% if layout != 'dish' %} outline{% endif %} btn-sm"
        {% if layout == 'dish' %}aria-current="page"{% endif %}
        title="Dishes as they stand in the field: rows A–H, X and Y per dish, the RFI antennas a row of their own">Dishes</a>

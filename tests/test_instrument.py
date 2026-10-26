@@ -443,18 +443,48 @@ class TestPage:
         assert "Signal path" in body and 'class="fl"' in body and "slot 3" in body and "B01–B02 X" in body
         assert "Ethernet12/1 (crate slot 4): down" in body
         assert "/pipeline/cx/cx1" in body and "48.1 V" in body
-        assert "Ethernet33" in body
-        assert "Servers" in body and "PDU outlets" in body and "iDRAC" in body
         assert "Processing" in body and "Control" in body and "BFFS" in body
+        # the tables live on their own pages; the cards link there
+        assert "Ethernet33" not in body and "PDU outlets" not in body
+        assert 'href="/switch"' in body and 'href="/service/power#supply"' in body
         part = client.get("/partials/instrument").data.decode()
-        assert "Switch ports" in part and "<html" not in part
+        assert "Signal path" in part and "<html" not in part
 
-    def test_badge_appears_in_the_strip_when_configured(self, inst_app, client):
+    def test_switch_page_shows_each_link_end_to_end(self, inst_app):
+        client = inst_app.test_client()
         login(client)
-        assert 'aria-label="PATH: degraded"' in client.get("/partials/services").data.decode()
+        body = client.get("/switch").data.decode()
+        assert "CRS boards → switch" in body and "Switch → X-engines" in body
+        assert "Ethernet12/1 (crate slot 4): down" in body
+        assert "cx1 · 0" in body and "Ethernet33" in body and "Wiring table" in body
+        part = client.get("/partials/switch").data.decode()
+        assert "Switch → X-engines" in part and "<html" not in part
+
+    def test_nodes_page_carries_each_server(self, inst_app):
+        client = inst_app.test_client()
+        login(client)
+        body = client.get("/nodes").data.decode()
+        assert "Server" in body and "iDRAC" in body and "753 W" in body
+        assert "753 W" in client.get("/partials/dashboard-table").data.decode()
+
+    def test_power_page_has_the_supply_and_the_outlets(self, inst_app):
+        client = inst_app.test_client()
+        login(client)
+        assert client.get("/service/pdb?layout=dish").headers["Location"].endswith("/service/power?layout=dish")
+        body = client.get("/service/power").data.decode()
+        assert "Dish supply" in body and "48.10 V" in body and "PDU outlets" in body and "750 W" in body
+        part = client.get("/partials/power-devices").data.decode()
+        assert "PDU outlets" in part and "<html" not in part
+
+    def test_badges_appear_in_the_strip_when_configured(self, inst_app, client):
+        login(client)
+        strip = client.get("/partials/services").data.decode()
+        assert 'aria-label="SWITCH: degraded"' in strip and 'href="/switch"' in strip
+        assert "PATH" not in strip and 'href="/service/power"' in strip and "POWER" in strip
 
     def test_unconfigured_page_says_how(self, client):
         login(client)
         body = client.get("/").data.decode()
         assert "instrument.prometheus_url" in body
-        assert "PATH" not in client.get("/partials/services").data.decode()
+        assert "SWITCH" not in client.get("/partials/services").data.decode()
+        assert "Server" not in client.get("/nodes").data.decode()

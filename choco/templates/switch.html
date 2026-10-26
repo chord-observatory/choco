@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Switch — CHOCO{% endblock %}
+
+{% block styles %}
+.inst-facts { display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; font-size: 0.85em; margin: 0 0 1em; }
+.inst-facts b { font-weight: 600; }
+table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.5em; white-space: nowrap; }
+table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
+table.ports th.side { text-align: center; border-bottom: 1px solid var(--surface-border); }
+table.ports .edge { border-left: 1px solid var(--surface-border); }
+table.ports tr.unwired td { color: var(--pico-muted-color); }
+.problems li { font-size: 0.85em; }
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h2><a href="{{ request.script_root }}/" class="crumb">Instrument</a><span class="crumb-sep">/</span>Switch</h2>
+</div>
+<p class="note">The Arista switch between the CRS boards and the X-engines, read-only.  Each board
+    link is its switch port; each X-engine link is shown end to end, the switch port as the switch
+    counts it and then the NIC port as kotekan counts it.  Read every 5 s while the page is open.</p>
+<div id="switch"
+     hx-get="{{ request.script_root }}/partials/switch"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+    {% include "_switch.html" %}
+</div>
+{% endblock %}

@@ -25,7 +25,7 @@ from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
                         run_blocking, timeline_rows, utc_minute)
 from . import dishlabels
 from .instrument import (CRATE_OUTLET, PAGE_POLL_S, SWITCH_OUTLET, worst_tone, ago, board_layout, flow_diagram,
-                         health_tone, job_tone, job_word, node_tone, outlet_watts,
+                         health_tone, host_health, job_tone, job_word, node_tone, outlet_watts,
                          overview as instrument_overview)
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
@@ -86,8 +86,19 @@ def _flag_response(nodes, attr: str, value: bool):
     """Reply to a bulk toggle: the dashboard table for htmx, else a redirect."""
     _orchestrator().set_flag(nodes, attr, value)
     if request.headers.get("HX-Request"):
-        return render_template("_dashboard_table.html", nodes=_registry().nodes)
+        return render_template("_dashboard_table.html", **_dashboard_context())
     return redirect(url_for("web.dashboard"))
+
+
+def _dashboard_context() -> dict:
+    """The nodes, and each node's server as the instrument monitor last
+    read it from Prometheus (``hosts``; None when it is not configured)."""
+    nodes = _registry().nodes
+    monitor = current_app.config.get("instrument_monitor")
+    hosts = None
+    if monitor is not None and monitor.configured and monitor.url:
+        hosts = {n.name: host_health(n.name, monitor.devices) for n in nodes.values()}
+    return {"nodes": nodes, "hosts": hosts}
 
 
 # URL action words of the bulk toggle routes -> flag value.
@@ -159,7 +170,7 @@ def _note_presence():
 
 
 _PAGE_NAMES = (("/nodes/edit/", "node"), ("/nodes/edit", "edit nodes"),
-               ("/nodes", "nodes"), ("/configs", "configs"), ("/files", "files"),
+               ("/nodes", "nodes"), ("/configs", "configs"), ("/files", "files"), ("/switch", "switch"),
                ("/waterfall", "waterfall"), ("/pipeline/", "pipeline"), ("/plot/", "plot"),
                ("/service/", "service"), ("/", "instrument"))
 
@@ -325,8 +336,7 @@ def partial_skymap():
 @bp.route("/nodes")
 @login_required
 def dashboard():
-    registry = _registry()
-    return render_template("dashboard.html", nodes=registry.nodes)
+    return render_template("dashboard.html", **_dashboard_context())
 
 
 @bp.route("/nodes/edit/<path:node_key>", methods=["GET", "POST"])
@@ -1099,8 +1109,7 @@ def _first_scalar(value):
 @bp.route("/partials/dashboard-table")
 @login_required
 def partial_dashboard_table():
-    registry = _registry()
-    return render_template("_dashboard_table.html", nodes=registry.nodes)
+    return render_template("_dashboard_table.html", **_dashboard_context())
 
 
 bp.add_app_template_filter(human_bytes, "filesize")
@@ -1607,7 +1616,7 @@ def partial_services():
         "_services_status.html",
         nodes=_nodes_health(),
         fpga=services["fpga"],
-        pdb=services["pdb"],
+        power=_power_badge(services["pdb"]),
         instrument=services["instrument"],
         data=services["data"],
         services=services,
@@ -1693,11 +1702,15 @@ def service_page(name):
         return render_template("service_fpga.html", control=bool(fpga_cfg.get("control", True)),
                                **_fpga_context(monitor))
     if name == "pdb":
+        # the page is Power now; the controls keep their /service/pdb/ URLs
+        query = request.query_string.decode()
+        return redirect(url_for("web.service_page", name="power") + ("?" + query if query else ""))
+    if name == "power":
         if current_app.config.get("pdb_monitor") is None:
             abort(404)
         context = _pdb_context()
         return render_template(
-            "service_pdb.html", **context,
+            "service_pdb.html", **context, **_power_devices(),
             check=_pdb_cross_check(context["pdb_map"]),
         )
     registry = _service_registry()
@@ -1907,6 +1920,34 @@ def _pdb_context() -> dict:
     }
 
 
+def _power_devices() -> dict:
+    """The power page's other supplies, as the instrument monitor last read
+    them from Prometheus: the dish supply (``psu``) and the PDU outlets
+    (``devices``); ``power_source`` False when it has no Prometheus."""
+    monitor = current_app.config.get("instrument_monitor")
+    if monitor is None or not monitor.url:
+        return {"power_source": False, "psu": None, "devices": {}}
+    return {"power_source": True, "psu": monitor.psu, "devices": monitor.devices}
+
+
+def _power_badge(pdb: dict | None) -> dict | None:
+    """The POWER badge: the PDB controller's snapshot, made worse when the
+    dish supply reports a fault, its output off or no answer."""
+    monitor = current_app.config.get("instrument_monitor")
+    psu = monitor.psu if monitor is not None and monitor.url else None
+    if pdb is None and not psu:
+        return None
+    badge = dict(pdb or {"health": "ok", "error": None, "host": None, "port": None, "last_seen": None})
+    supply = None
+    if psu:
+        supply = ("not answering" if not psu.get("up") else "fault" if psu.get("fault")
+                  else "output off" if not psu.get("output_on") else None)
+        badge["supply"] = supply or "on"
+    if supply and badge["health"] == "ok":
+        badge["health"], badge["error"] = "degraded", f"dish supply {supply}"
+    return badge
+
+
 def _pdb_cross_check(pdb_map: PdbMap) -> dict:
     """Check the master map against a kotekan group's dish_inputs table.
 
@@ -2001,7 +2042,9 @@ def _feed_flags() -> dict | None:
     return {label: d["flagged_by"].get(label, "") for label in d["bad_inputs"]}
 
 
-def _instrument_context() -> dict:
+def _instrument_view() -> dict:
+    """What the front page and the switch page share: the monitor's state,
+    the overview rows and the wiring table."""
     monitor = current_app.config["instrument_monitor"]
     wiring = monitor.wiring.get()
     boards, board_problem = _instrument_boards()
@@ -2010,22 +2053,25 @@ def _instrument_context() -> dict:
                       "branch": (n.version_info or {}).get("branch"),
                       "commit": (n.version_info or {}).get("git_commit_hash")}
              for n in _registry().nodes.values()}
-    pdb = current_app.config.get("pdb_monitor")
-    data = current_app.config.get("datafile_scan")
-    fpga = current_app.config.get("fpga_monitor")
     view = instrument_overview(boards, wiring, monitor.switch, monitor.nics, _feed_power(), nodes,
                                monitor.devices, _feed_flags())
-    stages = _instrument_stages(view, monitor, pdb, fpga, data)
     return {
         "inst": monitor.to_dict(),
         "view": view,
-        "flow": flow_diagram(view, stages, request.script_root),
         "board_problem": board_problem,
         "problems": monitor.problems,
         "wiring": wiring,
-        "devices": monitor.devices,
         "now_ts": time.time(),
     }
+
+
+def _instrument_context() -> dict:
+    """The front page: the shared view and the flowchart drawn from it."""
+    context = _instrument_view()
+    monitor = current_app.config["instrument_monitor"]
+    stages = _instrument_stages(context["view"], monitor, current_app.config.get("pdb_monitor"),
+                                current_app.config.get("fpga_monitor"), current_app.config.get("datafile_scan"))
+    return {**context, "flow": flow_diagram(context["view"], stages, request.script_root)}
 
 
 def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
@@ -2055,17 +2101,18 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
     else:
         supply = {"tone": "bad" if psu else "off", "line": "not answering" if psu else "no data"}
     cards = [{"name": "Dish supply", "sub": "Keysight N8732A", "title": "DC supply for the dishes' analog chain",
+              "href": root + "/service/power#supply",
               **supply}]
     if pdb is not None and pdb.configured:
         pline = (f"answering · polled {ago(pdb.last_seen, now)}" if pdb.health == "ok"
                  else f"{pdb.health} · {pdb.error or ''}"[:60])
         cards.append({"name": "PDB controller", "sub": f"power_db {pdb.host}", "line": pline,
-                      "tone": health_tone(pdb.health), "href": root + "/service/pdb",
+                      "tone": health_tone(pdb.health), "href": root + "/service/power",
                       "title": f"power_db at {pdb.host}:{pdb.port}: {pdb.health}"
                                + (f" ({pdb.error})" if pdb.error else "")})
         stages["pdb"] = {"title": "Feeds", "tone": health_tone(pdb.health),
                          "word": f"{pdb.n_on}/{pdb.n_channels} on" if pdb.n_channels else pdb.health,
-                         "href": root + "/service/pdb", "notes": ["filled: powered", "red: bffs flagged"]}
+                         "href": root + "/service/power", "notes": ["filled: powered", "red: bffs flagged"]}
     else:
         cards.append({"name": "PDB controller", "sub": "power_db", "line": "not configured", "tone": "off"})
         stages["pdb"] = {"title": "Feeds", "tone": "off", "word": "no PDB"}
@@ -2073,7 +2120,8 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
         n = len(devices.get("outlets", []))
         cards.append({"name": "Rack PDU", "sub": ", ".join(sorted({o["pdu"] for o in devices["outlets"]})),
                       "line": f"{devices['inlet_w'] / 1e3:.1f} kW in · {n} outlets", "tone": "ok",
-                      "href": "#power", "title": "AC power for the switch, the crate and the servers"})
+                      "href": root + "/service/power#outlets",
+                      "title": "AC power for the switch, the crate and the servers"})
     stages["power"] = {"title": "Power"}
     stages["power_cards"] = cards
 
@@ -2095,7 +2143,7 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
                    for p in view["switch_ports"])
     stages["switch"] = {"title": "Switch", "tone": stone if live else "bad",
                         "word": sword if live else ("eAPI failed" if eapi else "monitor down"),
-                        "href": "#switch-ports",
+                        "href": root + "/switch",
                         "notes": ["Arista 7060CX", "eAPI, live" if eapi else
                                   f"monitor {ago(mon.get('last_success'), now)}"]
                                  + ([watts(SWITCH_OUTLET)] if watts(SWITCH_OUTLET) else []),
@@ -2187,10 +2235,37 @@ def instrument_page():
 @bp.route("/partials/instrument")
 @login_required
 def partial_instrument():
-    """The diagram and the tables (htmx poll every PAGE_POLL_S)."""
+    """The diagram (htmx poll every PAGE_POLL_S)."""
     monitor = current_app.config["instrument_monitor"]
     monitor.poll_if_stale(PAGE_POLL_S)
     return render_template("_instrument.html", **_instrument_context())
+
+
+@bp.route("/switch")
+@login_required
+def switch_page():
+    """The switch's ports, each board link and each X-engine link end to
+    end (switch port, then the NIC kotekan reports), and the wiring table."""
+    monitor = current_app.config["instrument_monitor"]
+    monitor.poll_if_stale(PAGE_POLL_S)
+    return render_template("switch.html", **_instrument_view())
+
+
+@bp.route("/partials/switch")
+@login_required
+def partial_switch():
+    """The switch page's tables (htmx poll every PAGE_POLL_S)."""
+    monitor = current_app.config["instrument_monitor"]
+    monitor.poll_if_stale(PAGE_POLL_S)
+    return render_template("_switch.html", **_instrument_view())
+
+
+@bp.route("/partials/power-devices")
+@login_required
+def partial_power_devices():
+    """The power page's dish supply and PDU outlets (30 s htmx poll; the
+    instrument monitor reads Prometheus at most that often)."""
+    return render_template("_power_devices.html", **_power_devices())
 
 
 @bp.route("/partials/service-pdb")
@@ -2346,7 +2421,7 @@ def _pdb_result(ok: bool, message: str):
         return render_template("_service_pdb_result.html",
                                ok=ok, message=message, **_pdb_context())
     flash(f"PDB: {message}", "success" if ok else "error")
-    return redirect(url_for("web.service_page", name="pdb"))
+    return redirect(url_for("web.service_page", name="power"))
 
 
 @bp.route("/service/pdb/set", methods=["POST"])

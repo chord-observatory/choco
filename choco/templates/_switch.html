@@ -1,0 +1,133 @@
+{# The switch page's live part: problems, sources, the board links, the
+   X-engine links end to end, the other ports and the wiring table's
+   state.  Swapped by the 5 s htmx poll on #switch. #}
+{% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
+{% set now = now_ts %}
+{% macro gbps(v) -%}{% if v is number %}{{ '%.1f' % (v / 1e9) }} Gb/s{% else %}—{% endif %}{%- endmacro %}
+{% macro kpps(v) -%}{% if v is number %}{{ '%.0f' % (v / 1e3) }} kpps{% else %}—{% endif %}{%- endmacro %}
+{% macro per_s(v) -%}{% if v is number %}{{ '%.3g' % v if v else '0' }}{% else %}—{% endif %}{%- endmacro %}
+{% macro flag(v) -%}{% if v is number %}{{ 'yes' if v else 'no' }}{% else %}—{% endif %}{%- endmacro %}
+{% macro dbm(v) -%}{{ '%.1f' % v if v is number else '—' }}{%- endmacro %}
+{% set V = view %}
+
+{% if not inst.configured %}
+<div class="notice"><p>Set <code>instrument.prometheus_url</code> in config.yaml to read the switch
+    and to poll the X-engine NICs.</p></div>
+{% elif inst.health == 'down' %}
+<div class="notice"><p>{{ inst.error }}</p></div>
+{% endif %}
+{% if problems %}
+<div class="notice"><ul class="problems">
+    {% for p in problems[:12] %}<li>{{ p }}</li>{% endfor %}
+    {% if problems | length > 12 %}<li>… and {{ problems | length - 12 }} more</li>{% endif %}
+</ul></div>
+{% endif %}
+
+<div class="inst-facts">
+    <span>{{ tag(monitor_tone(inst.health), monitor_label(inst.health)) }}
+        <small>polled {{ since(inst.last_polled, now) }}</small></span>
+    {% set S = inst.sources %}
+    <span><b>Switch</b> {% if S.switch %}{{ 'eAPI' if S.switch.ok else '<span class="err">eAPI failed</span>' | safe }}{% else %}via Prometheus (no switch account){% endif %}</span>
+    {% if S.kotekan %}<span><b>NICs</b> kotekan on {{ S.kotekan.n }}{% if S.kotekan.of %} / {{ S.kotekan.of }}{% endif %} nodes</span>{% endif %}
+    <span><b>Total</b> {{ '%.0f' % V.in_gbps }} Gb/s in, {{ '%.0f' % V.out_gbps }} Gb/s out</span>
+</div>
+
+<h3>CRS boards → switch</h3>
+<p class="note">One port per board.  FEC and error counts are per second over 5 min.
+    {%- if not (V.boards | selectattr('stats.rx_dbm', 'number') | list) %}  Optical receive power
+    appears once the switch monitor exports it.{% endif %}</p>
+<div class="scroll-x">
+<table class="ports">
+    <thead><tr><th>Slot</th><th>Feeds</th><th>Port</th><th>State</th><th>Type</th><th>Signal</th><th>FEC lock</th>
+        <th>Rx dBm</th><th>In</th><th>FEC corr/s</th><th>FEC uncorr/s</th><th>Errors/s</th><th>Discards/s</th></tr></thead>
+    <tbody>
+    {% for b in V.boards %}
+    {% set s = b.stats %}
+    <tr>
+        <td class="num">{{ b.slot }}</td>
+        <td class="mono">{{ b.feeds[0].dish }}–{{ b.feeds[-1].dish }} {{ b.pol }}</td>
+        <td class="mono">{{ b.port or '—' }}</td>
+        <td>{{ tag(b.tone, b.word) }}</td>
+        <td>{{ s.type or '—' }}</td>
+        <td>{{ flag(s.signal) }}</td>
+        <td>{{ flag(s.fec_lock) }}</td>
+        <td class="num">{{ dbm(s.rx_dbm) }}</td>
+        <td class="num">{{ gbps(s.in_bps) }}</td>
+        <td class="num">{{ per_s(s.fec_corr) }}</td>
+        <td class="num">{{ per_s(s.fec_unc) }}</td>
+        <td class="num">{{ per_s(s.errors) }}</td>
+        <td class="num">{{ per_s(s.in_discards) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="13">{{ board_problem or 'No boards.' }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<h3>Switch → X-engines</h3>
+<p class="note">One row per link: what the switch sends on the port, then what the NIC receives.
+    A NIC that receives a different rate than its switch port sends is marked "rate differs":
+    check the wiring table.</p>
+<div class="scroll-x">
+<table class="ports">
+    <thead>
+        <tr><th colspan="5" class="side">Switch port</th><th colspan="6" class="side edge">X-engine NIC (kotekan)</th></tr>
+        <tr><th>Port</th><th>State</th><th>Out</th><th>Sends</th><th>Discards/s</th>
+            <th class="edge">Node · port</th><th>State</th><th>Receives</th><th>Missed/s</th><th>Ring full/s</th><th>Errors/s</th></tr>
+    </thead>
+    <tbody>
+    {% for x in V.nics %}
+    <tr>
+        <td class="mono">{{ x.port }}</td>
+        <td>{{ tag(x.sw_tone, x.sw_word) }}</td>
+        <td class="num">{{ gbps(x.sw.out_bps) }}</td>
+        <td class="num">{{ kpps(x.sw.out_pps) }}</td>
+        <td class="num">{{ per_s(x.sw.out_discards) }}</td>
+        <td class="mono edge">{{ x.node }} · {{ x.nic_port }}</td>
+        <td>{{ tag(x.nic_tone, x.nic_word) }}</td>
+        <td class="num">{{ kpps(x.nic.pps) }}</td>
+        <td class="num">{{ per_s(x.nic.missed) }}</td>
+        <td class="num">{{ per_s(x.nic.ring_full) }}</td>
+        <td class="num">{{ per_s(x.nic.errors) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="11">The wiring table places no X-engine ports.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% if V.unmapped %}
+<p class="note">NIC ports with data that the wiring table does not place:
+    {% for k in V.unmapped %}<code>{{ k[0] }}·{{ k[1] }}</code>{{ ', ' if not loop.last }}{% endfor %}.</p>
+{% endif %}
+
+{% set others = V.switch_ports | rejectattr('role') | list %}
+{% if others %}
+<h3>Other ports</h3>
+<p class="note">Ports the wiring table does not name.</p>
+<div class="scroll-x">
+<table class="ports">
+    <thead><tr><th>Port</th><th>State</th><th>Type</th><th>Rx dBm</th><th>In</th><th>Out</th><th>Errors/s</th></tr></thead>
+    <tbody>
+    {% for p in others %}
+    {% set s = p.stats %}
+    <tr class="unwired">
+        <td class="mono">{{ p.name }}</td>
+        <td>{{ tag(p.tone, p.word) }}</td>
+        <td>{{ s.type or '—' }}</td>
+        <td class="num">{{ dbm(s.rx_dbm) }}</td>
+        <td class="num">{{ gbps(s.in_bps) }}</td>
+        <td class="num">{{ gbps(s.out_bps) }}</td>
+        <td class="num">{{ per_s(s.errors) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+<p class="note">Wiring table: <code>{{ wiring.path or 'not configured' }}</code>
+    ({{ wiring.rows | length }} ports){% if wiring.errors %}; {{ wiring.errors | length }} rows refused,
+    listed above{% endif %}.  Rows marked "inferred" were matched from link changes and should be
+    confirmed on site or from the switch's static multicast MAC table.</p>

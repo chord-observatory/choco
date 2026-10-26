@@ -1,20 +1,8 @@
-{# The instrument page's live part: problems, facts, the flow diagram, the
-   node NIC and switch port tables, the wiring table's state.  Swapped by
-   the 10 s htmx poll on #instrument. #}
+{# The instrument page's live part: problems, facts and the flow diagram
+   (the port tables are on /switch, the servers on /nodes, the outlets on
+   /service/power).  Swapped by the 5 s htmx poll on #instrument. #}
 {% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
 {% set now = now_ts %}
-{% macro gbps(v) -%}{% if v is number %}{{ '%.1f' % (v / 1e9) }} Gb/s{% else %}—{% endif %}{%- endmacro %}
-{% macro kpps(v) -%}{% if v is number %}{{ '%.0f' % (v / 1e3) }} kpps{% else %}—{% endif %}{%- endmacro %}
-{% macro per_s(v) -%}{% if v is number %}{{ '%.3g' % v if v else '0' }}{% else %}—{% endif %}{%- endmacro %}
-{% macro flag(v) -%}{% if v is number %}{{ 'yes' if v else 'no' }}{% else %}—{% endif %}{%- endmacro %}
-{% macro short(port) -%}{{ 'Et' ~ port[8:].split('/')[0] if port else '—' }}{%- endmacro %}
-{% macro node_tag(st) -%}
-{%- if st -%}
-{%- set t = 'ok' if st.status == 'started' else 'bad' if st.status == 'down' else 'off' if st.status == 'unknown' else 'warn' -%}
-{{ tag('maint' if st.maintenance and t == 'ok' else t, st.status ~ (' · maint' if st.maintenance else '')) }}
-{%- else -%}{{ tag('off', 'not in nodes.yaml') }}{%- endif -%}
-{%- endmacro %}
-{% set V = view %}
 
 {% if not inst.configured %}
 <div class="notice"><p>Set <code>instrument.prometheus_url</code> in config.yaml to read the switch,
@@ -114,112 +102,4 @@
     {% if s.href %}</a>{% endif %}
     {% endfor %}
 </svg>
-</div>
-
-<div class="inst-tables">
-{% if V.unmapped %}
-<p class="note">NIC ports with data that the wiring table does not place:
-    {% for k in V.unmapped %}<code>{{ k[0] }}·{{ k[1] }}</code>{{ ', ' if not loop.last }}{% endfor %}.</p>
-{% endif %}
-
-<h3>Servers</h3>
-<table class="ports stack">
-    <thead><tr><th>Node</th><th>kotekan</th><th>Branch</th><th>Commit</th><th>Host</th><th>iDRAC</th>
-        <th>PSUs</th><th>Inlet</th><th>CPU</th><th>GPU</th><th>PDU</th></tr></thead>
-    <tbody>
-    {% for h in V.hosts.values() %}
-    <tr>
-        <td class="stack-lead mono">{{ h.name }}</td>
-        <td class="stack-end">{{ node_tag(h) }}</td>
-        <td data-label="branch" class="mono">{{ h.branch or '—' }}</td>
-        <td data-label="commit" class="mono" title="{{ h.version or '' }}">{{ (h.commit or '')[:10] or '—' }}</td>
-        <td data-label="host">{% if h.host_up is number %}{{ tag('ok' if h.host_up else 'bad', 'up' if h.host_up else 'no answer') }}{% else %}—{% endif %}</td>
-        <td data-label="iDRAC">{{ tag(h.idrac_tone, h.idrac_word) }}</td>
-        <td data-label="PSUs">{% for n, v in h.psu | dictsort %}{{ tag('ok' if v == 3 else 'warn', n | replace(' Status', '')) }} {% else %}—{% endfor %}</td>
-        <td class="num" data-label="inlet">{{ '%.0f °C' % h.temps.inlet if h.temps.inlet is number else '—' }}</td>
-        <td class="num" data-label="CPU">{{ '%.0f °C' % h.temps.cpu if h.temps.cpu is number else '—' }}</td>
-        <td class="num" data-label="GPU">{{ '%.0f °C' % h.temps.gpu if h.temps.gpu is number else '—' }}</td>
-        <td class="num" data-label="PDU">{{ '%.0f W' % h.watts if h.watts is number else '—' }}</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-</table>
-
-<h3>X-engine NIC ports</h3>
-<table class="ports stack">
-    <thead><tr><th>Node</th><th>Port</th><th>Switch port</th><th>State</th><th>Rx</th>
-        <th>Switch sends</th><th>Missed/s</th><th>Ring full/s</th><th>Errors/s</th></tr></thead>
-    <tbody>
-    {% for x in V.nics %}
-    <tr>
-        <td class="stack-lead mono">{{ x.node }}</td>
-        <td data-label="port" class="mono">{{ x.nic_port }}</td>
-        <td data-label="switch" class="mono">{{ short(x.port) }}</td>
-        <td class="stack-end">{{ tag(x.nic_tone, x.nic_word) }}</td>
-        <td class="num" data-label="rx">{{ kpps(x.nic.pps) }}</td>
-        <td class="num" data-label="switch sends">{{ kpps(x.sw.out_pps) }}</td>
-        <td class="num" data-label="missed/s">{{ per_s(x.nic.missed) }}</td>
-        <td class="num" data-label="ring full/s">{{ per_s(x.nic.ring_full) }}</td>
-        <td class="num" data-label="errors/s">{{ per_s(x.nic.errors) }}</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-</table>
-
-<h3 id="switch-ports">Switch ports</h3>
-<p class="note">All Ethernet ports the switch monitor reports, read-only.  In and out are as the switch
-    counts them; FEC and error counts are per second over 5 min.
-    {%- if not (V.switch_ports | selectattr('stats.rx_dbm', 'number') | list) %}  Optical receive
-    power appears once the switch monitor exports it.{% endif %}</p>
-<div class="scroll-x">
-<table class="ports">
-    <thead><tr><th>Port</th><th>Carries</th><th>State</th><th>Type</th><th>Signal</th><th>FEC lock</th>
-        <th>Rx dBm</th><th>In</th><th>Out</th><th>FEC corr/s</th><th>FEC uncorr/s</th>
-        <th>Errors/s</th><th>Discards/s</th></tr></thead>
-    <tbody>
-    {% for p in V.switch_ports %}
-    {% set s = p.stats %}
-    <tr class="{{ 'unwired' if not p.role }}">
-        <td class="mono">{{ p.name }}</td>
-        <td>{{ p.role or '—' }}</td>
-        <td>{{ tag(p.tone, p.word) }}</td>
-        <td>{{ s.type or '—' }}</td>
-        <td>{{ flag(s.signal) }}</td>
-        <td>{{ flag(s.fec_lock) }}</td>
-        <td class="num">{{ '%.1f' % s.rx_dbm if s.rx_dbm is number else '—' }}</td>
-        <td class="num">{{ gbps(s.in_bps) }}</td>
-        <td class="num">{{ gbps(s.out_bps) }}</td>
-        <td class="num">{{ per_s(s.fec_corr) }}</td>
-        <td class="num">{{ per_s(s.fec_unc) }}</td>
-        <td class="num">{{ per_s(s.errors) }}</td>
-        <td class="num">{{ per_s((s.in_discards or 0) + (s.out_discards or 0)) if s.in_discards is number or s.out_discards is number else '—' }}</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-</table>
-</div>
-
-<h3 id="power">PDU outlets</h3>
-{% if devices.outlets %}
-<p class="note">Active power per outlet, as the PDU reports it ({{ '%.1f' % (devices.inlet_w / 1e3) if devices.inlet_w is number else '—' }} kW at the inlet).
-    Servers have two supplies on two outlets; the second idles at a few watts.</p>
-<div class="scroll-x">
-<table class="ports">
-    <thead><tr><th>PDU</th><th>Outlet</th><th>Label</th><th>Power</th></tr></thead>
-    <tbody>
-    {% for o in devices.outlets %}
-    <tr><td class="mono">{{ o.pdu }}</td><td class="num">{{ o.outlet }}</td><td>{{ o.name or '—' }}</td>
-        <td class="num">{{ '%.0f W' % o.watts }}</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
-</div>
-{% else %}
-<p class="note">No PDU outlet series in Prometheus.</p>
-{% endif %}
-
-<p class="note">Wiring table: <code>{{ wiring.path or 'not configured' }}</code>
-    ({{ wiring.rows | length }} ports){% if wiring.errors %}; {{ wiring.errors | length }} rows refused,
-    listed above{% endif %}.  Rows marked "inferred" were matched from link changes and should be
-    confirmed on site or from the switch's static multicast MAC table.</p>
 </div>

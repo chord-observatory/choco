@@ -3,7 +3,7 @@
 The wiring between the analog power distribution boards (PDB, driven by
 power_db) and the correlator's dish inputs lives in one CSV next to
 ``nodes.yaml``.  It is the *master* table: choco labels the
-``/service/pdb`` grid from it, serves it at ``/api/pdb/map`` so jobs
+``/service/power`` grid from it, serves it at ``/api/pdb/map`` so jobs
 share one copy instead of vendoring their own, and cross-checks it
 against the labels kotekan actually reports in its ``dish_inputs``
 table — the same table kotekan indexes its bad-input mask with, so a

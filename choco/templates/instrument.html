@@ -60,11 +60,7 @@ svg.fl a:hover .ht { fill: var(--pico-primary); }
               font-size: 0.85em; }
 .inst-facts { display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; font-size: 0.85em; margin: 0 0 1em; }
 .inst-facts b { font-weight: 600; }
-table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.5em; white-space: nowrap; }
-table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
-table.ports tr.unwired td { color: var(--pico-muted-color); }
 .problems li { font-size: 0.85em; }
-body.wall .inst-tables { display: none; }
 body.wall svg.fl { max-width: none; }
 {% endblock %}
 
@@ -77,7 +73,10 @@ body.wall svg.fl { max-width: none; }
     switch sends each frequency stream to one X-engine NIC port.  Feeds show their PDB power;
     links show the live rate (their width too) and their state.  Everything here is read from Prometheus, choco's
     own monitors, kotekan and kotekan's config, every 5 s while the page is open; nothing that
-    changes anything is sent to the devices.</p>
+    changes anything is sent to the devices.  The port tables are on the
+    <a href="{{ request.script_root }}/switch">switch</a> page, the servers on
+    <a href="{{ request.script_root }}/nodes">nodes</a> and the outlets on
+    <a href="{{ request.script_root }}/service/power">power</a>.</p>
 <div id="instrument"
      hx-get="{{ request.script_root }}/partials/instrument"
      hx-trigger="every 5s"

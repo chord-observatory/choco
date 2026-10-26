@@ -1,4 +1,7 @@
-{% from "_service_macros.html" import maint_ctl, node_status, node_version, start_ctl with context %}
+{% from "_service_macros.html" import maint_ctl, node_status, node_version, start_ctl, tag with context %}
+{# hosts: each node's server from Prometheus (iDRAC, PSUs, temperatures,
+   PDU power; refreshed every 30 s), None when the instrument monitor
+   has no Prometheus. #}
 {% if not nodes %}
 <p>No nodes configured yet. <a href="{{ request.script_root }}/nodes/edit">Edit nodes</a> to add kotekan instances.</p>
 {% else %}
@@ -23,6 +26,7 @@
             <th>Status</th>
             <th>Version</th>
             {% if not one_file %}<th>Config</th>{% endif %}
+            {% if hosts %}<th>Server</th><th title="Inlet / hottest CPU / hottest GPU">Temps °C</th><th title="Active power on the node's PDU outlets">Power</th>{% endif %}
             <th></th>
         </tr>
     </thead>
@@ -36,6 +40,16 @@
             <td class="stack-end">{{ node_status(node) }}</td>
             <td class="stack-full">{{ node_version(node, "ver-pop-" ~ node.group ~ "-" ~ node.name) }}</td>
             {% if not one_file %}<td class="stack-full" data-label="config"><code>{{ node.config_filename }}</code></td>{% endif %}
+            {% if hosts %}{% set h = hosts[node.name] %}
+            <td data-label="server" class="server-tags"
+                title="node_exporter: {{ {1: 'answering', 0: 'not answering'}.get(h.host_up, 'no data') }}">
+                {%- if h.host_up == 0 %}{{ tag('bad', 'no answer') }} {% endif -%}
+                {{ tag(h.idrac_tone, 'iDRAC ' ~ h.idrac_word) }}
+                {%- for n, v in h.psu | dictsort if v != 3 %} {{ tag('warn', n | replace(' Status', '')) }}{% endfor -%}
+            </td>
+            <td data-label="temps °C" class="num">{% for k in ('inlet', 'cpu', 'gpu') %}{{ '%.0f' % h.temps[k] if h.temps[k] is number else '—' }}{{ ' / ' if not loop.last }}{% endfor %}</td>
+            <td data-label="power" class="num">{{ '%.0f W' % h.watts if h.watts is number else '—' }}</td>
+            {% endif %}
             <td class="actions" style="white-space: nowrap;">
                 <a href="{{ request.script_root }}/pipeline/{{ key }}" role="button" class="secondary outline btn-sm"
                    title="The live pipeline graph on {{ key }}">Pipeline</a>

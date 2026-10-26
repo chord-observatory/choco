@@ -58,11 +58,13 @@
 {% if fpga %}
 {{ monitor_tag('FPGA', 'fpga_master', fpga, ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else ''), request.script_root ~ '/service/fpga') }}
 {% endif %}
-{% if pdb %}
-{{ monitor_tag('PDB', 'power_db', pdb, ('\nchannels on: ' ~ pdb.n_on ~ ' / ' ~ pdb.n_channels if pdb.n_channels else ''), request.script_root ~ '/service/pdb') }}
+{# POWER: the PDB controller, worse when the dish supply is not on #}
+{% if power %}
+{{ monitor_tag('POWER', 'power_db', power, ('\nchannels on: ' ~ power.n_on ~ ' / ' ~ power.n_channels if power.n_channels else '')
+               ~ ('\ndish supply: ' ~ power.supply if power.supply else ''), request.script_root ~ '/service/power') }}
 {% endif %}
 {% if instrument %}
-{{ monitor_tag('PATH', 'Prometheus (switch, NICs, dish supply)', instrument, ('\nlink problems: ' ~ instrument.n_problems if instrument.n_problems else ''), request.script_root ~ '/') }}
+{{ monitor_tag('SWITCH', 'the switch and X-engine NIC monitor', instrument, ('\nlink problems: ' ~ instrument.n_problems if instrument.n_problems else ''), request.script_root ~ '/switch') }}
 {% endif %}
 {# DATA is the mounts and the jobs that read them (the waterfall
    renderer, the acquisition notes), one tag (data_tone / data_word pick
