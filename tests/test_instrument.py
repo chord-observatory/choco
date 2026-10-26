@@ -440,7 +440,7 @@ class TestPage:
         client = inst_app.test_client()
         login(client)
         body = client.get("/").data.decode()
-        assert "Signal path" in body and 'class="fl"' in body and "slot 3" in body and "B01–B02 X" in body
+        assert "<h3>Signal path" not in body and 'class="fl"' in body and "slot 3" in body and "B01–B02 X" in body
         # no page title; the facts and the description follow the diagram
         assert "<h2>Instrument</h2>" not in body
         assert body.index('class="fl"') < body.index('class="inst-facts"') < body.index('class="note"')
@@ -452,7 +452,7 @@ class TestPage:
         assert "Ethernet33" not in body and "PDU outlets" not in body
         assert 'href="/switch"' in body and 'href="/service/power#supply"' in body
         part = client.get("/partials/instrument").data.decode()
-        assert "Signal path" in part and "<html" not in part
+        assert 'class="fl"' in part and "<html" not in part
 
     def test_switch_page_shows_each_link_end_to_end(self, inst_app):
         client = inst_app.test_client()
