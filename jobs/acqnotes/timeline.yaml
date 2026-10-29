@@ -162,7 +162,7 @@ entries:
     correct the table.  Files from 2026-10-01 20:18 UTC have physical labels.
 - topic: labels
   from: 2026-10-01T20:18
-  to: null
+  to: 2026-10-17
   source: "kotekan PR #1695 (2026-09-22); file labels; this analysis (fringe/pol check)"
   text: >-
     The labels are physical: per-element `A01X ... B08Y, RFIA1X ... RFIB4Y` with
@@ -341,7 +341,7 @@ entries:
 
 - topic: fringestop
   from: 2026-10-09T19:14
-  to: null
+  to: 2026-10-17
   source: "live kotekan /config on cx19, cx27, cx42, cx43, cx44 (2026-10-09); config_json of the files 2026-10-10 to 10-12"
   text: >-
     All cx nodes fringestop in N2Accumulate.  They use the config pointing, Dec +40.7,
