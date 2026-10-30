@@ -179,6 +179,23 @@ class TestRun:
         assert len(hist) == 1 and hist[0]["applied"] is True
         assert hist[0]["table"]["H8"] == -27.3
 
+    def test_state_file_changes_with_the_table(self, choco, site, scratch_state_dir):
+        assert pointing.main(["--state-dir", str(scratch_state_dir)]) == 0
+        state_file = scratch_state_dir / "state.json"
+        state = json.loads(state_file.read_text())
+        assert state["array_value"] == -27.3 and state["outliers"] == []
+        assert state["table"]["A1"] == -27.3 and len(state["table"]) == 64
+        first = state_file.stat().st_mtime_ns
+        # The same table again: history grows, state.json is left alone.
+        assert pointing.main(["--state-dir", str(scratch_state_dir)]) == 0
+        assert state_file.stat().st_mtime_ns == first
+        assert len((scratch_state_dir / "history.jsonl").read_text().splitlines()) == 2
+        # One dish moves: the table changed, state.json is rewritten.
+        site["text"] = table_text({"E1": 0.0})
+        assert pointing.main(["--state-dir", str(scratch_state_dir)]) == 0
+        state = json.loads(state_file.read_text())
+        assert state["outliers"] == ["E1"] and state["table"]["E1"] == 0.0
+
     def test_unchanged_writes_nothing(self, choco, site, scratch_state_dir):
         choco.vars_text = "dish_coelev_deg: -27.3\nother: 1\n"
         assert pointing.main(["--state-dir", str(scratch_state_dir)]) == 0

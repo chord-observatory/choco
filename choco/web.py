@@ -1429,12 +1429,13 @@ _JOBS: dict[str, dict] = {
             "Moon and pointing every 5 minutes, in a day and a night palette; "
             '<a href="{root}/">also on the landing page</a>.'),
     },
-    # pointing keeps no state file: what it publishes is vars.yaml in the
-    # config library, and its history is append-only.  run.json says what
-    # the last fetch found and whether it changed anything.
+    # pointing rewrites its state file (the latest table) only when the
+    # table changes, so the mtime is "last change"; what it publishes is
+    # vars.yaml in the config library.  run.json says what the last fetch
+    # found and whether it changed anything.
     "pointing": {
         "label": "POINTING", "unit": "choco-pointing.service",
-        "run": RUN_NAME, "mtime_label": "last run",
+        "state": STATE_NAME, "run": RUN_NAME, "mtime_label": "last change",
         "description": "Dish pointing — reads the site's antenna angle table and "
                        "writes the array's co-elevation to the config library's "
                        "vars.yaml, pausing the nodes it re-renders.",

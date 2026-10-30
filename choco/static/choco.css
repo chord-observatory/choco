@@ -323,6 +323,10 @@ label.toggle-switch.htmx-request .toggle-slider { opacity: 0.45; }
                               text-align: center; overflow: hidden;
                               text-overflow: ellipsis; }
 .feed-grid-clickable td:hover { filter: brightness(0.92); }
+/* the pointing grid: the same cells as the dishes stand, with row and
+   column heads like the PDB page's dish grid */
+.pointing-grid th { padding: 0.15em 0.2em; border: 0; text-align: center; font-weight: 600;
+                    font-family: var(--pico-font-family-monospace); color: var(--pico-muted-color); }
 
 /* ---- flash messages ---------------------------------------------------
    One-shot notices (action results), dismissable so they read as

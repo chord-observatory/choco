@@ -1,0 +1,46 @@
+{# The POINTING page's summary (jobdetail.pointing_detail): what the last
+   run did, then the latest table as the dishes stand, rows A-H of eight.
+   A cell at the array value is the ground, one that differs the figure,
+   like the bffs grid; the value in each cell is the dish's co-elevation
+   in degrees (south of zenith negative). #}
+{% if detail.has_run %}
+<dl class="service-facts">
+    <dt>Last run</dt>
+    <dd>{{ detail.run.time }} — {{ detail.run.status }}{% if detail.run.reason %}: {{ detail.run.reason }}{% endif %}</dd>
+    {% if detail.run.changed %}
+    <dt>Applied</dt>
+    <dd>{{ detail.run.previous if detail.run.previous is not none else 'unset' }} &rarr; {{ detail.array_value }}{% if detail.run.paused %}; put in maintenance: {{ detail.run.paused | join(', ') }}{% endif %}</dd>
+    {% endif %}
+</dl>
+{% endif %}
+{% if detail.has_state %}
+<div class="section-head">
+    <h3>Dishes as in the field</h3>
+    <small>{% if detail.array_value is not none %}array value {{ detail.array_value }}&deg;{% else %}no array value{% endif %}; {{ detail.n_dishes }} dishes in the table, {{ detail.time }}</small>
+</div>
+<figure class="scroll-x">
+<table class="feed-grid pointing-grid">
+    <thead>
+        <tr>
+            <th></th>
+            {% for c in detail.cols %}<th>{{ '%02d' % c }}</th>{% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in detail.rows %}
+        <tr>
+            <th>{{ row.name }}</th>
+            {% for cell in row.cells %}
+            {% if cell.kind is none %}
+            <td class="feed-none" title="{{ cell.name }}: not in the table">&middot;</td>
+            {% else %}
+            <td class="{{ 'feed-good' if cell.kind == 'same' else 'feed-bad' }}" title="{{ cell.name }}: {{ cell.value }}&deg;{% if cell.kind == 'other' %}, not the array value{% endif %}">{{ cell.value }}</td>
+            {% endif %}
+            {% endfor %}
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<figcaption>Each dish's co-elevation from the site's angle table, degrees south of zenith negative. <span class="feed-key feed-good">at the array value</span> <span class="feed-key feed-bad">differs</span>{% if detail.outliers %}: {{ detail.outliers | join(', ') }}{% endif %}. Only the array value is written to kotekan.</figcaption>
+</figure>
+{% endif %}

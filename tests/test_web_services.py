@@ -472,6 +472,41 @@ class TestServicePage:
         body = resp.data.decode()
         assert "2 entries" in body
 
+    def test_pointing_detail_grid(self, client, app, tmp_path, jobs):
+        login(client)
+        table = {f"{r}{c}": -27.3 for r in "ABCDEFGH" for c in range(1, 9)}
+        table["E1"] = 0.0
+        del table["H8"]
+        state_file = tmp_path / "pointing-state.json"
+        state_file.write_text(json.dumps({"time": 1700000000.0, "array_value": -27.3,
+                                          "outliers": ["E1"], "table": table}))
+        _install_state(app, "pointing", state_file)
+        run_file = tmp_path / "pointing-run.json"
+        run_file.write_text(json.dumps({"time": 1700000100.0, "status": "ok",
+                                        "changed": True, "previous": -8.6,
+                                        "paused": ["cx/cx1", "recv/recv1"]}))
+        _install_state(app, "pointing", run_file, name="run.json")
+        resp = client.get("/service/pointing")
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert "array value -27.3" in body and "63 dishes in the table" in body
+        assert 'title="E1: 0.0&deg;, not the array value"' in body
+        assert 'title="A1: -27.3&deg;"' in body
+        assert 'title="H8: not in the table"' in body
+        assert "-8.6 &rarr; -27.3; put in maintenance: cx/cx1, recv/recv1" in body
+        assert body.count("feed-bad") == 2   # the E1 cell and the key
+
+    def test_pointing_detail_without_state(self, client, app, tmp_path, jobs):
+        login(client)
+        run_file = tmp_path / "pointing-run.json"
+        run_file.write_text(json.dumps({"time": 1700000100.0, "status": "degraded",
+                                        "reason": "InvalidTable: unexpected header"}))
+        _install_state(app, "pointing", run_file, name="run.json")
+        resp = client.get("/service/pointing")
+        body = resp.data.decode()
+        assert "degraded: InvalidTable: unexpected header" in body
+        assert "Dishes as in the field" not in body
+
     def test_choco_detail_counts(self, client, jobs):
         login(client)
         resp = client.get("/service/choco")

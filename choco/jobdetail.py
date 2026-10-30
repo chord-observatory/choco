@@ -513,6 +513,58 @@ def eop_detail(state: dict | None, run, svc) -> dict | None:
     }
 
 
+POINTING_ROWS = "ABCDEFGH"
+POINTING_COLS = range(1, 9)
+
+
+def pointing_detail(state: dict | None, run: dict | None, svc: dict) -> dict | None:
+    """The POINTING page's summary: the latest table as the dishes stand
+    (``state.json``, rewritten when the table changes) and what the last
+    run did (``run.json``, every run).
+
+    The grid is rows A-H of eight dishes, each cell the dish's angle and
+    whether it is the array value (``same``), differs from it (``other``),
+    or is not in the table (``None``).  The array value is the one the job
+    applied, or None when no value had enough dishes.
+    """
+    if state is None and run is None:
+        return None
+    out: dict = {"has_state": state is not None, "has_run": run is not None}
+    if run is not None:
+        out["run"] = {
+            "time": fmt_utc(run.get("time")),
+            "status": run.get("status"),
+            "reason": run.get("reason"),
+            "changed": run.get("changed"),
+            "previous": float_or_none(run.get("previous")),
+            "paused": run.get("paused") or [],
+        }
+    if state is not None:
+        table = state.get("table") or {}
+        array_value = float_or_none(state.get("array_value"))
+        rows = []
+        for r in POINTING_ROWS:
+            cells = []
+            for c in POINTING_COLS:
+                name = f"{r}{c}"
+                value = float_or_none(table.get(name))
+                cells.append({
+                    "name": name, "value": value,
+                    "kind": (None if value is None
+                             else "same" if value == array_value else "other"),
+                })
+            rows.append({"name": r, "cells": cells})
+        out.update({
+            "time": fmt_utc(state.get("time")),
+            "array_value": array_value,
+            "outliers": [str(x) for x in state.get("outliers") or []],
+            "n_dishes": sum(1 for v in table.values() if float_or_none(v) is not None),
+            "rows": rows,
+            "cols": list(POINTING_COLS),
+        })
+    return out
+
+
 def acqnotes_detail(state, run, svc) -> dict | None:
     """What the notes job has measured (its index: {acq: measured at})
     and what its last run did (the run record)."""
@@ -557,6 +609,7 @@ JOB_DETAILS = {
     "bffs": bffs_detail,
     "eigencal": eigencal_detail,
     "mapmaker": mapmaker_detail,
+    "pointing": pointing_detail,
     "acqnotes": acqnotes_detail,
     "waterfall": waterfall_detail,
 }

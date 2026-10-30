@@ -29,8 +29,9 @@ import urllib.request
 
 import yaml
 
-from choco.jobclient import (Degraded, failure, get_json, job_state_dir, put_json,
-                             setup_logging, single_run, write_json_atomic, write_run)
+from choco.jobclient import (STATE_NAME, Degraded, failure, get_json, job_state_dir,
+                             put_json, setup_logging, single_run, write_json_atomic,
+                             write_run)
 
 log = logging.getLogger("pointing")
 
@@ -52,6 +53,8 @@ _SIGNED_RE = re.compile(r"^-?[0-9]{1,2}\.[0-9]{4}$")
 _ID_RE = re.compile(r"^[0-9]{3}$")
 #: What vars.yaml carries; the key telescope.j2 reads.
 VAR = "dish_coelev_deg"
+#: Every fetch, one line each; state.json is the latest table and changes
+#: only when the table does, so its mtime is "last change".
 HISTORY_NAME = "history.jsonl"
 
 
@@ -215,9 +218,18 @@ def run(cfg: dict, state_dir, dry_run: bool = False) -> tuple[int, dict]:
                     ", ".join(facts["reloaded"]) or "none",
                     ", ".join(facts["paused"]) or "none")
     if not dry_run:
+        now = time.time()
         with open(state_dir / HISTORY_NAME, "a") as f:
-            f.write(json.dumps({"time": time.time(), "array_value": value,
+            f.write(json.dumps({"time": now, "array_value": value,
                                 "applied": changed, "table": table}) + "\n")
+        state_file = state_dir / STATE_NAME
+        try:
+            previous_table = json.loads(state_file.read_text()).get("table")
+        except (OSError, ValueError, AttributeError):
+            previous_table = None
+        if table != previous_table:
+            write_json_atomic(state_file, {"time": now, "array_value": value,
+                                           "outliers": outliers, "table": table})
     return 0, facts
 
 
