@@ -1429,6 +1429,16 @@ _JOBS: dict[str, dict] = {
             "Moon and pointing every 5 minutes, in a day and a night palette; "
             '<a href="{root}/">also on the landing page</a>.'),
     },
+    # pointing keeps no state file: what it publishes is vars.yaml in the
+    # config library, and its history is append-only.  run.json says what
+    # the last fetch found and whether it changed anything.
+    "pointing": {
+        "label": "POINTING", "unit": "choco-pointing.service",
+        "run": RUN_NAME, "mtime_label": "last run",
+        "description": "Dish pointing — reads the site's antenna angle table and "
+                       "writes the array's co-elevation to the config library's "
+                       "vars.yaml, pausing the nodes it re-renders.",
+    },
     # mapmaker rewrites its state file on every run; a run with nothing
     # new to fold in is the normal case between files, so the mtime is
     # "last run" and never a health downgrade.
@@ -2876,7 +2886,10 @@ def api_config_put(name):
     """Write a library file (``{"content": ...}``), creating it if
     needed, after the check the editor makes: every node that uses the
     file must still render.  This is how a config reaches the configs
-    directory without a root shell (``choco config put``)."""
+    directory without a root shell (``choco config put``).  With
+    ``"pause": true`` the nodes the file re-renders are put in
+    maintenance first, as a pull does, so the write restarts nothing
+    until the operator lifts it; ``paused`` in the reply names them."""
     registry = _registry()
     try:
         library.file_path(registry, name)
@@ -2886,13 +2899,22 @@ def api_config_put(name):
     content = data.get("content")
     if not isinstance(content, str):
         return {"error": "'content' must be a string"}, 400
+    pause = data.get("pause", False)
+    if not isinstance(pause, bool):
+        return {"error": "'pause' must be a boolean"}, 400
     affected, error = library.check_save(registry, name, content)
     if error:
         return {"error": error}, 400
     created = not (registry.configs_dir / name).exists()
+    paused = []
+    if pause:
+        to_pause = [registry.get_node(key) for key in affected
+                    if not registry.get_node(key).maintenance]
+        _orchestrator().set_flag(to_pause, "maintenance", True)
+        paused = [n.key for n in to_pause]
     library.write_file(registry, _orchestrator(), name, content, _audit_user())
     return {"status": "saved", "path": name, "created": created,
-            "reloaded": affected}
+            "reloaded": affected, "paused": paused}
 
 
 @bp.route("/api/configs/pull", methods=["POST"])

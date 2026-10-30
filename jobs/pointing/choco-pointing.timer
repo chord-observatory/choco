@@ -1,0 +1,10 @@
+[Unit]
+Description=dish pointing from the site's angle table (every 10 min)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

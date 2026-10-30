@@ -463,6 +463,16 @@ The [mapmaker job](jobs/mapmaker/) (`choco-mapmaker.timer`, every 2 minutes) fol
 
 The [skymap job](jobs/skymap/) (`choco-skymap.timer`, every 5 minutes) renders a Mollweide all-sky view of the CHORD drift-scan strip with the current Sun, Moon and beam position, reading the pointing live from `/api/config/<group>`. Each run renders the same instant in two palettes: the day image is served unauthenticated at `/skymap.png` and shown at the foot of the MAP page, and a dark-page night version at `/skymap-night.png` for wall displays. Its config is `/etc/choco/skymap.yaml`.
 
+## Dish pointing
+
+The [pointing job](jobs/pointing/) (`choco-pointing.timer`, every 10 minutes) reads the site's antenna angle table (`http://px.chord-observatory.ca/chord-angle-csv`, one row per foundation; `Ant angle` is signed like kotekan's `dish_coelev_deg`, south of zenith negative) and keeps `dish_coelev_deg` in the config library's `vars.yaml` at the value the array dishes share. kotekan's `telescope.j2` renders that variable, so every node and the N² files follow the table; the skymap job reads the same value through `/api/config/<group>`.
+
+**Rules** — the table is untrusted input. The fetch is bounded (`max_bytes`), the text must be ASCII, every field must match a fixed pattern, the signed angle must agree with the unsigned one and its side, and the 64 pathfinder foundations (A1–H8) must each appear once. The array value is the angle at least `min_agree` (56) of them share; dishes that differ are listed in `run.json` and not applied. Anything short of a valid table, or no angle with that many dishes (the dishes are moving), changes nothing and exits degraded: the last applied value stands until a valid table arrives. Nothing read from the table is written anywhere; `vars.yaml` gets a float, the history (`history.jsonl` in the job's state directory) floats and the labels that matched.
+
+**A change** is written through `PUT /api/configs/vars.yaml` with `pause` (the `--pause` of `choco config put`): the nodes `vars.yaml` re-renders are put in maintenance first, as a pull does, so the new pointing restarts nothing until you lift it. The run logs the old and new value and the nodes it paused; `run.json` carries the same. `pause: false` in `/etc/choco/pointing.yaml` lets the sync loop restart them at once instead. A hand run: `jobs/run-job.sh pointing/pointing.py /etc/choco/pointing.yaml -n` (dry run: fetch and compare, write nothing).
+
+**Deploying the variable** — the job must have written `vars.yaml` once before a `telescope.j2` that renders `{{ dish_coelev_deg }}` is pulled: unset, the variable renders null and kotekan refuses to start. The first write changes no rendered config, so it restarts nothing; the pull then renders the same value and lifting maintenance restarts nothing either.
+
 ## Tests
 
 ```bash

@@ -253,6 +253,32 @@ band for the transit curves (which already sample every third file), one
 near 600 MHz for the pol and zero-visibility checks; the summary went from
 over 100 s a file to 12 s.
 
+## pointing: the dish angle table into vars.yaml (2026-10-30)
+
+Until 2026-10 the pointing was set by hand in four places (kotekan's
+``dish_coelev_deg``, the mapmaker's ``pointing_dec_deg``, the skymap's
+``dec``, the acqnotes timeline) and went stale each time the operators
+moved dishes: the files recorded Cyg A for a week of Tau A.  The site
+publishes the angles as CSV (one row per foundation, the full site A1–J20,
+``Ant angle`` signed as kotekan signs ``dish_coelev_deg``), so one job reads
+it and the others follow.  Three choices.  (1) kotekan does not query: the
+value goes into the config choco already posts to ``/start``, through
+``vars.yaml``, the Jinja context every node renders with (``telescope.j2``
+renders ``{{ dish_coelev_deg }}``; the query that kotekan PR #1743 first
+carried called back into choco from inside ``/start`` and was dropped).  A
+pointing change is therefore a config change and a restart, which is right:
+a new pointing is a new acquisition anyway (``json_hash`` changes).  (2) The
+write pauses first: ``PUT /api/configs/<name>`` grew ``pause`` so a job can
+do what a pull does, and the operator lifts maintenance when the dishes
+have settled.  (3) The table is untrusted and the value must be right, so
+the intake is a bounded fetch, strict ASCII, a fixed header, a pattern per
+field, a sign/magnitude cross-check, the 64 foundations once each, and an
+array value at least ``min_agree`` (56 of 64) dishes share; a table read
+while the dishes move (two values, neither at 56) applies nothing, and E1
+read 0.0 against 63 at −27.3 on the first fetch, so outliers are reported,
+not applied.  Per-dish offsets (``coelev_disp_deg``) are not written: whether
+fringestopping uses them has not been checked.
+
 ## EOP merge policy
 
 ``jobs/eop/eop_update.py::merge_tables`` is **append-only and no-overwrite**.

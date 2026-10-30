@@ -297,7 +297,7 @@ class TestConfigLibraryApi:
                           json={"content": "log_level: WARN\n"})
         assert resp.status_code == 200
         assert resp.get_json() == {"status": "saved", "path": "chord/common.j2",
-                                   "created": True, "reloaded": []}
+                                   "created": True, "reloaded": [], "paused": []}
         assert (library / "chord" / "common.j2").read_text() == "log_level: WARN\n"
 
         resp = client.put("/api/configs/chord/telescope.j2",

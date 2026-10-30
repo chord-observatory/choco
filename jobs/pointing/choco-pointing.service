@@ -1,0 +1,28 @@
+[Unit]
+Description=choco job: dish pointing from the site's angle table
+Requires=choco.service
+After=choco.service
+
+[Service]
+Type=oneshot
+# systemd owns /var/lib/choco/pointing (creates it with the right
+# ownership) and exports it as $STATE_DIRECTORY; history.jsonl and
+# run.json live there.  What the job publishes is vars.yaml in the
+# config library, through choco's API.
+StateDirectory=choco/pointing
+User=choco
+Group=choco
+ExecStart=/opt/choco/jobs/run-job.sh pointing/pointing.py /etc/choco/pointing.yaml
+# No Restart: a fetch that fails or a table that does not validate exits
+# 2 and changes nothing; the next timer tick retries.  Exit 1 = config
+# error / bug.
+Nice=10
+IOSchedulingClass=idle
+# One HTTP fetch of a few kB and a YAML write: the caps are backstops.
+CPUQuota=50%
+CPUWeight=20
+MemoryHigh=256M
+MemoryMax=512M
+
+[Install]
+WantedBy=choco.service

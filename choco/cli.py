@@ -306,7 +306,7 @@ def cmd_config(c: Client, a) -> int:
     if a.what == "put":
         content = read_text(a.file)
         return _emit(*c.put("/api/configs/" + library_path(a.path),
-                            {"content": content}))
+                            {"content": content, "pause": bool(a.pause)}))
     if a.what == "pull":
         return _emit(*c.post("/api/configs/pull",
                              {"dry_run": bool(a.dry_run)}))
@@ -408,6 +408,9 @@ def build_parser() -> argparse.ArgumentParser:
                            "longer render")
     w.add_argument("path", metavar="<path>", help=PATH)
     w.add_argument("file", metavar="<file>", help=FILE)
+    w.add_argument("-p", "--pause", action="store_true",
+                   help="put the nodes the file re-renders in maintenance first, "
+                        "as a pull does, so the write restarts nothing")
     w = cs.add_parser("pull", parents=[common],
                       help="mirror the upstream config directory (config.yaml's "
                            "upstream:, kotekan's config/chord by default) into "

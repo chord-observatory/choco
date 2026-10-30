@@ -423,6 +423,34 @@ def test_config_put_ls_get_and_use(run, app, configs_dir, tmp_path):
     assert _node(app, "cx/cx1").config_filename == "cx/cx1.yaml"
 
 
+def test_config_put_pause(run, app, configs_dir, tmp_path):
+    """``put --pause`` puts the nodes the file re-renders in maintenance
+    before the write, as a pull does; vars.yaml re-renders every node."""
+    nodes = app.config["registry"].nodes
+    for n in nodes.values():
+        n.maintenance = False
+    src = tmp_path / "vars.yaml"
+    src.write_text("dish_coelev_deg: -27.3\n")
+    code, out, err = run("config", "put", "vars.yaml", str(src))
+    assert code == 0, err
+    body = json.loads(out)
+    assert body["paused"] == [] and set(body["reloaded"]) == set(nodes)
+    assert not any(n.maintenance for n in nodes.values())
+
+    src.write_text("dish_coelev_deg: -8.6\n")
+    code, out, err = run("config", "put", "--pause", "vars.yaml", str(src))
+    assert code == 0, err
+    body = json.loads(out)
+    assert set(body["paused"]) == set(nodes)
+    assert all(n.maintenance for n in nodes.values())
+    assert (configs_dir / "vars.yaml").read_text() == "dish_coelev_deg: -8.6\n"
+
+    # Already paused nodes are not named again.
+    src.write_text("dish_coelev_deg: 0.0\n")
+    code, out, err = run("config", "put", "--pause", "vars.yaml", str(src))
+    assert code == 0 and json.loads(out)["paused"] == []
+
+
 def test_config_errors_are_the_servers(run, tmp_path):
     code, out, err = run("config", "get", "chord/absent.j2")
     assert code == 1 and "HTTP 404" in err

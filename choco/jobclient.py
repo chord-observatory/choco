@@ -38,8 +38,10 @@ def ssl_context(url: str) -> ssl.SSLContext | None:
     return ctx
 
 
-def request_json(base_url: str, path: str, body=None, timeout: float = 10.0):
-    """GET (``body`` None) or POST (``body`` JSON-encoded) one endpoint.
+def request_json(base_url: str, path: str, body=None, timeout: float = 10.0,
+                 method: str | None = None):
+    """GET (``body`` None) or POST (``body`` JSON-encoded) one endpoint;
+    *method* overrides the verb (``PUT`` for a library write).
 
     Returns the decoded JSON reply, or None for an empty body.  Raises
     ``urllib.error.HTTPError`` for a non-2xx reply and ``URLError`` when
@@ -52,7 +54,7 @@ def request_json(base_url: str, path: str, body=None, timeout: float = 10.0):
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers,
-                                 method="POST" if body is not None else "GET")
+                                 method=method or ("POST" if body is not None else "GET"))
     with urllib.request.urlopen(req, timeout=timeout,
                                 context=ssl_context(url)) as resp:
         raw = resp.read()
@@ -65,6 +67,10 @@ def get_json(base_url: str, path: str, timeout: float = 10.0):
 
 def post_json(base_url: str, path: str, body, timeout: float = 10.0):
     return request_json(base_url, path, body=body, timeout=timeout)
+
+
+def put_json(base_url: str, path: str, body, timeout: float = 10.0):
+    return request_json(base_url, path, body=body, timeout=timeout, method="PUT")
 
 
 def push_updatable(base_url: str, group: str, endpoint: str, values,

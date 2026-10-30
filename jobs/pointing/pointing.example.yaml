@@ -1,0 +1,30 @@
+# pointing job config: /etc/choco/pointing.yaml, seeded from this file by
+# ./choco.sh install.  The job reads the site's antenna angle table and
+# writes the array's co-elevation as dish_coelev_deg in the config
+# library's vars.yaml, which kotekan's telescope.j2 renders.  Its history
+# (history.jsonl) and run.json live in the job's state directory
+# (/var/lib/choco/pointing), not here.  All keys are optional; the
+# defaults shown are what an absent key means.
+
+# choco's loopback API (localhost bypasses auth; TLS is unverified on
+# purpose, the cert is self-signed).
+choco_url: https://localhost:5000
+
+# The table: one row per foundation, "Ant angle" signed like kotekan's
+# dish_coelev_deg (south of zenith negative).
+url: http://px.chord-observatory.ca/chord-angle-csv
+timeout_s: 30
+# A reply longer than this is refused; the table is a few kB.
+max_bytes: 65536
+
+# The array value is the angle at least this many of the 64 dishes share.
+# Fewer (a table read while the dishes move, or half the array
+# disagreeing) applies nothing and exits degraded.  Dishes that differ
+# from the array value are listed in run.json, not applied.
+min_agree: 56
+
+# Put the nodes vars.yaml re-renders in maintenance before writing a
+# changed value, as a pull does, so the change restarts nothing until
+# the operator lifts it.  false: the sync loop restarts them onto the new
+# pointing at once, one at a time.
+pause: true

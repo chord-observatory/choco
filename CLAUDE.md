@@ -85,6 +85,7 @@ jobs/               # One dir per job: systemd units, code, tests; run-job.sh ru
 ├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
 ├── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
 ├── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
+├── pointing/       # Dish pointing from the site's angle table into vars.yaml (10 min timer); pauses the nodes it re-renders
 └── acqnotes/       # Per-acquisition README + acq_info.yaml written into subset/ (hourly); timeline.yaml is curated history
 configs/            # nodes.yaml, vars.yaml, pdb_map.csv, wiring.csv, the config library (<dir>/<file>.j2, legacy <group>/<node>.yaml|.j2)
 tests/              # pytest; test_<module>.py per module, test_web_<area>.py for routes, test_route_auth.py sweeps every route's exposure
