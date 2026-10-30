@@ -124,6 +124,10 @@ The config directory (`/etc/choco/configs/`) is the source of truth for which no
     └── recv1.j2        # Base kotekan config (Jinja2 template)
 ```
 
+#### `vars.yaml` - Shared template variables
+
+An optional YAML mapping. Each top-level key is a variable the library's templates can use as `{{ name }}`. Edit it by hand for a value every node shares and no job keeps. A change re-renders every node, and the sync loop restarts a node whose rendered config changed (`choco config put --pause vars.yaml <file>` pauses them first). `dish_coelev_deg` is written by the [pointing job](#dish-pointing) from the site's angle table: do not edit it by hand, the next run puts the table's value back. The job writes the file with a header that says so and keeps every other line as it found it.
+
 #### `nodes.yaml` - Node Registry
 
 Defines the kotekan instances choco should monitor, organized into groups. Each node's base config lives at `<group>/<node>.yaml` (or `.j2`):

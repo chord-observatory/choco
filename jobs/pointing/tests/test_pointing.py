@@ -127,6 +127,36 @@ class TestArrayValue:
         assert value is None and len(outliers) == 64
 
 
+class TestUpdatedText:
+    def test_first_write_has_the_header(self):
+        text = pointing.updated_text("", -27.3)
+        assert text.startswith("# vars.yaml: the Jinja context")
+        assert "Do not edit it by hand" in text
+        assert text.endswith("\ndish_coelev_deg: -27.3\n")
+        assert yaml.safe_load(text) == {"dish_coelev_deg": -27.3}
+
+    def test_hand_edits_and_comments_survive(self):
+        text = ("# vars.yaml: the Jinja context every node's config renders with.\n"
+                "# mine\n"
+                "other: 1   # a hand-set value\n"
+                "dish_coelev_deg: -27.3\n"
+                "later: [a, b]\n")
+        new = pointing.updated_text(text, -8.6)
+        assert new == text.replace("dish_coelev_deg: -27.3", "dish_coelev_deg: -8.6")
+        assert new.count("# vars.yaml:") == 1
+
+    def test_key_appended_and_header_added_once(self):
+        new = pointing.updated_text("other: 1\n", 0.0)
+        assert new.startswith("# vars.yaml:") and new.endswith("other: 1\ndish_coelev_deg: 0.0\n")
+        again = pointing.updated_text(new, -27.3)
+        assert again.count("# vars.yaml:") == 1 and again.endswith("dish_coelev_deg: -27.3\n")
+        assert pointing.updated_text("other: 1", 0.0).endswith("other: 1\ndish_coelev_deg: 0.0\n")
+
+    def test_block_under_the_key_is_refused(self):
+        with pytest.raises(ValueError):
+            pointing.updated_text("dish_coelev_deg:\n  a: 1\n", -27.3)
+
+
 class FakeChoco:
     """``get_json`` / ``put_json`` against an in-memory vars.yaml."""
 
@@ -211,6 +241,7 @@ class TestRun:
         assert pointing.main(["--config", str(cfg),
                               "--state-dir", str(scratch_state_dir)]) == 0
         assert yaml.safe_load(choco.vars_text) == {"dish_coelev_deg": -8.6, "other": 1}
+        assert choco.vars_text.startswith("# vars.yaml:") and "other: 1\n" in choco.vars_text
         assert choco.puts[0]["pause"] is False
 
     def test_dry_run_writes_nothing(self, choco, site, scratch_state_dir):

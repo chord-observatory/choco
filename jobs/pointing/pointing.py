@@ -53,6 +53,19 @@ _SIGNED_RE = re.compile(r"^-?[0-9]{1,2}\.[0-9]{4}$")
 _ID_RE = re.compile(r"^[0-9]{3}$")
 #: What vars.yaml carries; the key telescope.j2 reads.
 VAR = "dish_coelev_deg"
+#: The head of vars.yaml, put there on the first write and kept since: what
+#: the file is for and that this key is not for hand edits.
+VARS_HEADER = """\
+# vars.yaml: the Jinja context every node's config renders with.  Each
+# top-level key is a variable the library's templates can use as
+# {{ name }}.  Edit it by hand for a value every node shares and no job
+# keeps.  A change re-renders every node, and the sync loop restarts a
+# node whose rendered config changed.
+#
+# dish_coelev_deg is written by the pointing job (choco-pointing.timer)
+# from the site's angle table.  Do not edit it by hand: the next run puts
+# the table's value back.
+"""
 #: Every fetch, one line each; state.json is the latest table and changes
 #: only when the table does, so its mtime is "last change".
 HISTORY_NAME = "history.jsonl"
@@ -155,9 +168,31 @@ def current_value(choco_url: str, timeout: float) -> float | None:
     return float(value)
 
 
+def updated_text(text: str, value: float) -> str:
+    """vars.yaml's text with ``dish_coelev_deg`` set to *value*: the key's
+    line replaced, or appended when absent, and the header put at the top
+    when it is not there.  Every other byte is kept, so hand-written keys
+    and comments survive.  ``ValueError`` when the result is not a mapping
+    that carries the value (a block value under the key, say)."""
+    line = f"{VAR}: {value}"
+    if re.search(rf"^{VAR}:", text, re.M):
+        new = re.sub(rf"^{VAR}:[^\n]*$", line, text, count=1, flags=re.M)
+    else:
+        new = (text if text.endswith("\n") or not text else text + "\n") + line + "\n"
+    if not new.startswith("# vars.yaml:"):
+        new = VARS_HEADER + "\n" + new
+    try:
+        data = yaml.safe_load(new)
+    except yaml.YAMLError as e:
+        raise ValueError(f"vars.yaml would not parse after the edit: {e}") from None
+    if not isinstance(data, dict) or data.get(VAR) != value:
+        raise ValueError(f"vars.yaml would not carry {VAR} = {value} after the edit")
+    return new
+
+
 def write_value(choco_url: str, value: float, pause: bool, timeout: float) -> dict:
     """Set ``dish_coelev_deg`` in vars.yaml through the library API, keeping
-    the file's other keys.  With *pause*, the nodes that render it are put
+    the rest of the file.  With *pause*, the nodes that render it are put
     in maintenance first, as a pull does, so the change restarts nothing
     until the operator lifts it.  Returns choco's reply."""
     text = ""
@@ -166,11 +201,9 @@ def write_value(choco_url: str, value: float, pause: bool, timeout: float) -> di
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
-    data = yaml.safe_load(text) or {}
-    data[VAR] = value
-    content = yaml.safe_dump(data, default_flow_style=False, sort_keys=True)
     return put_json(choco_url, "/api/configs/vars.yaml",
-                    {"content": content, "pause": pause}, timeout=timeout)
+                    {"content": updated_text(text, value), "pause": pause},
+                    timeout=timeout)
 
 
 def load_config(path) -> dict:
