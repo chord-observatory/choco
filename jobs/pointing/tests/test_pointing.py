@@ -21,8 +21,8 @@ def table_text(values=None, extra_rows=(), header=None):
         mag = f"{abs(v):.4f}"
         if v < 0:
             lines.append(f'{f},{mag},S,"-\n{mag}",{n:03d}')
-        elif v > 0:
-            lines.append(f"{f},{mag},N,{mag},{n:03d}")
+        elif v > 0:   # north: the site leaves the side blank
+            lines.append(f"{f},{mag},,{mag},{n:03d}")
         else:
             lines.append(f"{f},0.0000,,0.0000,{n:03d}")
     lines.extend(extra_rows)
@@ -59,10 +59,15 @@ class TestParse:
 
     def test_sign_and_magnitude_must_agree(self):
         for row in ["A1,27.3000,S,27.3000,006", "A1,27.3000,N,-27.3000,006",
-                    "A1,27.3000,,27.3000,006", "A1,27.3000,S,-28.3000,006"]:
+                    "A1,27.3000,,-27.3000,006", "A1,27.3000,S,-28.3000,006"]:
             text = table_text().replace('A1,27.3000,S,"-\n27.3000",000', row)
             with pytest.raises(Degraded, match="does not agree"):
                 pointing.parse(text)
+        # North and zero both come with a blank side; N is accepted too.
+        for row in ["A1,27.3000,,27.3000,006", "A1,27.3000,N,27.3000,006",
+                    "A1,0.0000,,0.0000,006"]:
+            text = table_text().replace('A1,27.3000,S,"-\n27.3000",000', row)
+            assert pointing.parse(text)["A1"] == float(row.split(",")[3])
 
     def test_duplicate_and_missing(self):
         with pytest.raises(Degraded, match="listed twice"):

@@ -65,7 +65,8 @@ def fetch(url: str, timeout_s: float, max_bytes: int) -> str:
     ``OSError`` when the site cannot be reached; :class:`InvalidTable`
     when the reply is too long or not ASCII.
     """
-    req = urllib.request.Request(url, headers={"Accept": "text/csv"})
+    # The site answers 406 to urllib's default User-Agent.
+    req = urllib.request.Request(url, headers={"User-Agent": "choco-pointing/1"})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         raw = resp.read(max_bytes + 1)
     if len(raw) > max_bytes:
@@ -80,10 +81,11 @@ def parse(text: str) -> dict[str, float]:
     """``{foundation: signed angle}`` for every row of a valid table.
 
     Every field must match its pattern and the row must be consistent:
-    the signed angle is the unsigned one with the sign ``N / S`` gives
-    (``S`` negative, ``N`` positive, blank zero).  The site's signed
-    field carries a line break after the sign, which the CSV reader
-    keeps inside the quotes; it is removed before the match.
+    the signed angle is the unsigned one, negative when ``N / S`` is
+    ``S`` and positive otherwise (the site leaves the side blank for
+    north and for zero).  The site's signed field carries a line break
+    after the sign, which the CSV reader keeps inside the quotes; it is
+    removed before the match.
     """
     try:
         rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
@@ -103,7 +105,7 @@ def parse(text: str) -> dict[str, float]:
             raise InvalidTable(f"line {n}: field outside the known patterns")
         value = float(signed)
         expect = -float(angle) if ns == "S" else float(angle)
-        if value != expect or (ns == "" and value != 0.0) or abs(value) > 90.0:
+        if value != expect or abs(value) > 90.0:
             raise InvalidTable(f"line {n}: {foundation} angle {signed} does not "
                                f"agree with {angle} {ns or 'no'} side")
         if foundation in table:
