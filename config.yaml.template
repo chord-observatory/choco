@@ -191,3 +191,12 @@ vis_files:
     - /mnt/cs00/data/kotekan_vis_files/full
     - /mnt/cs00/data/kotekan_vis_files/subset
   ttl: 30                           # Seconds to cache a scan (these are NFS mounts)
+  # The remote archive's live view of one root, asked of the transfer host's
+  # kotekan-vis-verify socket (chord-sysops, roles/kotekan_vis_transfer) when
+  # the page opens and on Check archive: one dry-run rsync there, nothing
+  # recorded.  Leave host empty for no Archive column.
+  archive:
+    host: alpenhorn.site.chord-observatory.ca
+    port: 9873
+    root: /mnt/cs00/data/kotekan_vis_files/subset   # the root the archive mirrors (the transfer's source)
+    timeout: 120                                    # seconds to wait for the answer

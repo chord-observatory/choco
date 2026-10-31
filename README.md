@@ -96,7 +96,7 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 | `eop`, `bffs`, `eigencal`, `waterfall` | optional: each job's `service_unit` for its badge; `bffs.control` (clickable element grid); `waterfall.ttl` and `timezone`.  Every default is the shipped value, so the blocks can be left out |
 | `skymap` | the sky-map job's `service_unit`; its PNGs are read from `<state_dir>/skymap/` |
 | `mapmaker` | the drift-scan map job's `service_unit`; its state and PNGs are read from `<state_dir>/mapmaker/` |
-| `vis_files` | the data roots `/files` scans |
+| `vis_files` | the data roots `/files` scans, and `archive`, the transfer host's verify socket that says what the remote archive holds of one of them |
 
 `config.yaml` contains secrets and is chmod 600. Only `config.yaml.template` is checked into the repo.
 

@@ -1156,8 +1156,13 @@ def partial_files():
     store = _component("waterfall_store")
     rendered = (rendered_index(store, force=request.args.get("refresh") == "1")
                 if store is not None else {})
-    return render_template("_files_table.html", scan=result,
-                           rendered=rendered, now_ts=time.time())
+    # The root the archive mirrors gets an Archive column, filled by
+    # /partials/files/archive once the table is in.
+    check = _component("archive_check")
+    archive_root = next((i for i, r in enumerate(result.get("roots") or [])
+                         if check is not None and check.covers(r["path"])), None)
+    return render_template("_files_table.html", scan=result, rendered=rendered,
+                           archive_root=archive_root, now_ts=time.time())
 
 
 #: How long a notes read may block on NFS before the popover says so.
@@ -1214,6 +1219,28 @@ def files_timeline(root_idx):
     except (OSError, ValueError) as exc:
         return render_template("_files_timeline.html", error=str(exc))
     return render_template("_files_timeline.html", rows=rows, path=root["path"])
+
+
+@bp.route("/partials/files/archive/<int:root_idx>")
+@login_required
+def partial_files_archive(root_idx):
+    """The archive's live word on one root's acquisitions: a summary for
+    the root header (the request's target) and each row's Archive cell
+    as an out-of-band swap.
+
+    The root is an index into the configured roots and must be the one
+    the archive mirrors; the names asked about are the cached scan's
+    rows, never the caller's.  One connection to the transfer host, one
+    dry-run rsync there, nothing recorded: the answer is what the
+    archive holds now.
+    """
+    root = _scan_root(root_idx)
+    check = _component("archive_check")
+    if check is None or not check.covers(root["path"]):
+        abort(404)
+    result = check.query([d["name"] for d in root["dirs"]])
+    return render_template("_files_archive.html", root_idx=root_idx,
+                           dirs=root["dirs"], result=result)
 
 
 @bp.route("/files/<root>/<acq>/triangle")

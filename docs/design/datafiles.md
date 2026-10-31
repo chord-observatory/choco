@@ -94,3 +94,31 @@ with ``yaml.safe_load`` and renders one row per entry, oldest first, every
 text field through the same escape-first inline formatter.  The overlay dims
 the page through the popover's ``::backdrop`` and has an explicit close
 button outside the swapped body, so the load cannot replace it.
+
+### Archive check (2026-10-31)
+
+The transfer host (alpenhorn, chord-sysops ``roles/kotekan_vis_transfer``)
+pushes finished ``subset/`` acquisitions to Fir with rsync, without
+``--delete``: a local copy can be removed once the archive holds it, and
+the question is how to know that it does.  Not from a record written at
+transfer time — that says a copy existed once — but from the archive, now.
+choco cannot ask Fir itself (the only key is alpenhorn's, locked to rsync),
+so alpenhorn's ``kotekan-vis-verify`` socket answers for it: one connection,
+one line of acquisition names, one dry-run rsync against Fir, one line per
+acquisition back — the files here and the files a transfer would still send
+(missing, or of another size or mtime).  ``archive.ArchiveCheck`` is that
+client (``vis_files.archive``: the socket and the one root it mirrors; a
+cooperative socket, no threadpool needed, bounded by ``timeout``).  The
+``/files`` table grows an **Archive** column for that root only, empty
+when the table lands; ``/partials/files/archive/<root index>`` fills it
+once on load and on **Check archive**, with the root header's summary as
+the response body and each cell as an ``hx-swap-oob`` span matched by id,
+so the table is never redrawn and the Rescan button stays independent.
+The route takes a root index the archive covers and asks only about the
+rows the cached scan listed that look like acquisition names (one bad name
+fails the whole answer on the transfer host).  The count is every file of
+the directory the transfer's filter passes, notes and ``baseband_gains.h5``
+included, so it runs two or three above the table's ``.h5`` count; the
+cell says *all N*, *k of N* or *none of N* and the summary how many
+acquisitions the archive holds in full.  Nothing is cached: each press is
+a new question to Fir, which takes the few seconds the dry run takes.

@@ -13,6 +13,7 @@ import gevent
 import yaml
 from flask import Flask
 
+from .archive import ArchiveCheck
 from .auth import init_auth, parse_proxy_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
 from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
@@ -294,6 +295,15 @@ def create_app(
         vis_cfg.get("roots") or (),
         ttl_s=float(vis_cfg.get("ttl") or DataFileScan.DEFAULT_TTL_S),
     )
+    # The remote archive's live word on one of those roots, asked of the
+    # transfer host's verify socket when the page opens or on request;
+    # never polled, never recorded.
+    arc_cfg = vis_cfg.get("archive") or {}
+    archive_check = ArchiveCheck(
+        host=arc_cfg.get("host"), port=arc_cfg.get("port"),
+        root=arc_cfg.get("root"),
+        timeout_s=float(arc_cfg.get("timeout") or ArchiveCheck.DEFAULT_TIMEOUT_S),
+    )
 
     # The master dish-input <-> power-channel table.  Lives beside
     # nodes.yaml by default, so it version-controls and deploys with the
@@ -348,6 +358,7 @@ def create_app(
         state_file=lambda: Path(app.config["state_dir"]) / "waterfall" / STATE_NAME,
     )
     app.config["datafile_scan"] = datafile_scan
+    app.config["archive_check"] = archive_check
     app.config["configs_dir"] = configs_dir
     # None when upstream.enabled is false: the pull button and routes are off.
     app.config["upstream"] = Upstream.from_config(config.get("upstream"))

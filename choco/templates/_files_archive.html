@@ -1,0 +1,32 @@
+{# The archive's answer for one root.  The summary is the response body
+   (swapped into the root header); each row's Archive cell follows as an
+   out-of-band swap, matched by id, so the table itself is never redrawn. #}
+{% set ns = namespace(full=0, part=0, none=0) %}
+{% for d in dirs %}{% set a = result.dirs.get(d.name) %}{% if a and a.files %}
+{%- if a.missing == 0 %}{% set ns.full = ns.full + 1 %}
+{%- elif a.missing < a.files %}{% set ns.part = ns.part + 1 %}
+{%- else %}{% set ns.none = ns.none + 1 %}{% endif %}
+{%- endif %}{% endfor %}
+{%- if not result.ok -%}
+<small class="t-bad">archive check failed: {{ result.error }}</small>
+{%- else -%}
+<small>the archive holds {{ ns.full }} of {{ ns.full + ns.part + ns.none }} acquisitions in full
+{%- if ns.part %}, {{ ns.part }} in part{% endif %}{% if ns.none %}, {{ ns.none }} not at all{% endif %}
+ · checked {{ result.checked_at | utc_minute(short=true) }} UTC</small>
+{%- endif %}
+{% for d in dirs %}
+{% set a = result.dirs.get(d.name) %}
+<span id="archive-{{ root_idx }}-{{ d.name }}" hx-swap-oob="true">
+{%- if not result.ok -%}
+<small class="muted" title="{{ result.error }}">?</small>
+{%- elif a is none or a.files == 0 -%}
+<small class="muted">&mdash;</small>
+{%- elif a.missing == 0 -%}
+<small class="t-ok" title="every file of this directory is on the archive">all {{ a.files }}</small>
+{%- elif a.missing < a.files -%}
+<small class="t-warn" title="{{ a.missing }} file{{ '' if a.missing == 1 else 's' }} still to send">{{ a.files - a.missing }} of {{ a.files }}</small>
+{%- else -%}
+<small class="t-bad" title="nothing of this directory is on the archive">none of {{ a.files }}</small>
+{%- endif -%}
+</span>
+{% endfor %}

@@ -12,6 +12,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 .root-header small { color: var(--pico-muted-color); }
 .root-header .btn-sm { margin: 0 0 0 auto; }
 .lines-picker { margin-left: auto; font-size: 0.85em; }
+.archive-summary.htmx-request { opacity: 0.5; }
 {% endblock %}
 
 {% block content %}
@@ -44,6 +45,10 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
     <strong>Span</strong> runs from the oldest to the newest file's write time.
     <strong>Waterfalls</strong> counts the files folded into each acquisition's
     rendered images; follow it for the upper-triangle contact sheet.
+    <strong>Archive</strong> is the remote archive's live answer, asked through
+    the transfer host when the page opens and on <strong>Check archive</strong>:
+    how many of the directory's files (notes included) it holds; delete a
+    local copy only when it holds all of them.
 </p>
 <div id="files-table"
      hx-get="{{ request.script_root }}/partials/files"

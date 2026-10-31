@@ -19,6 +19,17 @@
            {{ root.files }} file{{ '' if root.files == 1 else 's' }} ·
            {{ root.bytes | filesize }}</small>
     {% endif %}
+    {% if archive_root == root_idx %}
+    {# The archive's answer lands here (the summary) and in the rows'
+       Archive cells (out-of-band), once on load and on each press. #}
+    <span id="archive-summary-{{ root_idx }}" class="archive-summary"><small class="muted">asking the archive…</small></span>
+    <button type="button" class="secondary outline btn-sm"
+            hx-get="{{ request.script_root }}/partials/files/archive/{{ root_idx }}"
+            hx-trigger="load, click"
+            hx-target="#archive-summary-{{ root_idx }}" hx-swap="innerHTML"
+            hx-indicator="#archive-summary-{{ root_idx }}"
+            title="Ask the archive, now, which of these files it holds (one dry-run rsync on the transfer host)">Check archive</button>
+    {% endif %}
     {% if root.timeline %}
     {% set tl_id = "timeline-" ~ root_idx %}
     <button type="button" class="secondary outline btn-sm" popovertarget="{{ tl_id }}"
@@ -48,6 +59,7 @@
             <th>Span (UTC)</th>
             <th style="text-align: right;">Newest</th>
             <th style="text-align: right;">Waterfalls</th>
+            {% if archive_root == root_idx %}<th style="text-align: right;">Archive</th>{% endif %}
         </tr>
     </thead>
     <tbody>
@@ -88,6 +100,9 @@
                 <small class="muted">&mdash;</small>
             {%- endif %}
             </td>
+            {% if archive_root == root_idx %}
+            <td class="num archive" data-label="archive"><span id="archive-{{ root_idx }}-{{ d.name }}"><small class="muted">…</small></span></td>
+            {% endif %}
         </tr>
     {% endfor %}
     </tbody>
