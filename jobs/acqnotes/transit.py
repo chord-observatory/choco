@@ -22,6 +22,9 @@ from choco.observatory import SITE_HEIGHT_M, SITE_LAT_DEG, SITE_LON_DEG
 from choco.observatory import SOURCES as OBS_SOURCES
 
 iers.conf.auto_download = False
+# Offline: accept the bundled IERS-A table's predictions (UT1-UTC good to 0.1 s;
+# astropy 8 refuses them once the table is 30 days old).
+iers.conf.auto_max_age = None
 
 LAT, LON = SITE_LAT_DEG, SITE_LON_DEG
 SITE = EarthLocation(lat=LAT * u.deg, lon=LON * u.deg, height=SITE_HEIGHT_M * u.m)
