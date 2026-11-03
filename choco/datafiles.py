@@ -454,17 +454,22 @@ def baseband_facts(first: tuple | None, n_files: int) -> dict:
     dset = next((d for d in manifest.get("datasets") or [] if d["name"] == BASEBAND_DATASET), None)
     if dset is None:
         return {}
+    # The attributes are whatever the file carries: each is used only in
+    # the shape expected, so an odd file gives blanks, not a traceback.
     a = dset.get("attrs") or {}
-    extents = dset.get("extents") or []
+    number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    extents = [n for n in dset.get("extents") or [] if isinstance(n, int)]
     samples = extents[0] if extents else None
-    seq_ns = a.get("seq_length_nsec")
-    start_ns = a.get("fpga_seq_time_nsec")
-    coarse = a.get("coarse_freq") or []
+    seq_ns = number(a.get("seq_length_nsec"))
+    start_ns = number(a.get("fpga_seq_time_nsec"))
+    coarse = [c for c in (a.get("coarse_freq") if isinstance(a.get("coarse_freq"), list) else [])
+              if number(c) is not None]
+    dim_names = a.get("dim_names")
     facts = {
-        "start": start_ns / 1e9 if isinstance(start_ns, (int, float)) else None,
+        "start": start_ns / 1e9 if start_ns else None,
         "samples": samples,
         "sample_ns": seq_ns,
-        "file_s": samples * seq_ns / 1e9 if samples and isinstance(seq_ns, (int, float)) else None,
+        "file_s": samples * seq_ns / 1e9 if samples and seq_ns else None,
         "channels": len(coarse) or (extents[1] if len(extents) > 1 else None),
         "chan_first": coarse[0] if coarse else None,
         "chan_last": coarse[-1] if coarse else None,
@@ -474,7 +479,7 @@ def baseband_facts(first: tuple | None, n_files: int) -> dict:
         "dishes": a.get("num_dishes"),
         "sample_type": a.get("type"),
         "shape": extents,
-        "dim_names": a.get("dim_names"),
+        "dim_names": dim_names if isinstance(dim_names, list) else None,
         "bytes": dset.get("bytes"),
         "sources": a.get("merge_num_sources"),
         "merge_tool": a.get("merge_tool"),

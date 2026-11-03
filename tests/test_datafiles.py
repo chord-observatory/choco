@@ -147,6 +147,30 @@ class TestScan:
         assert set(merged["h5"]) == {"baseband_subset.00000000.h5", "baseband_subset.00000020.h5"}
 
 
+class TestBasebandFacts:
+    def test_odd_attributes_give_blanks(self):
+        import choco.datafiles as df
+        first = ("/nowhere/baseband_subset.00000000.h5", 1.0, 2)
+        df._baseband_manifests[first[0]] = ((1.0, 2), {"attrs": {}, "datasets": [{
+            "name": "baseband_subset", "extents": [4, 3], "bytes": 12,
+            "attrs": {"coarse_freq": 1536, "seq_length_nsec": [5120], "fpga_seq_time_nsec": "x",
+                      "dim_names": "T", "gps_time_enabled": True},
+        }]})
+        facts = df.baseband_facts(first, 3)
+        assert facts["channels"] == 3 and facts["chan_first"] is None
+        assert facts["file_s"] is None and facts["start"] is None and facts["start_utc"] is None
+        assert facts["dim_names"] is None and facts["n_files"] == 3
+        df._baseband_manifests.clear()
+
+    def test_without_the_dataset(self):
+        import choco.datafiles as df
+        first = ("/nowhere/other.h5", 1.0, 2)
+        df._baseband_manifests[first[0]] = ((1.0, 2), {"attrs": {}, "datasets": []})
+        assert df.baseband_facts(first, 1) == {}
+        assert df.baseband_facts(None, 1) == {}
+        df._baseband_manifests.clear()
+
+
 class TestDataFileScan:
     def test_unconfigured(self):
         scan = DataFileScan([])

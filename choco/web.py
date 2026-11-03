@@ -21,7 +21,8 @@ from flask import (
 from . import auth, library
 from .auth import current_user, localhost_or_login_required, login_required, logout_user
 from .jobclient import MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT
-from .archive import ACQ_NAME_RE as ARCHIVE_ACQ_RE, MERGED_NAME_RE, join_root
+from .acqtree import MERGED_NAME_RE
+from .archive import ACQ_NAME_RE as ARCHIVE_ACQ_RE, join_root
 from .datafiles import (TIMELINE_NAME, baseband_facts, human_bytes, notes_html, read_baseband_dir,
                         read_notes, run_blocking, timeline_rows, utc_minute)
 from . import dishlabels
@@ -1261,7 +1262,7 @@ def files_baseband(name):
     try:
         info = run_blocking(read_baseband_dir, row["path"], timeout=BASEBAND_TIMEOUT_S)
         facts = baseband_facts(info["first"], row["files"])
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError, LookupError, TypeError) as exc:
         return render_template("_files_baseband.html", name=name, error=str(exc))
     return render_template("_files_baseband.html", name=name, row=row, log=info["log"], facts=facts)
 
