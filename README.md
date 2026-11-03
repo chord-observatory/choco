@@ -330,8 +330,9 @@ Every reply is printed as JSON. Exit status: 0 ok, 1 rejected (the server's erro
 
 `GET /metrics` serves Prometheus exposition text and is **unauthenticated** (Prometheus
 scrapes from another host and speaks neither login sessions nor CSRF tokens); the
-only other unauthenticated routes are `/skymap.png` and `/skymap-night.png`, for wall displays. It deliberately exposes only aggregate health — no node names,
-hosts, or configs:
+only other unauthenticated routes are `/skymap.png` and `/skymap-night.png`, for wall displays. It deliberately exposes only aggregate health and the jobs' own numbers — no node names,
+hosts, or configs. In production, chord-sysops' `grafana_stack` scrapes it (job `choco`)
+and provisions the **CHOCO** Grafana dashboard and the `Choco*` alerts from it.
 
 - `choco_up` — 1 while choco is serving requests (Prometheus's own `up` metric
   covers total outage)
@@ -340,15 +341,40 @@ hosts, or configs:
   (worth alerting on)
 - `choco_service_state{service,state}` — one-hot health per service (`fpga`:
   ok / no_timing / down / unconfigured / unknown; `pdb`: ok / no_states / down /
-  unconfigured / unknown; `data`: ok / degraded / down / unconfigured / unknown;
-  `eop`, `bffs`, `eigencal`, `waterfall`, `skymap`, `mapmaker`: ok / degraded / stale /
+  unconfigured / unknown; `data` and `instrument`: ok / degraded / down / unconfigured / unknown;
+  `archive`: ok / down / unconfigured / unknown;
+  `eop`, `bffs`, `eigencal`, `waterfall`, `skymap`, `pointing`, `mapmaker`, `acqnotes`: ok / degraded / stale /
   failed / never_run / unknown — degraded = the job exited 2, meaning a
   dependency or input problem rather than a broken job)
+- `choco_monitor_last_polled_timestamp_seconds{monitor}`, `choco_monitor_last_seen_timestamp_seconds{monitor}`
+  — when each monitor last probed its service and last got a good answer; plus
+  `choco_pdb_channels`, `choco_pdb_channels_on`, `choco_data_roots`, `choco_data_roots_ok`,
+  `choco_instrument_problems`, `choco_archive_acquisitions`, `choco_archive_listing_timestamp_seconds`
 - `choco_nodes{status}`, `choco_nodes_total`, `choco_nodes_started_desired`,
-  `choco_nodes_maintenance` — node counts
+  `choco_nodes_maintenance`, `choco_nodes_config_error`, `choco_nodes_error`,
+  `choco_kotekan_versions` (distinct versions the nodes report), `choco_queued_changes`,
+  `choco_workers{phase}`, `choco_workers_failing` — the cluster as the sync loop sees it
+- `choco_job_running{job}`, `choco_job_state_timestamp_seconds{job}` (the state file's
+  mtime), `choco_job_run_timestamp_seconds{job}` and `choco_job_run_seconds{job}` (from
+  the run file), `choco_job_degraded_reasons{job}`
+- each job's own numbers, read from its `run.json` / `state.json` (never bffs's
+  state file, which is the whole flag history): `choco_bffs_bad_inputs`, `choco_bffs_inputs`,
+  `choco_bffs_file_timestamp_seconds` (the newest N² file the last run read — whether
+  data is still landing), `choco_bffs_source_measured{source}` / `_flagged{source}`;
+  `choco_eigencal_good_frac`, `_calibrated_inputs`, `_transit_timestamp_seconds`,
+  `_solution_timestamp_seconds`, `_next_transit_timestamp_seconds`; `choco_waterfall_backlog`,
+  `_files_rendered`, `_errors`; `choco_mapmaker_backlog`, `_files_imaged`, `_files_uncalibrated`,
+  `_errors`, `_gains_timestamp_seconds`, `_clean_timestamp_seconds`, `_clean_run_seconds`,
+  `_clean_components`, `_clean_residual_sigma`; `choco_pointing_coelevation_deg`, `_outliers`,
+  `_table_timestamp_seconds`; `choco_acqnotes_acquisitions`, `_backlog`, `_measured`, `_written`;
+  `choco_eop_table_entries`, `choco_eop_table_end_timestamp_seconds`
+- `process_cpu_seconds_total`, `process_resident_memory_bytes`, `process_open_fds` — the
+  web process, as the Prometheus client libraries report it
 
-Example alerts: `choco_service_state{service="eop",state="ok"} != 1` for a
-day, `choco_nodes{status="down"} > 0`, or `changes(choco_start_time_seconds[1h]) > 0`.
+A value the source does not have is left out, never reported as zero. Example
+alerts: `choco_service_state{service="eop",state="ok"} != 1` for a day,
+`choco_nodes{status="down"} > 0`, `changes(choco_start_time_seconds[1h]) > 0`, or
+`time() - choco_bffs_file_timestamp_seconds > 1800` (no new data for half an hour).
 
 ## How Sync Works
 

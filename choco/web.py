@@ -42,6 +42,7 @@ from .jobdetail import (JOB_DETAILS, MAPMAKER_IMAGES, file_mtime, float_or_none,
 from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json,
                         timer_status)
 from .manualflags import toggle_manual_flag
+from .metrics import render as render_metrics
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import NodeStatus, find_updatable_blocks, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
@@ -1578,11 +1579,13 @@ def _services_health(registry: dict | None = None) -> dict:
     pdb = current_app.config.get("pdb_monitor")
     data = current_app.config.get("datafile_scan")
     inst = current_app.config.get("instrument_monitor")
+    arc = current_app.config.get("archive_monitor")
     health = {
         "fpga": fpga.to_dict() if fpga is not None else None,
         "pdb": pdb.to_dict() if pdb is not None else None,
         "instrument": inst.to_dict() if inst is not None and inst.configured else None,
         "data": data.to_dict() if data is not None else None,
+        "archive": arc.to_dict() if arc is not None else None,
     }
     for name, svc in (registry or _service_registry()).items():
         if svc["kind"] == "job":
@@ -2781,7 +2784,8 @@ def _node_to_dict(node) -> dict:
 def _status_summary() -> dict:
     """Aggregate choco health: services plus node counts.
 
-    Shared by /api/status (JSON) and /metrics (Prometheus text).
+    What /api/status answers; /metrics renders the same snapshots, and
+    more, through ``choco.metrics``.
     """
     services = _services_health()
     return {
@@ -2805,58 +2809,26 @@ def api_status():
     return _status_summary()
 
 
-# Health states each service can report, for one-hot /metrics gauges.
-_JOB_STATES = ("ok", "degraded", "stale", "failed", "never_run", "unknown")
-_MONITOR_STATES = {
-    "fpga": ("ok", "no_timing", "down", "unconfigured", "unknown"),
-    "pdb": ("ok", "no_states", "down", "unconfigured", "unknown"),
-    "data": ("ok", "degraded", "down", "unconfigured", "unknown"),
-}
-
-
-def _gauge(name: str, help_text: str, value=None) -> list[str]:
-    """One Prometheus gauge's lines: HELP, TYPE and, given, its value
-    (a labelled series appends its own lines)."""
-    lines = [f"# HELP {name} {help_text}", f"# TYPE {name} gauge"]
-    return lines + ([f"{name} {value}"] if value is not None else [])
-
-
 @bp.route("/metrics", methods=["GET"])
 def metrics():
-    """Prometheus metrics.
+    """Prometheus metrics (``choco.metrics``).
 
     Deliberately unauthenticated (Prometheus scrapes from another
     host and speaks neither login sessions nor our CSRF); it exposes
-    only aggregate health — no node names, hosts, or configs.
+    only aggregate health and the jobs' own numbers — no node names,
+    hosts, or configs.
     """
-    summary = _status_summary()
-    nodes = summary["nodes"]
-    lines = [
-        *_gauge("choco_up", "1 while choco is serving requests.", 1),
-        *_gauge("choco_start_time_seconds", "Unix time the choco process started "
-                "(a restart re-engages cluster-wide maintenance mode).", f"{_STARTED_AT:.3f}"),
-        *_gauge("choco_service_state", "Service health, one-hot per state."),
-    ]
-    for name, health in summary["services"].items():
-        states = _MONITOR_STATES.get(name, _JOB_STATES)
-        for state in states:
-            value = 1 if health == state else 0
-            lines.append(
-                f'choco_service_state{{service="{name}",state="{state}"}} '
-                f"{value}")
-    lines += _gauge("choco_nodes", "Node count by kotekan runtime status.")
-    for status in NodeStatus:
-        lines.append(
-            f'choco_nodes{{status="{status.value}"}} {nodes[status.value]}')
-    lines += [
-        *_gauge("choco_nodes_total", "Number of registered nodes.", nodes["total"]),
-        *_gauge("choco_nodes_started_desired", "Nodes whose desired state is started.",
-                nodes["started_desired"]),
-        *_gauge("choco_nodes_maintenance", "Nodes currently in maintenance mode.",
-                nodes["maintenance"]),
-    ]
-    return Response("\n".join(lines) + "\n",
-                    mimetype="text/plain; version=0.0.4")
+    registry = _registry()
+    orchestrator = _orchestrator()
+    root = _state_root()
+    text = render_metrics(
+        started_at=_STARTED_AT,
+        services=_services_health(),
+        nodes=registry.nodes.values(),
+        workers=filter(None, (orchestrator.worker_status(key) for key in registry.nodes)),
+        job_dirs={name: root / name for name in _JOBS},
+    )
+    return Response(text, mimetype="text/plain; version=0.0.4")
 
 
 @bp.route("/api/nodes/status", methods=["GET"])

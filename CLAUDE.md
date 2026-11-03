@@ -59,6 +59,7 @@ choco/
 ├── powerdb.py      # PdbMonitor: power_db poll and the one read-modify-write-verify behind every power control
 ├── pipeline_svg.py # dot layout presets, render_dot_svg, the SVG whitelist sanitizer
 ├── jobstatus.py    # job_status / timer_status / job_logs / read_state_json (systemd + state files)
+├── metrics.py      # /metrics: Prometheus exposition of the status snapshots, the sync loop and the jobs' run/state files (no Flask)
 ├── manualflags.py  # the bffs manual override file, read and edited by one rule (shared with bffs)
 ├── monitor.py      # PolledMonitor / HttpMonitor: the header strip's pollers' shared lifecycle
 ├── http.py         # fetch(): the one HTTP request helper (retries, OSError) for state, fpga, powerdb, upstream

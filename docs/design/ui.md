@@ -470,11 +470,21 @@ desired kotekan config at ``/api/config/<group>`` (bffs derives its feed
 labels from the config's ``dish_inputs`` table there — the same table kotekan
 indexes its bad-input mask with); the master PDB channel map plus its cross-
 check at ``/api/pdb/map``; and the data-file scan at ``/api/files``
-(``?refresh=1`` bypasses its cache).  ``/metrics`` re-renders the same summary
-as hand-rolled Prometheus exposition text (no client library) and is
+(``?refresh=1`` bypasses its cache).  ``/metrics`` renders the same snapshots
+as hand-rolled Prometheus exposition text (no client library;
+``choco.metrics``) and is
 unauthenticated — Prometheus scrapes cross-host and can't do login sessions —
 so it must stay aggregate-only: no node names, hosts, or configs in metric
-labels.  The only other unauthenticated routes are ``/skymap.png`` and its
+labels.  Since 2026-11-03 it also carries the monitors' poll times and
+counts, the sync loop's worker phases and queue, and each job's own numbers
+read from its ``run.json`` / ``state.json`` (bffs's state file, the whole
+flag history, is never read: its ``run.json`` has the counts), so the
+Grafana side (chord-sysops ``grafana_stack``: job ``choco``, the CHOCO
+dashboard, the ``Choco*`` alerts) can show a backlog, a bad-feed count or
+the age of the newest file over time; the header strip only shows now.
+Names follow the Prometheus conventions (``*_timestamp_seconds`` for unix
+times, durations in seconds) and a value a file does not have is left out
+rather than reported as zero, so an absent series means "not known".  The only other unauthenticated routes are ``/skymap.png`` and its
 night-palette twin ``/skymap-night.png`` (see the sky-map bullet), open for the
 same cross-host reason; everything else requires login.  ``choco_start_time_seconds`` exists specifically because a choco
 restart re-engages cluster-wide maintenance (alertable via ``changes()``).
