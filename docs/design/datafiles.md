@@ -95,30 +95,63 @@ text field through the same escape-first inline formatter.  The overlay dims
 the page through the popover's ``::backdrop`` and has an explicit close
 button outside the swapped body, so the load cannot replace it.
 
-### Archive check (2026-10-31)
+### Archive listing (2026-10-31, polled since 2026-11-03)
 
 The transfer host (alpenhorn, chord-sysops ``roles/kotekan_vis_transfer``)
-pushes finished ``subset/`` acquisitions to Fir with rsync, without
-``--delete``: a local copy can be removed once the archive holds it, and
-the question is how to know that it does.  Not from a record written at
-transfer time — that says a copy existed once — but from the archive, now.
-choco cannot ask Fir itself (the only key is alpenhorn's, locked to rsync),
-so alpenhorn's ``kotekan-vis-verify`` socket answers for it: one connection,
-one line of acquisition names, one dry-run rsync against Fir, one line per
-acquisition back — the files here and the files a transfer would still send
-(missing, or of another size or mtime).  ``archive.ArchiveCheck`` is that
-client (``vis_files.archive``: the socket and the one root it mirrors; a
-cooperative socket, no threadpool needed, bounded by ``timeout``).  The
-``/files`` table grows an **Archive** column for that root only, empty
-when the table lands; ``/partials/files/archive/<root index>`` fills it
-once on load and on **Check archive**, with the root header's summary as
-the response body and each cell as an ``hx-swap-oob`` span matched by id,
-so the table is never redrawn and the Rescan button stays independent.
-The route takes a root index the archive covers and asks only about the
-rows the cached scan listed that look like acquisition names (one bad name
-fails the whole answer on the transfer host).  The count is every file of
-the directory the transfer's filter passes, notes and ``baseband_gains.h5``
-included, so it runs two or three above the table's ``.h5`` count; the
-cell says *all N*, *k of N* or *none of N* and the summary how many
-acquisitions the archive holds in full.  Nothing is cached: each press is
-a new question to Fir, which takes the few seconds the dry run takes.
+pushes finished ``subset/`` acquisitions and merged baseband dumps to Fir
+with rsync, without ``--delete``: a local copy can be removed once the
+archive holds it, and the question is how to know that it does.  Not from
+a record written at transfer time — that says a copy existed once — but
+from the archive itself.  choco cannot ask Fir (the only key is
+alpenhorn's, locked to Alliance's ``transfer_commands.sh``), so alpenhorn's
+``kotekan-vis-verify`` socket answers for it: one request line per
+connection.  The first version (2026-10-31) asked ``verify``, a dry-run
+rsync over the local acquisitions, when the page opened and on a **Check
+archive** button, and recorded nothing.  Since 2026-11-03 the request is
+``list -l``: Alliance's forced command runs ``ls`` as well as rsync, so the
+script lists what Fir holds, one line per file with its size and mtime,
+over every acquisition and merged dump there — read from Fir alone, so it
+also names what was deleted on site, which the dry run (local names in,
+remote answer out) never could.  ``archive.ArchiveMonitor`` is a
+``PolledMonitor`` like the header strip's: it asks every
+``vis_files.archive.interval`` seconds (default 600; one ``ls -lR`` on
+Lustre over tens of thousands of files takes seconds to a minute, which is
+why the page never asks on its own — the policy is to poll the script and
+show the latest listing with its age) and keeps the last listing that
+arrived; a failed poll keeps it and the page says the latest poll failed.
+The ``/files`` partial joins that listing to the cached scan by name:
+``archive.join_root`` gives a row per directory on either side — the
+scan's rows with ``archive.held``, how many of the directory's ``.h5``
+files Fir has at the same size and whole-second mtime (rsync's quick
+check, so *all N* means a transfer would send nothing; the scan now keeps
+each file's size and mtime in ``h5`` for this), and for a directory only
+Fir has a row shaped like the scan's with Fir's count, size and span,
+marked *archive only* — sorted newest first together.  The root header
+carries the summary (held in full, in part, not at all, only there), the
+note line the listing's age.  Before the first listing arrives the cells
+say ``?`` rather than *none*.  Only the root the archive mirrors gets the
+column; ``full/`` is not transferred.
+
+### Baseband dumps (2026-11-03)
+
+``vis_files.baseband`` names the dumps' root (``/mnt/cs00/data/baseband``).
+It is one more ``scan_root`` walk, kept apart in the result (``baseband``)
+and at the end of the table, filtered to the ``<trigger>_merged``
+directories (``acqtree.MERGED_NAME_RE``): the raw per-node dumps and the
+odd loose file beside them are not the finished product.  Each dump's
+``.h5`` parts are counted exactly as an acquisition's files, and the
+archive's listing joins the same way (the transfer sends the merged dumps
+to Fir too), so a dump can be *all N*, *archive only* or in between.  The
+**Info** popover (``/files/baseband/<name>``, a name the cached scan
+listed, never the caller's) shows what the first part file says about the
+dump through the h5read subprocess — the dataset's attributes
+(``fpga_seq_time_nsec``, ``seq_length_nsec``, ``coarse_freq``,
+``num_dishes``, ``type``, ``merge_num_sources``…), which the manifest now
+carries per dataset — as start, length, band (channel index ×
+``COARSE_CHANNEL_MHZ``, 0.1953125 MHz, checked against the N² files'
+``index_map/freq``), elements, sample layout, sources and the digital-gains
+file, plus the stamped lines of ``merge.log`` (start and end with the host,
+what was scanned, the merged shape; the progress lines are dropped).  The
+directory read is a threadpool call with a timeout like the notes; the
+subprocess is cooperative under the monkey-patching and its manifest is
+cached by the part's path, mtime and size, so a dump is read once.

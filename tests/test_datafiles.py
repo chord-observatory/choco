@@ -40,6 +40,23 @@ def roots(tmp_path):
 
 
 @pytest.fixture
+def baseband(tmp_path):
+    """A baseband root: a merged dump (two parts and its merge log) beside
+    a raw per-node dump directory and a stray file, which the scan must
+    leave out."""
+    root = tmp_path / "baseband"
+    merged = root / "20261029T170000Z_merged"
+    merged.mkdir(parents=True)
+    for n in ("00000000", "00000020"):
+        (merged / f"baseband_subset.{n}.h5").write_bytes(b"b" * 200)
+    (merged / "merge.log").write_text("=== 2026-10-29T23:57:44Z start on corrcal\n")
+    (root / "20261029T170000Z").mkdir()
+    (root / "20261029T170000Z" / "node.h5").write_bytes(b"r")
+    (root / "20260904T181800Z.h5").write_bytes(b"s")
+    return root
+
+
+@pytest.fixture
 def configs_dir(tmp_path):
     nodes = {"groups": {"cx": {"cx1": {"host": "cx1.example", "port": 12048}}}}
     (tmp_path / "configs").mkdir()
@@ -73,7 +90,14 @@ class TestScan:
     def test_empty_dir(self, roots):
         row = scan_dir(str(roots[0] / "acq_b"))
         assert row == {"files": 0, "bytes": 0, "oldest": None, "newest": None,
-                       "notes": False, "error": None}
+                       "notes": False, "h5": {}, "error": None}
+
+    def test_files_by_name(self, roots):
+        d = roots[0] / "acq_a"
+        os.utime(d / "vis_0.h5", (1000, 1000.7))
+        row = scan_dir(str(d))
+        assert set(row["h5"]) == {"vis_0.h5", "vis_1.h5", "vis_2.h5"}
+        assert row["h5"]["vis_0.h5"] == (100, 1000)        # bytes, whole-second mtime
 
     def test_span_and_notes(self, roots):
         d = roots[0] / "acq_a"
@@ -114,6 +138,14 @@ class TestScan:
         assert root["dirs"] == []
         assert "FileNotFoundError" in root["error"]
 
+    def test_baseband_root_keeps_merged_dumps_only(self, baseband):
+        from choco.acqtree import MERGE_LOG_NAME, MERGED_NAME_RE
+        root = scan_root(str(baseband), MERGED_NAME_RE, MERGE_LOG_NAME)
+        assert [d["name"] for d in root["dirs"]] == ["20261029T170000Z_merged"]
+        merged = root["dirs"][0]
+        assert merged["files"] == 2 and merged["notes"] is True
+        assert set(merged["h5"]) == {"baseband_subset.00000000.h5", "baseband_subset.00000020.h5"}
+
 
 class TestDataFileScan:
     def test_unconfigured(self):
@@ -127,6 +159,19 @@ class TestDataFileScan:
         assert result["dirs"] == 3          # acq_a, acq_b, acq_a
         assert result["files"] == 4
         assert result["bytes"] == 303 + 100
+        assert result["baseband"] is None
+
+    def test_baseband_root_is_reported_apart(self, roots, baseband):
+        scan = DataFileScan(roots, baseband=baseband)
+        result = scan.get()
+        assert result["dirs"] == 3 and result["files"] == 4      # the acquisitions only
+        assert result["baseband"]["path"] == str(baseband)
+        assert [d["name"] for d in result["baseband"]["dirs"]] == ["20261029T170000Z_merged"]
+        assert result["baseband"]["files"] == 2
+        # The badge probes it with the roots.
+        scan.poll_once()
+        assert [s["path"] for s in scan.root_status] == [str(r) for r in roots] + [str(baseband)]
+        assert scan.health == "ok" and scan.to_dict()["n_roots"] == 3
 
     def test_cached_until_stale(self, roots):
         scan = DataFileScan(roots, ttl_s=1000)

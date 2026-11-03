@@ -13,8 +13,8 @@ web process (for the constants below) costs nothing.
 
 ``manifest`` writes JSON on stdout: the plottable datasets with the same
 descriptor vocabulary the buffer-plot API already speaks (value_type,
-extents, dimnames), plus the file's attributes and a summary of the
-index maps.  ``data`` writes one dataset's raw bytes, C-order and
+extents, dimnames) and each one's attributes, plus the file's attributes
+and a summary of the index maps.  ``data`` writes one dataset's raw bytes, C-order and
 little-endian, which is precisely what the plotter's byte-prefix
 contract expects — so an HDF5 dataset plots through the existing stack
 with no new client code.
@@ -25,6 +25,7 @@ what we hoped" (the caller degrades), 1 for a bug here.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 
 # numpy kind + itemsize -> the value_type names bufferplot.js decodes.
@@ -40,6 +41,21 @@ _VALUE_TYPES = {
 # Datasets bigger than this are still listed, but the caller is expected
 # to fetch them by prefix rather than whole.
 MAX_DATASET_BYTES = 256 * 1024 * 1024
+# A dataset attribute with more elements than this is left out of the
+# manifest (the baseband files' coarse_freq, 6144 channels, is the
+# largest one wanted).
+MAX_ATTR_ELEMENTS = 8192
+
+
+def run(mode: str, path: str, *args: str) -> bytes:
+    """Run this module in a subprocess and return its stdout; a failure
+    is a ``RuntimeError`` carrying its stderr."""
+    cmd = [sys.executable, "-m", "choco.h5read", mode, path, *args]
+    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip() or "no detail"
+        raise RuntimeError(f"h5read {mode} failed: {detail}")
+    return proc.stdout
 
 
 def _value_type(dtype):
@@ -156,6 +172,8 @@ def manifest(h5py, path):
                 "extents": [int(n) for n in obj.shape],
                 "dimnames": _dimnames(obj, obj.ndim),
                 "bytes": nbytes,
+                "attrs": {k: _scalar(v) for k, v in obj.attrs.items()
+                          if getattr(v, "size", 1) <= MAX_ATTR_ELEMENTS},
             })
 
         f.visititems(visit)

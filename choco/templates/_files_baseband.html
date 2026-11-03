@@ -1,0 +1,31 @@
+{# One merged baseband dump's facts: the part file's own attributes, then
+   the merge log's stamped lines. #}
+{% if error %}<p class="t-warn">Info unavailable: {{ error }}</p>{% else %}
+<h4>{{ name }}</h4>
+{% if facts %}
+<table>
+    <tbody>
+        <tr><th>Start (UTC)</th><td>{{ facts.start_utc or '—' }}</td></tr>
+        <tr><th>Length</th><td>
+            {%- if facts.total_s %}{{ '%.1f' % facts.total_s }} s: {% endif -%}
+            {{ facts.n_files }} part{{ '' if facts.n_files == 1 else 's' }}
+            {%- if facts.file_s %} of {{ '%.3f' % facts.file_s }} s{% endif %}
+            {%- if facts.samples %} ({{ facts.samples }} samples of {{ facts.sample_ns }} ns){% endif %}</td></tr>
+        <tr><th>Band</th><td>
+            {%- if facts.chan_first is not none %}channels {{ facts.chan_first }}–{{ facts.chan_last }} ({{ facts.channels }}),
+            {{ '%.1f' % facts.mhz_first }}–{{ '%.1f' % facts.mhz_last }} MHz{% else %}{{ facts.channels or '—' }} channels{% endif %}</td></tr>
+        <tr><th>Elements</th><td>{{ facts.dishes }} dishes × {{ facts.pols }} polarizations</td></tr>
+        <tr><th>Samples</th><td>{{ facts.sample_type or '—' }}; {{ facts.shape | join(' × ') }}
+            {%- if facts.dim_names %} ({{ facts.dim_names | join(', ') }}){% endif %}, {{ facts.bytes | filesize }} a part</td></tr>
+        <tr><th>Merged from</th><td>{{ facts.sources }} X-engine streams{% if facts.merge_tool %} by {{ facts.merge_tool }}{% endif %}</td></tr>
+        <tr><th>Digital gains</th><td>{{ facts.gains_file or '—' }}</td></tr>
+    </tbody>
+</table>
+{% else %}
+<p class="muted">No part file to read.</p>
+{% endif %}
+{% if log %}
+<h5>Merge log</h5>
+<pre>{{ log | join('\n') }}</pre>
+{% endif %}
+{% endif %}

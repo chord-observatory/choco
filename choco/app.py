@@ -13,7 +13,7 @@ import gevent
 import yaml
 from flask import Flask
 
-from .archive import ArchiveCheck
+from .archive import ArchiveMonitor
 from .auth import init_auth, parse_proxy_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
 from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
@@ -294,15 +294,17 @@ def create_app(
     datafile_scan = DataFileScan(
         vis_cfg.get("roots") or (),
         ttl_s=float(vis_cfg.get("ttl") or DataFileScan.DEFAULT_TTL_S),
+        baseband=vis_cfg.get("baseband") or None,
     )
-    # The remote archive's live word on one of those roots, asked of the
-    # transfer host's verify socket when the page opens or on request;
-    # never polled, never recorded.
+    # What the remote archive holds of one of those roots and of the
+    # baseband dumps: the transfer host's listing, polled on its own
+    # interval and read by the page as it stands.
     arc_cfg = vis_cfg.get("archive") or {}
-    archive_check = ArchiveCheck(
+    archive_monitor = ArchiveMonitor(
         host=arc_cfg.get("host"), port=arc_cfg.get("port"),
         root=arc_cfg.get("root"),
-        timeout_s=float(arc_cfg.get("timeout") or ArchiveCheck.DEFAULT_TIMEOUT_S),
+        timeout_s=float(arc_cfg.get("timeout") or ArchiveMonitor.DEFAULT_TIMEOUT_S),
+        interval_s=float(arc_cfg.get("interval") or 0) or None,
     )
 
     # The master dish-input <-> power-channel table.  Lives beside
@@ -358,7 +360,7 @@ def create_app(
         state_file=lambda: Path(app.config["state_dir"]) / "waterfall" / STATE_NAME,
     )
     app.config["datafile_scan"] = datafile_scan
-    app.config["archive_check"] = archive_check
+    app.config["archive_monitor"] = archive_monitor
     app.config["configs_dir"] = configs_dir
     # None when upstream.enabled is false: the pull button and routes are off.
     app.config["upstream"] = Upstream.from_config(config.get("upstream"))
@@ -375,6 +377,8 @@ def create_app(
         gevent.spawn(pdb_monitor.run)
     if datafile_scan.configured:
         gevent.spawn(datafile_scan.run)
+    if archive_monitor.configured:
+        gevent.spawn(archive_monitor.run)
     if instrument_monitor.configured:
         gevent.spawn(instrument_monitor.run)
 

@@ -161,9 +161,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   request's row and polarization become channel addresses only through
   `pdbmap.row_entries`; an acquisition-notes request is a root index
   plus a directory the cached `/files` scan listed with notes, and a
-  timeline request a root index whose scan saw `timeline.yaml`, and an
-  archive check a root index the archive mirrors, asking the transfer host
-  only about the names the scan listed; a GitHub
+  timeline request a root index whose scan saw `timeline.yaml`, and a
+  baseband dump's info a directory the cached scan listed under the
+  baseband root (the archive's listing is polled on a timer and joined to
+  the scan by name, never asked per request); a GitHub
   listing's file names go through `resolve_config_path` too, and the raw
   URL is built from the validated name at the resolved commit, never from
   the listing's `download_url`.

@@ -24,6 +24,14 @@ from .jobclient import Degraded
 ACQ_PREFIX = "acq_"
 #: An acquisition directory named for its start (``acq_20261012_…``).
 ACQ_NAME_RE = re.compile(r"^acq_\d{8}")
+#: A merged baseband dump under the baseband root (``20261029T170000Z_merged``:
+#: the per-node dumps of that trigger merged by ``merge_baseband_freq.py``
+#: into ``baseband_subset.<first sample>.h5`` parts plus its ``merge.log``).
+MERGED_NAME_RE = re.compile(r"^\d{8}T\d{6}Z_merged$")
+MERGE_LOG_NAME = "merge.log"
+#: Width of one coarse channel; channel index 1536 is 300 MHz (the N²
+#: files' ``index_map/freq``: 300.0 to 1500.0 MHz in 0.1953125 MHz steps).
+COARSE_CHANNEL_MHZ = 0.1953125
 
 #: A completed kotekan file.  The index in the name is what lets a file
 #: already folded in be skipped without opening it: the archive is

@@ -109,6 +109,23 @@ class TestManifest:
                                           "last_mhz": 401.5}
         assert m["index_map"]["inputs"]["names"] == ["in000", "in001", "in002"]
 
+    def test_dataset_attributes_come_through(self, tmp_path):
+        path = tmp_path / "bb.h5"
+        with h5py.File(path, "w") as f:
+            d = f.create_dataset("baseband_subset", data=np.zeros((4, 3, 2, 2), np.uint8))
+            d.attrs["coarse_freq"] = np.arange(1536, 1539, dtype=np.int32)
+            d.attrs["fpga_seq_time_nsec"] = np.int64(1793293199959241010)
+            d.attrs["dim_names"] = np.array(["T", "F", "P", "D"], dtype=object)
+            d.attrs["gps_time_enabled"] = np.True_
+            d.attrs["huge"] = np.zeros(9000, np.int32)
+        m = json.loads(run("manifest", str(path)).stdout)
+        attrs = m["datasets"][0]["attrs"]
+        assert attrs["coarse_freq"] == [1536, 1537, 1538]
+        assert attrs["fpga_seq_time_nsec"] == 1793293199959241010
+        assert attrs["dim_names"] == ["T", "F", "P", "D"]
+        assert attrs["gps_time_enabled"] is True
+        assert "huge" not in attrs                 # over MAX_ATTR_ELEMENTS
+
     def test_attributes_and_scalars_come_through(self, gain_file):
         m = json.loads(run("manifest", str(gain_file)).stdout)
         assert m["attrs"]["instrument_name"] == "chord_pathfinder"

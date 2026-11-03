@@ -191,12 +191,19 @@ vis_files:
     - /mnt/cs00/data/kotekan_vis_files/full
     - /mnt/cs00/data/kotekan_vis_files/subset
   ttl: 30                           # Seconds to cache a scan (these are NFS mounts)
-  # The remote archive's live view of one root, asked of the transfer host's
-  # kotekan-vis-verify socket (chord-sysops, roles/kotekan_vis_transfer) when
-  # the page opens and on Check archive: one dry-run rsync there, nothing
-  # recorded.  Leave host empty for no Archive column.
+  # The merged baseband dumps (<trigger>_merged directories), listed at the
+  # end of the page with their part files; leave empty for none.
+  baseband: /mnt/cs00/data/baseband
+  # What the remote archive holds of the root below and of the baseband
+  # dumps: the transfer host's kotekan-vis-verify socket (chord-sysops,
+  # roles/kotekan_vis_transfer) is asked for its per-file listing (`list -l`,
+  # one ls on the archive) every `interval` seconds, and the page shows the
+  # latest listing joined to the scan: the files here that the archive holds
+  # at the same size and mtime, and the directories only it has.  Leave host
+  # empty for no Archive column.
   archive:
     host: alpenhorn.site.chord-observatory.ca
     port: 9873
     root: /mnt/cs00/data/kotekan_vis_files/subset   # the root the archive mirrors (the transfer's source)
-    timeout: 120                                    # seconds to wait for the answer
+    interval: 600                                   # seconds between polls
+    timeout: 300                                    # seconds to wait for one answer

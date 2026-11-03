@@ -14,8 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -23,6 +21,7 @@ from pathlib import Path
 import requests
 from gevent.lock import BoundedSemaphore
 
+from .h5read import run as _h5read
 from .http import fetch
 from .monitor import HttpMonitor
 
@@ -420,12 +419,3 @@ class FileArchive(_H5Archive):
             self.error = None
             return True
 
-
-def _h5read(mode: str, path: str, *args: str) -> bytes:
-    """Run choco.h5read in a subprocess and return its stdout."""
-    cmd = [sys.executable, "-m", "choco.h5read", mode, path, *args]
-    proc = subprocess.run(cmd, capture_output=True, timeout=120)
-    if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", "replace").strip() or "no detail"
-        raise RuntimeError(f"h5read {mode} failed: {detail}")
-    return proc.stdout

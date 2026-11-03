@@ -21,8 +21,9 @@ from flask import (
 from . import auth, library
 from .auth import current_user, localhost_or_login_required, login_required, logout_user
 from .jobclient import MANUAL_OVERRIDES_NAME, RUN_NAME, STATE_NAME, STATE_ROOT
-from .datafiles import (TIMELINE_NAME, human_bytes, notes_html, read_notes,
-                        run_blocking, timeline_rows, utc_minute)
+from .archive import ACQ_NAME_RE as ARCHIVE_ACQ_RE, MERGED_NAME_RE, join_root
+from .datafiles import (TIMELINE_NAME, baseband_facts, human_bytes, notes_html, read_baseband_dir,
+                        read_notes, run_blocking, timeline_rows, utc_minute)
 from . import dishlabels
 from .instrument import (CRATE_OUTLET, PAGE_POLL_S, SWITCH_OUTLET, worst_tone, ago, board_layout, flow_diagram,
                          health_tone, host_health, job_tone, job_word, node_tone, outlet_watts,
@@ -1149,20 +1150,35 @@ def partial_files():
     """The scan table.  ``?refresh=1`` bypasses the cache."""
     scan = _component("datafile_scan")
     if scan is None:
-        result = {"configured": False, "roots": []}
+        result = {"configured": False, "roots": [], "baseband": None}
     else:
         result = scan.get(force=request.args.get("refresh") == "1")
 
     store = _component("waterfall_store")
     rendered = (rendered_index(store, force=request.args.get("refresh") == "1")
                 if store is not None else {})
-    # The root the archive mirrors gets an Archive column, filled by
-    # /partials/files/archive once the table is in.
-    check = _component("archive_check")
-    archive_root = next((i for i, r in enumerate(result.get("roots") or [])
-                         if check is not None and check.covers(r["path"])), None)
-    return render_template("_files_table.html", scan=result, rendered=rendered,
-                           archive_root=archive_root, now_ts=time.time())
+    # The root the archive mirrors, and the baseband dumps, are joined
+    # with the archive's latest listing (polled, never asked from here):
+    # a row per directory on either side.
+    monitor = _component("archive_monitor")
+    views = []
+    for i, root in enumerate(result.get("roots") or []):
+        archived = monitor is not None and monitor.covers(root["path"])
+        rows, summary = (join_root(root, monitor.dirs, ARCHIVE_ACQ_RE) if archived
+                         else (root.get("dirs") or [], None))
+        views.append({"idx": i, "root": root, "rows": rows, "archived": archived,
+                      "summary": summary})
+    baseband = result.get("baseband")
+    baseband_view = None
+    if baseband is not None:
+        rows, summary = (join_root(baseband, monitor.dirs, MERGED_NAME_RE) if monitor is not None
+                         else (baseband.get("dirs") or [], None))
+        baseband_view = {"root": baseband, "rows": rows, "archived": monitor is not None,
+                         "summary": summary}
+    return render_template("_files_table.html", scan=result, rendered=rendered, views=views,
+                           baseband=baseband_view,
+                           archive=monitor.to_dict() if monitor is not None else None,
+                           now_ts=time.time())
 
 
 #: How long a notes read may block on NFS before the popover says so.
@@ -1221,26 +1237,33 @@ def files_timeline(root_idx):
     return render_template("_files_timeline.html", rows=rows, path=root["path"])
 
 
-@bp.route("/partials/files/archive/<int:root_idx>")
-@login_required
-def partial_files_archive(root_idx):
-    """The archive's live word on one root's acquisitions: a summary for
-    the root header (the request's target) and each row's Archive cell
-    as an out-of-band swap.
+#: How long a dump's directory read may block on NFS before the popover says so.
+BASEBAND_TIMEOUT_S = 10.0
 
-    The root is an index into the configured roots and must be the one
-    the archive mirrors; the names asked about are the cached scan's
-    rows, never the caller's.  One connection to the transfer host, one
-    dry-run rsync there, nothing recorded: the answer is what the
-    archive holds now.
+
+@bp.route("/files/baseband/<name>")
+@login_required
+def files_baseband(name):
+    """One merged baseband dump's facts, for the table's info popover:
+    the stamped lines of its merge log and what its first part file
+    says (through the h5read subprocess, read once per file).
+
+    The name must be a directory the cached scan listed under the
+    baseband root: the caller's string never becomes a path.  The
+    directory read runs in the threadpool with a timeout; the subprocess
+    is cooperative on its own.
     """
-    root = _scan_root(root_idx)
-    check = _component("archive_check")
-    if check is None or not check.covers(root["path"]):
+    scan = _component("datafile_scan")
+    baseband = scan.get().get("baseband") if scan is not None else None
+    row = next((d for d in (baseband or {}).get("dirs") or [] if d["name"] == name), None)
+    if row is None:
         abort(404)
-    result = check.query([d["name"] for d in root["dirs"]])
-    return render_template("_files_archive.html", root_idx=root_idx,
-                           dirs=root["dirs"], result=result)
+    try:
+        info = run_blocking(read_baseband_dir, row["path"], timeout=BASEBAND_TIMEOUT_S)
+        facts = baseband_facts(info["first"], row["files"])
+    except (OSError, RuntimeError, ValueError) as exc:
+        return render_template("_files_baseband.html", name=name, error=str(exc))
+    return render_template("_files_baseband.html", name=name, row=row, log=info["log"], facts=facts)
 
 
 @bp.route("/files/<root>/<acq>/triangle")

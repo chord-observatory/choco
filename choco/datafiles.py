@@ -31,6 +31,7 @@ on the page cost one scan, and file counts change on the timescale of a
 kotekan acquisition, not of a page load.
 """
 
+import json
 import logging
 import os
 import re
@@ -43,6 +44,8 @@ import yaml
 from gevent.lock import BoundedSemaphore
 from markupsafe import Markup, escape
 
+from .acqtree import COARSE_CHANNEL_MHZ, MERGE_LOG_NAME, MERGED_NAME_RE
+from .h5read import run as h5read
 from .monitor import PolledMonitor
 
 logger = logging.getLogger(__name__)
@@ -74,25 +77,28 @@ def run_blocking(fn, *args, timeout: float):
             f"no answer from the filesystem in {timeout:.0f}s") from None
 
 
-def scan_dir(path: str) -> dict:
+def scan_dir(path: str, notes_name: str = NOTES_NAME) -> dict:
     """Count the ``.h5`` files sitting directly in one directory.
 
-    Returns ``{"files", "bytes", "oldest", "newest", "notes", "error"}``.
+    Returns ``{"files", "bytes", "oldest", "newest", "notes", "h5", "error"}``.
     ``newest`` is the mtime of the most recently modified counted file
     (``None`` when there are none), which is what says whether an
     acquisition is still growing; ``oldest`` with it gives the span the
-    files cover.  ``notes`` says whether the directory carries a
-    ``README.md`` (written by the acqnotes job), noticed from the same
-    listing at no extra cost.
+    files cover.  ``h5`` is each counted file's ``(bytes, mtime)`` by
+    name, what the archive's listing is joined on.  ``notes`` says
+    whether the directory carries a *notes_name* file (``README.md``,
+    written by the acqnotes job), noticed from the same listing at no
+    extra cost.
     """
     files = 0
     total = 0
     oldest = newest = None
     notes = False
+    h5 = {}
     try:
         with os.scandir(path) as it:
             for entry in it:
-                if entry.name == NOTES_NAME:
+                if entry.name == notes_name:
                     notes = True
                     continue
                 if not entry.name.endswith(H5_SUFFIX):
@@ -108,20 +114,26 @@ def scan_dir(path: str) -> dict:
                     continue
                 files += 1
                 total += st.st_size
+                h5[entry.name] = (st.st_size, int(st.st_mtime))
                 if newest is None or st.st_mtime > newest:
                     newest = st.st_mtime
                 if oldest is None or st.st_mtime < oldest:
                     oldest = st.st_mtime
     except OSError as exc:
         return {"files": files, "bytes": total, "oldest": oldest,
-                "newest": newest, "notes": notes,
+                "newest": newest, "notes": notes, "h5": h5,
                 "error": f"{type(exc).__name__}: {exc}"}
     return {"files": files, "bytes": total, "oldest": oldest,
-            "newest": newest, "notes": notes, "error": None}
+            "newest": newest, "notes": notes, "h5": h5, "error": None}
 
 
-def scan_root(root: str) -> dict:
+def scan_root(root: str, dir_re: re.Pattern | None = None,
+              notes_name: str = NOTES_NAME) -> dict:
     """Scan one root: its immediate subdirectories, newest first.
+
+    *dir_re* keeps only the subdirectories it matches (the baseband
+    root holds the raw per-node dumps beside the merged ones); *notes_name*
+    is the file that gives a row its info button.
 
     Failures are collected, never raised, in the same spirit as
     ``Registry.reload``: an unreadable acquisition costs that row, and a
@@ -136,7 +148,7 @@ def scan_root(root: str) -> dict:
             for e in it:
                 if e.name == TIMELINE_NAME:
                     timeline = True
-                elif e.is_dir():
+                elif e.is_dir() and (dir_re is None or dir_re.match(e.name)):
                     entries.append(e)
     except OSError as exc:
         logger.warning(f"data-files: cannot list {path}: {exc}")
@@ -146,7 +158,7 @@ def scan_root(root: str) -> dict:
 
     dirs = []
     for entry in sorted(entries, key=lambda e: e.name):
-        row = scan_dir(entry.path)
+        row = scan_dir(entry.path, notes_name)
         row["name"] = entry.name
         row["path"] = entry.path
         dirs.append(row)
@@ -199,7 +211,9 @@ class DataFileScan(PolledMonitor):
 
     ``roots`` is the explicit list from ``config.yaml`` (``vis_files.roots``);
     an empty list leaves the page saying it is unconfigured rather than
-    guessing at a mount point.
+    guessing at a mount point.  ``baseband`` (``vis_files.baseband``) is
+    the dumps' root, scanned for its ``*_merged`` directories the same
+    way and reported apart from the acquisition roots.
     """
 
     DEFAULT_TTL_S = 30.0
@@ -208,8 +222,9 @@ class DataFileScan(PolledMonitor):
     #: is picked up, not restarted, by the next scan.
     SCAN_TIMEOUT_S = 30.0
 
-    def __init__(self, roots=(), ttl_s: float = DEFAULT_TTL_S):
+    def __init__(self, roots=(), ttl_s: float = DEFAULT_TTL_S, baseband=None):
         self.roots = [Path(r) for r in (roots or ())]
+        self.baseband = Path(baseband) if baseband else None
         self.ttl_s = float(ttl_s)
         self._result: dict | None = None
         self._lock = BoundedSemaphore(1)
@@ -238,7 +253,7 @@ class DataFileScan(PolledMonitor):
         after the lock and normally find the work already done.
         """
         if not self.configured:
-            return {"configured": False, "roots": [], "scanned_at": None,
+            return {"configured": False, "roots": [], "baseband": None, "scanned_at": None,
                     "duration_s": 0.0, "files": 0, "bytes": 0, "dirs": 0}
         with self._lock:
             if not force and not self._stale():
@@ -258,9 +273,14 @@ class DataFileScan(PolledMonitor):
         for p in paths:
             if p not in self._walks:
                 self._walks[p] = pool.spawn(scan_root, p)
+        # The baseband root is one more walk of the same kind, kept apart
+        # in the result: its directories are dumps, not acquisitions.
+        baseband = str(self.baseband) if self.baseband else None
+        if baseband and baseband not in self._walks:
+            self._walks[baseband] = pool.spawn(scan_root, baseband, MERGED_NAME_RE, MERGE_LOG_NAME)
         deadline = started + self.SCAN_TIMEOUT_S
         roots = []
-        for p in paths:
+        for p in paths + ([baseband] if baseband else []):
             walk = self._walks[p]
             try:
                 roots.append(walk.get(timeout=max(0.0, deadline - time.monotonic())))
@@ -281,9 +301,11 @@ class DataFileScan(PolledMonitor):
             f"data-files: scanned {len(roots)} root(s), "
             f"{sum(r['files'] for r in roots)} files in {duration:.2f}s"
         )
+        baseband_root = roots.pop() if baseband else None
         return {
             "configured": True,
             "roots": roots,
+            "baseband": baseband_root,
             "scanned_at": time.time(),
             "duration_s": duration,
             "dirs": sum(len(r["dirs"]) for r in roots),
@@ -320,7 +342,7 @@ class DataFileScan(PolledMonitor):
                           f"{self.CHECK_TIMEOUT_S:.0f}s (mount not responding)")
             return
 
-        paths = [str(p) for p in self.roots]
+        paths = [str(p) for p in self.roots + ([self.baseband] if self.baseband else [])]
         self._probing = True
         result = gevent.get_hub().threadpool.spawn(probe_roots, paths)
         result.rawlink(self._probe_done)
@@ -361,9 +383,9 @@ class DataFileScan(PolledMonitor):
         return {
             "configured": self.configured,
             "health": self.health,
-            "roots": [str(p) for p in self.roots],
+            "roots": [str(p) for p in self.roots + ([self.baseband] if self.baseband else [])],
             "root_status": self.root_status,
-            "n_roots": len(self.roots),
+            "n_roots": len(self.roots) + (1 if self.baseband else 0),
             "n_ok": sum(1 for s in self.root_status if s["ok"]),
             "last_polled": self.last_polled,
             "last_seen": self.last_ok,
@@ -380,6 +402,89 @@ def read_notes(path: str, name: str = NOTES_NAME) -> str:
     if len(data) > NOTES_MAX_BYTES:
         raise OSError(f"{name} is larger than {NOTES_MAX_BYTES} bytes")
     return data.decode("utf-8", errors="replace")
+
+
+#: The merge log's lines worth showing: the stamped start and end, what
+#: was scanned, and the merged shape.  The rest is progress.
+_MERGE_LOG_KEEP = re.compile(r"^(=== |scanning |merged: |split into |\d+ node\(s\))")
+#: The merged dump's data: one part file's dataset, ``[T, F, P, D]``.
+BASEBAND_DATASET = "baseband_subset"
+#: Manifests of the dumps' first parts, keyed by path with the file's
+#: (mtime, size): a dump is read once, however often its info is opened.
+_baseband_manifests: dict[str, tuple[tuple, dict]] = {}
+
+
+def read_baseband_dir(path: str) -> dict:
+    """What a merged dump's directory says about itself.  Blocking: run
+    it in the threadpool.  Returns the merge log's stamped lines
+    (``log``) and the first part file (``first``: path, mtime, size),
+    either absent when missing.
+    """
+    out = {"log": [], "first": None}
+    names = sorted(n for n in os.listdir(path) if n.endswith(H5_SUFFIX))
+    if names:
+        st = os.stat(os.path.join(path, names[0]))
+        out["first"] = (os.path.join(path, names[0]), st.st_mtime, st.st_size)
+    try:
+        with open(os.path.join(path, MERGE_LOG_NAME), "rb") as fh:
+            text = fh.read(4 << 20).decode("utf-8", errors="replace")
+    except OSError:
+        return out
+    out["log"] = [l.rstrip() for l in text.splitlines() if _MERGE_LOG_KEEP.match(l)][:40]
+    return out
+
+
+def baseband_facts(first: tuple | None, n_files: int) -> dict:
+    """The facts a merged dump's part file carries, read once through
+    the h5read subprocess (cooperative under the monkey-patching, so
+    not the threadpool).  *first* is ``read_baseband_dir``'s; None, or
+    a file without the dataset, gives ``{}``.  Raises ``RuntimeError``
+    when the read fails.
+    """
+    if first is None:
+        return {}
+    path, mtime, size = first
+    key = (mtime, size)
+    cached = _baseband_manifests.get(path)
+    if cached is None or cached[0] != key:
+        manifest = json.loads(h5read("manifest", path).decode())
+        _baseband_manifests[path] = (key, manifest)
+    else:
+        manifest = cached[1]
+    dset = next((d for d in manifest.get("datasets") or [] if d["name"] == BASEBAND_DATASET), None)
+    if dset is None:
+        return {}
+    a = dset.get("attrs") or {}
+    extents = dset.get("extents") or []
+    samples = extents[0] if extents else None
+    seq_ns = a.get("seq_length_nsec")
+    start_ns = a.get("fpga_seq_time_nsec")
+    coarse = a.get("coarse_freq") or []
+    facts = {
+        "start": start_ns / 1e9 if isinstance(start_ns, (int, float)) else None,
+        "samples": samples,
+        "sample_ns": seq_ns,
+        "file_s": samples * seq_ns / 1e9 if samples and isinstance(seq_ns, (int, float)) else None,
+        "channels": len(coarse) or (extents[1] if len(extents) > 1 else None),
+        "chan_first": coarse[0] if coarse else None,
+        "chan_last": coarse[-1] if coarse else None,
+        "mhz_first": coarse[0] * COARSE_CHANNEL_MHZ if coarse else None,
+        "mhz_last": (coarse[-1] + 1) * COARSE_CHANNEL_MHZ if coarse else None,
+        "pols": a.get("num_polarizations"),
+        "dishes": a.get("num_dishes"),
+        "sample_type": a.get("type"),
+        "shape": extents,
+        "dim_names": a.get("dim_names"),
+        "bytes": dset.get("bytes"),
+        "sources": a.get("merge_num_sources"),
+        "merge_tool": a.get("merge_tool"),
+        "gains_file": os.path.basename(str(manifest.get("attrs", {}).get("digital_gains_source_file") or "")) or None,
+        "n_files": n_files,
+    }
+    facts["total_s"] = facts["file_s"] * n_files if facts["file_s"] and n_files else None
+    facts["start_utc"] = (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(facts["start"]))
+                          if facts["start"] else None)
+    return facts
 
 
 _CODE = re.compile(r"`([^`]+)`")
