@@ -52,8 +52,10 @@ class TestParseListing:
         assert dirs == {ACQ_A: {"vis_0.h5": (100, 1000), ".partial/baseband_gains.h5": (5, 1)},
                         MERGED: {"merge.log": (7, 2)}}
 
-    def test_empty_is_an_empty_archive(self):
-        assert parse_listing("") == {} and parse_listing("\n") == {}
+    @pytest.mark.parametrize("text", ["", "\n"])
+    def test_empty_answer_is_refused(self, text):
+        with pytest.raises(ValueError, match="empty answer"):
+            parse_listing(text)
 
     def test_error_line(self):
         with pytest.raises(ValueError, match="transfer host says: ls on fir exited 255"):

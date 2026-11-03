@@ -72,6 +72,23 @@ def run(*args):
                           capture_output=True)
 
 
+class TestRunner:
+    def test_manifest_through_the_runner(self, gain_file):
+        from choco.h5read import run as h5run
+        assert json.loads(h5run("manifest", str(gain_file)))["attrs"]["instrument_name"] == "chord_pathfinder"
+
+    def test_failure_and_timeout_are_runtime_errors(self, tmp_path, monkeypatch):
+        import choco.h5read as h5read
+        with pytest.raises(RuntimeError, match="h5read manifest failed"):
+            h5read.run("manifest", str(tmp_path / "absent.h5"))
+
+        def hang(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+        monkeypatch.setattr(h5read.subprocess, "run", hang)
+        with pytest.raises(RuntimeError, match="no answer in 120s"):
+            h5read.run("manifest", str(tmp_path / "x.h5"))
+
+
 class TestManifest:
     def test_lists_plottable_datasets_with_axes(self, gain_file):
         proc = run("manifest", str(gain_file))

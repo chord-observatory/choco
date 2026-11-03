@@ -128,9 +128,14 @@ class ArchiveMonitor(PolledMonitor):
 def parse_listing(text: str) -> dict[str, dict[str, tuple[int, int]]]:
     """``{dir: {file path: (bytes, mtime)}}`` from a ``list -l`` answer.
 
-    An ``error`` line or a line of another shape is a ``ValueError``
-    naming the problem.  An empty answer is an empty archive.
+    An ``error`` line, a line of another shape or an empty answer is a
+    ``ValueError`` naming the problem.  Empty is refused rather than
+    read as an empty archive: a socket whose service instance did not
+    run (its data mount missing, say) closes the connection with no
+    output, and the archive is never empty.
     """
+    if not text.strip():
+        raise ValueError("empty answer from the transfer host")
     dirs: dict[str, dict[str, tuple[int, int]]] = {}
     for line in text.splitlines():
         line = line.strip()

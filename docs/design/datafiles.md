@@ -119,6 +119,11 @@ Lustre over tens of thousands of files takes seconds to a minute, which is
 why the page never asks on its own — the policy is to poll the script and
 show the latest listing with its age) and keeps the last listing that
 arrived; a failed poll keeps it and the page says the latest poll failed.
+An empty answer counts as a failure, not as an empty archive: a socket
+whose service instance did not run (cs00 unmounted, say: the unit has
+``RequiresMountsFor``) closes the connection with nothing said, and
+reading that as "Fir holds nothing" would mark every acquisition *none*
+at the worst moment.
 The ``/files`` partial joins that listing to the cached scan by name:
 ``archive.join_root`` gives a row per directory on either side — the
 scan's rows with ``archive.held``, how many of the directory's ``.h5``

@@ -47,11 +47,19 @@ MAX_DATASET_BYTES = 256 * 1024 * 1024
 MAX_ATTR_ELEMENTS = 8192
 
 
+#: How long one read may take; a part file on a wedged mount otherwise
+#: holds the request for good.
+RUN_TIMEOUT_S = 120
+
+
 def run(mode: str, path: str, *args: str) -> bytes:
     """Run this module in a subprocess and return its stdout; a failure
-    is a ``RuntimeError`` carrying its stderr."""
+    or a timeout is a ``RuntimeError`` saying so."""
     cmd = [sys.executable, "-m", "choco.h5read", mode, path, *args]
-    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=RUN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"h5read {mode} gave no answer in {RUN_TIMEOUT_S}s") from None
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip() or "no detail"
         raise RuntimeError(f"h5read {mode} failed: {detail}")
