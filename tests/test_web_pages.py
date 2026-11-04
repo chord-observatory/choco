@@ -306,7 +306,7 @@ class TestServicesPartial:
         assert '/fpga' in body
         assert '/power/analog' in body
         # The cluster itself is a badge too, linking to the dashboard.
-        assert "Nodes" in body
+        assert "X-engine" in body
 
     # --- The NODES badge: green all up, red all down, yellow between ---
 
@@ -321,7 +321,7 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         m = re.search(
             r'<a href="/nodes" class="tag tag-([a-z]+)( quiet)?[^"]*"'
-            r' aria-label="Nodes: ([^"]*)"', body)
+            r' aria-label="X-engine: ([^"]*)"', body)
         assert m, body
         return m.group(1), m.group(3)
 
@@ -352,7 +352,7 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
         assert nodes and 'class="tag tag-ok quiet"' in nodes.group(0)
-        assert "<strong>Nodes</strong>" in nodes.group(1)
+        assert "<strong>X-engine</strong>" in nodes.group(1)
         assert 'class="word"' not in nodes.group(1)
 
     def test_running_job_is_a_quiet_blue_dot(self, client, app):
@@ -473,8 +473,8 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
         assert nodes and 'class="tag tag-bad"' in nodes.group(0)
-        assert 'aria-label="Nodes: all down"' in nodes.group(0)
-        assert "<strong>Nodes</strong>" in nodes.group(1)
+        assert 'aria-label="X-engine: all down"' in nodes.group(0)
+        assert "<strong>X-engine</strong>" in nodes.group(1)
         assert 'class="word"' not in nodes.group(1)
 
     def test_degraded_job_badge_is_tinted_and_wordless(self, client, app):

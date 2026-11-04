@@ -168,17 +168,18 @@ td .tag, dd .tag { font-size: 0.85em; }
    The menu (base.html, _menu.html) is a column at the left of every
    page: the mark, the pages in groups, each a quiet tag (its badge where
    a monitor or a job stands behind it), and at the foot who is here,
-   logout and the theme.  It is full height and stays put while the page
-   scrolls; the current page's item is marked. */
+   logout and the theme.  The aside spans the page, so its ground runs
+   top to bottom however short the menu or the page is; its content
+   (.menu-inner) sticks to the viewport and scrolls on its own when the
+   menu is taller than the screen.  The current page's item is marked. */
 .shell { display: grid; grid-template-columns: 13rem minmax(0, 1fr); min-height: 100vh; }
 /* The page's own top margin: the nav used to give it. */
 .shell > main { padding-top: 1.25rem; }
-aside.menu {
-    position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+aside.menu { border-right: 1px solid var(--surface-border); background: var(--surface); }
+.menu-inner {
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
     display: flex; flex-direction: column; gap: 0;
     padding: 1rem 0.75rem 0.75rem;
-    border-right: 1px solid var(--surface-border);
-    background: var(--surface);
 }
 .menu-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.1rem 0.5rem; }
 /* The three-bar button that opens the menu on a small screen (below). */
@@ -620,8 +621,9 @@ button.build-toggle {
    grid, the journal) keep their .scroll-x. */
 @media (max-width: 1023.98px) {
     .shell { display: block; }
-    aside.menu { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: center;
-                 gap: 0.25rem 0.75rem; padding: 0.5rem 0.75rem; border-right: 0; border-bottom: 1px solid var(--surface-border); }
+    aside.menu { border-right: 0; border-bottom: 1px solid var(--surface-border); }
+    .menu-inner { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
+                  gap: 0.25rem 0.75rem; padding: 0.5rem 0.75rem; }
     .menu-head { padding: 0; gap: 0.5rem; }
     .menu-toggle { display: inline-flex; }
     #menu-items { display: none; order: 1; flex-basis: 100%; padding-bottom: 0.5rem; }

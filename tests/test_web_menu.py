@@ -44,7 +44,7 @@ class TestMenu:
         assert '<a href="/power/rack" class="tag quiet plain active">' in body
         assert '<span class="crumb">Power</span>' in body
         # the first paint has no health: every item is a plain link
-        assert 'aria-label="Nodes' not in body
+        assert 'aria-label="X-engine' not in body
         # the registry editor styles its own .group; the menu's classes are its own
         assert 'class="group"' not in body
         assert 'id="menu-items"' in body and 'hx-get="/partials/menu"' in body
@@ -61,7 +61,7 @@ class TestMenu:
     def test_the_partial_fills_the_badges_and_marks_the_page(self, client, jobs):
         login(client)
         body = client.get("/partials/menu", headers={"HX-Current-URL": "https://x/service/eop"}).data.decode()
-        assert 'aria-label="Nodes' in body and 'aria-label="Earth orientation: ok"' in body
+        assert 'aria-label="X-engine' in body and 'aria-label="Earth orientation: ok"' in body
         eop = re.search(r'<a href="/service/eop" class="tag ([^"]*)"', body)
         assert eop and "active" in eop.group(1)
         assert body.count(" active") == 1

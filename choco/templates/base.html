@@ -39,6 +39,7 @@
        items are polled (badges, the current page marked); the foot is
        static so the theme toggle keeps its listener. #}
     <aside class="menu">
+    <div class="menu-inner">
         <div class="menu-head"><a href="{{ request.script_root }}/" class="brand">CHOCO</a>
             {% if current_user.is_authenticated %}
             {# below 1024 px the items are folded away behind this button (choco.css) #}
@@ -62,6 +63,7 @@
             {% endif %}
             <button type="button" id="theme-toggle" class="icon-btn" title="Toggle dark/light" aria-label="Toggle dark/light"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg></button>
         </div>
+    </div>
     </aside>
 
     <main class="container">

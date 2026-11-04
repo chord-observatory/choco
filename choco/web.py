@@ -1562,12 +1562,12 @@ def _service_registry() -> dict[str, dict]:
 #: monitor, ``data`` or a job; None for a plain link).  An item is
 #: current for its href and everything under it, plus the paths in
 #: ``also`` (a path, or a prefix ending in /); the longest match wins, so
-#: a node page is Nodes and the registry editor Node registry.  The front
+#: a node page is X-engine and the registry editor Node registry.  The front
 #: page is the CHOCO mark's, not an item's.  ``_menu.html`` renders it;
 #: ``menu_group`` is the active group, for a page's crumb.
 MENU = (
     ("Instrument", (
-        ("Nodes", "/nodes", "nodes", ("/nodes/edit/", "/pipeline/", "/plot/")),
+        ("X-engine", "/nodes", "nodes", ("/nodes/edit/", "/pipeline/", "/plot/")),
         ("Switch", "/switch", "instrument", ()),
         ("F-engine", "/fpga", "fpga", ("/service/fpga",)),
     )),
