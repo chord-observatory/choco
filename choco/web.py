@@ -1035,7 +1035,7 @@ def partial_fpga_gains():
     arrives on its own (``hx-trigger="load"``) and a failure degrades to
     a note inside it.
     """
-    return render_template("_fpga_gains.html", gains=_gain_context(), transits=_transit_context(),
+    return render_template("_fpga_gains.html", gains=_gain_context(), transits=_transit_context(with_timeline=False),
                            poll_ms=GAIN_POLL_MS, fetch_bytes=GAIN_FETCH_BYTES)
 
 
@@ -1181,7 +1181,7 @@ def partial_files():
     return render_template("_files_table.html", scan=result, rendered=rendered, views=views,
                            baseband=baseband_view,
                            archive=monitor.to_dict() if monitor is not None else None,
-                           now_ts=time.time())
+                           transfer=_transfer_status(), now_ts=time.time())
 
 
 #: How long a notes read may block on NFS before the popover says so.
@@ -1432,7 +1432,7 @@ _JOBS: dict[str, dict] = {
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
     "eop": {
-        "label": "EOP", "unit": "choco-eop-broadcast.service",
+        "label": "Earth orientation", "unit": "choco-eop-broadcast.service",
         "state": STATE_NAME, "stale_after_s": EOP_STALE_AFTER_S, "mtime_label": "last run",
         "description": "Earth-orientation-parameter broadcast — merges IERS data and "
                        "pushes the EOP table to kotekan daily.",
@@ -1445,7 +1445,7 @@ _JOBS: dict[str, dict] = {
     # toggles flags in (``bffs.control: false`` makes the grid
     # read-only, the switch the PDB page has).
     "bffs": {
-        "label": "BFFS", "unit": "choco-bffs-flag.service",
+        "label": "Bad feeds", "unit": "choco-bffs-flag.service",
         "state": STATE_NAME, "run": RUN_NAME, "manual": MANUAL_OVERRIDES_NAME,
         "mtime_label": "last change",
         "description": "Feed flagging — combines per-feed health sources and pushes the "
@@ -1455,7 +1455,7 @@ _JOBS: dict[str, dict] = {
     # transits skipped for daytime are silent by design, so an old
     # mtime is informational, not a health downgrade.
     "eigencal": {
-        "label": "EIGENCAL", "unit": "choco-eigencal.service",
+        "label": "Eigencal", "unit": "choco-eigencal.service",
         "state": STATE_NAME, "run": RUN_NAME, "mtime_label": "last calibration",
         "description": "Point-source gain calibration — fits per-input complex gains once "
                        "per calibrator transit, at night.",
@@ -1467,7 +1467,7 @@ _JOBS: dict[str, dict] = {
     # and one page: /files shows the mounts' scan with the renderer's
     # status below it.
     "waterfall": {
-        "label": "WF", "unit": "choco-waterfall.service",
+        "label": "Waterfalls", "unit": "choco-waterfall.service",
         "state": STATE_NAME, "mtime_label": "last run", "page": "/files",
     },
     # skymap keeps no state file: the image is the record and its title
@@ -1475,7 +1475,7 @@ _JOBS: dict[str, dict] = {
     # plot ends the MAP page, so the job is folded into MAP the way the
     # waterfall is into DATA.
     "skymap": {
-        "label": "SKYMAP", "unit": "choco-skymap.service", "mtime_label": "last render",
+        "label": "Sky strip", "unit": "choco-skymap.service", "mtime_label": "last render",
         "page": "/service/mapmaker", "card": "/partials/skymap",
         "description": Markup(
             "Current-sky strip plot — renders the beam's drift-scan strip with the Sun, "
@@ -1487,7 +1487,7 @@ _JOBS: dict[str, dict] = {
     # vars.yaml in the config library.  run.json says what the last fetch
     # found and whether it changed anything.
     "pointing": {
-        "label": "POINTING", "unit": "choco-pointing.service",
+        "label": "Dish pointing", "unit": "choco-pointing.service",
         "state": STATE_NAME, "run": RUN_NAME, "mtime_label": "last change",
         "description": "Dish pointing — reads the site's antenna angle table and "
                        "writes the array's co-elevation to the config library's "
@@ -1497,7 +1497,7 @@ _JOBS: dict[str, dict] = {
     # new to fold in is the normal case between files, so the mtime is
     # "last run" and never a health downgrade.
     "mapmaker": {
-        "label": "MAP", "unit": "choco-mapmaker.service",
+        "label": "Sky maps", "unit": "choco-mapmaker.service",
         "state": STATE_NAME, "mtime_label": "last run",
         "description": Markup(
             "Drift-scan sky maps — folds each new N&sup2; file into a map of every pass, "
@@ -1510,7 +1510,7 @@ _JOBS: dict[str, dict] = {
     # run that finds nothing new is normal.  It writes the notes /files
     # shows, so it is folded into DATA like the waterfall.
     "acqnotes": {
-        "label": "NOTES", "unit": "choco-acqnotes.service",
+        "label": "Acquisition notes", "unit": "choco-acqnotes.service",
         "state": "index.json", "run": RUN_NAME, "mtime_label": "last measurement",
         "page": "/files",
     },
@@ -1532,7 +1532,7 @@ def _service_registry() -> dict[str, dict]:
     status partial, /api/status and /metrics, which report it on its own.
     """
     root = _state_root()
-    registry = {"choco": {"kind": "choco", "label": "CHOCO", "unit": "choco.service",
+    registry = {"choco": {"kind": "choco", "label": "choco", "unit": "choco.service",
                           "timer": None, "state_file": None, "stale_after_s": None,
                           "mtime_label": None, "run_file": None, "manual_file": None,
                           "page": None, "description": "The config orchestrator itself."}}
@@ -1596,6 +1596,10 @@ MENU = (
 )
 
 
+#: Each item's label by its href: the page's title is its menu item's name.
+_MENU_LABELS = {href: label for _group, items in MENU for label, href, _badge, _also in items}
+
+
 def _menu_match(path: str, pattern: str) -> bool:
     if pattern == "/":
         return path == "/"
@@ -1618,7 +1622,7 @@ def _menu_context() -> dict:
     """``menu`` (the groups) and the page's ``menu_group`` and
     ``menu_active`` href, for the aside and the crumbs."""
     group, href = menu_active(request.path)
-    return {"menu": MENU, "menu_group": group, "menu_active": href}
+    return {"menu": MENU, "menu_group": group, "menu_active": href, "menu_label": _MENU_LABELS.get(href)}
 
 
 def _folded(registry: dict) -> dict[str, list[str]]:
@@ -1931,11 +1935,12 @@ def partial_service_fpga():
 @bp.route("/partials/fpga-boards")
 @login_required
 def partial_fpga_boards():
-    """The FPGA page's board table (5 s htmx poll), at the foot of the page."""
+    """The FPGA page's board table (5 s htmx poll), at the foot of the
+    page.  It reads the monitor as the status block's poll left it: two
+    polls a viewer would double the load on fpga_master."""
     monitor = current_app.config.get("fpga_monitor")
     if monitor is None:
         abort(404)
-    monitor.poll_if_stale(5)
     return render_template("_fpga_boards.html", **_fpga_context(monitor))
 
 
@@ -2120,6 +2125,43 @@ def _power_badge(pdb: dict | None) -> dict | None:
     if supply and badge["health"] == "ok":
         badge["health"], badge["error"] = "degraded", f"dish supply {supply}"
     return badge
+
+
+def _fmt_bps(bps: float) -> str:
+    return f"{bps / 1e9:.1f} Gb/s" if bps >= 1e9 else f"{bps / 1e6:.0f} Mb/s"
+
+
+def _transfer_status() -> dict | None:
+    """The acquisitions' transfer to Fir, as the instrument monitor last
+    read it from Prometheus (``instrument.transfer_state``): ``tone``,
+    ``word``, ``detail`` (the host's send rate during a run, which the
+    byte counter only counts once the run ends, else what finished runs
+    sent in 24 h) and ``title``; None without Prometheus.  No series reads
+    "no data", grey, rather than nothing."""
+    inst = current_app.config.get("instrument_monitor")
+    if inst is None or not inst.url:
+        return None
+    t = inst.transfer or {}
+    now = time.time()
+    tone, word = transfer_state(inst.transfer, now)
+    host = t.get("host", "?")
+    tx = ((inst.devices or {}).get("hosts", {}).get(host) or {}).get("tx_bps") if t.get("running") else None
+    sent = t.get("sent_24h")
+    title = ("The acquisitions' transfer to Fir, the Alliance (Compute Canada) cluster "
+             f"(kotekan-vis-transfer on {host})")
+    if not t:
+        title += "\nno kotekan_vis_transfer series in Prometheus"
+    else:
+        if t.get("running"):
+            title += ("\nsending" + (f" since {ago(t['last_start'], now)}" if t.get("last_start") else "")
+                      + (f", at {_fmt_bps(tx)}" if tx else ""))
+        title += f"\nlast success: {ago(t.get('last_success'), now)}"
+        if t.get("failures"):
+            title += f"\n{t['failures']:.0f} failed run(s) in a row"
+        if sent is not None:
+            title += f"\nsent by runs that ended in the last 24 h: {human_bytes(sent)}"
+    detail = _fmt_bps(tx) if tx else f"{human_bytes(sent)} / 24 h" if sent else ""
+    return {"tone": tone, "word": word, "detail": detail, "title": title}
 
 
 def _rack_badge() -> dict | None:
@@ -2396,7 +2438,7 @@ def _instrument_jobs(root: str) -> dict:
                                     for n, h in parts) + "".join(f"\n{w}" for w in why)}
 
     c = detail("choco") or {}
-    control = [{"name": "CHOCO", "sub": "up", "tone": "ok", "href": root + "/service/choco",
+    control = [{"name": "choco", "sub": "up", "tone": "ok", "href": root + "/service/choco",
                 "line": f"configs · {c.get('queued', 0)} queued change{'s' if c.get('queued') != 1 else ''}",
                 "title": "choco pushes each node's config and starts it"}]
     e = detail("eop") or {}
@@ -2417,22 +2459,10 @@ def _instrument_jobs(root: str) -> dict:
                                     else ""), fold=("skymap",)),
     ]
     jobs = [j for j in jobs if j]
-    inst = current_app.config.get("instrument_monitor")
-    t = inst.transfer if inst is not None and inst.url else None
+    t = _transfer_status()
     if t:
-        now = time.time()
-        tone, word = transfer_state(t, now)
-        sent = t.get("sent_24h")
-        jobs.append({
-            "name": "TRANSFER", "sub": word, "tone": tone, "href": root + "/files",
-            "line": "to Fir" + (f" · {human_bytes(sent)} / 24 h" if sent else ""),
-            "title": "The acquisitions' transfer to the Alliance's Fir cluster "
-                     f"(kotekan-vis-transfer on {t.get('host', '?')})"
-                     + (f"\nsending since {ago(t['last_start'], now)}" if t.get("running") and t.get("last_start") else "")
-                     + f"\nlast success: {ago(t.get('last_success'), now)}"
-                     + (f"\n{t['failures']:.0f} failed run(s) in a row" if t.get("failures") else "")
-                     + (f"\nsent in the last 24 h: {human_bytes(sent)}" if sent is not None else ""),
-        })
+        jobs.append({"name": "Transfer", "sub": t["word"], "tone": t["tone"], "href": root + "/files",
+                     "line": "to Fir" + (f" · {t['detail']}" if t["detail"] else ""), "title": t["title"]})
     tones = [j["tone"] for j in jobs]
     out = {"control_cards": [cc for cc in control if cc], "job_cards": jobs}
     if jobs:
@@ -2441,18 +2471,20 @@ def _instrument_jobs(root: str) -> dict:
     return out
 
 
-def _transit_context() -> dict | None:
-    """What a page shows of the transit forecast (``gnss.summarize`` and
-    the timeline), or None when the monitor is not configured."""
+def _transit_context(with_timeline: bool = True) -> dict | None:
+    """What a page shows of the transit forecast (``gnss.summarize``, once,
+    and the timeline when the page draws it), or None when the monitor is
+    not configured."""
     monitor = _component("transit_monitor")
     if monitor is None:
         return None
     now = time.time()
     summary = monitor.summary(now)
     return {
-        "monitor": monitor.to_dict(),
+        "monitor": monitor.to_dict(summary),
         "summary": summary,
-        "timeline": transit_timeline(monitor.forecast, now, monitor.min_quiet_s) if summary else None,
+        "timeline": (transit_timeline(monitor.forecast, now, monitor.min_quiet_s, monitor.tz)
+                     if summary and with_timeline else None),
         "now_ts": now,
     }
 

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_service_macros.html" import job_tone, job_label, tag %}
 
-{% block title %}{{ name | upper }} — CHOCO{% endblock %}
+{% block title %}{{ menu_label or name | upper }} — CHOCO{% endblock %}
 
 {% block styles %}
 .lines-picker { margin-left: auto; font-size: 0.85em; }
@@ -10,7 +10,7 @@
 {% block content %}
 <div class="page-head">
     <h2>
-        <span class="crumb">{{ menu_group or "Instrument" }}</span><span class="crumb-sep">/</span>{{ name | upper }}
+        <span class="crumb">{{ menu_group or "Instrument" }}</span><span class="crumb-sep">/</span>{{ menu_label or name | upper }}
         {{ tag(job_tone(job.health, job.running), job_label(job.health, job.running)) }}
     </h2>
 </div>

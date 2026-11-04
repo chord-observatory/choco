@@ -9,9 +9,12 @@
     <p class="note">
     The F-engine's current gain archive, read from
     <code>/get-current-gain-file</code>. Read-only.</p>
-    {% if transits and transits.summary %}{% set ts = transits.summary %}
+    {% if transits and transits.monitor.health == 'ok' and transits.summary %}{% set ts = transits.summary %}
     <p class="note">Quiet sky for a gain measurement:
-        {% if ts.gain_windows %}{% set w = ts.gain_windows[0] %}{{ w.start_fmt }}&ndash;{{ w.end_fmt }} UTC ({{ w.length_fmt }}{{ ', ' ~ w.in_fmt if not w.current }}){% else %}none of {{ ts.min_quiet_fmt }} in the next {{ ts.horizon_fmt }}{% endif %};
+        {% if ts.gain_windows %}{% set w = ts.gain_windows[0] %}{{ w.start_fmt }}&ndash;{{ w.end_fmt }} UTC{% if w.end_local %} ({{ w.start_local or 'now' }}&ndash;{{ w.end_local }} {{ ts.tz_name }}){% endif %}, {{ w.length_fmt }}{{ ', ' ~ w.in_fmt if not w.current }}{% else %}none of {{ ts.min_quiet_fmt }} in the next {{ ts.horizon_fmt }}{% endif %};
+        <a href="{{ request.script_root }}/transits">the transit forecast</a>.</p>
+    {% elif transits %}
+    <p class="note t-warn">No quiet window offered: the transit forecast is {{ transits.monitor.health | replace('_', ' ') }}{% if transits.monitor.error %} ({{ transits.monitor.error }}){% endif %};
         <a href="{{ request.script_root }}/transits">the transit forecast</a>.</p>
     {% endif %}
     {% if gains.error and not gains.datasets %}

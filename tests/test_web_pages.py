@@ -23,9 +23,10 @@ class TestFrontPage:
         assert 'class="fl"' in body and "instrument.prometheus_url" in body
         # the control column and the processing lane: one card per badge
         # that is not hardware; the skymap rides in MAP, the waterfall is WF
-        for label in ("CHOCO", "EOP", "BFFS", "EIGENCAL", "MAP", "WF", "NOTES"):
+        for label in ("choco", "Earth orientation", "Bad feeds", "Eigencal", "Sky maps", "Waterfalls",
+                      "Acquisition notes"):
             assert f">{label}<" in body
-        assert ">SKYMAP<" not in body
+        assert ">Sky strip<" not in body
         assert 'id="skymap"' not in body          # the sky map is on the MAP page
 
     def test_dashboard_not_at_root(self, client):
@@ -70,10 +71,10 @@ class TestPageChrome:
 
     def test_titles_name_the_page_then_the_site(self, client, app):
         login(client)
-        for url, title in [("/", "Instrument — CHOCO"), ("/nodes", "Nodes — CHOCO"),
-                           ("/nodes/edit", "Edit nodes — CHOCO"), ("/nodes/edit/cx/cx1", "cx/cx1 — CHOCO"),
-                           ("/configs", "Configs — CHOCO"), ("/files", "Data files — CHOCO"),
-                           ("/service/eop", "EOP — CHOCO"), ("/pipeline/cx/cx1", "cx/cx1 pipeline — CHOCO")]:
+        for url, title in [("/", "Instrument — CHOCO"), ("/nodes", "X-engine — CHOCO"),
+                           ("/nodes/edit", "Node registry — CHOCO"), ("/nodes/edit/cx/cx1", "cx/cx1 — CHOCO"),
+                           ("/configs", "Config library — CHOCO"), ("/files", "Acquisitions — CHOCO"),
+                           ("/service/eop", "Earth orientation — CHOCO"), ("/pipeline/cx/cx1", "cx/cx1 pipeline — CHOCO")]:
             body = client.get(url).data.decode()
             assert f"<title>{title}</title>" in body, url
         # a logged-in client is bounced off /login; a fresh one sees the form

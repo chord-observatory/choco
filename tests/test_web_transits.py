@@ -1,6 +1,7 @@
 """/transits, its partial and API, the TRANSITS badge and the gains card's hint."""
 
 import json
+import re
 import time
 
 import pytest
@@ -44,7 +45,7 @@ class TestPage:
         transits.new_transits = [transits.forecast["transits"][-1]]
         transits.new_since = time.time() - 30
         login(client)
-        assert "new since the forecast before it" in client.get("/transits").data.decode()
+        assert "not in the forecast before it" in client.get("/transits").data.decode()
 
     def test_an_error_shows_with_the_forecast_kept(self, client, transits):
         transits.health, transits.error = "degraded", "the forecast is for az 180°, el 62.7°; the array points at el 60°"
@@ -124,13 +125,33 @@ class TestGainsCardHint:
         transits.forecast = retimed(transits.forecast, transits.forecast["created_unix"] - (a - time.time()) - 60)
         login(client)
         body = client.get("/partials/fpga-gains").data.decode()
-        assert "Quiet sky for a gain measurement:\n        now&ndash;" in body
+        assert re.search(r"Quiet sky for a gain measurement:\s*now&ndash;", body)
 
     def test_no_window_in_the_forecast(self, client, app, transits):
         configure_gain_archive(app)
         transits.min_quiet_s = 7200
         login(client)
         assert "none of 2 h 00 min in the next" in client.get("/partials/fpga-gains").data.decode()
+
+    def test_a_stale_forecast_offers_no_window(self, client, app, transits):
+        configure_gain_archive(app)
+        transits.health, transits.error = "stale", "the forecast is 40 min old"
+        login(client)
+        body = client.get("/partials/fpga-gains").data.decode()
+        assert "Quiet sky" not in body
+        assert "No quiet window offered: the transit forecast is stale (the forecast is 40 min old)" in body
+        menu = client.get("/partials/menu").data.decode()
+        assert "quiet for gains" not in menu and "next transit" not in menu
+
+    def test_local_times_beside_utc(self, client, app, transits):
+        from zoneinfo import ZoneInfo
+        import datetime as dt
+        transits.tz = ZoneInfo("America/Vancouver")
+        abbr = dt.datetime.now(transits.tz).strftime("%Z")
+        login(client)
+        body = client.get("/transits").data.decode()
+        assert f"<th class=\"muted\">{abbr}</th>" in body and f"then the site's ({abbr})" in body
+        assert re.search(rf"UTC \(\d\d:\d\d&ndash;\d\d:\d\d {abbr}\)", body)
 
     def test_without_the_monitor_the_card_says_nothing(self, client, app):
         configure_gain_archive(app)

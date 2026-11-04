@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_service_macros.html" import data_tone, data_word, job_tone, job_label, tag %}
-{% block title %}Data files — CHOCO{% endblock %}
+{% block title %}Acquisitions — CHOCO{% endblock %}
 
 {% block styles %}
 table.files td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -20,7 +20,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
    menu's joint Acquisitions tag; each job's own tag heads its section. #}
 {% set data_jobs = [['waterfall', job], ['notes', notes.job]] %}
 <div class="page-head">
-    <h2>Data files {{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</h2>
+    <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Acquisitions {{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</h2>
     {% if configured %}
     <div class="page-actions">
         <button class="secondary outline btn-sm"

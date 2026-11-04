@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_service_macros.html" import monitor_tone, monitor_label, tag %}
 
-{% block title %}FPGA — CHOCO{% endblock %}
+{% block title %}F-engine — CHOCO{% endblock %}
 
 {% block styles %}
 .fpga-controls form { margin: 0; }
@@ -11,7 +11,7 @@
 {% block content %}
 <div class="page-head">
     <h2>
-        <span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>FPGA
+        <span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>F-engine
         {{ tag(monitor_tone(fpga.health), monitor_label(fpga.health)) }}
     </h2>
 </div>

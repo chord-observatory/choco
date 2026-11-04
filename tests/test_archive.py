@@ -242,7 +242,7 @@ class TestFilesTable:
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
         assert ">Transfer</th>" not in body
-        assert "the archive holds" not in body and "archive only" not in body
+        assert "Fir holds" not in body and "on Fir only" not in body
 
     def test_cells_from_the_listing(self, configs_dir, roots, verify_socket):
         verify_socket["reply"] = SUBSET_LISTING
@@ -251,17 +251,17 @@ class TestFilesTable:
         client = app.test_client()
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
-        assert "the archive holds 1 of 2 in full, 1 in part; 1 only there" in body
+        assert "Fir holds 1 of 2 in full, 1 in part; 1 only there" in body
         assert re.search(rf"{ACQ_A}.*?<small class=\"t-ok\"[^>]*>all 1<", body, re.S)
         assert re.search(rf"{ACQ_B}.*?<small class=\"t-warn\"[^>]*>1 of 2<", body, re.S)
         # The acquisition only the archive has: a row with its count and span there.
-        m = re.search(rf"{ACQ_GONE}\s*<br><small class=\"muted\">archive only</small>.*?</tr>", body, re.S)
+        m = re.search(rf"{ACQ_GONE}\s*<br><small class=\"muted\">on Fir only</small>.*?</tr>", body, re.S)
         assert m and 'data-label="files">2<' in m.group(0)
         assert "1970-01-01 00:50 &rarr; 01-01 00:58" in m.group(0)       # mtimes 3000..3500
-        assert "archive only</small></td>" in m.group(0)                   # the Archive cell
+        assert "on Fir only</small></td>" in m.group(0)                   # the Transfer cell
         # The empty acquisition has nothing to hold; the other root no column.
         assert re.search(rf"{ACQ_C}.*?data-label=\"transfer\"><small class=\"muted\">&mdash;<", body, re.S)
-        assert body.count("archive only") == 2                              # name cell + Archive cell, once
+        assert body.count("on Fir only") == 2                              # name cell + Archive cell, once
 
     def test_none_held(self, configs_dir, roots, verify_socket):
         verify_socket["reply"] = listing((ACQ_B, "vis_0.h5", 1, 1))        # another size
@@ -270,7 +270,7 @@ class TestFilesTable:
         client = app.test_client()
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
-        assert "the archive holds 0 of 2 in full, 2 not at all" in body
+        assert "Fir holds 0 of 2 in full, 2 not at all" in body
         assert re.search(rf"{ACQ_B}.*?<small class=\"t-bad\"[^>]*>none of 2<", body, re.S)
 
     def test_before_the_first_listing(self, configs_dir, roots, verify_socket):
@@ -280,7 +280,7 @@ class TestFilesTable:
         client = app.test_client()
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
-        assert body.count("archive not listed yet") == 2       # the note and the root header
+        assert body.count("Fir not listed yet") == 2       # the note and the root header
         assert body.count(">?</small>") == 3                    # every row of the archived root
         assert "transfer host says: ls on fir exited 255" in body
 
@@ -314,10 +314,10 @@ class TestBasebandTable:
         assert head > body.index(str(roots[1]))                 # after the acquisition roots
         tail = body[head:]
         assert re.search(r"1 merged dump ·\s+1 file ·\s+200 B", tail)
-        assert "the archive holds 1 of 1 in full; 1 only there" in tail
+        assert "Fir holds 1 of 1 in full; 1 only there" in tail
         assert ">Dump</th>" in tail and ">Info</th>" in tail and ">Waterfalls</th>" not in tail
         assert re.search(rf"{MERGED}.*?<small class=\"t-ok\"[^>]*>all 1<", tail, re.S)
-        assert re.search(rf"{MERGED_GONE}\s*<br><small class=\"muted\">archive only</small>", tail)
+        assert re.search(rf"{MERGED_GONE}\s*<br><small class=\"muted\">on Fir only</small>", tail)
         assert f'hx-get="/files/baseband/{MERGED}"' in tail
         assert f'hx-get="/files/baseband/{MERGED_GONE}"' not in tail
 

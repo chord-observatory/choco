@@ -141,11 +141,18 @@ Grafana cannot.  ``gnss.summarize`` reads a forecast for one moment (the
 page, the badge, ``/api/transits`` and the FPGA gains card all read the same
 function) and ``gnss.timeline`` lays it out for the page's inline SVG: no
 plotting library, the palette tokens as CSS classes, so it follows the theme.
-"New passes" are those not in the forecast before the current one (same
-satellite within 5 min of the closest approach is the same pass, since a
-refreshed TLE moves a pass by seconds); the sliding horizon makes most
-refreshes add one, which is the point: the badge says when there is more to
-look at.  The quiet windows offered for a gain measurement are the ``all``
+"New passes" are those the current forecast predicts inside the previous
+forecast's horizon that the previous one did not (same satellite within 5 min
+of the closest approach is the same pass, since a refreshed TLE moves a pass
+by seconds).  The first version counted every pass the previous forecast
+lacked, so the far end that each 5-min refresh adds was always "new" and the
+note never went away; a refresh with nothing new now clears it (review,
+2026-11-04).  Only an ``ok`` forecast is advice: ``to_dict`` gives no sky
+state, next transit or gain window otherwise, and the F-engine page's gains
+card says why instead.  ``check_forecast`` checks the type of every field the
+pages compute with, so a malformed answer is ``degraded`` at the poll rather
+than a 500 on every page that reads the menu.  Local times come from the
+site's zone, ``waterfall.timezone``, shared with the waterfall viewer.  The quiet windows offered for a gain measurement are the ``all``
 windows at least ``gnss.min_quiet_s`` (600 s) long that are still ahead, a
 window already begun counted by its remainder.
 

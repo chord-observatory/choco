@@ -108,7 +108,9 @@
 {{ monitor_tag(label, 'the gnss-fengine forecast', gnss,
                ('\nsky now: ' ~ ('quiet' if gnss.quiet_now else 'not quiet') if gnss.quiet_now is not none else '')
                ~ ('\nnext transit: ' ~ gnss.next_transit.name ~ ' ' ~ gnss.next_transit.in_fmt if gnss.next_transit else '')
-               ~ ('\nquiet for gains: ' ~ gnss.gain_window.start_fmt ~ '–' ~ gnss.gain_window.end_fmt if gnss.gain_window else '')
+               ~ ('\nquiet for gains: ' ~ gnss.gain_window.start_fmt ~ '–' ~ gnss.gain_window.end_fmt ~ ' UTC'
+                  ~ (' (' ~ (gnss.gain_window.start_local or 'now') ~ '–' ~ gnss.gain_window.end_local ~ ' ' ~ gnss.tz_name ~ ')'
+                     if gnss.gain_window.end_local else '') if gnss.gain_window else '')
                ~ ('\nnew passes in the forecast: ' ~ gnss.n_new if gnss.n_new else ''),
                url, extra) }}
 {% elif badge in services and badge in svc and svc[badge].kind == 'job' %}

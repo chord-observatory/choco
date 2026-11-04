@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Nodes — CHOCO{% endblock %}
+{% block title %}X-engine — CHOCO{% endblock %}
 
 {% block content %}
 {% from "_service_macros.html" import maint_ctl, start_ctl with context %}
 <div class="page-head">
-    <h2>Nodes</h2>
+    <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>X-engine</h2>
     <div class="page-actions">
         {{ maint_ctl() }}
         {{ start_ctl() }}

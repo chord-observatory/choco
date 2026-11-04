@@ -127,7 +127,7 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
 
 {% block content %}
 <div class="tri-head page-head">
-    <h2><a href="{{ request.script_root }}/files" class="crumb">Files</a><span class="crumb-sep">/</span><code>{{ acq }}</code></h2>
+    <h2><a href="{{ request.script_root }}/files" class="crumb">Acquisitions</a><span class="crumb-sep">/</span><code>{{ acq }}</code></h2>
     <form class="tri-filter action-row" method="get" action="">
         <label for="elements" style="font-size: 0.85em; margin: 0;">Elements</label>
         <input type="text" id="elements" name="elements" value="{{ elements_arg }}"

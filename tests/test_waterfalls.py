@@ -1136,11 +1136,11 @@ class TestSheet:
         assert [e["what"] for e in st["events"]] == ["gains g2"] and st["named"]
 
     def test_out_of_step_needs_a_majority(self):
-        from choco.waterfalls import _stream_table, _tzinfo
+        from choco.waterfalls import _stream_table, site_tz
         rec = _diag_line(1, stream_masked=[[1] * 4, [1] * 4, [1, 0, 1, 1]])
         rec["n_streams"] = 3
         rec["missing"].append([0] * 4)
-        rows = _stream_table([rec], {}, _tzinfo("UTC"))["rows"]
+        rows = _stream_table([rec], {}, site_tz("UTC"))["rows"]
         assert [r["out_of_step"] for r in rows] == [0, 0, 1] and rows[2]["last_out"]
 
     def test_mask_columns_row_for_row(self, sh_store):

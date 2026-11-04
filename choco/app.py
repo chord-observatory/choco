@@ -17,7 +17,7 @@ from .archive import ArchiveMonitor
 from .auth import init_auth, parse_proxy_auth, parse_trusted_hosts
 from .datafiles import DataFileScan
 from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
-from .waterfalls import WaterfallStore
+from .waterfalls import WaterfallStore, site_tz
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .fpga import FileArchive, FpgaMonitor, GainArchive, newest_file
 from .instrument import DEFAULT_WIRING_FILENAME, InstrumentMonitor, SwitchEapi, WiringFile
@@ -299,6 +299,7 @@ def create_app(
         min_quiet_s=gnss_cfg.get("min_quiet_s"),
         pointing=lambda: (read_state_json(Path(app.config["state_dir"]) / "pointing" / STATE_NAME)
                           or {}).get("array_value"),
+        tz=site_tz((config.get("waterfall") or {}).get("timezone")),
     )
 
     # Data-file roots for /files.  Scanned on demand (and cached), never

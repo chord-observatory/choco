@@ -504,12 +504,33 @@ class TestTransfer:
         client = inst_app.test_client()
         login(client)
         body = client.get("/partials/instrument").data.decode()
-        assert "TRANSFER" in body and "to Fir · 2.3 TiB / 24 h" in body
-        assert "kotekan-vis-transfer on alpenhorn" in body and "sent in the last 24 h: 2.3 TiB" in body
+        assert ">Transfer<" in body and "to Fir · 2.3 TiB / 24 h" in body
+        assert "kotekan-vis-transfer on alpenhorn" in body and "runs that ended in the last 24 h: 2.3 TiB" in body
 
-    def test_no_card_without_the_series(self, client):
+    def test_a_run_in_progress_shows_its_send_rate(self, inst_app, monkeypatch):
+        """The byte counter counts a run only when it ends, so during a
+        long run the card shows the host's send rate instead."""
+        monkeypatch.setitem(REPLIES, "sum by (instance) (rate(node_network_transmit_bytes_total",
+                            [_result(8.0e8, instance="alpenhorn.example")])
+        m = inst_app.config["instrument_monitor"]
+        m._prom_at = None
+        m.poll_once()
+        assert m.devices["hosts"]["alpenhorn"]["tx_bps"] == 8.0e8
+        client = inst_app.test_client()
         login(client)
-        assert "TRANSFER" not in client.get("/partials/instrument").data.decode()
+        body = client.get("/partials/instrument").data.decode()
+        assert "to Fir · 800 Mb/s" in body and ", at 800 Mb/s" in body
+
+    def test_missing_series_read_no_data(self, inst_app):
+        inst_app.config["instrument_monitor"].transfer = None
+        client = inst_app.test_client()
+        login(client)
+        body = client.get("/partials/instrument").data.decode()
+        assert ">Transfer<" in body and "no data" in body and "no kotekan_vis_transfer series" in body
+
+    def test_no_card_without_prometheus(self, client):
+        login(client)
+        assert ">Transfer<" not in client.get("/partials/instrument").data.decode()
 
 
 class TestPage:
@@ -524,7 +545,7 @@ class TestPage:
         # the link problems are listed on /switch only; here the diagram shows them
         assert "Ethernet12/1 (crate slot 4): down" not in body
         assert "/pipeline/cx/cx1" in body and "48.1 V" in body
-        assert "Processing" in body and "Control" in body and "BFFS" in body
+        assert "Processing" in body and "Control" in body and "Bad feeds" in body
         # the tables live on their own pages; the cards link there
         assert "Ethernet33" not in body and "PDU outlets" not in body
         assert 'href="/switch"' in body and 'href="/power/analog#supply"' in body

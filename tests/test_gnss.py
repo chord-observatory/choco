@@ -40,7 +40,29 @@ class TestCheck:
 
     def test_a_pass_without_a_field(self, forecast):
         del forecast["transits"][0]["closest_unix"]
-        assert check_forecast(forecast) == "a pass lacks a field"
+        assert check_forecast(forecast) == "a pass is malformed"
+
+    @pytest.mark.parametrize("break_it", [
+        lambda f: f["transits"][0].update(closest_unix=None),
+        lambda f: f["transits"][0].update(bands="E5b"),
+        lambda f: f["quiet_by_band"].update({"L2 1217-1238": [[1, 2, 3]]}),
+        lambda f: f["quiet"].update(all=[["a", 2]]),
+        lambda f: f["boresight"].pop("az_deg"),
+        lambda f: f.update(created_unix=float("nan")),
+    ])
+    def test_types_are_checked_not_just_keys(self, forecast, break_it):
+        """A malformed forecast is refused at the poll: summarize would
+        otherwise raise in every request that reads the menu."""
+        break_it(forecast)
+        assert check_forecast(forecast) is not None
+
+    def test_odd_optional_facts_are_dropped_not_fatal(self, forecast):
+        forecast["criteria"] = {"transit_deg": "five"}
+        forecast["tle_age_days"] = [["gps-ops", None], ["galileo", 0.3]]
+        forecast["sun_sep_deg"] = ["x"]
+        assert check_forecast(forecast) is None
+        s = summarize(forecast, forecast["created_unix"] + 120, 600)
+        assert s["criteria"] == {} and s["tle_age_days"] == [["galileo", 0.3]] and s["sun"] is None
 
 
 class TestSummary:
@@ -82,18 +104,23 @@ class TestSummary:
 
 class TestNewPasses:
     def test_the_same_forecast_has_nothing_new(self, forecast):
-        assert new_passes(forecast["transits"], forecast["transits"]) == []
+        assert new_passes(forecast["transits"], forecast["transits"], forecast["end_unix"]) == []
 
     def test_a_pass_moved_by_seconds_is_the_same_pass(self, forecast):
         moved = copy.deepcopy(forecast["transits"])
         for p in moved:
             p["closest_unix"] += 20
-        assert new_passes(moved, forecast["transits"]) == []
+        assert new_passes(moved, forecast["transits"], forecast["end_unix"]) == []
 
-    def test_a_pass_beyond_the_old_horizon_is_new(self, forecast):
+    def test_a_pass_inside_the_old_horizon_is_new(self, forecast):
         later = copy.deepcopy(forecast["transits"])
-        later.append({**later[0], "name": "E16", "closest_unix": later[0]["closest_unix"] + 7000})
-        assert [p["name"] for p in new_passes(later, forecast["transits"])] == ["E16"]
+        later.append({**later[0], "name": "E16", "closest_unix": forecast["end_unix"] - 100})
+        assert [p["name"] for p in new_passes(later, forecast["transits"], forecast["end_unix"])] == ["E16"]
+
+    def test_a_pass_beyond_the_old_horizon_is_the_window_moving_on(self, forecast):
+        later = copy.deepcopy(forecast["transits"])
+        later.append({**later[0], "name": "E16", "closest_unix": forecast["end_unix"] + 100})
+        assert new_passes(later, forecast["transits"], forecast["end_unix"]) == []
 
 
 class TestBoresight:
@@ -139,7 +166,20 @@ class TestTimeline:
         assert [lane["label"] for lane in tl["lanes"]] == ["all bands"] + list(forecast["quiet_by_band"])
         assert tl["gutter"] < tl["now_x"] < tl["plot_x1"]
         assert all(len(t["label"]) == 5 for t in tl["ticks"]) and len(tl["ticks"]) == 10
-        assert tl["height"] == tl["axis_y"] + 22
+        assert tl["height"] == tl["axis_y"] + 34 and tl["tz_name"] is None
+        assert all(t["local"] is None for t in tl["ticks"])
+
+    def test_the_axis_carries_the_site_zone(self, forecast):
+        from zoneinfo import ZoneInfo
+        import datetime as dt
+        zone, now = ZoneInfo("America/Vancouver"), forecast["created_unix"] + 120
+        tl = timeline(forecast, now, 600, zone)
+        # the abbreviation is the zone database's: BC stays on UTC-7 ("MST") from 2026-11
+        offset = dt.datetime.fromtimestamp(now, zone).utcoffset()
+        assert tl["tz_name"] == dt.datetime.fromtimestamp(now, zone).strftime("%Z")
+        for t in tl["ticks"][:2]:
+            utc = dt.datetime.strptime(t["label"], "%H:%M")
+            assert t["local"] == (utc + offset).strftime("%H:%M")
 
     def test_bars_and_windows(self, forecast):
         now = forecast["created_unix"] + 120
@@ -188,7 +228,8 @@ class TestMonitor:
         second["created_unix"] = time.time() - 60
         second["end_unix"] += 300
         second["transits"].append({**second["transits"][0], "name": "E16",
-                                   "closest_unix": second["end_unix"] - 100})
+                                   "closest_unix": first["end_unix"] - 100,
+                                   "end_unix": first["end_unix"] - 50})
         responses.add(responses.GET, BASE + "/transit_windows", json=first)
         responses.add(responses.GET, BASE + "/transit_windows", json=second)
         monitor.poll_once()
@@ -198,13 +239,15 @@ class TestMonitor:
         assert [p["name"] for p in monitor.summary()["new_transits"]] == ["E16"]
 
     @responses.activate
-    def test_the_same_forecast_again_keeps_the_new_list(self, monitor, forecast):
-        doc = retimed(forecast, time.time() - 60)
-        responses.add(responses.GET, BASE + "/transit_windows", json=doc)
+    def test_a_refresh_with_nothing_new_clears_the_list(self, monitor, forecast):
+        first = retimed(forecast, time.time() - 400)
+        second = dict(copy.deepcopy(first), created_unix=time.time() - 60)
+        responses.add(responses.GET, BASE + "/transit_windows", json=first)
+        responses.add(responses.GET, BASE + "/transit_windows", json=second)
         monitor.poll_once()
-        monitor.new_transits = [doc["transits"][0]]
+        monitor.new_transits, monitor.new_since = [first["transits"][0]], time.time()
         monitor.poll_once()
-        assert monitor.new_transits == [doc["transits"][0]]
+        assert monitor.new_transits == [] and monitor.new_since is None
 
     @responses.activate
     def test_an_old_forecast_is_stale(self, monitor, forecast):
@@ -233,7 +276,10 @@ class TestMonitor:
         responses.add(responses.GET, BASE + "/transit_windows", body=ConnectionError("refused"))
         monitor.poll_once()
         assert monitor.health == "down" and HOST in monitor.error
-        assert monitor.forecast == good and monitor.to_dict()["next_transit"]
+        # the forecast is kept for the page, but it is no longer advice
+        assert monitor.forecast == good and monitor.summary()["next_transit"]
+        d = monitor.to_dict()
+        assert d["next_transit"] is None and d["gain_window"] is None and d["quiet_now"] is None
 
     @responses.activate
     def test_a_dropped_request_is_retried(self, monitor, forecast):
@@ -256,6 +302,10 @@ class TestMonitor:
         responses.add(responses.GET, BASE + "/transit_windows", json=retimed(forecast, time.time() - 60))
         monitor.poll_once()
         assert monitor.health == "ok"
+
+    def test_an_explicit_zero_quiet_floor_is_kept(self):
+        assert TransitMonitor(HOST, PORT, min_quiet_s=0).min_quiet_s == 0.0
+        assert TransitMonitor(HOST, PORT).min_quiet_s == TransitMonitor.DEFAULT_MIN_QUIET_S
 
     def test_unconfigured(self):
         monitor = TransitMonitor(None, None)

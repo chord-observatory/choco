@@ -1,4 +1,4 @@
-{% from "_service_macros.html" import since %}
+{% from "_service_macros.html" import since, tag %}
 {% if not scan.get('configured') %}
 <p>No data roots configured.</p>
 {% else %}
@@ -11,9 +11,12 @@
     {{ scan.bytes | filesize }} total ·
     scanned {{ since(scan.scanned_at, now_ts) }} in {{ '%.2f' % scan.duration_s }}s
     {%- if archive %} ·
-    {% if known %}archive listed {{ since(archive.checked_at, now_ts) }}
+    {% if known %}Fir listed {{ since(archive.checked_at, now_ts) }}
     {%- if archive.error %} <span class="t-warn" title="{{ archive.error }}">(the latest poll failed)</span>{% endif %}
-    {%- else %}<span class="t-warn" title="{{ archive.error or 'the first poll has not answered yet' }}">archive not listed yet</span>{% endif %}
+    {%- else %}<span class="t-warn" title="{{ archive.error or 'the first poll has not answered yet' }}">Fir not listed yet</span>{% endif %}
+    {%- endif %}
+    {%- if transfer %} ·
+    transfer {{ tag(transfer.tone, transfer.word, title=transfer.title) }}{% if transfer.detail %} {{ transfer.detail }}{% endif %}
     {%- endif %}
 </p>
 
@@ -21,28 +24,28 @@
 {% macro archive_cell(d) -%}
 {%- set a = d.archive -%}
 {%- if not known -%}
-<small class="muted" title="no listing from the archive yet">?</small>
+<small class="muted" title="no listing from Fir yet">?</small>
 {%- elif not d.on_site -%}
-<small class="t-ok" title="the archive holds it; nothing of it is on site">archive only</small>
+<small class="t-ok" title="Fir holds it; nothing of it is on site">on Fir only</small>
 {%- elif d.files == 0 -%}
 <small class="muted">&mdash;</small>
 {%- elif a.held == d.files -%}
-<small class="t-ok" title="every file here is on the archive at the same size and mtime">all {{ d.files }}</small>
+<small class="t-ok" title="every file here is on Fir at the same size and mtime">all {{ d.files }}</small>
 {%- elif a.held -%}
 {%- set left = d.files - a.held -%}
-<small class="t-warn" title="{{ left }} file{{ '' if left == 1 else 's' }} here {{ 'is' if left == 1 else 'are' }} not on the archive, or differ{{ 's' if left == 1 else '' }} there">{{ a.held }} of {{ d.files }}</small>
+<small class="t-warn" title="{{ left }} file{{ '' if left == 1 else 's' }} here {{ 'is' if left == 1 else 'are' }} not on Fir, or differ{{ 's' if left == 1 else '' }} there">{{ a.held }} of {{ d.files }}</small>
 {%- else -%}
-<small class="t-bad" title="none of the files here is on the archive{% if a.files %} ({{ a.files }} other file{{ '' if a.files == 1 else 's' }} there){% endif %}">none of {{ d.files }}</small>
+<small class="t-bad" title="none of the files here is on Fir{% if a.files %} ({{ a.files }} other file{{ '' if a.files == 1 else 's' }} there){% endif %}">none of {{ d.files }}</small>
 {%- endif -%}
 {%- endmacro %}
 
 {# The root header's line on the archive. #}
 {% macro archive_summary(summary) -%}
 {%- if not known -%}
-<small class="t-warn">archive not listed yet</small>
+<small class="t-warn">Fir not listed yet</small>
 {%- else -%}
 {%- set n = summary.full + summary.part + summary.none -%}
-<small>the archive holds {{ summary.full }} of {{ n }} in full
+<small>Fir holds {{ summary.full }} of {{ n }} in full
 {%- if summary.part %}, {{ summary.part }} in part{% endif %}{% if summary.none %}, {{ summary.none }} not at all{% endif %}
 {%- if summary.archive_only %}; {{ summary.archive_only }} only there{% endif %}</small>
 {%- endif -%}
@@ -68,7 +71,7 @@
     {% for d in rows %}
         <tr>
             <td class="name stack-lead">{{ d.name }}{% if not d.get('on_site', true) %}
-                <br><small class="muted">archive only</small>{% endif %}{% if d.error %}
+                <br><small class="muted">on Fir only</small>{% endif %}{% if d.error %}
                 <br><small class="err">{{ d.error }}</small>{% endif %}</td>
             <td class="notes stack-end">
             {%- if kind == 'dump' and d.get('on_site', true) %}

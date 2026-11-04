@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_service_macros.html" import monitor_tone, monitor_label, tag %}
 
-{% block title %}Transits — CHOCO{% endblock %}
+{% block title %}GNSS transits — CHOCO{% endblock %}
 
 {% block styles %}
 /* The timeline (gnss.timeline): one lane per band on the surface tint,
@@ -38,7 +38,7 @@ table.windows tr.current td:first-child { font-weight: 600; }
 {% block content %}
 <div class="page-head">
     <h2>
-        <span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Transits
+        <span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>GNSS transits
         {{ tag(monitor_tone(monitor.health), monitor_label(monitor.health)) }}
     </h2>
 </div>

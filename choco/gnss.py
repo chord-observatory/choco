@@ -45,26 +45,32 @@ LOOKBACK_S = 1800.0
 #: The lane the Sun and the continuum sources are listed under.
 ALL_BAND = "all"
 _SOURCE_BAND = "all (continuum source)"
-_PASS_KEYS = ("start_unix", "end_unix", "name", "kind", "min_sep_deg", "closest_unix", "bands")
+#: A pass's numeric fields; ``name`` and ``kind`` are strings, ``bands`` a list of them.
+_PASS_NUMBERS = ("start_unix", "end_unix", "closest_unix", "min_sep_deg")
+#: The criteria the page prints; a forecast without all of them shows none.
+_CRITERIA = ("transit_deg", "guowang_transit_deg", "quiet_deg", "sun_deg", "source_deg")
 
 
 class TransitMonitor(HttpMonitor):
     """The forecast as last fetched, and how that went.
 
     ``forecast`` is the latest good document (kept through a failed
-    poll); ``new_transits`` the passes that were not in the forecast
-    before it, ``new_since`` when they appeared.  ``pointing`` returns
-    the array's co-elevation in degrees (south of zenith negative) or
-    None; the boresight check needs it.
+    poll); ``new_transits`` the passes it predicts inside the previous
+    forecast's horizon that the previous one did not, ``new_since`` when
+    they appeared.  ``pointing`` returns the array's co-elevation in
+    degrees (south of zenith negative) or None; the boresight check needs
+    it.  ``tz`` is the site's zone, for local times beside UTC (None: UTC
+    only).  Only an ``ok`` forecast is offered as advice (``to_dict``).
     """
 
     INTERVAL_S = 60
     DEFAULT_MIN_QUIET_S = 600.0
 
-    def __init__(self, host, port, timeout: float = 5.0, min_quiet_s=None, pointing=None):
+    def __init__(self, host, port, timeout: float = 5.0, min_quiet_s=None, pointing=None, tz=None):
         super().__init__(host, port, timeout)
-        self.min_quiet_s = float(min_quiet_s or self.DEFAULT_MIN_QUIET_S)
+        self.min_quiet_s = float(self.DEFAULT_MIN_QUIET_S if min_quiet_s is None else min_quiet_s)
         self._pointing = pointing
+        self.tz = tz
         self.forecast: dict | None = None
         self.last_seen: float | None = None
         self.new_transits: list[dict] = []
@@ -90,9 +96,8 @@ class TransitMonitor(HttpMonitor):
         self.last_seen = now
         previous, self.forecast = self.forecast, doc
         if previous is not None and doc["created_unix"] != previous["created_unix"]:
-            new = new_passes(doc["transits"], previous["transits"])
-            if new:
-                self.new_transits, self.new_since = new, now
+            self.new_transits = new_passes(doc["transits"], previous["transits"], previous["end_unix"])
+            self.new_since = now if self.new_transits else None
         pointing = self._pointing() if self._pointing else None
         self.boresight_error = boresight_check(doc["boresight"], pointing)
         age = now - doc["created_unix"]
@@ -108,15 +113,18 @@ class TransitMonitor(HttpMonitor):
         if self.forecast is None:
             return None
         now = time.time() if now is None else now
-        out = summarize(self.forecast, now, self.min_quiet_s)
-        out["new_transits"] = [_pass_view(p, now) for p in self.new_transits]
+        out = summarize(self.forecast, now, self.min_quiet_s, self.tz)
+        out["new_transits"] = [_pass_view(p, now, self.tz) for p in self.new_transits if p["end_unix"] > now]
         out["new_since"] = self.new_since
         out["boresight_error"] = self.boresight_error
         return out
 
-    def to_dict(self) -> dict:
-        now = time.time()
-        s = self.summary(now)
+    def to_dict(self, summary: dict | None = None) -> dict:
+        """The badge's snapshot.  *summary* is :meth:`summary` when the
+        caller has one.  The sky's state, the next transit and the gain
+        window are given only while the forecast is ``ok``: a stale,
+        unreadable or mis-aimed forecast is no advice."""
+        s = (summary or self.summary()) if self.health == "ok" else None
         return {
             "configured": self.configured,
             "host": self.host,
@@ -130,44 +138,61 @@ class TransitMonitor(HttpMonitor):
             "quiet_now": s["quiet_now"] if s else None,
             "next_transit": s["next_transit"] if s else None,
             "gain_window": s["gain_windows"][0] if s and s["gain_windows"] else None,
-            "n_new": len(self.new_transits),
+            "tz_name": s["tz_name"] if s else None,
+            "n_new": len(s["new_transits"]) if s else 0,
         }
 
 
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _windows(w) -> bool:
+    return isinstance(w, list) and all(
+        isinstance(x, list) and len(x) == 2 and _num(x[0]) and _num(x[1]) for x in w)
+
+
 def check_forecast(doc) -> str | None:
-    """Why *doc* is not a forecast this module reads, or None."""
+    """Why *doc* is not a forecast this module reads, or None.  Every field
+    the pages compute with is checked for its type here, so a malformed
+    forecast is refused at the poll (``degraded``) instead of raising in
+    every request that reads it; the optional facts (criteria, TLE ages,
+    the Sun) are filtered by :func:`summarize`."""
     if not isinstance(doc, dict):
         return "the answer is not a JSON object"
     if doc.get("schema") != SCHEMA:
         return f"schema {doc.get('schema')!r}, not {SCHEMA}"
     for key in ("created_unix", "start_unix", "end_unix"):
-        if not isinstance(doc.get(key), (int, float)):
+        if not _num(doc.get(key)):
             return f"no {key}"
-    if not isinstance(doc.get("boresight"), dict):
+    b = doc.get("boresight")
+    if not (isinstance(b, dict) and _num(b.get("az_deg")) and _num(b.get("el_deg"))):
         return "no boresight"
     if not isinstance(doc.get("transits"), list):
         return "no transits"
     for p in doc["transits"]:
-        if not isinstance(p, dict) or not all(k in p for k in _PASS_KEYS):
-            return "a pass lacks a field"
+        if not (isinstance(p, dict) and all(_num(p.get(k)) for k in _PASS_NUMBERS)
+                and isinstance(p.get("name"), str) and isinstance(p.get("kind"), str)
+                and isinstance(p.get("bands"), list) and all(isinstance(x, str) for x in p["bands"])):
+            return "a pass is malformed"
     quiet = doc.get("quiet")
-    if not isinstance(quiet, dict) or not isinstance(quiet.get(ALL_BAND), list):
+    if not isinstance(quiet, dict) or not _windows(quiet.get(ALL_BAND)):
         return "no quiet windows"
-    if not isinstance(doc.get("quiet_by_band"), dict):
+    by_band = doc.get("quiet_by_band")
+    if not isinstance(by_band, dict) or not all(_windows(w) for w in by_band.values()):
         return "no quiet windows per band"
     return None
 
 
-def new_passes(transits: list[dict], previous: list[dict]) -> list[dict]:
-    """The passes of *transits* that *previous* did not have: the same
-    satellite within :data:`SAME_PASS_S` of the closest approach is the
-    same pass."""
-    out = []
-    for p in transits:
-        if not any(q["name"] == p["name"] and abs(q["closest_unix"] - p["closest_unix"]) < SAME_PASS_S
-                   for q in previous):
-            out.append(p)
-    return out
+def new_passes(transits: list[dict], previous: list[dict], horizon: float) -> list[dict]:
+    """The passes of *transits* that *previous*, a forecast up to
+    *horizon*, did not predict.  A pass beyond that horizon is the window
+    moving on, which every refresh brings, not news; the same satellite
+    within :data:`SAME_PASS_S` of the closest approach is the same pass."""
+    return [p for p in transits
+            if p["closest_unix"] <= horizon
+            and not any(q["name"] == p["name"] and abs(q["closest_unix"] - p["closest_unix"]) < SAME_PASS_S
+                        for q in previous)]
 
 
 def boresight_check(boresight: dict, coelev) -> str | None:
@@ -193,9 +218,14 @@ def boresight_check(boresight: dict, coelev) -> str | None:
 
 # ---- reading a forecast for one moment ---------------------------------------
 
-def fmt_hm(ts) -> str:
-    """``HH:MM`` UTC."""
-    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%H:%M")
+def fmt_hm(ts, tz=None) -> str:
+    """``HH:MM`` in *tz* (UTC when None)."""
+    return dt.datetime.fromtimestamp(ts, tz or dt.timezone.utc).strftime("%H:%M")
+
+
+def _local(ts, tz):
+    """``HH:MM`` in the site's zone, or None without one."""
+    return fmt_hm(ts, tz) if tz is not None else None
 
 
 def fmt_length(seconds) -> str:
@@ -217,13 +247,15 @@ def fmt_in(seconds) -> str:
     return f"in {fmt_length(seconds)}" if seconds > 0 else f"{fmt_length(-seconds)} ago"
 
 
-def _pass_view(p: dict, now: float) -> dict:
+def _pass_view(p: dict, now: float, tz=None) -> dict:
     return {
         "name": p["name"], "kind": p["kind"], "bands": list(p["bands"]),
         "start": p["start_unix"], "end": p["end_unix"], "closest": p["closest_unix"],
         "min_sep_deg": p["min_sep_deg"],
         "start_fmt": fmt_hm(p["start_unix"]), "end_fmt": fmt_hm(p["end_unix"]),
         "closest_fmt": fmt_hm(p["closest_unix"]),
+        "start_local": _local(p["start_unix"], tz), "end_local": _local(p["end_unix"], tz),
+        "closest_local": _local(p["closest_unix"], tz),
         "in_fmt": fmt_in(p["start_unix"] - now) if p["start_unix"] > now
         else "now" if now < p["end_unix"] else fmt_in(p["end_unix"] - now),
         "state": "past" if p["end_unix"] <= now else "now" if p["start_unix"] <= now else "ahead",
@@ -234,11 +266,12 @@ def _in_window(windows, now: float) -> bool:
     return any(a <= now < b for a, b in windows)
 
 
-def summarize(forecast: dict, now: float, min_quiet_s: float) -> dict:
-    """What the forecast says at *now*: the sky's state, the next transit,
-    the quiet windows at least *min_quiet_s* long that are still ahead
-    (a window already begun counts its remainder) and every pass with its
-    times formatted."""
+def summarize(forecast: dict, now: float, min_quiet_s: float, tz=None) -> dict:
+    """What the forecast (one :func:`check_forecast` passed) says at *now*:
+    the sky's state, the next transit, the quiet windows at least
+    *min_quiet_s* long that are still ahead (a window already begun counts
+    its remainder) and every pass with its times formatted, in UTC and,
+    given *tz*, in the site's zone too."""
     quiet_all = forecast["quiet"][ALL_BAND]
     by_band = forecast["quiet_by_band"]
     bands = list(by_band)
@@ -253,28 +286,33 @@ def summarize(forecast: dict, now: float, min_quiet_s: float) -> dict:
             gain_windows.append({
                 "start": start, "end": b, "length_s": b - start, "current": a <= now,
                 "start_fmt": "now" if a <= now else fmt_hm(start), "end_fmt": fmt_hm(b),
+                "start_local": None if a <= now else _local(start, tz), "end_local": _local(b, tz),
                 "length_fmt": fmt_length(b - start), "in_fmt": fmt_in(start - now),
             })
-    sun_sep = forecast.get("sun_sep_deg") or []
-    sun_el = forecast.get("sun_el_deg") or []
+    sun_sep = [v for v in forecast.get("sun_sep_deg") or [] if _num(v)]
+    sun_el = [v for v in forecast.get("sun_el_deg") or [] if _num(v)]
+    criteria = forecast.get("criteria")
+    tles = forecast.get("tle_age_days")
     return {
         "created": forecast["created_unix"], "created_fmt": fmt_utc(forecast["created_unix"]),
         "age_s": now - forecast["created_unix"],
         "start": forecast["start_unix"], "end": forecast["end_unix"],
         "end_fmt": fmt_hm(forecast["end_unix"]),
+        "tz_name": dt.datetime.fromtimestamp(now, tz).strftime("%Z") if tz is not None else None,
         "horizon_fmt": fmt_length(forecast["end_unix"] - now),
         "bands": bands,
         "quiet_now": _in_window(quiet_all, now),
         "quiet_now_by_band": {b: _in_window(by_band.get(b) or [], now) for b in bands},
-        "active": [_pass_view(p, now) for p in active],
-        "next_transit": _pass_view(ahead[0], now) if ahead else None,
+        "active": [_pass_view(p, now, tz) for p in active],
+        "next_transit": _pass_view(ahead[0], now, tz) if ahead else None,
         "gain_windows": gain_windows,
         "min_quiet_s": min_quiet_s, "min_quiet_fmt": fmt_length(min_quiet_s),
-        "transits": [_pass_view(p, now) for p in passes],
+        "transits": [_pass_view(p, now, tz) for p in passes],
         "n_closest": len(closest),
         "boresight": forecast["boresight"],
-        "criteria": forecast.get("criteria") or {},
-        "tle_age_days": forecast.get("tle_age_days") or [],
+        "criteria": criteria if isinstance(criteria, dict) and all(_num(criteria.get(k)) for k in _CRITERIA) else {},
+        "tle_age_days": [t for t in tles if isinstance(t, list) and len(t) == 2
+                         and isinstance(t[0], str) and _num(t[1])] if isinstance(tles, list) else [],
         "sun": {"sep_min": min(sun_sep), "sep_max": max(sun_sep),
                 "el_min": min(sun_el), "el_max": max(sun_el)} if sun_sep and sun_el else None,
     }
@@ -286,16 +324,17 @@ def summarize(forecast: dict, now: float, min_quiet_s: float) -> dict:
 TL_WIDTH = 1000
 TL_GUTTER = 190
 TL_LANE_H = 26
-TL_AXIS_H = 22
+TL_AXIS_H = 34
 TL_TOP = 6
 TL_TICK_S = 900
 
 
-def timeline(forecast: dict, now: float, min_quiet_s: float) -> dict:
+def timeline(forecast: dict, now: float, min_quiet_s: float, tz=None) -> dict:
     """The forecast as lanes for the page's SVG: an ``all`` lane (the quiet
     windows for the whole sky, the Sun and the continuum sources), then one
     per band with its quiet windows and passes.  Positions are SVG x
-    coordinates; a pass is labelled when its bar is wide enough."""
+    coordinates; a pass is labelled when its bar is wide enough.  The axis
+    is UTC, with the site's zone under it given *tz*."""
     t0 = now - LOOKBACK_S
     t1 = max(forecast["end_unix"], now + 60)
     plot_w = TL_WIDTH - TL_GUTTER - 10
@@ -339,7 +378,7 @@ def timeline(forecast: dict, now: float, min_quiet_s: float) -> dict:
     ticks = []
     t = math.ceil(t0 / TL_TICK_S) * TL_TICK_S
     while t <= t1:
-        ticks.append({"x": x(t), "label": fmt_hm(t)})
+        ticks.append({"x": x(t), "label": fmt_hm(t), "local": _local(t, tz)})
         t += TL_TICK_S
     for i, lane in enumerate(lanes):
         lane["y"] = TL_TOP + i * TL_LANE_H
@@ -349,4 +388,5 @@ def timeline(forecast: dict, now: float, min_quiet_s: float) -> dict:
         "axis_y": TL_TOP + len(lanes) * TL_LANE_H,
         "now_x": x(now), "ticks": ticks, "lanes": lanes,
         "t0_fmt": fmt_hm(t0), "t1_fmt": fmt_hm(t1),
+        "tz_name": dt.datetime.fromtimestamp(now, tz).strftime("%Z") if tz is not None else None,
     }

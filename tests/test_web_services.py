@@ -70,12 +70,17 @@ class TestServicePage:
         resp = client.get("/service/not-a-service")
         assert resp.status_code == 404
 
-    @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal", "mapmaker"])
-    def test_job_pages_render(self, client, name, jobs):
+    @pytest.mark.parametrize("name, title", [("choco", "choco"), ("eop", "Earth orientation"),
+                                             ("bffs", "Bad feeds"), ("eigencal", "Eigencal"),
+                                             ("mapmaker", "Sky maps")])
+    def test_job_pages_render(self, client, name, title, jobs):
+        """A page is titled by its menu item."""
         login(client)
         resp = client.get(f"/service/{name}")
         assert resp.status_code == 200
-        assert name.upper() in resp.data.decode()
+        body = resp.data.decode()
+        assert f"<title>{title} — CHOCO</title>" in body
+        assert f'<span class="crumb-sep">/</span>{title}' in body
 
     def test_skymap_rides_on_the_map_page(self, client):
         """The skymap job is folded into MAP: its old page redirects there,
@@ -88,7 +93,7 @@ class TestServicePage:
         with patch("choco.web.job_status", return_value=stub), \
              patch("choco.web.timer_status", return_value=None):
             body = client.get("/service/mapmaker?lines=500").data.decode()
-        assert "SKYMAP" in body and "choco-skymap.service" in body
+        assert "<h3>Sky strip</h3>" in body and "choco-skymap.service" in body
         assert 'hx-get="/partials/skymap"' in body               # the strip plot itself
         assert "/partials/service-status/skymap" in body
         assert "/partials/service-logs/skymap?lines=500" in body
@@ -166,7 +171,7 @@ class TestServicePage:
         resp = client.get("/fpga")
         assert resp.status_code == 200
         body = resp.data.decode()
-        assert "FPGA" in body
+        assert "F-engine" in body
         assert "not configured" in body
 
     def test_pdb_page_renders(self, client):
@@ -827,7 +832,7 @@ class TestBffsRunFile:
         degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
         with patch("choco.web.job_status", return_value=degraded):
             body = client.get("/partials/instrument").data.decode()
-        assert "rfi: 2 of 14 /sk endpoints unreachable" in body and "BFFS result: exit-code (exit 2)" in body
+        assert "rfi: 2 of 14 /sk endpoints unreachable" in body and "Bad feeds result: exit-code (exit 2)" in body
 
     def test_failed_run_error_is_a_reason(self, client, app, tmp_path):
         login(client)

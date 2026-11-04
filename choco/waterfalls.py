@@ -328,9 +328,11 @@ _J2000_UNIX_S = 946_728_000
 DEFAULT_TZ = "America/Vancouver"
 
 
-def _tzinfo(name: str):
+def site_tz(name: str | None = None):
+    """The site's zone (``waterfall.timezone``, else :data:`DEFAULT_TZ`):
+    the waterfall viewer's axis and the transit page's local times."""
     try:
-        return ZoneInfo(name)
+        return ZoneInfo(name or DEFAULT_TZ)
     except Exception:
         logger.warning(f"waterfalls: unknown timezone {name!r}; using UTC")
         return timezone.utc
@@ -358,7 +360,7 @@ def time_ticks(times_ns, rows: int, target: int = 12,
     distrust the axis.  A store with no real timestamps at all (or an
     older tree with no times.bin) labels scanline numbers instead.
     """
-    zone = _tzinfo(tz or DEFAULT_TZ)
+    zone = site_tz(tz)
     n = min(rows, len(times_ns)) if isinstance(times_ns, list) else 0
     valid = [t for t in (times_ns[:n] if n else []) if t > 0]
     fmt, start, end, unit = "%H:%M", None, None, "scanline"
@@ -1109,7 +1111,7 @@ def matrix_context(store, root: str, acq: str, band, row, tz=None) -> dict | Non
     when = None
     at = row * ov["rpf"]                    # the file's first overview row
     if isinstance(times, list) and at < len(times) and times[at] > 0:
-        when = _j2000_dt(times[at], _tzinfo(tz or DEFAULT_TZ)).strftime("%Y-%m-%d %H:%M:%S %Z")
+        when = _j2000_dt(times[at], site_tz(tz)).strftime("%Y-%m-%d %H:%M:%S %Z")
     page = f"/files/{root}/{acq}/matrix"
     return {
         "root": root, "acq": acq, "band": band, "row": row, "n_rows": n_rows, "n_el": n,
@@ -1383,7 +1385,7 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
     n = ov["n_el"]
     label = _label_of(index)
     labels = [label(e) for e in range(n)]
-    zone = _tzinfo(tz or DEFAULT_TZ)
+    zone = site_tz(tz)
     rendered = {p.get("name") for p in index.get("products") or []
                 if isinstance(p, dict) and p.get("rows")}
     elements = index.get("elements") or []

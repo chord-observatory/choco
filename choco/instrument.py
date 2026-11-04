@@ -263,6 +263,7 @@ _DEVICE_QUERIES = {
     "idrac_psu": "idrac_psu_status",
     "host_up": 'up{job="node"}',
     "host_rx": 'sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[2m])) * 8',
+    "host_tx": 'sum by (instance) (rate(node_network_transmit_bytes_total{device!="lo"}[2m])) * 8',
 }
 #: PDU outlet names of the devices that are not hosts (a host's outlets
 #: carry its name).
@@ -361,7 +362,7 @@ def parse_devices(results: dict[str, list[dict]]) -> dict:
     for r in results.get("idrac_psu", []):
         m = r["metric"]
         host(_idrac_host(m.get("instance", "?")))["psu"][m.get("psu", m.get("psu_index", "?"))] = float(r["value"][1])
-    for field, key in (("host_up", "up"), ("host_rx", "rx_bps")):
+    for field, key in (("host_up", "up"), ("host_rx", "rx_bps"), ("host_tx", "tx_bps")):
         for r in results.get(field, []):
             host(_short_host(r["metric"].get("instance", "?")))[key] = float(r["value"][1])
     outlets = sorted(({"outlet": int(r["metric"]["outlet"]) if str(r["metric"].get("outlet", "")).isdigit() else 0,

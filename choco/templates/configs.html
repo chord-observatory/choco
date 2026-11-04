@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Configs — CHOCO{% endblock %}
+{% block title %}Config library — CHOCO{% endblock %}
 
 {% block content %}
 <div class="page-head">
-    <h2>Config library</h2>
+    <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Config library</h2>
     {% if upstream %}
     <div class="page-actions">
         <form method="post" action="{{ request.script_root }}/configs/pull" style="margin: 0;"

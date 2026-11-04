@@ -15,14 +15,14 @@
     <dt>Forecast</dt>
     <dd>made {{ s.created_fmt }} ({{ since(s.created, now_ts) }}), to {{ s.end_fmt }} UTC ({{ s.horizon_fmt }} ahead);
         {{ s.n_closest }} transit{{ '' if s.n_closest == 1 else 's' }}, {{ s.transits | length }} passes
-        {%- if s.new_transits %}<br><small class="muted">new since the forecast before it ({{ since(s.new_since, now_ts) }}):
+        {%- if s.new_transits %}<br><small class="muted">not in the forecast before it ({{ since(s.new_since, now_ts) }}):
             {% for p in s.new_transits %}{{ p.name }} {{ p.closest_fmt }}{{ '' if loop.last else ', ' }}{% endfor %}</small>{% endif %}</dd>
     <dt>Sky now</dt>
     <dd>{% if s.active %}{{ tag('info', 'transit') }} {% for p in s.active %}{{ p.name }} ({{ p.bands | join(', ') }}, {{ '%.1f' % p.min_sep_deg }}&deg;){{ '' if loop.last else '; ' }}{% endfor %}
         {% elif s.quiet_now %}{{ tag('ok', 'quiet') }} every band
         {% else %}{{ tag('warn', 'not quiet') }} quiet in {% set q = s.quiet_now_by_band.items() | selectattr(1) | map(attribute=0) | list %}{{ q | join(', ') if q else 'no band' }}{% endif %}</dd>
     <dt>Next transit</dt>
-    <dd>{% if s.next_transit %}{{ s.next_transit.name }} {{ s.next_transit.start_fmt }}&ndash;{{ s.next_transit.end_fmt }} UTC ({{ s.next_transit.in_fmt }}),
+    <dd>{% if s.next_transit %}{{ s.next_transit.name }} {{ s.next_transit.start_fmt }}&ndash;{{ s.next_transit.end_fmt }} UTC{% if s.tz_name %} ({{ s.next_transit.start_local }}&ndash;{{ s.next_transit.end_local }} {{ s.tz_name }}){% endif %}, {{ s.next_transit.in_fmt }},
         {{ s.next_transit.bands | join(', ') }}, closest {{ '%.1f' % s.next_transit.min_sep_deg }}&deg;{% else %}none in the forecast{% endif %}</dd>
     <dt>Boresight</dt>
     <dd>az {{ '%g' % s.boresight.az_deg }}&deg;, el {{ '%g' % s.boresight.el_deg }}&deg;
@@ -39,12 +39,12 @@
 
 <h3>Quiet windows for a gain measurement</h3>
 {% if s.gain_windows %}
-<p class="note">At least {{ s.min_quiet_fmt }} with every band quiet (<code>gnss.min_quiet_s</code>).</p>
+<p class="note">At least {{ s.min_quiet_fmt }} with every band quiet (<code>gnss.min_quiet_s</code>); times UTC{% if s.tz_name %}, then the site's ({{ s.tz_name }}){% endif %}.</p>
 <table class="windows">
-    <thead><tr><th>Start</th><th>End</th><th>Length</th><th></th></tr></thead>
+    <thead><tr><th>Start</th><th>End</th>{% if s.tz_name %}<th class="muted">{{ s.tz_name }}</th>{% endif %}<th>Length</th><th></th></tr></thead>
     <tbody>
     {% for w in s.gain_windows %}
-    <tr class="{{ 'current' if w.current }}"><td>{{ w.start_fmt }}</td><td>{{ w.end_fmt }}</td><td>{{ w.length_fmt }}</td><td class="muted">{{ w.in_fmt }}</td></tr>
+    <tr class="{{ 'current' if w.current }}"><td>{{ w.start_fmt }}</td><td>{{ w.end_fmt }}</td>{% if s.tz_name %}<td class="muted">{{ w.start_local or 'now' }}&ndash;{{ w.end_local }}</td>{% endif %}<td>{{ w.length_fmt }}</td><td class="muted">{{ w.in_fmt }}</td></tr>
     {% endfor %}
     </tbody>
 </table>
@@ -68,27 +68,30 @@
     {% if b.label %}<text class="bl" x="{{ '%.1f' % ((b.x0 + b.x1) / 2) }}" y="{{ lane.y + tl.lane_h * 0.62 }}" text-anchor="middle">{{ b.label }}</text>{% endif %}
     {% endfor %}
     {% endfor %}
+    <text class="ax" x="{{ tl.gutter - 8 }}" y="{{ tl.axis_y + 14 }}" text-anchor="end">UTC</text>
+    {% if tl.tz_name %}<text class="ax" x="{{ tl.gutter - 8 }}" y="{{ tl.axis_y + 28 }}" text-anchor="end">{{ tl.tz_name }}</text>{% endif %}
     {% for t in tl.ticks %}
     <line class="tick" x1="{{ '%.1f' % t.x }}" x2="{{ '%.1f' % t.x }}" y1="{{ tl.lanes[0].y }}" y2="{{ tl.axis_y }}"/>
     <text class="ax" x="{{ '%.1f' % t.x }}" y="{{ tl.axis_y + 14 }}" text-anchor="middle">{{ t.label }}</text>
+    {% if t.local %}<text class="ax" x="{{ '%.1f' % t.x }}" y="{{ tl.axis_y + 28 }}" text-anchor="middle">{{ t.local }}</text>{% endif %}
     {% endfor %}
     <line class="now" x1="{{ '%.1f' % tl.now_x }}" x2="{{ '%.1f' % tl.now_x }}" y1="{{ tl.lanes[0].y - 3 }}" y2="{{ tl.axis_y + 2 }}"/>
 </svg>
 <figcaption class="tl-key">
     <span><i class="q"></i>quiet</span><span><i class="g"></i>long enough for gains</span>
     <span><i class="closest"></i>transit</span><span><i class="near"></i>near (inside the quiet radius)</span>
-    <span><i class="source"></i>Sun or bright source</span> &middot; times UTC, now in red
+    <span><i class="source"></i>Sun or bright source</span> &middot; times UTC{% if tl.tz_name %} and {{ tl.tz_name }}{% endif %}, now in red
 </figcaption>
 </figure>
 
 <h3>Passes</h3>
 <figure class="scroll-x">
 <table class="passes">
-    <thead><tr><th>Start</th><th>End</th><th>Satellite</th><th>Pass</th><th>Closest</th><th>Separation</th><th>Bands</th><th></th></tr></thead>
+    <thead><tr><th>Start</th><th>End</th>{% if s.tz_name %}<th class="muted">{{ s.tz_name }}</th>{% endif %}<th>Satellite</th><th>Pass</th><th>Closest</th><th>Separation</th><th>Bands</th><th></th></tr></thead>
     <tbody>
     {% for p in s.transits %}
     <tr class="{{ p.state }}">
-        <td>{{ p.start_fmt }}</td><td>{{ p.end_fmt }}</td><td class="mono">{{ p.name }}</td>
+        <td>{{ p.start_fmt }}</td><td>{{ p.end_fmt }}</td>{% if s.tz_name %}<td class="muted">{{ p.start_local }}&ndash;{{ p.end_local }}</td>{% endif %}<td class="mono">{{ p.name }}</td>
         <td>{% if p.kind == 'closest' %}{{ tag('info', 'transit') }}{% else %}near{% endif %}</td>
         <td>{{ p.closest_fmt }}</td><td class="num">{{ '%.1f' % p.min_sep_deg }}&deg;</td>
         <td>{{ p.bands | join(', ') }}</td><td class="muted">{{ p.in_fmt }}</td>
