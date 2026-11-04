@@ -295,7 +295,7 @@ entries:
     0.06-0.15.  G02 has the highest value.
 - topic: polarization
   from: 2026-10-19T21:28
-  to: null
+  to: 2026-10-26T13:48
   source: "this analysis (coherence of the X and Y feeds of E03 and E04 in every acquisition from 2026-10-19; fringe rates at the Tau A transit 2026-10-26 11:13 UTC, 450-800 MHz)"
   summary: "the Y feeds of E03 and E04 are swapped between the two dishes"
   text: >-
@@ -305,6 +305,16 @@ entries:
     with `E03Y` is 0.05-0.09, as for two different dishes.  At the Tau A transit the fringe
     rates put `E03Y` at column 04 and `E04Y` at column 03.  Use `E03Y` as E04's Y, and
     `E04Y` as E03's Y.  Before 2026-10-19 the Y inputs of row E have no data.
+- topic: polarization
+  from: 2026-10-29T01:07
+  to: null
+  source: "this analysis (coherence of the X and Y feeds of E03 and E04 in every file of every acquisition from 2026-10-19 to 2026-11-04, 367-1003 MHz)"
+  text: >-
+    From the acquisition of 2026-10-29 01:07 UTC, the Y inputs of E03 and E04 are no longer
+    swapped.  The coherence of E03X with `E03Y`, and of E04X with `E04Y`, is about 0.17, as
+    for the X and Y feeds of one dish.  The coherence of E03X with `E04Y` is 0.06-0.09, as
+    for two different dishes.  The cabling changed between 2026-10-26 13:48 and 2026-10-29
+    01:07 UTC.  The array recorded no data in this interval.
 
 # ---- RFI --------------------------------------------------------------------------------
 - topic: rfi
