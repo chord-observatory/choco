@@ -20,9 +20,9 @@ thing it describes, and the diagram's cards link there:
   front page's view (`web._instrument_view`) and its 5 s poll.  Its
   badge, SWITCH, replaced PATH: the CHOCO mark already leads to the
   front page.
-- `/nodes`: each node's server (node_exporter, iDRAC, PSUs, temperatures,
+- `/nodes`: each node's server (whether its node_exporter answers, its
   outlet power; `instrument.host_health`) as extra columns, from the
-  monitor's last Prometheus read, so the 2 s table poll costs no query.
+  monitor's last read, so the 2 s table poll costs no request.
 - `/power/analog` (was `/service/pdb`, then `/service/power`, both of
   which redirect; the controls keep their `/service/pdb/set*` URLs): the
   PDB grid, the Keysight dish supply and the channel map with its
@@ -57,18 +57,38 @@ devices directly where it can, for latency:
   1387 samples).  This replaced the `crs_control_*` Prometheus queries,
   whose exporter only curled the same two endpoints.
 
-Prometheus, read at most every 30 s, keeps what choco cannot read itself:
+Since 2026-11-04 (user's wish: "everything from sources if possible") the
+slow sources are read directly too, every 30 s (`SLOW_EVERY_S`):
 
-- the Keysight supply: its SCPI socket may take one client, which the
-  exporter holds;
-- the PDU and the iDRACs: SNMP, already scraped; slow-changing;
-- node_exporter: it accepts Prometheus alone (`IPAddressAllow`).
+- each kotekan host's node_exporter, and the transfer host's
+  (`vis_files.archive.host`, where the transfer job writes its textfile
+  series): `?collect[]=netdev&collect[]=textfile` keeps the answer small;
+  rates come from successive readings like the NICs'.  node_exporter
+  allows choco's address (chord-sysops `node_exporter_allowed_sources`).
+  The transfer card shows the host's send rate during a run and what the
+  last run sent otherwise: a 24 h total would need history choco does
+  not keep.
+- the rack PDU over SNMP v2c: four `snmpbulkwalk` walks of PDU2-MIB
+  (outlet names, outlet sensor values and digits, inlet values; sensor
+  type 5 is active power, 0 decimals on this PDU), under a second from
+  the site network.  SNMP rather than the JSON-RPC API: the read
+  community already exists and needs no account; `snmpbulkwalk` is a host
+  tool (the `snmp` package), like `dot`.
+- the switch's error counters, PHY and optics over the same eAPI, the
+  commands and fields the switch monitor uses (`show interfaces counters
+  errors`, `phy detail`, `transceiver`); with the account, nothing of the
+  switch comes from Prometheus.
 
-Still to move, cheapest first: node_exporter (one line in its
-`IPAddressAllow`; the text parses like kotekan's), the switch (the
-account), the iDRACs over Redfish, the PDU over its JSON-RPC API, and the
-supply last (choco would have to own the SCPI socket and publish it on
-`/metrics`).
+The iDRACs are no longer read (user, 2026-11-04): the X-engine page and
+the node cards lost the server state and the temperatures with them.
+node_exporter and the PDU are reported in the monitor's `sources` but do
+not set its health, which is the signal path's (the Switch item): the PDU
+has its own item, the hosts their own column.
+
+Prometheus keeps two things: the Keysight supply (its SCPI socket takes
+very few sessions, slow to clean up, and the exporter holds one; choco
+would have to own it and publish it for Prometheus instead) and the
+switch until choco has its account.
 
 choco keeps talking to kotekan, power_db and fpga_master directly, as
 before; the page uses choco's registry for node state, the PDB monitor for

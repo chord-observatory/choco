@@ -102,10 +102,10 @@ class TestPowerPages:
     def test_the_rack_page(self, client, jobs):
         login(client)
         body = client.get("/power/rack").data.decode()
-        assert "Rack power" in body and "PDU outlets" in body and "instrument.prometheus_url" in body
+        assert "Rack power" in body and "PDU outlets" in body and "instrument.pdu" in body
         assert "SPI bus" not in body and "Dish supply" not in body and 'href="/power/analog"' in body
 
-    def test_the_rack_badge_without_prometheus_is_absent(self, client, jobs):
+    def test_the_rack_badge_without_a_pdu_is_absent(self, client, jobs):
         login(client)
         body = client.get("/partials/menu").data.decode()
         assert '<a href="/power/rack" class="tag quiet plain">' in body

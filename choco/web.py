@@ -96,11 +96,12 @@ def _flag_response(nodes, attr: str, value: bool):
 
 def _dashboard_context() -> dict:
     """The nodes, and each node's server as the instrument monitor last
-    read it from Prometheus (``hosts``; None when it is not configured)."""
+    read it: node_exporter and the PDU outlets (``hosts``; None when the
+    monitor is not configured)."""
     nodes = _registry().nodes
     monitor = current_app.config.get("instrument_monitor")
     hosts = None
-    if monitor is not None and monitor.configured and monitor.url:
+    if monitor is not None and monitor.configured:
         hosts = {n.name: host_health(n.name, monitor.devices) for n in nodes.values()}
     return {"nodes": nodes, "hosts": hosts}
 
@@ -2099,14 +2100,15 @@ def _pdb_context() -> dict:
 
 
 def _power_devices() -> dict:
-    """The power pages' supplies, as the instrument monitor last read
-    them from Prometheus: the dish supply (``psu``, the analog page) and
-    the PDU outlets (``devices``, the rack page); ``power_source`` False
-    when it has no Prometheus."""
+    """The power pages' supplies, as the instrument monitor last read them:
+    the dish supply from Prometheus (``psu``, the analog page;
+    ``power_source`` False without Prometheus) and the PDU's outlets over
+    SNMP (``devices``, the rack page; ``pdu_source`` False without a PDU)."""
     monitor = current_app.config.get("instrument_monitor")
-    if monitor is None or not monitor.url:
-        return {"power_source": False, "psu": None, "devices": {}}
-    return {"power_source": True, "psu": monitor.psu, "devices": monitor.devices}
+    if monitor is None:
+        return {"power_source": False, "pdu_source": False, "psu": None, "devices": {}}
+    return {"power_source": bool(monitor.url), "pdu_source": monitor.pdu is not None,
+            "psu": monitor.psu if monitor.url else None, "devices": monitor.devices}
 
 
 def _power_badge(pdb: dict | None) -> dict | None:
@@ -2133,24 +2135,24 @@ def _fmt_bps(bps: float) -> str:
 
 def _transfer_status() -> dict | None:
     """The acquisitions' transfer to Fir, as the instrument monitor last
-    read it from Prometheus (``instrument.transfer_state``): ``tone``,
-    ``word``, ``detail`` (the host's send rate during a run, which the
-    byte counter only counts once the run ends, else what finished runs
-    sent in 24 h) and ``title``; None without Prometheus.  No series reads
+    read it from the transfer host's node_exporter (the job's textfile
+    series; ``instrument.transfer_state``): ``tone``, ``word``, ``detail``
+    (the host's send rate during a run, else what the last run sent) and
+    ``title``; None when no transfer host is configured.  No series reads
     "no data", grey, rather than nothing."""
     inst = current_app.config.get("instrument_monitor")
-    if inst is None or not inst.url:
+    if inst is None or not inst.transfer_host:
         return None
     t = inst.transfer or {}
     now = time.time()
     tone, word = transfer_state(inst.transfer, now)
-    host = t.get("host", "?")
+    host = t.get("host") or inst.transfer_host.split(".")[0]
     tx = ((inst.devices or {}).get("hosts", {}).get(host) or {}).get("tx_bps") if t.get("running") else None
-    sent = t.get("sent_24h")
+    last = t.get("last_run_bytes")
     title = ("The acquisitions' transfer to Fir, the Alliance (Compute Canada) cluster "
              f"(kotekan-vis-transfer on {host})")
     if not t:
-        title += "\nno kotekan_vis_transfer series in Prometheus"
+        title += f"\nno kotekan_vis_transfer series from {host}'s node_exporter"
     else:
         if t.get("running"):
             title += ("\nsending" + (f" since {ago(t['last_start'], now)}" if t.get("last_start") else "")
@@ -2158,33 +2160,32 @@ def _transfer_status() -> dict | None:
         title += f"\nlast success: {ago(t.get('last_success'), now)}"
         if t.get("failures"):
             title += f"\n{t['failures']:.0f} failed run(s) in a row"
-        if sent is not None:
-            title += f"\nsent by runs that ended in the last 24 h: {human_bytes(sent)}"
-    detail = _fmt_bps(tx) if tx else f"{human_bytes(sent)} / 24 h" if sent else ""
+        if last is not None:
+            title += f"\nthe last run sent {human_bytes(last)}"
+    detail = _fmt_bps(tx) if tx else f"last run {human_bytes(last)}" if last else ""
     return {"tone": tone, "word": word, "detail": detail, "title": title}
 
 
 def _rack_badge() -> dict | None:
-    """The rack PDU's badge, from the instrument monitor's last Prometheus
-    read: ok with outlets reported, down when Prometheus has no PDU
-    series (the SNMP target unreachable, or its series gone stale),
-    unknown before the first read or while Prometheus does not answer;
-    None without Prometheus."""
+    """The rack PDU's badge, from the instrument monitor's last SNMP read:
+    ok with outlets read, down when the PDU did not answer or gave no
+    outlets, unknown before the first read; None without a PDU."""
     monitor = current_app.config.get("instrument_monitor")
-    if monitor is None or not monitor.url:
+    if monitor is None or monitor.pdu is None:
         return None
     devices = monitor.devices or {}
     outlets = devices.get("outlets") or []
-    badge = {"pdus": sorted({o["pdu"] for o in outlets}), "n_outlets": len(outlets),
+    src = monitor.sources.get("pdu")
+    badge = {"host": monitor.pdu.host, "port": 161, "pdus": [monitor.pdu.name], "n_outlets": len(outlets),
              "inlet_w": devices.get("inlet_w"), "last_seen": monitor.last_seen, "error": None}
-    if monitor.last_polled is None:
+    if src is None:
         badge["health"] = "unknown"
-    elif not (monitor.sources.get("prometheus") or {}).get("ok", True):
-        badge["health"], badge["error"] = "unknown", "Prometheus not answering"
+    elif not src.get("ok"):
+        badge["health"], badge["error"] = "down", src.get("error")
     elif outlets:
         badge["health"] = "ok"
     else:
-        badge["health"], badge["error"] = "down", "no PDU series in Prometheus"
+        badge["health"], badge["error"] = "down", "the PDU listed no outlet power"
     return badge
 
 
@@ -2398,7 +2399,7 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
                          "tone": "off" if not names else "ok" if started == len(names) else
                          "bad" if not started else "warn", "href": root + "/nodes",
                          "notes": ([f"{sum(w for w in xw if w) / 1e3:.1f} kW"] if any(xw) else [])
-                                  + [f"iDRAC ok {sum(1 for n in names if view['hosts'].get(n, {}).get('idrac_tone') == 'ok')}"
+                                  + [f"node_exporter {sum(1 for n in names if view['hosts'].get(n, {}).get('host_up'))}"
                                      f"/{len(names)}"]}
     rx = view["downstream"][0] if view["downstream"] else None
     stages["recv"] = {"title": "Receiver", "tone": node_tone(rx), "word": (rx or {}).get("status") or "—",

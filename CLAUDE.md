@@ -182,9 +182,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   reads `/get-hw-map` and `/get-monitoring-data` beside `/status`); the
   switch over eAPI only with a `show`-only account, and `SwitchEapi`
   refuses any command that is not a `show` before sending it — never add
-  another verb.  The PDU, the iDRACs, the dish supply and node_exporter
-  come from Prometheus (at most every 30 s); a detail it lacks is added to
-  its exporter in chord-sysops.
+  another verb.  Every 30 s, each host's node_exporter (it must allow
+  choco's address) and the rack PDU over SNMP (`PduSnmp`, the
+  `snmpbulkwalk` host tool, walks only); the switch's PHY and optics over
+  the same eAPI.  Only the dish supply (its SCPI socket takes one client,
+  the exporter) and the switch without an account come from Prometheus.
+  choco does not read the iDRACs.
 - A board's card is the board as fpga_master sees it (`board_state`): grey
   whenever fpga_master has nothing current to say — down, not running, the
   slot not in its map, samples older than `BOARD_STALE_S`.  The link below

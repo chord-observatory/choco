@@ -14,7 +14,7 @@ table.ports td.num { text-align: right; font-family: var(--pico-font-family-mono
     <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Rack power
         {% if rack %}{{ tag(monitor_tone(rack.health), monitor_label(rack.health)) }}{% endif %}</h2>
 </div>
-<p class="note">The rack's PDU (Raritan), as Prometheus last read it over SNMP (every 30 s): every
+<p class="note">The rack's PDU (Raritan), read over SNMP every 30 s: every
     outlet's active power and the inlet's.  The feed amplifiers' supply is on
     <a href="{{ request.script_root }}/power/analog">Analog power</a>.</p>
 

@@ -5,10 +5,13 @@ import pytest
 import yaml
 
 from choco import instrument
-from choco.instrument import (InstrumentMonitor, SwitchEapi, Wiring, WiringFile, WiringRow, board_facts,
-                              board_layout, board_state, flow_diagram, host_temps, idrac_state, in_port_state,
-                              link_problems, job_tone, job_word, nic_state, out_port_state, outlet_watts,
-                              overview, parse_devices, parse_wiring, short_build, transfer_state, worst_tone)
+from types import SimpleNamespace
+
+from choco.instrument import (InstrumentMonitor, PduSnmp, SwitchEapi, Wiring, WiringFile, WiringRow, board_facts,
+                              board_layout, board_state, flow_diagram, in_port_state, link_problems, job_tone,
+                              job_word, nic_state, out_port_state, outlet_watts, overview, parse_node_exporter,
+                              parse_snmp_walk, parse_switch_slow, parse_wiring, short_build, transfer_state,
+                              worst_tone)
 from tests.helpers import login
 
 WIRING = """\
@@ -57,39 +60,62 @@ REPLIES = {
     "rate(kotekan_dpdk_nic_rx_packets_total": [_result(4e5, instance="cx1.example:12048", port="0"),
                                                _result(2e5, instance="cx1.example:12048", port="1")],
     "keysight_psu_up": [_result(1, instance="10.222.0.31")],
-    "kotekan_vis_transfer_running": [_result(1, instance="alpenhorn.example")],
-    "kotekan_vis_transfer_consecutive_failures": [_result(0, instance="alpenhorn.example")],
-    "kotekan_vis_transfer_last_success_timestamp_seconds": [_result(1e10, instance="alpenhorn.example")],
-    "increase(kotekan_vis_transfer_transferred_bytes_total": [_result(2.5e12, instance="alpenhorn.example")],
     "keysight_psu_output_on": [_result(1, instance="10.222.0.31")],
     "keysight_psu_voltage_volts": [_result(48.1, instance="10.222.0.31")],
     "keysight_psu_current_amps": [_result(12.5, instance="10.222.0.31")],
     "switch_monitor_up": [_result(1)],
-    'pdu_outlet_sensor_value{sensor="5"}': [_result(750, instance="10.222.0.27", outlet="5", outlet_name="cx1"),
-                                            _result(3, instance="10.222.0.27", outlet="6", outlet_name="cx1")],
-    'up{job="idrac_snmp"}': [_result(1, instance="cx1i.example")],
-    "idrac_system_power_state": [_result(4, instance="cx1i.example")],
-    'up{job="node"}': [_result(1, instance="cx1.example:9100")],
     "switch_monitor_last_success_timestamp_seconds": [_result(1e12)],
 }
 
 
-#: _DEVICE_QUERIES results for one server, cx1.
-DEVICE_RESULTS = {
-    "outlet_w": [_result(747, instance="10.222.0.27", outlet="5", outlet_name="cx1"),
-                 _result(3, instance="10.222.0.27", outlet="6", outlet_name="cx1"),
-                 _result(98, instance="10.222.0.27", outlet="11", outlet_name="arista")],
-    "inlet_w": [_result(8100, instance="10.222.0.27", inlet="1")],
-    "idrac_up": [_result(1, instance="cx1i.example")],
-    "idrac_temp": [_result(t, instance="cx1i.example", probe_location=loc)
-                   for loc, t in (("Inlet Temp", 18), ("CPU1 Temp", 40), ("CPU2 Temp", 41), ("GPU Temp 31", 33))],
-    "idrac_temp_status": [_result(3, instance="cx1i.example", probe_location="Inlet Temp")],
-    "idrac_status": [_result(3, instance="cx1i.example")],
-    "idrac_power": [_result(4, instance="cx1i.example")],
-    "idrac_psu": [_result(3, instance="cx1i.example", psu="PS1 Status"),
-                  _result(3, instance="cx1i.example", psu="PS2 Status")],
-    "host_up": [_result(1, instance="cx1.example:9100")],
+#: What the monitor reads for one server, cx1: its PDU outlets and its node_exporter.
+DEVICES = {
+    "outlets": [{"outlet": 5, "name": "cx1", "pdu": "10.222.0.27", "watts": 747.0},
+                {"outlet": 6, "name": "cx1", "pdu": "10.222.0.27", "watts": 3.0},
+                {"outlet": 11, "name": "arista", "pdu": "10.222.0.27", "watts": 98.0}],
+    "inlet_w": 8100.0,
+    "hosts": {"cx1": {"up": 1.0}},
 }
+
+
+def node_exporter_text(n: int, transfer: bool = False) -> str:
+    """node_exporter's answer on the n-th read: 1 GB received and 100 MB
+    sent on ens18 per read (loopback ignored); the transfer host also
+    carries the transfer job's textfile series."""
+    lines = ["# HELP node_network_receive_bytes_total Network device statistic receive_bytes.",
+             "# TYPE node_network_receive_bytes_total counter",
+             f'node_network_receive_bytes_total{{device="ens18"}} {1e9 * n:e}',
+             f'node_network_receive_bytes_total{{device="lo"}} {5e12:e}',
+             f'node_network_transmit_bytes_total{{device="ens18"}} {1e8 * n:e}',
+             'node_scrape_collector_success{collector="netdev"} 1']
+    if transfer:
+        lines += ["kotekan_vis_transfer_running 1", "kotekan_vis_transfer_consecutive_failures 0",
+                  "kotekan_vis_transfer_last_success_timestamp_seconds 1e+10",
+                  "kotekan_vis_transfer_last_run_bytes_transferred 2.5e+12"]
+    return "\n".join(lines) + "\n"
+
+
+def _oid(base, *index):
+    return "." + base + "." + ".".join(str(i) for i in index)
+
+
+#: The PDU's walks, by base OID (snmpbulkwalk -On -Oq).
+SNMP = {
+    instrument._PDU_OUTLET_NAME: "\n".join(f'{_oid(instrument._PDU_OUTLET_NAME, o)} "{n}"'
+                                            for o, n in ((5, "cx1"), (6, "cx1"), (11, "arista"))),
+    instrument._PDU_OUTLET_VALUE: "\n".join(f"{_oid(instrument._PDU_OUTLET_VALUE, o, s)} {v}"
+                                             for o, s, v in ((5, 1, 2160), (5, 5, 750), (6, 5, 3), (11, 5, 98))),
+    instrument._PDU_OUTLET_DIGITS: "\n".join(f"{_oid(instrument._PDU_OUTLET_DIGITS, o, s)} {d}"
+                                              for o, s, d in ((5, 1, 3), (5, 5, 0), (6, 5, 0), (11, 5, 0))),
+    instrument._PDU_INLET_VALUE: f"{_oid(instrument._PDU_INLET_VALUE, 1, 5)} 8100\n"
+                                 f"{_oid(instrument._PDU_INLET_VALUE, 1, 4)} 236",
+}
+
+
+def fake_snmp(argv, **kw):
+    """``run_tool`` for snmpbulkwalk: the walk of SNMP's base OID."""
+    return SimpleNamespace(returncode=0, stdout=SNMP[argv[-1]], stderr="")
+
 
 #: FpgaMonitor.to_dict() with the four boards of TELESCOPE, slot 3 empty,
 #: sampled at t=1000.
@@ -138,6 +164,23 @@ def eapi_results(n: int) -> list[dict]:
             {"interfaces": {"Ethernet9/1": {"inDiscards": 0, "outDiscards": 5 * n}}}]
 
 
+def eapi_slow_results(n: int) -> list[dict]:
+    """``_SWITCH_SLOW_CMDS`` replies on the n-th read: error counters, the
+    PHY and the optics (one optic per lane entry, one by channels)."""
+    return [{"interfaceErrorCounters": {"Ethernet9/1": {"fcsErrors": 2 * n, "symbolErrors": n, "inErrors": 0,
+                                                        "outErrors": 0}}},
+            {"interfacePhyStatuses": {
+                "Ethernet9/1": {"phyStatuses": [{"pma": {"signalDetect": {"value": True, "changes": 2}},
+                                                 "fec": {"encoding": "reedSolomon",
+                                                         "alignmentLock": {"value": True},
+                                                         "correctedCodewords": {"value": 100 * n},
+                                                         "uncorrectedCodewords": {"value": 0}}}]},
+                "Ethernet12/1": {"phyStatuses": [{"pma": {"signalDetect": {"value": False}}}]}}},
+            {"interfaces": {"Ethernet9/1": {"parameters": {"rxPower": {"channels": {"1": -1.5, "2": -2.25,
+                                                                                    "3": -1.0, "4": -1.75}}}},
+                            "Ethernet12/1": {"rxPower": -9.0}, "Et12/2": {"rxPower": -30.0}}}]
+
+
 def fake_fetch(calls, reads=None):
     """Prometheus answers from REPLIES, every kotekan /metrics from
     kotekan_metrics, the switch from eapi_results; *reads* counts the reads
@@ -146,12 +189,19 @@ def fake_fetch(calls, reads=None):
 
     def fetch(method, url, *, timeout, params=None, **kw):
         reads[url] = reads.get(url, 0) + 1
+        if url.endswith(":9100/metrics"):
+            calls.append(url)
+            return _Reply(None, node_exporter_text(reads[url], transfer="alpenhorn" in url))
         if url.endswith("/metrics"):
             calls.append(url)
             return _Reply(None, kotekan_metrics(reads[url]))
         if method == "POST":
-            calls.append(kw["json"]["params"]["cmds"])
-            return _Reply({"jsonrpc": "2.0", "id": 1, "result": eapi_results(reads[url])})
+            cmds = kw["json"]["params"]["cmds"]
+            calls.append(cmds)
+            key = (url, cmds[0])
+            reads[key] = reads.get(key, 0) + 1
+            replies = eapi_slow_results if cmds == instrument._SWITCH_SLOW_CMDS else eapi_results
+            return _Reply({"jsonrpc": "2.0", "id": 1, "result": replies(reads[key])})
         q = params["query"]
         calls.append(q)
         hit = next((v for k, v in REPLIES.items() if q.startswith(k)), [])
@@ -305,7 +355,7 @@ class TestFlow:
         nodes = {"cx1": {"status": "started", "group": "cx", "branch": "chord",
                          "version": "chord.2021.10+1242.g340808ce76"},
                  "recv1": {"status": "idle", "group": "recv"}}
-        devices = parse_devices(DEVICE_RESULTS)
+        devices = DEVICES
         v = overview(boards, Wiring(rows, []), switch, nics, {"A01X": True, "A02X": False, "B01X": True}, nodes,
                      devices, {"B01X": "autos: low"}, FPGA, 1010)
         stages = {"switch": {"title": "Switch", "tone": "warn", "word": "1/2 ok"},
@@ -333,8 +383,8 @@ class TestFlow:
         assert flow_diagram(unknown, stages)["feeds"][0]["tone"] == "none-on"
         node = next(c for c in f["cards"] if c["lines"][0]["text"] == "cx1")
         assert node["href"] == "/choco/pipeline/cx/cx1"
-        assert "chord +1242" in texts and "iDRAC on · OK" in texts and "CPU 41° GPU 33°" in texts
-        assert "750 W · inlet 18°" in texts
+        assert "chord +1242" in texts and "750 W" in texts
+        assert not any("iDRAC" in t or "°" in t for t in texts if t)
         assert any(c["lines"][0]["text"] == "recv1" for c in f["cards"])
         assert f["bus"] and f["bus"]["tone"] == "ok"
         tones = [l["tone"] for l in f["links"]]
@@ -370,24 +420,48 @@ class TestJobs:
         assert worst_tone(["ok", "info", "warn"]) == "warn" and worst_tone([]) == "off"
 
 
-class TestDevices:
-    def test_parses_outlets_idracs_and_hosts(self):
-        d = parse_devices(DEVICE_RESULTS)
-        assert d["inlet_w"] == 8100 and outlet_watts(d, "cx1") == 750 and outlet_watts(d, "nope") is None
-        assert d["outlets"][0]["pdu"] == "10.222.0.27"
-        h = d["hosts"]["cx1"]
-        assert h["power"] == 4 and h["psu"] == {"PS1 Status": 3, "PS2 Status": 3} and h["up"] == 1
-        assert host_temps(h) == {"inlet": 18, "cpu": 41, "gpu": 33}
-        assert "crate" not in d       # the boards come from fpga_master itself
+class TestDirectSources:
+    def test_node_exporter_counters_and_the_transfer(self):
+        got = parse_node_exporter(node_exporter_text(3, transfer=True))
+        assert got["rx"] == 3e9 and got["tx"] == 3e8          # loopback left out
+        assert got["transfer"] == {"running": 1.0, "failures": 0.0, "last_success": 1e10,
+                                   "last_run_bytes": 2.5e12}
+        assert parse_node_exporter("# nothing\nnode_load1 0.5\n") == {"rx": None, "tx": None, "transfer": {}}
 
-    def test_idrac_state(self):
-        assert idrac_state(None) == ("off", "not scraped")
-        assert idrac_state({"idrac_up": 0}) == ("bad", "silent")
-        assert idrac_state({"idrac_up": 1, "power": 3}) == ("bad", "power off")
-        assert idrac_state({"idrac_up": 1, "power": 4, "status": 3, "psu": {"PS2 Status": 5}}) == \
-            ("warn", "PS2 Status not OK")
-        assert idrac_state({"idrac_up": 1, "power": 4, "status": 3, "temp_bad": True}) == ("warn", "warning")
-        assert idrac_state({"idrac_up": 1, "power": 4, "status": 5}) == ("bad", "critical")
+    def test_snmp_walk_lines(self):
+        base = "1.3.6.1.4.1.13742.6.3.5.3.1.3.1"
+        text = f'.{base}.1 "cx47"\n.{base}.12 "an \\"odd\\" name"\n.1.3.6.1.2.1.1.5.0 "other"\nNo more variables\n'
+        assert parse_snmp_walk(text, base) == {(1,): "cx47", (12,): 'an \\"odd\\" name'}
+
+    def test_the_pdu_over_snmp(self, monkeypatch):
+        monkeypatch.setattr("choco.hosttool.run_tool", fake_snmp)
+        d = PduSnmp("10.222.0.27").read()
+        assert d["inlet_w"] == 8100.0
+        assert [(o["outlet"], o["name"], o["watts"]) for o in d["outlets"]] == \
+            [(5, "cx1", 750.0), (6, "cx1", 3.0), (11, "arista", 98.0)]   # active power only
+        assert outlet_watts(d, "cx1") == 753 and outlet_watts(d, "nope") is None
+        assert d["outlets"][0]["pdu"] == "10.222.0.27"
+
+    def test_a_silent_pdu_raises(self, monkeypatch):
+        monkeypatch.setattr("choco.hosttool.run_tool", lambda argv, **kw: SimpleNamespace(
+            returncode=1, stdout="", stderr="Timeout: No Response from 10.222.0.27\n"))
+        with pytest.raises(OSError, match="No Response"):
+            PduSnmp("10.222.0.27").read()
+        monkeypatch.setattr("choco.hosttool.run_tool", lambda argv, **kw: None)
+        with pytest.raises(OSError, match="not installed"):
+            PduSnmp("10.222.0.27").read()
+
+    def test_the_switch_phy_and_optics(self):
+        from choco.instrument import Rates
+        rates = Rates()
+        parse_switch_slow(eapi_slow_results(1), rates, 1000.0)
+        out = parse_switch_slow(eapi_slow_results(2), rates, 1010.0)
+        e9, e12 = out["Ethernet9/1"], out["Ethernet12/1"]
+        assert e9["signal"] == 1.0 and e9["fec_lock"] == 1.0
+        assert e9["errors"] == 0.3 and e9["fec_corr"] == 10.0 and e9["fec_unc"] == 0.0
+        assert e9["rx_dbm"] == -2.25                       # the weakest lane
+        assert e12["signal"] == 0.0 and "fec_lock" not in e12
+        assert e12["rx_dbm"] == -30.0                      # Et12/2 folds into Ethernet12/1
 
     def test_short_build(self):
         assert short_build("chord", "chord.2021.10+1242.g340808ce76") == "chord +1242"
@@ -400,9 +474,12 @@ class TestMonitor:
     def _monitor(self, monkeypatch, tmp_path, **kw):
         calls = []
         monkeypatch.setattr(instrument, "fetch", fake_fetch(calls))
-        monkeypatch.setattr(instrument.time, "time", iter(range(1000, 100000, 10)).__next__)
+        monkeypatch.setattr(instrument.time, "time", iter(range(1000, 100000)).__next__)
+        monkeypatch.setattr("choco.hosttool.run_tool", fake_snmp)
         (tmp_path / "wiring.csv").write_text(WIRING)
         kw.setdefault("url", "http://prom.example:9090/")
+        kw.setdefault("pdu", PduSnmp("10.222.0.27"))
+        kw.setdefault("transfer_host", "alpenhorn.example")
         m = InstrumentMonitor(kw.pop("url"), switch_instance="10.0.0.21",
                               wiring=WiringFile(tmp_path / "wiring.csv"),
                               nodes=lambda: [("cx1", "http://cx1.example:12048")], **kw)
@@ -412,7 +489,7 @@ class TestMonitor:
         m = InstrumentMonitor(None)
         assert m.health == "unconfigured" and not m.configured
         m.poll_once()
-        assert m.error == "instrument.prometheus_url not set"
+        assert m.error == "no instrument source configured"
 
     def test_poll_fills_the_snapshot_and_judges_the_links(self, monkeypatch, tmp_path):
         m, calls = self._monitor(monkeypatch, tmp_path)
@@ -426,11 +503,18 @@ class TestMonitor:
         m.poll_once()
         assert m.nics[("cx1", 1)]["pps"] == 2e5
         assert m.nics[("cx1", 0)]["pps"] == 4e5 and m.nics[("cx1", 0)]["ring_full"] == 100
-        # Prometheus waits PROMETHEUS_EVERY_S; kotekan is read every poll
+        # the slow sources wait SLOW_EVERY_S; kotekan is read every poll
         assert sum(isinstance(c, str) and not c.endswith("/metrics") for c in calls) == n_prom
+        assert sum(c.endswith(":9100/metrics") for c in calls if isinstance(c, str)) == 2
         assert m.sources["kotekan"] == {"ok": True, "n": 1, "of": 1}
+        assert m.sources["node_exporter"] == {"ok": True, "n": 2, "of": 2} and m.sources["pdu"]["ok"]
         assert m.psu["volts"] == 48.1
-        assert outlet_watts(m.devices, "cx1") == 753 and m.devices["hosts"]["cx1"]["power"] == 4
+        # the outlets over SNMP, each host from its own node_exporter, the transfer from its host's
+        assert outlet_watts(m.devices, "cx1") == 753 and m.devices["hosts"]["cx1"]["up"] == 1.0
+        assert m.transfer == {"running": 1.0, "failures": 0.0, "last_success": 1e10,
+                              "last_run_bytes": 2.5e12, "host": "alpenhorn"}
+        assert not any("pdu_" in c or "idrac" in c or 'job="node"' in c or "kotekan_vis_transfer" in c
+                       for c in calls if isinstance(c, str))
         assert m.health == "degraded"
         assert "Ethernet12/1 (crate slot 4): down" in m.problems
         assert m.to_dict()["n_problems"] == len(m.problems)
@@ -447,6 +531,10 @@ class TestMonitor:
         m.poll_once()
         m.poll_once()
         assert ["show interfaces status", "show interfaces counters", "show interfaces counters discards"] in calls
+        assert instrument._SWITCH_SLOW_CMDS in calls
+        # with the account, nothing of the switch comes from Prometheus
+        assert not any(isinstance(c, str) and c.startswith(("switch_", "sum by (interface")) for c in calls)
+        assert m.switch["Ethernet9/1"]["signal"] == 1.0 and m.switch["Ethernet9/1"]["rx_dbm"] == -2.25
         sw = m.switch["Ethernet9/1"]
         # the counters' change over the 1 s between the readings
         assert sw["in_bps"] == 9.7e9 * 8 and sw["in_pps"] == 1.5e6 and sw["out_discards"] == 5
@@ -455,6 +543,23 @@ class TestMonitor:
             eapi.run(["configure terminal"])
         with pytest.raises(ValueError):
             eapi.run(["show version; reload"])
+
+    def test_silent_hosts_and_pdu_leave_the_signal_path_alone(self, monkeypatch, tmp_path):
+        """node_exporter and the PDU are reported, not judged here: the PDU
+        has its own badge, the hosts their own column."""
+        m, _ = self._monitor(monkeypatch, tmp_path)
+        good = fake_fetch([])
+
+        def no_node_exporter(method, url, **kw):
+            if url.endswith(":9100/metrics"):
+                raise OSError("refused")
+            return good(method, url, **kw)
+        monkeypatch.setattr(instrument, "fetch", no_node_exporter)
+        monkeypatch.setattr("choco.hosttool.run_tool", lambda argv, **kw: None)
+        m.poll_once()
+        assert not m.sources["node_exporter"]["ok"] and not m.sources["pdu"]["ok"]
+        assert m.devices["hosts"]["cx1"] == {"up": 0.0}
+        assert "node_exporter" not in (m.error or "") and "PDU" not in (m.error or "")
 
     def test_prometheus_down_is_down(self, monkeypatch, tmp_path):
         m, _ = self._monitor(monkeypatch, tmp_path)
@@ -476,8 +581,10 @@ def inst_app(app, configs_dir, monkeypatch, tmp_path):
         node.load_config()
     monkeypatch.setattr(instrument, "fetch", fake_fetch([]))
     (tmp_path / "wiring.csv").write_text(WIRING)
+    monkeypatch.setattr("choco.hosttool.run_tool", fake_snmp)
     m = app.config["instrument_monitor"]
     m.url, m.switch_instance, m.wiring = "http://prom.example:9090", None, WiringFile(tmp_path / "wiring.csv")
+    m.pdu, m.transfer_host = PduSnmp("10.222.0.27"), "alpenhorn.example"
     m.poll_once()
     return app
 
@@ -504,31 +611,32 @@ class TestTransfer:
         client = inst_app.test_client()
         login(client)
         body = client.get("/partials/instrument").data.decode()
-        assert ">Transfer<" in body and "to Fir · 2.3 TiB / 24 h" in body
-        assert "kotekan-vis-transfer on alpenhorn" in body and "runs that ended in the last 24 h: 2.3 TiB" in body
+        assert ">Transfer<" in body and "to Fir · last run 2.3 TiB" in body
+        assert "kotekan-vis-transfer on alpenhorn" in body and "the last run sent 2.3 TiB" in body
 
-    def test_a_run_in_progress_shows_its_send_rate(self, inst_app, monkeypatch):
+    def test_a_run_in_progress_shows_its_send_rate(self, inst_app):
         """The byte counter counts a run only when it ends, so during a
-        long run the card shows the host's send rate instead."""
-        monkeypatch.setitem(REPLIES, "sum by (instance) (rate(node_network_transmit_bytes_total",
-                            [_result(8.0e8, instance="alpenhorn.example")])
+        long run the card shows the host's send rate instead (a rate needs
+        two readings of its node_exporter)."""
+        import re
         m = inst_app.config["instrument_monitor"]
-        m._prom_at = None
+        m._slow_at = None
         m.poll_once()
-        assert m.devices["hosts"]["alpenhorn"]["tx_bps"] == 8.0e8
+        assert m.devices["hosts"]["alpenhorn"]["tx_bps"] > 0
         client = inst_app.test_client()
         login(client)
         body = client.get("/partials/instrument").data.decode()
-        assert "to Fir · 800 Mb/s" in body and ", at 800 Mb/s" in body
+        assert re.search(r"to Fir · \d+(\.\d)? [MG]b/s", body) and ", at " in body
 
     def test_missing_series_read_no_data(self, inst_app):
         inst_app.config["instrument_monitor"].transfer = None
         client = inst_app.test_client()
         login(client)
         body = client.get("/partials/instrument").data.decode()
-        assert ">Transfer<" in body and "no data" in body and "no kotekan_vis_transfer series" in body
+        assert ">Transfer<" in body and "no data" in body
+        assert "no kotekan_vis_transfer series from alpenhorn&#39;s node_exporter" in body
 
-    def test_no_card_without_prometheus(self, client):
+    def test_no_card_without_a_transfer_host(self, client):
         login(client)
         assert ">Transfer<" not in client.get("/partials/instrument").data.decode()
 
@@ -566,7 +674,7 @@ class TestPage:
         client = inst_app.test_client()
         login(client)
         body = client.get("/nodes").data.decode()
-        assert "Server" in body and "iDRAC" in body and "753 W" in body
+        assert "Server" in body and "answering" in body and "753 W" in body and "iDRAC" not in body
         assert "753 W" in client.get("/partials/dashboard-table").data.decode()
 
     def test_power_page_has_the_supply_and_the_outlets(self, inst_app):

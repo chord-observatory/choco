@@ -20,7 +20,7 @@ from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
 from .waterfalls import WaterfallStore, site_tz
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .fpga import FileArchive, FpgaMonitor, GainArchive, newest_file
-from .instrument import DEFAULT_WIRING_FILENAME, InstrumentMonitor, SwitchEapi, WiringFile
+from .instrument import DEFAULT_WIRING_FILENAME, InstrumentMonitor, PduSnmp, SwitchEapi, WiringFile
 from .powerdb import PdbMonitor
 from .gnss import TransitMonitor
 from .jobstatus import read_state_json
@@ -336,6 +336,7 @@ def create_app(
     inst_cfg = config.get("instrument") or {}
     wiring_file = Path(inst_cfg.get("wiring_file") or DEFAULT_WIRING_FILENAME)
     eapi_cfg = inst_cfg.get("switch_eapi") or {}
+    pdu_cfg = inst_cfg.get("pdu") or {}
     instrument_monitor = InstrumentMonitor(
         inst_cfg.get("prometheus_url") or None,
         switch_instance=inst_cfg.get("switch_instance") or None,
@@ -345,6 +346,10 @@ def create_app(
         switch_eapi=SwitchEapi(eapi_cfg["url"], eapi_cfg["username"], eapi_cfg["password"],
                                timeout=float(inst_cfg.get("timeout") or 5.0))
         if eapi_cfg.get("url") and eapi_cfg.get("username") else None,
+        pdu=PduSnmp(pdu_cfg["host"], str(pdu_cfg.get("community") or "public"),
+                    timeout=float(inst_cfg.get("timeout") or 5.0)) if pdu_cfg.get("host") else None,
+        # the transfer runs on the host whose socket lists the archive
+        transfer_host=arc_cfg.get("host") or None,
     )
 
     # Store on app for access in routes

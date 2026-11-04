@@ -1,8 +1,8 @@
-{# The rack power page's PDU outlets, from Prometheus through the
-   instrument monitor (30 s htmx poll on #power-outlets). #}
+{# The rack power page's PDU outlets, read over SNMP by the instrument
+   monitor (30 s htmx poll on #power-outlets). #}
 <h3 id="outlets">PDU outlets</h3>
-{% if not power_source %}
-<p class="note">Set <code>instrument.prometheus_url</code> in config.yaml to read the PDU.</p>
+{% if not pdu_source %}
+<p class="note">Set <code>instrument.pdu</code> in config.yaml to read the PDU.</p>
 {% elif devices.outlets %}
 <p class="note">Active power per outlet, as the PDU reports it ({{ '%.1f' % (devices.inlet_w / 1e3) if devices.inlet_w is number else '—' }} kW at the inlet).
     Servers have two supplies on two outlets; the second idles at a few watts.</p>
@@ -18,5 +18,5 @@
 </table>
 </div>
 {% else %}
-<p class="note">No PDU outlet series in Prometheus.</p>
+<p class="note">The PDU has not answered yet.</p>
 {% endif %}

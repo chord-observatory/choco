@@ -115,6 +115,11 @@ pdb:
 # iDRACs, the dish supply and (without switch_eapi) the switch from
 # Prometheus.  Unset prometheus_url and switch_eapi: the page has no live
 # hardware data.
+# Each kotekan host's node_exporter (port 9100) is read directly, and so is
+# the transfer host's (vis_files.archive.host), for the transfer job's
+# series; node_exporter must allow choco's address (chord-sysops
+# node_exporter_allowed_sources).  Prometheus is read only for the dish
+# supply and, until switch_eapi is set, for the switch.
 instrument:
   prometheus_url: http://10.222.0.40:9090
   switch_instance: 10.222.0.21      # the switch monitor's instance label
@@ -133,6 +138,12 @@ instrument:
   #   url: https://10.222.0.21/command-api
   #   username: choco-ro
   #   password: ...
+  # The rack PDU (Raritan), read over SNMP v2c with net-snmp's snmpbulkwalk
+  # (the `snmp` package): outlet and inlet active power, every 30 s.
+  # Unset: no Rack power item or page figures.
+  pdu:
+    host: 10.222.0.27
+    community: public
 
 # The GNSS transit forecast: kvand's gnss-fengine service (kotekan
 # scripts/gnss/site/fengine_gains.py on the gnss VM), which forecasts the

@@ -15,11 +15,15 @@ Three inputs, all read-only:
   commands only, :class:`SwitchEapi`); the CRS boards come from choco's
   own fpga_master monitor (its hardware map and per-board samples,
   :func:`board_state`);
-- Prometheus, at most every ``PROMETHEUS_EVERY_S``, for what choco cannot
-  read itself: the dish supply (its SCPI socket takes the exporter alone),
-  the PDU and the iDRACs (SNMP), node_exporter (which answers Prometheus
-  alone), and the switch until choco has its account (the switch
-  monitor's ``switch_interface_*``, FEC and optics).
+- at most every ``SLOW_EVERY_S``, the slower sources, each read directly:
+  every host's node_exporter (reachability, network rates, and on the
+  transfer host the transfer job's textfile series), the rack PDU over
+  SNMP (:class:`PduSnmp`, the ``snmpbulkwalk`` host tool), and over eAPI
+  the switch's error counters, PHY (signal, FEC) and optics;
+- Prometheus, on the same cadence, only for what choco cannot read
+  itself: the dish supply (its SCPI socket takes one client, the
+  exporter), and the switch until choco has its eAPI account (the switch
+  monitor's ``switch_interface_*``).
 
 Stdlib only, apart from ``http.fetch`` for the requests.
 """
@@ -62,8 +66,9 @@ SWITCH_STALE_S = 180.0
 #: The page asks for a poll this often while it is open; the background
 #: loop (``InstrumentMonitor.INTERVAL_S``) keeps the header badge fresh.
 PAGE_POLL_S = 5.0
-#: Prometheus is read at most this often: its exporters scrape every 30-60 s.
-PROMETHEUS_EVERY_S = 30.0
+#: The slow sources (node_exporter, the PDU, the switch's PHY and optics,
+#: Prometheus) are read at most this often.
+SLOW_EVERY_S = 30.0
 #: fpga_master samples every board about every 11 s; a board whose newest
 #: sample is older than this is not being read.
 BOARD_STALE_S = 90.0
@@ -250,27 +255,10 @@ _SWITCH_QUERIES = {
     "fec_unc": "rate(switch_interface_fec_uncorrected_codewords_total{sw}[5m])",
     "rx_dbm": "min by (interface) (switch_interface_rx_power_dbm{sw})",
 }
-#: The power distribution unit, the servers' iDRACs (over SNMP) and
-#: node_exporter.  Raritan sensor 5 is active power (W).
-_DEVICE_QUERIES = {
-    "outlet_w": 'pdu_outlet_sensor_value{sensor="5"}',
-    "inlet_w": 'pdu_inlet_sensor_value{sensor="5"}',
-    "idrac_up": 'up{job="idrac_snmp"}',
-    "idrac_temp": "idrac_temperature_reading",
-    "idrac_temp_status": "idrac_temperature_status",
-    "idrac_status": "idrac_global_status",
-    "idrac_power": "idrac_system_power_state",
-    "idrac_psu": "idrac_psu_status",
-    "host_up": 'up{job="node"}',
-    "host_rx": 'sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[2m])) * 8',
-    "host_tx": 'sum by (instance) (rate(node_network_transmit_bytes_total{device!="lo"}[2m])) * 8',
-}
 #: PDU outlet names of the devices that are not hosts (a host's outlets
 #: carry its name).
 SWITCH_OUTLET = "arista"
 CRATE_OUTLET = "f-engine"
-#: Dell's status enumeration (iDRAC MIB): 3 is OK; 4 non-critical; 5, 6 critical.
-_DELL_OK = 3
 _PSU_QUERIES = {
     "up": "keysight_psu_up",
     "output_on": "keysight_psu_output_on",
@@ -280,16 +268,28 @@ _PSU_QUERIES = {
 }
 
 
-#: The acquisitions' transfer to the Alliance's Fir cluster: chord-sysops'
-#: ``kotekan_vis_transfer`` timer on the transfer host, through
-#: node_exporter's textfile collector.  One host runs it.
-_TRANSFER_QUERIES = {
-    "running": "kotekan_vis_transfer_running",
-    "failures": "kotekan_vis_transfer_consecutive_failures",
-    "last_success": "kotekan_vis_transfer_last_success_timestamp_seconds",
-    "last_start": "kotekan_vis_transfer_last_start_timestamp_seconds",
-    "sent_24h": "increase(kotekan_vis_transfer_transferred_bytes_total[24h])",
+#: node_exporter's port and the collectors read: the network counters and
+#: the textfile directory, where the transfer host writes the transfer
+#: job's series (chord-sysops ``kotekan_vis_transfer``).
+NODE_EXPORTER_PORT = 9100
+NODE_EXPORTER_PARAMS = {"collect[]": ["netdev", "textfile"]}
+#: The transfer job's textfile series, by the field they fill.
+_TRANSFER_SERIES = {
+    "kotekan_vis_transfer_running": "running",
+    "kotekan_vis_transfer_consecutive_failures": "failures",
+    "kotekan_vis_transfer_last_success_timestamp_seconds": "last_success",
+    "kotekan_vis_transfer_last_start_timestamp_seconds": "last_start",
+    "kotekan_vis_transfer_last_run_bytes_transferred": "last_run_bytes",
 }
+_SAMPLE_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(\S+)")
+#: The Raritan PDU's PDU2-MIB columns (PDU 1): outlet names, outlet and
+#: inlet sensor readings with the outlets' decimal digits.  A sensor row's
+#: last index is its type; 5 is active power, in watts.
+_PDU_OUTLET_NAME = "1.3.6.1.4.1.13742.6.3.5.3.1.3.1"
+_PDU_OUTLET_VALUE = "1.3.6.1.4.1.13742.6.5.4.3.1.4.1"
+_PDU_OUTLET_DIGITS = "1.3.6.1.4.1.13742.6.3.5.4.1.7.1"
+_PDU_INLET_VALUE = "1.3.6.1.4.1.13742.6.5.2.3.1.4.1"
+ACTIVE_POWER = 5
 #: The thresholds of chord-sysops' KotekanVisTransfer* alerts, so the card
 #: and Grafana agree: failing at two runs in a row, stale when idle with
 #: no success for 2 h, long when one run has gone 12 h (a baseband dump
@@ -300,7 +300,7 @@ TRANSFER_LONG_S = 12 * 3600
 
 
 def transfer_state(t: dict | None, now: float) -> tuple[str, str]:
-    """``(tone, word)`` of the transfer from its series (``_TRANSFER_QUERIES``
+    """``(tone, word)`` of the transfer from its series (``_TRANSFER_SERIES``
     fields), judged as the chord-sysops alerts judge it."""
     if not t:
         return "off", "no data"
@@ -323,55 +323,104 @@ def _short_host(instance: str) -> str:
     return instance.split(":")[0].split(".")[0]
 
 
-def _idrac_host(instance: str) -> str:
-    """``cx27i.site.chord-observatory.ca`` -> ``cx27`` (the iDRAC's name is the host's plus ``i``)."""
-    short = _short_host(instance)
-    return short[:-1] if short.endswith("i") else short
-
-
 def _pdu_name(instance: str) -> str:
     """A PDU target as Prometheus names it: a hostname shortened, an address kept."""
     host = instance.split(":")[0]
     return host if re.fullmatch(r"[\d.]+", host) else host.split(".")[0]
 
 
-def parse_devices(results: dict[str, list[dict]]) -> dict:
-    """The ``_DEVICE_QUERIES`` results as ``{"outlets", "inlet_w", "hosts"}``.
+def parse_node_exporter(text: str) -> dict:
+    """node_exporter's text -> ``{"rx", "tx", "transfer"}``: the network
+    byte counters summed over the host's interfaces but loopback (None when
+    the netdev collector gave none; DPDK traffic does not show here) and
+    the transfer job's series where the host writes them."""
+    rx = tx = 0.0
+    seen = False
+    transfer: dict[str, float] = {}
+    for line in text.splitlines():
+        if not line or line[0] == "#":
+            continue
+        m = _SAMPLE_RE.match(line)
+        if not m:
+            continue
+        name, labels, value = m.groups()
+        try:
+            v = float(value)
+        except ValueError:
+            continue
+        if name in ("node_network_receive_bytes_total", "node_network_transmit_bytes_total"):
+            if 'device="lo"' in (labels or ""):
+                continue
+            seen = True
+            if name == "node_network_receive_bytes_total":
+                rx += v
+            else:
+                tx += v
+        elif name in _TRANSFER_SERIES:
+            transfer[_TRANSFER_SERIES[name]] = v
+    return {"rx": rx if seen else None, "tx": tx if seen else None, "transfer": transfer}
 
-    ``hosts`` is keyed by short host name: ``idrac_up``, ``status``,
-    ``power`` (3 off, 4 on), ``psu`` ({name: status}), ``temps``
-    ({location: °C}), ``temp_bad`` (a probe not OK), ``up`` (node_exporter)
-    and ``rx_bps`` (kernel interfaces; DPDK traffic does not show here).
-    """
-    hosts: dict[str, dict] = {}
 
-    def host(name):
-        return hosts.setdefault(name, {"temps": {}, "psu": {}, "temp_bad": False})
+def parse_snmp_walk(text: str, base: str) -> dict[tuple[int, ...], str]:
+    """``snmpbulkwalk -On -Oq`` lines under *base* -> {index: value}, the
+    index the OID's components after *base*, a string's quotes removed."""
+    out: dict[tuple[int, ...], str] = {}
+    prefix = "." + base.lstrip(".") + "."
+    for line in text.splitlines():
+        oid, _, value = line.strip().partition(" ")
+        if not oid.startswith(prefix):
+            continue
+        try:
+            index = tuple(int(x) for x in oid[len(prefix):].split("."))
+        except ValueError:
+            continue
+        value = value.strip()
+        out[index] = value[1:-1] if len(value) >= 2 and value[0] == value[-1] == '"' else value
+    return out
 
-    for r in results.get("idrac_up", []):
-        host(_idrac_host(r["metric"].get("instance", "?")))["idrac_up"] = float(r["value"][1])
-    for field in ("idrac_status", "idrac_power"):
-        for r in results.get(field, []):
-            host(_idrac_host(r["metric"].get("instance", "?")))[field[6:]] = float(r["value"][1])
-    for r in results.get("idrac_temp", []):
-        m = r["metric"]
-        host(_idrac_host(m.get("instance", "?")))["temps"][m.get("probe_location", "?")] = float(r["value"][1])
-    for r in results.get("idrac_temp_status", []):
-        if float(r["value"][1]) != _DELL_OK:
-            host(_idrac_host(r["metric"].get("instance", "?")))["temp_bad"] = True
-    for r in results.get("idrac_psu", []):
-        m = r["metric"]
-        host(_idrac_host(m.get("instance", "?")))["psu"][m.get("psu", m.get("psu_index", "?"))] = float(r["value"][1])
-    for field, key in (("host_up", "up"), ("host_rx", "rx_bps"), ("host_tx", "tx_bps")):
-        for r in results.get(field, []):
-            host(_short_host(r["metric"].get("instance", "?")))[key] = float(r["value"][1])
-    outlets = sorted(({"outlet": int(r["metric"]["outlet"]) if str(r["metric"].get("outlet", "")).isdigit() else 0,
-                       "name": r["metric"].get("outlet_name") or "",
-                       "pdu": _pdu_name(r["metric"].get("instance", "?")),
-                       "watts": float(r["value"][1])}
-                      for r in results.get("outlet_w", [])), key=lambda o: (o["pdu"], o["outlet"]))
-    inlet = [float(r["value"][1]) for r in results.get("inlet_w", [])]
-    return {"outlets": outlets, "inlet_w": sum(inlet) if inlet else None, "hosts": hosts}
+
+class PduSnmp:
+    """The rack PDU (Raritan, PDU2-MIB) over SNMP v2c, read with net-snmp's
+    ``snmpbulkwalk`` (a host tool, like ``dot``); read-only by protocol use:
+    only walks are sent."""
+
+    def __init__(self, host: str, community: str = "public", timeout: float = 5.0):
+        self.host, self.community, self.timeout = host, community, float(timeout)
+
+    @property
+    def name(self) -> str:
+        """The PDU as the outlet table names it: a hostname shortened, an address kept."""
+        return _pdu_name(self.host)
+
+    def _walk(self, base: str) -> dict[tuple[int, ...], str]:
+        from .hosttool import run_tool
+        r = run_tool(["snmpbulkwalk", "-v2c", "-c", self.community, "-t", f"{self.timeout:g}", "-r", "1",
+                      "-On", "-Oq", self.host, base], timeout=3 * self.timeout + 5)
+        if r is None:
+            raise OSError("snmpbulkwalk is not installed or did not finish")
+        if r.returncode != 0:
+            lines = (r.stderr or "").strip().splitlines()
+            raise OSError(lines[-1] if lines else f"snmpbulkwalk exit {r.returncode}")
+        return parse_snmp_walk(r.stdout, base)
+
+    def read(self) -> dict:
+        """``{"outlets": [{outlet, name, pdu, watts}], "inlet_w"}``; raises
+        OSError when the PDU does not answer."""
+        names = self._walk(_PDU_OUTLET_NAME)
+        values = self._walk(_PDU_OUTLET_VALUE)
+        digits = self._walk(_PDU_OUTLET_DIGITS)
+        inlets = self._walk(_PDU_INLET_VALUE)
+        outlets = []
+        for (outlet, sensor), v in sorted(values.items()):
+            if sensor != ACTIVE_POWER:
+                continue
+            try:
+                watts = float(v) / 10 ** int(digits.get((outlet, sensor), "0"))
+            except ValueError:
+                continue
+            outlets.append({"outlet": outlet, "name": names.get((outlet,), ""), "pdu": self.name, "watts": watts})
+        inlet = [float(v) for (_inlet, sensor), v in inlets.items() if sensor == ACTIVE_POWER and v.isdigit()]
+        return {"outlets": outlets, "inlet_w": sum(inlet) if inlet else None}
 
 
 def outlet_watts(devices: dict | None, name: str) -> float | None:
@@ -380,44 +429,12 @@ def outlet_watts(devices: dict | None, name: str) -> float | None:
     return sum(ws) if ws else None
 
 
-def idrac_state(h: dict | None) -> tuple[str, str]:
-    """(tone, word) for a server from its iDRAC."""
-    if not h or "idrac_up" not in h:
-        return "off", "not scraped"
-    if not h["idrac_up"]:
-        return "bad", "silent"
-    if h.get("power") == 3:
-        return "bad", "power off"
-    status = h.get("status")
-    bad_psu = [n for n, v in h.get("psu", {}).items() if v != _DELL_OK]
-    if status is not None and status >= 5:
-        return "bad", "critical"
-    if bad_psu:
-        return "warn", f"{bad_psu[0]} not OK"
-    if h.get("temp_bad") or (status is not None and status != _DELL_OK):
-        return "warn", "warning"
-    return "ok", "on · OK" if h.get("power") == 4 else "OK"
-
-
-def host_temps(h: dict | None) -> dict:
-    """Inlet, hottest CPU and hottest GPU probe, °C (absent ones left out)."""
-    temps = (h or {}).get("temps", {})
-    out = {}
-    for key, word in (("inlet", "Inlet"), ("cpu", "CPU"), ("gpu", "GPU")):
-        vals = [v for loc, v in temps.items() if word in loc]
-        if vals:
-            out[key] = max(vals)
-    return out
-
-
 def host_health(name: str, devices: dict | None) -> dict:
-    """A server's iDRAC state, PSUs, temperatures, PDU power and
-    node_exporter reachability, from :func:`parse_devices`."""
-    h = (devices or {}).get("hosts", {}).get(name)
-    tone, word = idrac_state(h)
-    return {"idrac_tone": tone, "idrac_word": word, "temps": host_temps(h),
-            "watts": outlet_watts(devices, name), "host_up": (h or {}).get("up"),
-            "rx_bps": (h or {}).get("rx_bps"), "psu": (h or {}).get("psu", {})}
+    """A server's PDU power and its node_exporter: reachable (``host_up``)
+    and the network rates, from the monitor's ``devices``."""
+    h = (devices or {}).get("hosts", {}).get(name) or {}
+    return {"watts": outlet_watts(devices, name), "host_up": h.get("up"),
+            "rx_bps": h.get("rx_bps"), "tx_bps": h.get("tx_bps")}
 
 
 #: kotekan /metrics lines the NIC rows are made of, by the field they fill.
@@ -474,6 +491,13 @@ class Rates:
 #: Commands the switch reader may send.  Nothing else ever leaves choco.
 _SHOW_RE = re.compile(r"^show [a-z0-9 /|^.-]+$")
 _SWITCH_CMDS = ["show interfaces status", "show interfaces counters", "show interfaces counters discards"]
+#: Read on the slow cadence: the error counters, the PHY (signal detect,
+#: FEC lock and codewords) and the optics, as the switch monitor reads them.
+_SWITCH_SLOW_CMDS = ["show interfaces counters errors", "show interfaces phy detail",
+                     "show interfaces transceiver"]
+#: The error counters summed into ``errors`` (the switch monitor's set).
+_ERROR_KEYS = ("fcsErrors", "alignmentErrors", "symbolErrors", "inErrors", "frameTooShorts",
+               "frameTooLongs", "outErrors")
 
 
 class SwitchEapi:
@@ -533,27 +557,93 @@ def parse_switch(results: list[dict], rates: Rates, t: float) -> dict[str, dict]
     return out
 
 
+def _eos_value(obj):
+    """eAPI's phy-detail fields are ``{"value": x, "changes": n, ...}``."""
+    return obj["value"] if isinstance(obj, dict) and "value" in obj else None
+
+
+def _long_port(name: str) -> str:
+    return "Ethernet" + name[2:] if re.match(r"^Et\d", name) else name
+
+
+def parse_switch_slow(results: list[dict], rates: Rates, t: float) -> dict[str, dict]:
+    """``_SWITCH_SLOW_CMDS`` results -> ``errors`` (all error counters, a
+    rate), ``signal`` and ``fec_lock`` (1/0), ``fec_corr`` / ``fec_unc``
+    (codewords per second) and ``rx_dbm`` (the weakest lane's receive
+    power; a four-lane optic listed lane by lane folds into its /1 port)."""
+    errors, phy, xcvr = results
+    out: dict[str, dict] = {}
+    for name, c in (errors.get("interfaceErrorCounters") or {}).items():
+        total = sum(v for k, v in c.items() if k in _ERROR_KEYS and isinstance(v, (int, float)))
+        r = rates((name, "errors"), total, t)
+        if r is not None:
+            out.setdefault(name, {})["errors"] = r
+    statuses = phy.get("interfacePhyStatuses") or {}
+    for name, d in statuses.items():
+        ps = (d.get("phyStatuses") or [{}])[0]
+        e = out.setdefault(name, {})
+        signal = _eos_value((ps.get("pma") or {}).get("signalDetect"))
+        if isinstance(signal, bool):
+            e["signal"] = float(signal)
+        fec = ps.get("fec") or {}
+        lock = _eos_value(fec.get("alignmentLock"))
+        if isinstance(lock, bool):
+            e["fec_lock"] = float(lock)
+        for key, field in (("correctedCodewords", "fec_corr"), ("uncorrectedCodewords", "fec_unc")):
+            v = _eos_value(fec.get(key))
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                r = rates((name, field), v, t)
+                if r is not None:
+                    e[field] = r
+    for port, d in (xcvr.get("interfaces") or {}).items():
+        if not isinstance(d, dict):
+            continue
+        name = _long_port(port)
+        m = re.match(r"^(Ethernet\d+)/\d+$", name)
+        if m and name not in statuses and f"{m.group(1)}/1" in statuses:
+            name = f"{m.group(1)}/1"
+        params = d.get("parameters")
+        if isinstance(params, dict):
+            chans = (params.get("rxPower") or {}).get("channels") or {}
+            vals = [float(v) for ch, v in chans.items() if str(ch).isdigit() and isinstance(v, (int, float))]
+        else:
+            vals = [float(d["rxPower"])] if isinstance(d.get("rxPower"), (int, float)) else []
+        if vals:
+            e = out.setdefault(name, {})
+            e["rx_dbm"] = min(vals + ([e["rx_dbm"]] if "rx_dbm" in e else []))
+    return out
+
+
 class InstrumentMonitor(PolledMonitor):
     """Reads the X-engine NICs from kotekan, the switch from its eAPI (with
-    an account) or Prometheus, and the rest from Prometheus.
+    an account, else Prometheus), each host's node_exporter, the rack PDU
+    over SNMP (*pdu*, a :class:`PduSnmp`) and the dish supply from
+    Prometheus.
 
     *nodes* returns ``[(short name, kotekan base URL)]``, read at each
-    poll.  ``health``: ``ok`` when every source answers and the switch
-    numbers are fresh, ``degraded`` when one does not or a wired link is
-    down, ``down`` when nothing answers.
+    poll; their hosts, and *transfer_host* (the host that runs the
+    acquisitions' transfer), are the node_exporters read.  ``health`` is the
+    signal path's: ``ok`` when kotekan, the switch and Prometheus (where
+    used) answer and the switch numbers are fresh, ``degraded`` when one
+    does not or a wired link is down, ``down`` when nothing answers.
+    node_exporter and the PDU are reported in ``sources`` but judged by
+    their own pages (the PDU has its own badge).
     """
 
     INTERVAL_S = 30
 
     def __init__(self, url: str | None, switch_instance: str | None = None,
                  wiring: WiringFile | None = None, timeout: float = 5.0,
-                 nodes=None, switch_eapi: SwitchEapi | None = None):
+                 nodes=None, switch_eapi: SwitchEapi | None = None,
+                 pdu: PduSnmp | None = None, transfer_host: str | None = None):
         self.url = (url or "").rstrip("/") or None
         self.switch_instance = switch_instance or None
         self.wiring = wiring or WiringFile(None)
         self.timeout = float(timeout)
         self.nodes = nodes or (lambda: [])
         self.eapi = switch_eapi
+        self.pdu = pdu
+        self.transfer_host = transfer_host or None
         self.switch: dict[str, dict] = {}
         self.nics: dict[tuple[str, int], dict] = {}
         self.psu: dict | None = None
@@ -564,14 +654,15 @@ class InstrumentMonitor(PolledMonitor):
         self.problems: list[str] = []
         self.last_seen: float | None = None
         self._prom_switch: dict[str, dict] = {}
-        self._prom_at: float | None = None
+        self._eapi_slow: dict[str, dict] = {}
+        self._slow_at: float | None = None
         self._rates = Rates()
         self._busy = False
         super().__init__()
 
     @property
     def configured(self) -> bool:
-        return bool(self.url) or self.eapi is not None
+        return bool(self.url) or self.eapi is not None or self.pdu is not None or bool(self.transfer_host)
 
     # host/port for the strip's tooltip, like the other monitors
     @property
@@ -603,43 +694,45 @@ class InstrumentMonitor(PolledMonitor):
     def _poll(self) -> None:
         now = self.last_polled = time.time()
         if not self.configured:
-            self.health, self.error = "unconfigured", "instrument.prometheus_url not set"
+            self.health, self.error = "unconfigured", "no instrument source configured"
             return
         sources = {}
         nics, kotekan = self._poll_nics()
         if kotekan:
             sources["kotekan"] = kotekan
+        slow = self._slow_at is None or now - self._slow_at >= SLOW_EVERY_S
         direct = None
         if self.eapi is not None:
             try:
                 direct = parse_switch(self.eapi.run(_SWITCH_CMDS), self._rates, time.time())
+                if slow:
+                    self._eapi_slow = parse_switch_slow(self.eapi.run(_SWITCH_SLOW_CMDS), self._rates, time.time())
+                for name, fields in self._eapi_slow.items():
+                    direct.setdefault(name, {}).update(fields)
                 sources["switch"] = {"ok": True, "via": "eAPI"}
             except (OSError, ValueError, KeyError, TypeError) as e:
                 sources["switch"] = {"ok": False, "via": "eAPI", "error": f"switch eAPI: {e}"}
-        if self.url and (self._prom_at is None or now - self._prom_at >= PROMETHEUS_EVERY_S):
-            try:
-                self._poll_prometheus()
-                self._prom_at = now
-                sources["prometheus"] = {"ok": True}
-            except (OSError, ValueError, KeyError, TypeError) as e:
-                sources["prometheus"] = {"ok": False, "error": f"Prometheus at {self.url}: {e}"}
-        elif self.url:
-            sources["prometheus"] = self.sources.get("prometheus", {"ok": True})
-        switch = {k: dict(v) for k, v in self._prom_switch.items()}
+        if slow:
+            sources.update(self._poll_slow())
+            self._slow_at = now
+        else:
+            sources.update({k: v for k, v in self.sources.items() if k in ("prometheus", "node_exporter", "pdu")})
+        switch = {k: dict(v) for k, v in self._prom_switch.items()} if direct is None else {}
         for name, fields in (direct or {}).items():
             switch.setdefault(name, {}).update(fields)
         self.switch, self.nics, self.sources = switch, nics, sources
         if any(src.get("ok") for src in sources.values()):
             self.last_seen = now
         self.problems = link_problems(self.wiring.get(), switch, nics)
-        errors = [src["error"] for src in sources.values() if not src.get("ok")]
+        path = {k: v for k, v in sources.items() if k in ("kotekan", "switch", "prometheus")}
+        errors = [src["error"] for src in path.values() if not src.get("ok")]
         mon = self.switch_monitor
         age = now - mon["last_success"] if mon.get("last_success") else None
         if direct is None and not errors and (not mon.get("up") or age is None or age > SWITCH_STALE_S):
             errors.append("the switch monitor is down" if not mon.get("up") else
                           "the switch monitor has not polled the switch for " +
                           (f"{age / 60:.0f} min" if age is not None else "ever"))
-        if not any(src.get("ok") for src in sources.values()):
+        if not any(src.get("ok") for src in (path or sources).values()):
             self.health, self.error = "down", "; ".join(errors) or "no source answered"
         elif errors or self.problems:
             self.health, self.error = "degraded", (errors or self.problems)[0]
@@ -687,7 +780,80 @@ class InstrumentMonitor(PolledMonitor):
         return nics, {"ok": answered > 0, "n": answered, "of": len(nodes),
                       **({} if answered else {"error": "no kotekan /metrics answered"})}
 
+    def _poll_slow(self) -> dict[str, dict]:
+        """The slow sources, each on its own: node_exporter, the PDU and
+        Prometheus; their states for ``sources``."""
+        sources: dict[str, dict] = {}
+        hosts, transfer, state = self._poll_node_exporters()
+        if state:
+            sources["node_exporter"] = state
+        outlets = {"outlets": [], "inlet_w": None}
+        if self.pdu is not None:
+            try:
+                outlets = self.pdu.read()
+                sources["pdu"] = {"ok": True, "via": "SNMP"}
+            except OSError as e:
+                outlets = {k: self.devices.get(k) for k in ("outlets", "inlet_w")} if self.devices else outlets
+                sources["pdu"] = {"ok": False, "via": "SNMP", "error": f"PDU {self.pdu.host}: {e}"}
+        self.devices = {**outlets, "hosts": hosts}
+        self.transfer = transfer
+        if self.url:
+            try:
+                self._poll_prometheus()
+                sources["prometheus"] = {"ok": True}
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                sources["prometheus"] = {"ok": False, "error": f"Prometheus at {self.url}: {e}"}
+        return sources
+
+    def _poll_node_exporters(self) -> tuple[dict, dict | None, dict | None]:
+        """Every host's node_exporter at once: ``hosts`` ({short name: up,
+        rx_bps, tx_bps}), the transfer host's transfer series (None when it
+        gave none) and the source's state (None without hosts)."""
+        targets = [(name, urlsplit(base).hostname) for name, base in self.nodes()]
+        if self.transfer_host:
+            targets.append((_short_host(self.transfer_host), self.transfer_host))
+        targets = [(n, h) for n, h in dict(targets).items() if h]
+        if not targets:
+            return {}, None, None
+
+        def get(host):
+            try:
+                return fetch("GET", f"http://{host}:{NODE_EXPORTER_PORT}/metrics", params=NODE_EXPORTER_PARAMS,
+                             timeout=self.timeout).text
+            except OSError:
+                return None
+        jobs = [gevent.spawn(get, host) for _, host in targets]
+        gevent.joinall(jobs, timeout=self.timeout + 1)
+        hosts: dict[str, dict] = {}
+        transfer = None
+        for (name, _), job in zip(targets, jobs):
+            text = job.value if job.successful() else None
+            if text is None:
+                hosts[name] = {"up": 0.0}
+                continue
+            got, t = parse_node_exporter(text), time.time()
+            h = hosts[name] = {"up": 1.0}
+            for way in ("rx", "tx"):
+                if got[way] is not None:
+                    r = self._rates((name, "host", way), got[way], t)
+                    if r is not None:
+                        h[f"{way}_bps"] = r * 8
+            if self.transfer_host and name == _short_host(self.transfer_host) and got["transfer"]:
+                transfer = {**got["transfer"], "host": name}
+        answered = sum(1 for h in hosts.values() if h["up"])
+        return hosts, transfer, {"ok": answered > 0, "n": answered, "of": len(targets),
+                                 **({} if answered else {"error": "no node_exporter answered"})}
+
     def _poll_prometheus(self) -> None:
+        """The dish supply, and the switch while choco has no eAPI account."""
+        psu = {}
+        for field, q in _PSU_QUERIES.items():
+            for r in self._query(q):
+                psu[field] = float(r["value"][1])
+        self.psu = psu or None
+        if self.eapi is not None:
+            self._prom_switch, self.switch_monitor = {}, {}
+            return
         sw = f'{{instance="{self.switch_instance}"}}' if self.switch_instance else ""
         switch: dict[str, dict] = {}
         for field, q in _SWITCH_QUERIES.items():
@@ -705,23 +871,12 @@ class InstrumentMonitor(PolledMonitor):
         for r in self._query(f"switch_interface_status_info{sw}"):
             entry = switch.setdefault(r["metric"].get("interface", "?"), {})
             entry["status"] = r["metric"].get("status")
-        psu = {}
-        for field, q in _PSU_QUERIES.items():
-            for r in self._query(q):
-                psu[field] = float(r["value"][1])
-        devices = parse_devices({field: self._query(q) for field, q in _DEVICE_QUERIES.items()})
         mon = {}
         for field, q in (("up", f"switch_monitor_up{sw}"),
                          ("last_success", f"switch_monitor_last_success_timestamp_seconds{sw}")):
             for r in self._query(q):
                 mon[field] = float(r["value"][1])
-        transfer = {}
-        for field, q in _TRANSFER_QUERIES.items():
-            for r in self._query(q):
-                transfer[field] = float(r["value"][1])
-                transfer["host"] = _short_host(r["metric"].get("instance", "?"))
-        self._prom_switch, self.psu, self.devices, self.switch_monitor = switch, psu or None, devices, mon
-        self.transfer = transfer or None
+        self._prom_switch, self.switch_monitor = switch, mon
 
     def to_dict(self) -> dict:
         return {
@@ -884,8 +1039,8 @@ def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
     *boards*: :func:`board_layout`.  *power*: feed label -> True/False/None
     (the PDB channel; absent when the PDB table does not name the feed).
     *nodes*: node name -> ``{"status", "maintenance", "version", "branch",
-    "commit", "group"}`` from choco's registry.  *devices*:
-    :func:`parse_devices`.  *flags*: feed label -> why bffs flags it, for
+    "commit", "group"}`` from choco's registry.  *devices*: the monitor's
+    ``devices`` (the PDU's outlets, each host's node_exporter).  *flags*: feed label -> why bffs flags it, for
     the flagged feeds; None when bffs has not said.  *fpga*:
     ``FpgaMonitor.to_dict()``, for each board's own state (``board_tone``
     / ``board_word``, :func:`board_state`) beside its link's (``tone`` /
@@ -1164,19 +1319,14 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
     for g in groups:
         h = hosts.get(g["name"]) or {"status": None}
         left, right = cx(g["cols"][0]) - colw / 2 + 4, cx(g["cols"][-1]) + colw / 2 - 4
-        temps = h.get("temps", {})
-        tline = " ".join(f"{k.upper()} {temps[k]:.0f}°" for k in ("cpu", "gpu") if k in temps)
-        pline = " · ".join(([f"{h['watts']:.0f} W"] if h.get("watts") is not None else []) +
-                           ([f"inlet {temps['inlet']:.0f}°"] if "inlet" in temps else []))
+        pline = f"{h['watts']:.0f} W" if h.get("watts") is not None else ""
         tone = node_tone(h)
         status = (h.get("status") or "not in nodes.yaml") + (" · maint" if h.get("maintenance") else "")
         card(left, ny, right - left, Y["node_h"], "maint" if tone == "ok" and h.get("maintenance") else tone,
              [{"dy": 30, "text": g["name"], "cls": "fl-b"},
               {"dy": 44, "text": status, "cls": "fl-sm muted"},
               {"dy": 59, "text": short_build(h.get("branch"), h.get("version")), "cls": "fl-sm mono"},
-              {"dy": 74, "text": "iDRAC " + h.get("idrac_word", "—"), "cls": f"fl-sm pt-{h.get('idrac_tone', 'off')}"},
-              {"dy": 88, "text": tline, "cls": "fl-sm muted"},
-              {"dy": 102, "text": pline, "cls": "fl-sm muted"}],
+              {"dy": 74, "text": pline, "cls": "fl-sm muted"}],
              f"{g['name']}: {status}" + (f" · kotekan {h['version']}" if h.get("version") else "")
              + (f" ({h['commit'][:10]})" if h.get("commit") else ""),
              f"{root}/pipeline/{h['group']}/{g['name']}" if h.get("group") else None)
