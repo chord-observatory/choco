@@ -10,7 +10,7 @@ refreshed every 5 min.  Its ``/metrics`` is scraped by Prometheus
 (chord-sysops ``grafana_stack``), so Grafana keeps the history; choco
 shows the forecast.
 
-:class:`TransitMonitor` polls the forecast on the header strip's cadence
+:class:`TransitMonitor` polls the forecast on the menu's cadence
 and keeps the latest one.  :func:`summarize` reads it for a moment:
 whether the sky is quiet now, the next transit, the quiet windows long
 enough for an F-engine gain measurement (what the forecast is for: a
@@ -29,6 +29,7 @@ import math
 import time
 
 from .http import fetch
+from .jobdetail import fmt_utc
 from .monitor import HttpMonitor
 
 SCHEMA = "chord-gnss-transit-windows/0"
@@ -195,10 +196,6 @@ def boresight_check(boresight: dict, coelev) -> str | None:
 def fmt_hm(ts) -> str:
     """``HH:MM`` UTC."""
     return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%H:%M")
-
-
-def fmt_utc(ts) -> str:
-    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def fmt_length(seconds) -> str:

@@ -3,16 +3,14 @@
 import copy
 import json
 import time
-from pathlib import Path
 
 import pytest
 import responses
 
+from tests.helpers import TRANSIT_SAMPLE as SAMPLE, retimed
 from choco.gnss import (BORESIGHT_TOL_DEG, STALE_AFTER_S, TransitMonitor, boresight_check,
                         check_forecast, fmt_in, fmt_length, new_passes, summarize, timeline)
 
-#: One forecast as the service wrote it on 2026-11-04 (2 h, 10 passes).
-SAMPLE = Path(__file__).parent / "data" / "transit_windows.json"
 HOST, PORT = "gnss.example", 12070
 BASE = f"http://{HOST}:{PORT}"
 
@@ -20,20 +18,6 @@ BASE = f"http://{HOST}:{PORT}"
 @pytest.fixture(autouse=True)
 def no_retry_delay(monkeypatch):
     monkeypatch.setattr("choco.http.RETRY_DELAY_S", 0)
-
-
-def retimed(doc: dict, created: float) -> dict:
-    """The forecast moved in time so that it was made at *created*."""
-    out = copy.deepcopy(doc)
-    shift = created - doc["created_unix"]
-    for k in ("created_unix", "start_unix", "end_unix"):
-        out[k] += shift
-    for p in out["transits"]:
-        for k in ("start_unix", "end_unix", "closest_unix"):
-            p[k] += shift
-    out["quiet"] = {b: [[a + shift, c + shift] for a, c in w] for b, w in out["quiet"].items()}
-    out["quiet_by_band"] = {b: [[a + shift, c + shift] for a, c in w] for b, w in out["quiet_by_band"].items()}
-    return out
 
 
 @pytest.fixture

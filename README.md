@@ -534,7 +534,7 @@ choco/
 ├── pipeline_svg.py # dot layout presets, render_dot_svg, the SVG whitelist sanitizer
 ├── jobstatus.py    # job_status / timer_status / job_logs / read_state_json (systemd + state files)
 ├── manualflags.py  # the bffs manual override file, read and edited by one rule (shared with bffs)
-├── monitor.py      # PolledMonitor / HttpMonitor: the header strip's pollers' shared lifecycle
+├── monitor.py      # PolledMonitor / HttpMonitor: the menu's pollers' shared lifecycle
 ├── http.py         # fetch(): the one HTTP request helper (retries, OSError) for state, fpga, powerdb, upstream
 ├── hosttool.py     # run_tool(): systemctl / journalctl / dot, the one way
 ├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check + power_db wire conventions (stdlib; shared with bffs)

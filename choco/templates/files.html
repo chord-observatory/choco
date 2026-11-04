@@ -17,7 +17,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 {% block content %}
 {# The DATA badge's page: the mounts' scan, then the jobs that read them
    (the waterfall renderer, the acquisition notes).  The title tag is the
-   strip's joint DATA tag; each job's own tag heads its section. #}
+   menu's joint Acquisitions tag; each job's own tag heads its section. #}
 {% set data_jobs = [['waterfall', job], ['notes', notes.job]] %}
 <div class="page-head">
     <h2>Data files {{ tag(data_tone(data, data_jobs), data_word(data, data_jobs)) }}</h2>

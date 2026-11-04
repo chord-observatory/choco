@@ -43,7 +43,7 @@ from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json
                         timer_status)
 from .manualflags import toggle_manual_flag
 from .metrics import render as render_metrics
-from .gnss import summarize as transit_summary, timeline as transit_timeline
+from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import NodeStatus, find_updatable_blocks, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
@@ -1416,8 +1416,8 @@ def waterfall_view(root, acq, name):
     return render_template("waterfall_view.html", **context)
 
 
-#: The jobs the services strip and the landing table show, in badge
-#: order; ``label`` is the badge text.  ``unit`` is the service unit
+#: The jobs the menu and the front page's cards show; ``label`` is the
+#: badge text.  ``unit`` is the service unit
 #: unless ``<name>_cfg.service_unit`` says otherwise; the timer is the
 #: same name with ``.timer``.  ``state``, ``run`` and ``manual`` name the
 #: files read back from ``<state_dir>/<name>/``, the layout systemd's
@@ -1518,15 +1518,15 @@ _JOBS: dict[str, dict] = {
 
 
 def _service_registry() -> dict[str, dict]:
-    """Everything the services strip and /service/<name> pages know:
+    """Everything the menu and the /service/<name> pages know:
     choco itself, then ``_JOBS`` with their files placed under the state
     directory and their units as configured.  Keyed by page slug;
     ``unit`` doubles as the allowlist for the journal viewer: only these
     units can be read through the web UI.
 
     ``page`` says where a job's status is shown.  None: its own
-    /service/<name> page, a badge in the strip and a row in the landing
-    table.  A path: the job is folded into that page's badge and row
+    /service/<name> page and a badge in the menu.  A path: the job is
+    folded into that page's badge
     (the waterfall into DATA, the skymap into MAP) and /service/<name>
     redirects there; it keeps its entry for the journal viewer, the
     status partial, /api/status and /metrics, which report it on its own.
@@ -1557,41 +1557,42 @@ def _service_registry() -> dict[str, dict]:
     return registry
 
 
-#: The menu: groups of pages, each item ``(label, href, badge, matches)``.
+#: The menu: groups of pages, each item ``(label, href, badge, also)``.
 #: ``badge`` names the health snapshot the item's tag shows (``nodes``, a
-#: monitor, ``data`` or a job; None for a plain link) and ``matches`` the
-#: paths the item is current for (a path, or a prefix ending in /); the
-#: longest match wins, so a node page is NODES and the registry editor
-#: REGISTRY.  ``_menu.html`` renders it; ``menu_group`` is the active
-#: group, for a page's crumb.
-MENU: tuple = (
+#: monitor, ``data`` or a job; None for a plain link).  An item is
+#: current for its href and everything under it, plus the paths in
+#: ``also`` (a path, or a prefix ending in /); the longest match wins, so
+#: a node page is Nodes and the registry editor Node registry.
+#: ``_menu.html`` renders it; ``menu_group`` is the active group, for a
+#: page's crumb.
+MENU = (
     ("Instrument", (
-        ("Overview", "/", None, ("/",)),
-        ("Nodes", "/nodes", "nodes", ("/nodes", "/nodes/edit/", "/pipeline/", "/plot/")),
-        ("Switch", "/switch", "instrument", ("/switch",)),
-        ("F-engine", "/fpga", "fpga", ("/fpga", "/service/fpga")),
+        ("Overview", "/", None, ()),
+        ("Nodes", "/nodes", "nodes", ("/nodes/edit/", "/pipeline/", "/plot/")),
+        ("Switch", "/switch", "instrument", ()),
+        ("F-engine", "/fpga", "fpga", ("/service/fpga",)),
     )),
     ("Power", (
-        ("Analog power", "/power/analog", "power", ("/power/analog", "/service/power", "/service/pdb")),
-        ("Rack power", "/power/rack", "rack", ("/power/rack",)),
+        ("Analog power", "/power/analog", "power", ("/service/power", "/service/pdb")),
+        ("Rack power", "/power/rack", "rack", ()),
     )),
     ("Positioning", (
-        ("EOP", "/service/eop", "eop", ("/service/eop",)),
-        ("Pointing", "/service/pointing", "pointing", ("/service/pointing",)),
-        ("Transits", "/transits", "gnss", ("/transits",)),
+        ("EOP", "/service/eop", "eop", ()),
+        ("Pointing", "/service/pointing", "pointing", ()),
+        ("Transits", "/transits", "gnss", ()),
     )),
     ("Calibration", (
-        ("Feed flags", "/service/bffs", "bffs", ("/service/bffs",)),
-        ("Eigencal", "/service/eigencal", "eigencal", ("/service/eigencal",)),
+        ("Feed flags", "/service/bffs", "bffs", ()),
+        ("Eigencal", "/service/eigencal", "eigencal", ()),
     )),
     ("Data", (
-        ("Acquisitions", "/files", "data", ("/files", "/waterfall/")),
-        ("Sky maps", "/service/mapmaker", "mapmaker", ("/service/mapmaker", "/service/skymap")),
+        ("Acquisitions", "/files", "data", ("/waterfall/",)),
+        ("Sky maps", "/service/mapmaker", "mapmaker", ("/service/skymap",)),
     )),
     ("Config", (
-        ("Config library", "/configs", None, ("/configs",)),
-        ("Node registry", "/nodes/edit", None, ("/nodes/edit",)),
-        ("choco", "/service/choco", "choco", ("/service/choco",)),
+        ("Config library", "/configs", None, ()),
+        ("Node registry", "/nodes/edit", None, ()),
+        ("choco", "/service/choco", "choco", ()),
     )),
 )
 
@@ -1606,8 +1607,8 @@ def menu_active(path: str) -> tuple[str | None, str | None]:
     """``(group, href)`` of the menu item *path* belongs to, or Nones."""
     best, best_len = (None, None), -1
     for group, items in MENU:
-        for _label, href, _badge, matches in items:
-            for m in matches:
+        for _label, href, _badge, also in items:
+            for m in (href, *also):
                 if len(m) > best_len and _menu_match(path, m):
                     best, best_len = (group, href), len(m)
     return best
@@ -1617,7 +1618,7 @@ def menu_active(path: str) -> tuple[str | None, str | None]:
 def _menu_context() -> dict:
     """``menu`` (the groups) and the page's ``menu_group`` and
     ``menu_active`` href, for the aside and the crumbs."""
-    group, href = menu_active(request.path) if request else (None, None)
+    group, href = menu_active(request.path)
     return {"menu": MENU, "menu_group": group, "menu_active": href}
 
 
@@ -1636,8 +1637,8 @@ def _folded(registry: dict) -> dict[str, list[str]]:
 def _services_health(registry: dict | None = None) -> dict:
     """Health snapshots for the hardware monitors and the oneshot jobs.
 
-    Shared by the header strip, the landing table, /api/status and
-    /metrics.  *registry* is ``_service_registry()``, passed in when the
+    Shared by the menu, the front page, /api/status and /metrics.
+    *registry* is ``_service_registry()``, passed in when the
     caller already has one.
     """
     fpga = current_app.config.get("fpga_monitor")

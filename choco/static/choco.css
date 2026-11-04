@@ -104,9 +104,7 @@ td code, th code, dd code, .group-bar code { padding: 0; background: none; color
 
 /* ---- status tag -------------------------------------------------------
    Rectangular, a dot, the tone as tint + ink.  The font size is inherited
-   (the strip sets 0.85em, headings halve it, tables shrink it a little).
-   margin: 0 matters in the nav: Pico gives every `nav li a` a negative
-   margin equal to its padding, which would eat the strip's gap. */
+   (the menu sets 0.85em, headings halve it, tables shrink it a little). */
 .tag {
     display: inline-flex;
     align-items: center;
@@ -135,9 +133,9 @@ td code, th code, dd code, .group-bar code { padding: 0; background: none; color
 .tag-info  { background: var(--info-soft);  color: var(--info-text);  border-color: color-mix(in srgb, var(--info-text) 25%, transparent); }
 .tag-maint { background: var(--maint-soft); color: var(--maint-text); border-color: color-mix(in srgb, var(--maint-text) 25%, transparent); }
 .tag-off   { background: var(--off-soft);   color: var(--off-text);   border-color: color-mix(in srgb, var(--off-text) 25%, transparent); }
-/* A quiet tag (the strip, for ok / info / off): label and dot only on
+/* A quiet tag (the menu, for ok / info / off): label and dot only on
    neutral ground.  The dot keeps its tone, so a running job or an
-   unpolled node still reads at a glance.  No strip tag carries a word
+   unpolled node still reads at a glance.  No menu tag carries a word
    (the macro drops it); warn and bad keep their tint instead. */
 .tag.quiet { background: var(--surface); color: var(--pico-color); border-color: var(--surface-border); }
 .tag-ok.quiet .dot { color: var(--ok); }
@@ -221,7 +219,7 @@ body.wall aside.menu, body.wall .note { display: none; }
 body.wall .shell { display: block; }
 body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
 
-/* The nav's who-is-here line (base.html polls /partials/presence). */
+/* The menu foot's who-is-here line (base.html polls /partials/presence). */
 .presence { cursor: default; }
 
 /* ---- text helpers ---------------------------------------------------- */

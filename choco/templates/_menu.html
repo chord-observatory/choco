@@ -119,7 +119,7 @@
 {% for group, items in menu %}
 <div class="menu-group">
     <div class="menu-group-title">{{ group }}</div>
-    {% for label, href, badge, _matches in items %}{{ item(label, href, badge) }}
+    {% for label, href, badge, _also in items %}{{ item(label, href, badge) }}
     {% endfor %}
 </div>
 {% endfor %}

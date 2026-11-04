@@ -31,7 +31,7 @@ class TestActiveItem:
 
     def test_every_item_is_current_for_its_own_href(self):
         for group, items in MENU:
-            for _label, href, _badge, _matches in items:
+            for _label, href, _badge, _also in items:
                 assert menu_active(href) == (group, href)
 
 

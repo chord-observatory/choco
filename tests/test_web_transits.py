@@ -2,14 +2,11 @@
 
 import json
 import time
-from pathlib import Path
 
 import pytest
 import responses
 
-from tests.helpers import login
-from tests.test_gnss import SAMPLE, retimed
-from tests.test_web_fpga_pdb import TestFpgaGains
+from tests.helpers import TRANSIT_SAMPLE as SAMPLE, configure_gain_archive, login, retimed
 
 LOCAL = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
 
@@ -115,14 +112,14 @@ class TestGainsCardHint:
     measurement, from the same summary."""
 
     def test_the_next_quiet_window(self, client, app, transits):
-        TestFpgaGains()._configure(app)
+        configure_gain_archive(app)
         login(client)
         body = client.get("/partials/fpga-gains").data.decode()
         assert "Quiet sky for a gain measurement:" in body
         assert "42 min, in" in body and 'href="/transits"' in body
 
     def test_a_window_already_begun(self, client, app, transits):
-        TestFpgaGains()._configure(app)
+        configure_gain_archive(app)
         a, _b = transits.forecast["quiet"]["all"][0]
         transits.forecast = retimed(transits.forecast, transits.forecast["created_unix"] - (a - time.time()) - 60)
         login(client)
@@ -130,12 +127,12 @@ class TestGainsCardHint:
         assert "Quiet sky for a gain measurement:\n        now&ndash;" in body
 
     def test_no_window_in_the_forecast(self, client, app, transits):
-        TestFpgaGains()._configure(app)
+        configure_gain_archive(app)
         transits.min_quiet_s = 7200
         login(client)
         assert "none of 2 h 00 min in the next" in client.get("/partials/fpga-gains").data.decode()
 
     def test_without_the_monitor_the_card_says_nothing(self, client, app):
-        TestFpgaGains()._configure(app)
+        configure_gain_archive(app)
         login(client)
         assert "Quiet sky" not in client.get("/partials/fpga-gains").data.decode()

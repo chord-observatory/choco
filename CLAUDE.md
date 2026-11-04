@@ -422,7 +422,7 @@ names) rather than coin new ones.  This file holds the rules for agents;
 - [sync.md](docs/design/sync.md) — config model, config library and includes, workers, maintenance, one-offs, drift, load resilience
 - [cli.md](docs/design/cli.md) — the `choco` command
 - [auth.md](docs/design/auth.md) — config.yaml, the site proxy and roles, trusted hosts, dev mode
-- [ui.md](docs/design/ui.md) — URL layout, service strip, service pages, `/api/status`, `/metrics`
+- [ui.md](docs/design/ui.md) — URL layout, the menu (and the strip before it), service pages, `/api/status`, `/metrics`
 - [fpga-pdb.md](docs/design/fpga-pdb.md) — gain archive, FPGA/PDB controls, master PDB map
 - [instrument.md](docs/design/instrument.md) — the signal-path page: the devices where choco can and Prometheus for the rest, a board's two facts, the switch wiring table and how it was first inferred
 - [pipeline.md](docs/design/pipeline.md) — pipeline page, frame peeks, `bufferplot.js`

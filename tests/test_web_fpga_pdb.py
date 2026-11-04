@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from tests.helpers import csrf, login
+from tests.helpers import configure_gain_archive, csrf, login
 
 
 def _pdb(app, chips, control=True, **cfg):
@@ -26,36 +26,8 @@ def _pdb(app, chips, control=True, **cfg):
 class TestFpgaGains:
     """The digital-gain archive: manifest, data protocol, page, download."""
 
-    MANIFEST = {
-        "datasets": [
-            {"name": "gain_coeff", "value_type": "complex64",
-             "extents": [1, 8192, 128],
-             "dimnames": ["update_time", "freq", "input"], "bytes": 8388608},
-            {"name": "gain_exp", "value_type": "int32", "extents": [1, 128],
-             "dimnames": ["update_time", "input"], "bytes": 512},
-        ],
-        "attrs": {"acquisition_name": "20260808T053625Z_digitalgain"},
-        "scalars": {"update_id": ["digitalgain_20260808T053625.917371Z"],
-                    "index_map/update_time": [1786167385.917371]},
-        "index_map": {"freq": {"n": 8192, "first_mhz": 0.0,
-                               "last_mhz": 1599.8046875},
-                      "inputs": {"n": 128, "names": ["chord_pathfinder000000"]}},
-    }
-
-    def _configure(self, app, payload=b"\x01\x02\x03\x04"):
-        """A gain archive with its cache pre-filled — no fpga_master, no h5py."""
-        archive = app.config["gain_archive"]
-        archive.base_url = "http://fpga.example:54321"
-        archive._manifest = self.MANIFEST
-        archive._data = {"gain_exp": payload}
-        archive._fetched_at = 1e12          # never stale during a test
-        monitor = app.config["fpga_monitor"]
-        monitor.host, monitor.port = "fpga.example", 54321
-        app.config["fpga_cfg"] = {"host": monitor.host, "port": monitor.port}
-        return archive
-
     def test_descriptor_speaks_the_buffer_protocol(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         body = client.get("/api/fpga/gain-data?dataset=gain_coeff&len=0").get_json()
         # Exactly the shape bufferplot.js already understands, which is
@@ -69,7 +41,7 @@ class TestFpgaGains:
         assert body["metadata"]["index_map"]["freq"]["n"] == 8192
 
     def test_data_is_raw_bytes_with_the_update_id(self, client, app):
-        self._configure(app, payload=b"abcdefgh")
+        configure_gain_archive(app, payload=b"abcdefgh")
         login(client)
         resp = client.get("/api/fpga/gain-data?dataset=gain_exp&len=4")
         assert resp.status_code == 200
@@ -80,12 +52,12 @@ class TestFpgaGains:
         assert resp.headers["Cache-Control"] == "no-store"
 
     def test_unknown_dataset_404(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         assert client.get("/api/fpga/gain-data?dataset=nope&len=0").status_code == 404
 
     def test_bad_dataset_name_rejected(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         # The name reaches h5py, so it gets the same allowlist treatment
         # as a buffer name or a journal unit.
@@ -95,7 +67,7 @@ class TestFpgaGains:
             assert resp.status_code == 400, name
 
     def test_negative_len_rejected(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         resp = client.get("/api/fpga/gain-data?dataset=gain_exp&len=-1")
         assert resp.status_code == 400
@@ -105,7 +77,7 @@ class TestFpgaGains:
         assert client.get("/api/fpga/gain-data?dataset=x&len=0").status_code == 404
 
     def test_page_defers_the_card(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         body = client.get("/fpga").data.decode()
         # Filling the card means pulling 8.4 MB from fpga_master, so the
@@ -116,7 +88,7 @@ class TestFpgaGains:
         assert "digitalgain_20260808T053625.917371Z" not in body
 
     def test_card_shows_the_archive(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         body = client.get("/partials/fpga-gains").data.decode()
         assert "Digital gains" in body
@@ -127,7 +99,7 @@ class TestFpgaGains:
         assert "/service/fpga/gain.h5" in body        # download link
 
     def test_card_reports_an_unreachable_archive(self, client, app):
-        archive = self._configure(app)
+        archive = configure_gain_archive(app)
         archive._manifest = None
         archive._fetched_at = None
         archive.error = "ConnectionError: no route to host"
@@ -148,7 +120,7 @@ class TestFpgaGains:
         assert "F-engine" in body or "FPGA" in body   # ...page is fine
 
     def test_fullscreen_page_reuses_the_plot_template(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         body = client.get("/service/fpga/plot?dataset=gain_coeff").data.decode()
         assert 'data-source-url="/api/fpga/gain-data?dataset=gain_coeff"' in body
@@ -157,7 +129,7 @@ class TestFpgaGains:
         assert "bufferplot.js" in body
 
     def test_fullscreen_bad_dataset_redirects(self, client, app):
-        self._configure(app)
+        configure_gain_archive(app)
         login(client)
         resp = client.get("/service/fpga/plot?dataset=a b",
                           follow_redirects=False)
@@ -165,7 +137,7 @@ class TestFpgaGains:
         assert "/fpga" in resp.headers["Location"]
 
     def test_download_serves_the_file(self, client, app, tmp_path):
-        archive = self._configure(app)
+        archive = configure_gain_archive(app)
         h5 = tmp_path / "gain.h5"
         h5.write_bytes(b"\x89HDF\r\n\x1a\n rest")
         archive._path = h5
