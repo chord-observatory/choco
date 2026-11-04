@@ -57,6 +57,7 @@ choco/
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
 ├── fpga.py         # FpgaMonitor (fpga_master poll + controls), GainArchive, FileArchive (h5read subprocess)
 ├── powerdb.py      # PdbMonitor: power_db poll and the one read-modify-write-verify behind every power control
+├── gnss.py         # TransitMonitor: the GNSS transit forecast (kvand's gnss-fengine service), its summary and timeline
 ├── pipeline_svg.py # dot layout presets, render_dot_svg, the SVG whitelist sanitizer
 ├── jobstatus.py    # job_status / timer_status / job_logs / read_state_json (systemd + state files)
 ├── metrics.py      # /metrics: Prometheus exposition of the status snapshots, the sync loop and the jobs' run/state files (no Flask)

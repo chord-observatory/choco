@@ -30,6 +30,7 @@ MONITOR_STATES = {
     "data": ("ok", "degraded", "down", "unconfigured", "unknown"),
     "instrument": ("ok", "degraded", "down", "unconfigured", "unknown"),
     "archive": ("ok", "down", "unconfigured", "unknown"),
+    "gnss": ("ok", "stale", "degraded", "down", "unconfigured", "unknown"),
 }
 
 #: The files read per job, by name, for the job's own numbers.  bffs's

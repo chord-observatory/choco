@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_service_macros.html" import monitor_tone, monitor_label, tag %}
+
+{% block title %}Transits — CHOCO{% endblock %}
+
+{% block styles %}
+/* The timeline (gnss.timeline): one lane per band on the surface tint,
+   quiet windows in the ok tint (a window long enough for a gain
+   measurement outlined), passes as bars in the info tone: filled inside
+   the transit radius, dashed when only near; the Sun and the continuum
+   sources in the warn tone; now as a line in the bad tone. */
+svg.tl { display: block; width: 100%; max-width: 1100px; height: auto; margin: 0.5em 0; }
+svg.tl .lane { fill: var(--surface); stroke: var(--surface-border); stroke-width: 0.5; }
+svg.tl .q { fill: var(--ok-soft); }
+svg.tl .g { fill: none; stroke: var(--ok); stroke-width: 1.5; }
+svg.tl .closest { fill: var(--info); }
+svg.tl .near { fill: var(--info-soft); stroke: var(--info); stroke-width: 1; stroke-dasharray: 3 2; }
+svg.tl .source { fill: var(--warn); }
+svg.tl .now { stroke: var(--bad); stroke-width: 1.5; }
+svg.tl .tick { stroke: var(--surface-border); stroke-width: 0.5; }
+svg.tl text { fill: currentColor; font-size: 12px; }
+svg.tl .lbl { font-family: var(--pico-font-family-monospace); font-size: 11px; fill: var(--pico-muted-color); }
+svg.tl .bl { font-size: 10px; fill: var(--info-ink); paint-order: stroke; stroke: var(--info); stroke-width: 2px; }
+svg.tl .ax { font-family: var(--pico-font-family-monospace); font-size: 10.5px; fill: var(--pico-muted-color); }
+.tl-key { font-size: 0.85em; color: var(--pico-muted-color); }
+.tl-key span { display: inline-block; margin-right: 1em; }
+.tl-key i { display: inline-block; width: 1.4em; height: 0.8em; vertical-align: -0.05em; margin-right: 0.3em; border-radius: 2px; }
+.tl-key .q { background: var(--ok-soft); } .tl-key .g { border: 1.5px solid var(--ok); }
+.tl-key .closest { background: var(--info); } .tl-key .near { background: var(--info-soft); border: 1px dashed var(--info); }
+.tl-key .source { background: var(--warn); }
+table.passes td, table.passes th { font-size: 0.85em; padding: 0.3em 0.7em; white-space: nowrap; }
+table.passes td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
+table.passes tr.past { color: var(--pico-muted-color); }
+table.windows td, table.windows th { font-size: 0.9em; padding: 0.3em 0.8em; white-space: nowrap; }
+table.windows tr.current td:first-child { font-weight: 600; }
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h2>
+        <a href="{{ request.script_root }}/" class="crumb">Instrument</a><span class="crumb-sep">/</span>Transits
+        {{ tag(monitor_tone(monitor.health), monitor_label(monitor.health)) }}
+    </h2>
+</div>
+<p class="note">Satellite passes through the beam and the quiet windows between them, forecast by the
+    gnss-fengine service on <code>{{ monitor.host }}:{{ monitor.port }}</code>: a transit is a GNSS or
+    GuoWang satellite inside the transit radius of the boresight; a quiet window has no satellite, the
+    Sun or a bright source near it. A quiet window is when to measure the F-engine's digital gains.
+    Grafana keeps the history (<em>GNSS F-engine gains and transits</em>).</p>
+
+<div id="transits"
+     hx-get="{{ request.script_root }}/partials/transits"
+     hx-trigger="every 60s"
+     hx-swap="innerHTML">
+{% include "_transits.html" %}
+</div>
+{% endblock %}

@@ -9,6 +9,11 @@
     <p class="note">
     The F-engine's current gain archive, read from
     <code>/get-current-gain-file</code>. Read-only.</p>
+    {% if transits and transits.summary %}{% set ts = transits.summary %}
+    <p class="note">Quiet sky for a gain measurement:
+        {% if ts.gain_windows %}{% set w = ts.gain_windows[0] %}{{ w.start_fmt }}&ndash;{{ w.end_fmt }} UTC ({{ w.length_fmt }}{{ ', ' ~ w.in_fmt if not w.current }}){% else %}none of {{ ts.min_quiet_fmt }} in the next {{ ts.horizon_fmt }}{% endif %};
+        <a href="{{ request.script_root }}/transits">the transit forecast</a>.</p>
+    {% endif %}
     {% if gains.error and not gains.datasets %}
     <p class="err" style="font-size: 0.9em;">Gain file unavailable: {{ gains.error }}</p>
     {% else %}

@@ -134,6 +134,16 @@ instrument:
   #   username: choco-ro
   #   password: ...
 
+# The GNSS transit forecast: kvand's gnss-fengine service (kotekan
+# scripts/gnss/site/fengine_gains.py on the gnss VM), which forecasts the
+# satellite passes through the beam and the quiet windows between them.
+# The TRANSITS badge and /transits.  Unset host: no badge, no page.
+gnss:
+  host: gnss.site.chord-observatory.ca
+  port: 12070
+  timeout: 5                        # HTTP request timeout (seconds)
+  min_quiet_s: 600                  # a quiet window shorter than this is not offered for a gain measurement
+
 # Earth Orientation Parameter service settings.
 eop:
   # The job's own settings live in /etc/choco/eop.yaml (jobs/eop/eop.example.yaml).

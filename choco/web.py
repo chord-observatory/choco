@@ -43,6 +43,7 @@ from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json
                         timer_status)
 from .manualflags import toggle_manual_flag
 from .metrics import render as render_metrics
+from .gnss import summarize as transit_summary, timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import NodeStatus, find_updatable_blocks, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
@@ -1034,7 +1035,7 @@ def partial_fpga_gains():
     arrives on its own (``hx-trigger="load"``) and a failure degrades to
     a note inside it.
     """
-    return render_template("_fpga_gains.html", gains=_gain_context(),
+    return render_template("_fpga_gains.html", gains=_gain_context(), transits=_transit_context(),
                            poll_ms=GAIN_POLL_MS, fetch_bytes=GAIN_FETCH_BYTES)
 
 
@@ -1580,12 +1581,14 @@ def _services_health(registry: dict | None = None) -> dict:
     data = current_app.config.get("datafile_scan")
     inst = current_app.config.get("instrument_monitor")
     arc = current_app.config.get("archive_monitor")
+    gnss = current_app.config.get("transit_monitor")
     health = {
         "fpga": fpga.to_dict() if fpga is not None else None,
         "pdb": pdb.to_dict() if pdb is not None else None,
         "instrument": inst.to_dict() if inst is not None and inst.configured else None,
         "data": data.to_dict() if data is not None else None,
         "archive": arc.to_dict() if arc is not None else None,
+        "gnss": gnss.to_dict() if gnss is not None and gnss.configured else None,
     }
     for name, svc in (registry or _service_registry()).items():
         if svc["kind"] == "job":
@@ -1684,6 +1687,7 @@ def partial_services():
         power=_power_badge(services["pdb"]),
         instrument=services["instrument"],
         data=services["data"],
+        gnss=services["gnss"],
         services=services,
         svc=registry,
         folds={host: [[n, services[n]] for n in names]
@@ -2290,6 +2294,58 @@ def _instrument_jobs(root: str) -> dict:
         out["processing"] = {"title": "Processing", "tone": worst_tone(tones),
                              "word": f"{tones.count('ok')}/{len(jobs)} ok"}
     return out
+
+
+def _transit_context() -> dict | None:
+    """What a page shows of the transit forecast (``gnss.summarize`` and
+    the timeline), or None when the monitor is not configured."""
+    monitor = _component("transit_monitor")
+    if monitor is None:
+        return None
+    now = time.time()
+    summary = monitor.summary(now)
+    return {
+        "monitor": monitor.to_dict(),
+        "summary": summary,
+        "timeline": transit_timeline(monitor.forecast, now, monitor.min_quiet_s) if summary else None,
+        "now_ts": now,
+    }
+
+
+@bp.route("/transits")
+@login_required
+def transits_page():
+    """The GNSS transit forecast: the sky's state now, the quiet windows
+    for a gain measurement, the timeline and every pass."""
+    monitor = _component("transit_monitor")
+    if monitor is None:
+        abort(404)
+    monitor.poll_if_stale(30)
+    return render_template("transits.html", **_transit_context())
+
+
+@bp.route("/partials/transits")
+@login_required
+def partial_transits():
+    """The page's body (htmx, every 60 s)."""
+    monitor = _component("transit_monitor")
+    if monitor is None:
+        abort(404)
+    monitor.poll_if_stale(30)
+    return render_template("_transits.html", **_transit_context())
+
+
+@bp.route("/api/transits", methods=["GET"])
+@localhost_or_login_required
+def api_transits():
+    """The forecast as fetched and what choco reads from it now
+    (``summary``: the sky's state, the next transit, the quiet windows
+    for a gain measurement), for anything that times a measurement."""
+    monitor = _component("transit_monitor")
+    if monitor is None:
+        abort(404)
+    context = _transit_context()
+    return {"health": context["monitor"], "summary": context["summary"], "forecast": monitor.forecast}
 
 
 @bp.route("/instrument")

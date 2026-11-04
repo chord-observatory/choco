@@ -122,6 +122,33 @@ that page (status block, journal) and the tag takes a list of jobs,
 ``[word, snapshot]`` each, worst first-listed on a tie: ``notes failed`` is
 the notes job behind healthy mounts and a healthy renderer.
 
+**TRANSITS (2026-11-04).**  ``gnss.TransitMonitor`` polls kvand's gnss-fengine
+service for its transit forecast (``GET /transit_windows``, schema
+``chord-gnss-transit-windows/0``, two hours ahead, refreshed every 5 min) and
+keeps the latest document; a failed poll keeps it too, so the page shows the
+last forecast with the error.  The service's ``/metrics`` is scraped by
+Prometheus directly, so choco adds no ``choco_gnss_*`` numbers: Grafana has
+the history and choco the forecast, which Prometheus cannot hold.  The monitor
+checks the schema string and the fields a page reads (``check_forecast``) and
+reports anything else as ``degraded`` rather than crash, since the interface
+is a draft on kvand's side; ``stale`` is a forecast older than 15 min (three
+missed refreshes).  The forecast's boresight is fixed by the service's own
+arguments, not read from the pointing, so the monitor compares it with the
+pointing job's array value (``dish_coelev_deg``: −27.3 is az 180, el 62.7)
+and reports a disagreement over 0.5° as ``degraded``: the one way the
+forecast is wrong without saying so, and the one thing choco can tell that
+Grafana cannot.  ``gnss.summarize`` reads a forecast for one moment (the
+page, the badge, ``/api/transits`` and the FPGA gains card all read the same
+function) and ``gnss.timeline`` lays it out for the page's inline SVG: no
+plotting library, the palette tokens as CSS classes, so it follows the theme.
+"New passes" are those not in the forecast before the current one (same
+satellite within 5 min of the closest approach is the same pass, since a
+refreshed TLE moves a pass by seconds); the sliding horizon makes most
+refreshes add one, which is the point: the badge says when there is more to
+look at.  The quiet windows offered for a gain measurement are the ``all``
+windows at least ``gnss.min_quiet_s`` (600 s) long that are still ahead, a
+window already begun counted by its remainder.
+
 ## Service pages
 
 each badge links to a ``/service/<name>`` detail page, all keyed off the

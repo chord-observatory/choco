@@ -1,0 +1,100 @@
+{# The transit page's body (web._transit_context): the forecast's facts,
+   the quiet windows for a gain measurement, the timeline and every pass.
+   Refreshed every 60 s. #}
+{% from "_service_macros.html" import since, tag %}
+{% set s = summary %}
+{% if monitor.error and not s %}
+<p class="err">{{ monitor.error }}</p>
+{% elif not s %}
+<p class="note"><em>No forecast yet.</em></p>
+{% else %}
+{% if monitor.error %}
+<div class="notice notice-warn">&#9888; {{ monitor.error }}</div>
+{% endif %}
+<dl class="service-facts">
+    <dt>Forecast</dt>
+    <dd>made {{ s.created_fmt }} ({{ since(s.created, now_ts) }}), to {{ s.end_fmt }} UTC ({{ s.horizon_fmt }} ahead);
+        {{ s.n_closest }} transit{{ '' if s.n_closest == 1 else 's' }}, {{ s.transits | length }} passes
+        {%- if s.new_transits %}<br><small class="muted">new since the forecast before it ({{ since(s.new_since, now_ts) }}):
+            {% for p in s.new_transits %}{{ p.name }} {{ p.closest_fmt }}{{ '' if loop.last else ', ' }}{% endfor %}</small>{% endif %}</dd>
+    <dt>Sky now</dt>
+    <dd>{% if s.active %}{{ tag('info', 'transit') }} {% for p in s.active %}{{ p.name }} ({{ p.bands | join(', ') }}, {{ '%.1f' % p.min_sep_deg }}&deg;){{ '' if loop.last else '; ' }}{% endfor %}
+        {% elif s.quiet_now %}{{ tag('ok', 'quiet') }} every band
+        {% else %}{{ tag('warn', 'not quiet') }} quiet in {% set q = s.quiet_now_by_band.items() | selectattr(1) | map(attribute=0) | list %}{{ q | join(', ') if q else 'no band' }}{% endif %}</dd>
+    <dt>Next transit</dt>
+    <dd>{% if s.next_transit %}{{ s.next_transit.name }} {{ s.next_transit.start_fmt }}&ndash;{{ s.next_transit.end_fmt }} UTC ({{ s.next_transit.in_fmt }}),
+        {{ s.next_transit.bands | join(', ') }}, closest {{ '%.1f' % s.next_transit.min_sep_deg }}&deg;{% else %}none in the forecast{% endif %}</dd>
+    <dt>Boresight</dt>
+    <dd>az {{ '%g' % s.boresight.az_deg }}&deg;, el {{ '%g' % s.boresight.el_deg }}&deg;
+        {%- if s.criteria %} &middot; transit radius {{ '%g' % s.criteria.transit_deg }}&deg; (GuoWang {{ '%g' % s.criteria.guowang_transit_deg }}&deg;), quiet radius {{ '%g' % s.criteria.quiet_deg }}&deg;, Sun {{ '%g' % s.criteria.sun_deg }}&deg;, sources {{ '%g' % s.criteria.source_deg }}&deg;{% endif %}</dd>
+    {% if s.sun %}
+    <dt>Sun</dt>
+    <dd>{{ '%.0f' % s.sun.sep_min }}&ndash;{{ '%.0f' % s.sun.sep_max }}&deg; from the boresight, elevation {{ '%.0f' % s.sun.el_min }} to {{ '%.0f' % s.sun.el_max }}&deg; over the forecast</dd>
+    {% endif %}
+    {% if s.tle_age_days %}
+    <dt>TLEs</dt>
+    <dd>{% for name, age in s.tle_age_days %}<code>{{ name }}</code> {{ '%.1f' % age }} d{{ '' if loop.last else ', ' }}{% endfor %}</dd>
+    {% endif %}
+</dl>
+
+<h3>Quiet windows for a gain measurement</h3>
+{% if s.gain_windows %}
+<p class="note">At least {{ s.min_quiet_fmt }} with every band quiet (<code>gnss.min_quiet_s</code>).</p>
+<table class="windows">
+    <thead><tr><th>Start</th><th>End</th><th>Length</th><th></th></tr></thead>
+    <tbody>
+    {% for w in s.gain_windows %}
+    <tr class="{{ 'current' if w.current }}"><td>{{ w.start_fmt }}</td><td>{{ w.end_fmt }}</td><td>{{ w.length_fmt }}</td><td class="muted">{{ w.in_fmt }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="note">None of {{ s.min_quiet_fmt }} in the forecast.</p>
+{% endif %}
+
+<h3>Timeline</h3>
+{% set tl = timeline %}
+<figure class="scroll-x">
+<svg class="tl" viewBox="0 0 {{ tl.width }} {{ tl.height }}" role="img" aria-label="Transits and quiet windows per band, {{ tl.t0_fmt }} to {{ tl.t1_fmt }} UTC">
+    {% for lane in tl.lanes %}
+    <rect class="lane" x="{{ tl.gutter }}" y="{{ lane.y }}" width="{{ tl.plot_x1 - tl.gutter }}" height="{{ tl.lane_h - 2 }}"/>
+    <text class="lbl" x="{{ tl.gutter - 8 }}" y="{{ lane.y + tl.lane_h * 0.62 }}" text-anchor="end">{{ lane.label }}</text>
+    {% for q in lane.quiet %}
+    <rect class="q" x="{{ '%.1f' % q.x0 }}" y="{{ lane.y }}" width="{{ '%.1f' % (q.x1 - q.x0) }}" height="{{ tl.lane_h - 2 }}"/>
+    {% if q.gain %}<rect class="g" x="{{ '%.1f' % q.x0 }}" y="{{ lane.y + 1 }}" width="{{ '%.1f' % (q.x1 - q.x0) }}" height="{{ tl.lane_h - 4 }}"/>{% endif %}
+    {% endfor %}
+    {% for b in lane.bars %}
+    <rect class="{{ b.kind }}" x="{{ '%.1f' % b.x0 }}" y="{{ lane.y + 4 }}" width="{{ '%.1f' % (b.x1 - b.x0) }}" height="{{ tl.lane_h - 10 }}"><title>{{ b.title }}</title></rect>
+    {% if b.label %}<text class="bl" x="{{ '%.1f' % ((b.x0 + b.x1) / 2) }}" y="{{ lane.y + tl.lane_h * 0.62 }}" text-anchor="middle">{{ b.label }}</text>{% endif %}
+    {% endfor %}
+    {% endfor %}
+    {% for t in tl.ticks %}
+    <line class="tick" x1="{{ '%.1f' % t.x }}" x2="{{ '%.1f' % t.x }}" y1="{{ tl.lanes[0].y }}" y2="{{ tl.axis_y }}"/>
+    <text class="ax" x="{{ '%.1f' % t.x }}" y="{{ tl.axis_y + 14 }}" text-anchor="middle">{{ t.label }}</text>
+    {% endfor %}
+    <line class="now" x1="{{ '%.1f' % tl.now_x }}" x2="{{ '%.1f' % tl.now_x }}" y1="{{ tl.lanes[0].y - 3 }}" y2="{{ tl.axis_y + 2 }}"/>
+</svg>
+<figcaption class="tl-key">
+    <span><i class="q"></i>quiet</span><span><i class="g"></i>long enough for gains</span>
+    <span><i class="closest"></i>transit</span><span><i class="near"></i>near (inside the quiet radius)</span>
+    <span><i class="source"></i>Sun or bright source</span> &middot; times UTC, now in red
+</figcaption>
+</figure>
+
+<h3>Passes</h3>
+<figure class="scroll-x">
+<table class="passes">
+    <thead><tr><th>Start</th><th>End</th><th>Satellite</th><th>Pass</th><th>Closest</th><th>Separation</th><th>Bands</th><th></th></tr></thead>
+    <tbody>
+    {% for p in s.transits %}
+    <tr class="{{ p.state }}">
+        <td>{{ p.start_fmt }}</td><td>{{ p.end_fmt }}</td><td class="mono">{{ p.name }}</td>
+        <td>{% if p.kind == 'closest' %}{{ tag('info', 'transit') }}{% else %}near{% endif %}</td>
+        <td>{{ p.closest_fmt }}</td><td class="num">{{ '%.1f' % p.min_sep_deg }}&deg;</td>
+        <td>{{ p.bands | join(', ') }}</td><td class="muted">{{ p.in_fmt }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% endif %}

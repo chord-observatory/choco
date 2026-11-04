@@ -22,6 +22,8 @@ from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
 from .fpga import FileArchive, FpgaMonitor, GainArchive, newest_file
 from .instrument import DEFAULT_WIRING_FILENAME, InstrumentMonitor, SwitchEapi, WiringFile
 from .powerdb import PdbMonitor
+from .gnss import TransitMonitor
+from .jobstatus import read_state_json
 from .state import Registry
 from .sync import Orchestrator
 from .upstream import DEFAULTS as _UPSTREAM_DEFAULTS, Upstream
@@ -56,6 +58,7 @@ _DEFAULT_CONFIG = {
     "fpga_master": {},
     "pdb": {},
     "instrument": {},
+    "gnss": {},
     "eop": {},
     "bffs": {},
     "eigencal": {},
@@ -286,6 +289,17 @@ def create_app(
         port=pdb_cfg.get("port") or None,
         timeout=float(pdb_cfg.get("timeout") or 5.0),
     )
+    # The GNSS transit forecast (kvand's gnss-fengine service).  Its
+    # boresight is checked against the pointing job's latest array value.
+    gnss_cfg = config.get("gnss") or {}
+    transit_monitor = TransitMonitor(
+        host=gnss_cfg.get("host") or None,
+        port=gnss_cfg.get("port") or None,
+        timeout=float(gnss_cfg.get("timeout") or 5.0),
+        min_quiet_s=gnss_cfg.get("min_quiet_s"),
+        pointing=lambda: (read_state_json(Path(app.config["state_dir"]) / "pointing" / STATE_NAME)
+                          or {}).get("array_value"),
+    )
 
     # Data-file roots for /files.  Scanned on demand (and cached), never
     # polled: nothing in the header depends on it, and the roots are NFS
@@ -345,6 +359,8 @@ def create_app(
         lambda: newest_file(Path(app.config["state_dir"]) / "eigencal", EIGENCAL_ARCHIVE_GLOB))
     app.config["pdb_monitor"] = pdb_monitor
     app.config["pdb_cfg"] = pdb_cfg
+    app.config["transit_monitor"] = transit_monitor
+    app.config["gnss_cfg"] = gnss_cfg
     app.config["pdb_map"] = PdbMapFile(pdb_map_path)
     app.config["instrument_monitor"] = instrument_monitor
     app.config["instrument_cfg"] = inst_cfg
@@ -375,6 +391,8 @@ def create_app(
         gevent.spawn(fpga_monitor.run)
     if pdb_monitor.configured:
         gevent.spawn(pdb_monitor.run)
+    if transit_monitor.configured:
+        gevent.spawn(transit_monitor.run)
     if datafile_scan.configured:
         gevent.spawn(datafile_scan.run)
     if archive_monitor.configured:

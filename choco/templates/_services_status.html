@@ -86,3 +86,13 @@
 {% for name, s in svc.items() if s.kind == 'job' and not s.page %}
 {{ job_tag(s.label, name, services[name], s.mtime_label, folds.get(name, [])) }}
 {% endfor %}
+{# TRANSITS: the GNSS transit forecast; the sky's state and the next
+   transit in the tooltip #}
+{% if gnss %}
+{{ monitor_tag('TRANSITS', 'the gnss-fengine forecast', gnss,
+               ('\nsky now: ' ~ ('quiet' if gnss.quiet_now else 'not quiet') if gnss.quiet_now is not none else '')
+               ~ ('\nnext transit: ' ~ gnss.next_transit.name ~ ' ' ~ gnss.next_transit.in_fmt if gnss.next_transit else '')
+               ~ ('\nquiet for gains: ' ~ gnss.gain_window.start_fmt ~ '–' ~ gnss.gain_window.end_fmt if gnss.gain_window else '')
+               ~ ('\nnew passes in the forecast: ' ~ gnss.n_new if gnss.n_new else ''),
+               request.script_root ~ '/transits') }}
+{% endif %}
