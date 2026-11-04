@@ -777,7 +777,7 @@ class TestBffsRunFile:
     def test_run_file_alone_renders_without_a_state_summary(self, client, app, tmp_path):
         body = self._page(client, app, tmp_path, run=self.RUN)
         assert "Last run" in body and "Sources" in body
-        assert "Bad feeds" not in body
+        assert "<dt>Bad feeds</dt>" not in body       # the menu item of that name is not the summary
         assert "Recent transitions" not in body
 
     def test_both_files_come_from_the_state_root_alone(self, client, app, tmp_path):

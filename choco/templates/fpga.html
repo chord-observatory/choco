@@ -54,4 +54,11 @@ kotekan and the EOP table are anchored to.</p>
     </div>
 </section>
 {% endif %}
+
+<div id="fpga-boards"
+     hx-get="{{ request.script_root }}/partials/fpga-boards"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+{% include "_fpga_boards.html" %}
+</div>
 {% endblock %}

@@ -41,28 +41,6 @@
     </dd>
     {% endif %}
 </dl>
-{% if detail.run and detail.run.sources %}
-<h3>Sources</h3>
-<figure class="scroll-x">
-<table class="bffs-sources table-sm">
-    <thead>
-        <tr><th>Source</th><th>Status</th><th>Flagged</th><th>Judged</th><th>Detail</th></tr>
-    </thead>
-    <tbody>
-        {% for s in detail.run.sources %}
-        <tr>
-            <td><code>{{ s.kind }}</code></td>
-            <td>{{ tag(source_tone(s.status), s.status) }}</td>
-            <td>{{ s.n_flagged if s.n_flagged is not none else '&mdash;' }}</td>
-            <td>{{ s.n_measured if s.n_measured is not none else '&mdash;' }}</td>
-            <td>{% if s.reason %}{{ s.reason }}{% if s.summary %}<br>{% endif %}{% endif %}{% if s.summary %}<small>{{ s.summary }}</small>{% endif %}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-<figcaption>Each configured source as of the last run: <em>judged</em> counts the elements it could measure; a source that could not measure leaves feeds good and reports degraded rather than flagging them.</figcaption>
-</figure>
-{% endif %}
 {% if detail.element_rows %}
 {% set manual = detail.manual or {} %}
 {% set clickable = manual.enabled and not manual.error and not manual.mismatch %}
@@ -96,6 +74,28 @@
     {% if manual.error %}<br><span class="err">Manual flags cannot be edited: {{ manual.error }}</span>{% endif %}
     {% if manual.mismatch %}<br><span class="err">Manual flags cannot be edited: choco would write <code>{{ manual.path }}</code> but the bffs job reads {% if manual.job_path %}<code>{{ manual.job_path }}</code>{% else %}no manual file (no manual source configured){% endif %}.</span>{% endif %}
 </figcaption>
+</figure>
+{% endif %}
+{% if detail.run and detail.run.sources %}
+<h3>Sources</h3>
+<figure class="scroll-x">
+<table class="bffs-sources table-sm">
+    <thead>
+        <tr><th>Source</th><th>Status</th><th>Flagged</th><th>Judged</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+        {% for s in detail.run.sources %}
+        <tr>
+            <td><code>{{ s.kind }}</code></td>
+            <td>{{ tag(source_tone(s.status), s.status) }}</td>
+            <td>{{ s.n_flagged if s.n_flagged is not none else '&mdash;' }}</td>
+            <td>{{ s.n_measured if s.n_measured is not none else '&mdash;' }}</td>
+            <td>{% if s.reason %}{{ s.reason }}{% if s.summary %}<br>{% endif %}{% endif %}{% if s.summary %}<small>{{ s.summary }}</small>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<figcaption>Each configured source as of the last run: <em>judged</em> counts the elements it could measure; a source that could not measure leaves feeds good and reports degraded rather than flagging them.</figcaption>
 </figure>
 {% endif %}
 {% if detail.history %}

@@ -10,7 +10,7 @@ from tests.helpers import login
 
 class TestActiveItem:
     @pytest.mark.parametrize("path, group, href", [
-        ("/", "Instrument", "/"),
+        ("/", None, None),
         ("/nodes", "Instrument", "/nodes"),
         ("/nodes/edit", "Config", "/nodes/edit"),
         ("/nodes/edit/cx/cx1", "Instrument", "/nodes"),
@@ -54,11 +54,14 @@ class TestMenu:
         body = client.get("/").data.decode()
         foot = body[body.index('class="menu-foot"'):body.index("</aside>")]
         assert 'id="presence"' in foot and 'class="logout-icon"' in foot and 'id="theme-toggle"' in foot
+        # the small-screen button sits in the head, beside the mark
+        head = body[body.index('class="menu-head"'):body.index('id="menu-items"')]
+        assert 'id="menu-toggle"' in head and 'aria-controls="menu-items"' in head
 
     def test_the_partial_fills_the_badges_and_marks_the_page(self, client, jobs):
         login(client)
         body = client.get("/partials/menu", headers={"HX-Current-URL": "https://x/service/eop"}).data.decode()
-        assert 'aria-label="Nodes' in body and 'aria-label="EOP: ok"' in body
+        assert 'aria-label="Nodes' in body and 'aria-label="Earth orientation: ok"' in body
         eop = re.search(r'<a href="/service/eop" class="tag ([^"]*)"', body)
         assert eop and "active" in eop.group(1)
         assert body.count(" active") == 1

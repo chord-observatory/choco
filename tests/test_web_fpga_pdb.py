@@ -255,7 +255,7 @@ class TestFpgaControl:
         assert "Boards" not in resp.data.decode()        # no hardware map read yet
         pis.assert_called_once_with(5)
 
-    def test_status_partial_lists_the_boards(self, client, app):
+    def test_the_boards_partial_lists_the_boards(self, client, app):
         monitor = self._configure(app)
         monitor.state, monitor.crate = "on", "K7BP16-0011"
         monitor.hw_map = {0: ["CRS-0228"], 1: []}
@@ -263,8 +263,13 @@ class TestFpgaControl:
                               "adc_overflow": 5.0, "fft_overflow": 0.0, "sample_ts": 1e12}}
         login(client)
         with patch.object(monitor, "poll_if_stale"):
-            body = client.get("/partials/service-fpga").data.decode()
-        assert "K7BP16-0011" in body and "1 boards in the hardware map" in body
+            status = client.get("/partials/service-fpga").data.decode()
+            body = client.get("/partials/fpga-boards").data.decode()
+        assert "K7BP16-0011" in status and "1 boards in the hardware map" in status
+        assert "Boards" not in status and "CRS-0228" not in status
+        # the table ends the page, after the controls
+        page = client.get("/fpga").data.decode()
+        assert page.index("Controls") < page.index('id="fpga-boards"')
         row = body[body.index("CRS-0228") - 200:body.index("CRS-0228") + 600]
         assert "55 °C" in row and "44 °C" in row and "present" in row and "BP_CLK_10MHZ" in row and "ADC 5 · FFT 0" in row
         # the crate slot is fpga_master's index plus one; an empty slot shows dashes

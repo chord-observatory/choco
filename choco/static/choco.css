@@ -180,7 +180,9 @@ aside.menu {
     border-right: 1px solid var(--surface-border);
     background: var(--surface);
 }
-.menu-head { padding: 0 0.1rem 0.5rem; }
+.menu-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.1rem 0.5rem; }
+/* The three-bar button that opens the menu on a small screen (below). */
+.menu-toggle { display: none; }
 #menu-items { flex: 1 1 auto; }
 .menu-group { margin: 0.9rem 0 0; }
 .menu-group-title { padding: 0 0.6rem 0.25rem; font-size: 0.7em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pico-muted-color); }
@@ -607,8 +609,9 @@ button.build-toggle {
    1024 px container step (phones, tablets, a half-screen window) they
    reflow instead of scrolling sideways; below 576 px the base size drops
    to Pico's own phone size as well.  The menu becomes a bar above the
-   page: the mark and the foot on one line, the items a wrapped row
-   without their group titles.  A table marked .stack becomes one card
+   page: the mark, a three-bar button and the foot on one line; the
+   items, still in their groups, open under it from the button.  A
+   table marked .stack becomes one card
    per row: .stack-lead (the row's name) and .stack-end (its status or
    action) share the first line, the plain cells follow inline with
    their data-label as a caption, and .stack-full cells take a line each
@@ -619,12 +622,11 @@ button.build-toggle {
     .shell { display: block; }
     aside.menu { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: center;
                  gap: 0.25rem 0.75rem; padding: 0.5rem 0.75rem; border-right: 0; border-bottom: 1px solid var(--surface-border); }
-    .menu-head { padding: 0; }
-    #menu-items { order: 1; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 0.25em 0.35em; }
-    .menu-group { display: contents; }
-    .menu-group-title { display: none; }
-    .menu .tag { display: inline-flex; width: auto; margin: 0; padding: 0.25em 0.5em; }
-    .menu .tag.plain { padding-left: 0.5em; }
+    .menu-head { padding: 0; gap: 0.5rem; }
+    .menu-toggle { display: inline-flex; }
+    #menu-items { display: none; order: 1; flex-basis: 100%; padding-bottom: 0.5rem; }
+    aside.menu.open #menu-items { display: block; }
+    .menu-group { margin-top: 0.5rem; }
     .menu-foot { margin: 0 0 0 auto; padding: 0; border: 0; }
 
     .group-bar { flex-wrap: wrap; }

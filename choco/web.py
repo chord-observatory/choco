@@ -1562,12 +1562,11 @@ def _service_registry() -> dict[str, dict]:
 #: monitor, ``data`` or a job; None for a plain link).  An item is
 #: current for its href and everything under it, plus the paths in
 #: ``also`` (a path, or a prefix ending in /); the longest match wins, so
-#: a node page is Nodes and the registry editor Node registry.
-#: ``_menu.html`` renders it; ``menu_group`` is the active group, for a
-#: page's crumb.
+#: a node page is Nodes and the registry editor Node registry.  The front
+#: page is the CHOCO mark's, not an item's.  ``_menu.html`` renders it;
+#: ``menu_group`` is the active group, for a page's crumb.
 MENU = (
     ("Instrument", (
-        ("Overview", "/", None, ()),
         ("Nodes", "/nodes", "nodes", ("/nodes/edit/", "/pipeline/", "/plot/")),
         ("Switch", "/switch", "instrument", ()),
         ("F-engine", "/fpga", "fpga", ("/service/fpga",)),
@@ -1577,12 +1576,12 @@ MENU = (
         ("Rack power", "/power/rack", "rack", ()),
     )),
     ("Positioning", (
-        ("EOP", "/service/eop", "eop", ()),
-        ("Pointing", "/service/pointing", "pointing", ()),
-        ("Transits", "/transits", "gnss", ()),
+        ("Earth orientation", "/service/eop", "eop", ()),
+        ("Dish pointing", "/service/pointing", "pointing", ()),
+        ("GNSS transits", "/transits", "gnss", ()),
     )),
     ("Calibration", (
-        ("Feed flags", "/service/bffs", "bffs", ()),
+        ("Bad feeds", "/service/bffs", "bffs", ()),
         ("Eigencal", "/service/eigencal", "eigencal", ()),
     )),
     ("Data", (
@@ -1927,6 +1926,17 @@ def partial_service_fpga():
         abort(404)
     monitor.poll_if_stale(5)
     return render_template("_service_fpga_status.html", **_fpga_context(monitor))
+
+
+@bp.route("/partials/fpga-boards")
+@login_required
+def partial_fpga_boards():
+    """The FPGA page's board table (5 s htmx poll), at the foot of the page."""
+    monitor = current_app.config.get("fpga_monitor")
+    if monitor is None:
+        abort(404)
+    monitor.poll_if_stale(5)
+    return render_template("_fpga_boards.html", **_fpga_context(monitor))
 
 
 def _fpga_context(monitor) -> dict:

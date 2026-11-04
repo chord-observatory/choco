@@ -294,8 +294,8 @@ class TestServicesPartial:
         resp = client.get("/partials/menu")
         assert resp.status_code == 200
         body = resp.data.decode()
-        assert "EOP" in body
-        assert "Feed flags" in body
+        assert "Earth orientation" in body
+        assert "Bad feeds" in body
         assert "Eigencal" in body
         # Monitor badges are only rendered if a monitor is set on
         # app.config.  The test app installs both (unconfigured).
@@ -366,7 +366,7 @@ class TestServicesPartial:
             body = client.get("/partials/menu").data.decode()
         eop = re.search(r'<a href="/service/eop"[^>]*>(.*?)</a>', body, re.S)
         assert eop and 'class="tag tag-info quiet"' in eop.group(0)
-        assert 'aria-label="EOP: running"' in eop.group(0)
+        assert 'aria-label="Earth orientation: running"' in eop.group(0)
         assert 'class="word"' not in eop.group(1)
 
     # --- The DATA badge: the mounts and the waterfall renderer, one tag ---
@@ -484,7 +484,7 @@ class TestServicesPartial:
             body = client.get("/partials/menu").data.decode()
         bffs = re.search(r'<a href="/service/bffs"[^>]*>(.*?)</a>', body, re.S)
         assert bffs and 'class="tag tag-warn"' in bffs.group(0)
-        assert 'aria-label="Feed flags: degraded"' in bffs.group(0)
+        assert 'aria-label="Bad feeds: degraded"' in bffs.group(0)
         assert 'class="word"' not in bffs.group(1)
 
 
