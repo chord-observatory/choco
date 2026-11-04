@@ -100,13 +100,14 @@ class TestApi:
 class TestBadge:
     def test_the_strip_has_a_transits_tag(self, client, transits, jobs):
         login(client)
-        body = client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
         assert "TRANSITS" in body and 'href="/transits"' in body
         assert "next transit: DIGUI-08 in" in body and "quiet for gains: " in body
 
     def test_unconfigured_has_no_tag(self, client, jobs):
         login(client)
-        assert "TRANSITS" not in client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
+        assert 'aria-label="TRANSITS:' not in body and 'href="/transits"' in body
 
 
 class TestGainsCardHint:

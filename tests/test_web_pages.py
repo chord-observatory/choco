@@ -126,7 +126,7 @@ class TestPresence:
         # a poll keeps presence fresh and names the page it belongs to,
         # but is not an action
         action = me["last_action"]
-        client.get("/partials/services", headers={"HX-Current-URL": "https://x/service/pdb"})
+        client.get("/partials/menu", headers={"HX-Current-URL": "https://x/service/pdb"})
         me = self._seen(app)["tester"]
         assert me["page"] == "/service/pdb" and me["last_action"] == action
 
@@ -291,7 +291,7 @@ class TestServicesPartial:
         # No fpga_master configured in the test app, so monitor is in
         # 'unknown' / unconfigured state.
         login(client)
-        resp = client.get("/partials/services")
+        resp = client.get("/partials/menu")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "EOP" in body
@@ -303,8 +303,8 @@ class TestServicesPartial:
         assert "POWER" in body
         # Badges link to the service pages.
         assert '/service/eop' in body
-        assert '/service/fpga' in body
-        assert '/service/power' in body
+        assert '/fpga' in body
+        assert '/power/pdb' in body
         # The cluster itself is a badge too, linking to the dashboard.
         assert "NODES" in body
 
@@ -318,7 +318,7 @@ class TestServicesPartial:
         aria-label because a strip badge shows no word at all.  The caller
         holds the ``jobs`` fixture.
         """
-        body = client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
         m = re.search(
             r'<a href="/nodes" class="tag tag-([a-z]+)( quiet)?[^"]*"'
             r' aria-label="NODES: ([^"]*)"', body)
@@ -349,7 +349,7 @@ class TestServicesPartial:
         # tooltip and aria-label, and the tint goes neutral.
         login(client)
         self._set_statuses(app, ["STARTED", "STARTED", "STARTED"])
-        body = client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
         assert nodes and 'class="tag tag-ok quiet"' in nodes.group(0)
         assert "<strong>NODES</strong>" in nodes.group(1)
@@ -363,7 +363,7 @@ class TestServicesPartial:
         running = dict(_JOB_STUB, health="never_run", running=True,
                        unit="choco-eop.service")
         with patch("choco.web.job_status", return_value=running):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         eop = re.search(r'<a href="/service/eop"[^>]*>(.*?)</a>', body, re.S)
         assert eop and 'class="tag tag-info quiet"' in eop.group(0)
         assert 'aria-label="EOP: running"' in eop.group(0)
@@ -376,7 +376,7 @@ class TestServicesPartial:
         job_status stubbed to *wf*; the test app's mounts are
         unconfigured (off), so the renderer wins whenever it is worse."""
         jobs(**wf)
-        body = client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
         m = re.search(
             r'<a href="/files" class="tag tag-([a-z]+)( quiet)?[^"]*"'
             r' aria-label="DATA: ([^"]*)"', body)
@@ -412,7 +412,7 @@ class TestServicesPartial:
         stub = dict(_JOB_STUB, health="degraded", unit="choco-waterfall.service",
                     reasons=["subset/ unreadable"])
         with patch("choco.web.job_status", return_value=stub):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         tag = re.search(r'<a href="/files"[^>]*title="([^"]*)"', body)
         assert tag, body
         tip = tag.group(1)
@@ -433,7 +433,7 @@ class TestServicesPartial:
             health = "failed" if unit == "choco-acqnotes.service" else "ok"
             return dict(_JOB_STUB, health=health, unit=unit)
         with patch("choco.web.job_status", side_effect=status):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         m = re.search(r'<a href="/files" class="tag tag-([a-z]+)[^"]*" aria-label="DATA: ([^"]*)"'
                       r'[^>]*title="([^"]*)"', body)
         assert m, body
@@ -450,7 +450,7 @@ class TestServicesPartial:
             health = "failed" if unit == "choco-skymap.service" else "ok"
             return dict(_JOB_STUB, health=health, unit=unit)
         with patch("choco.web.job_status", side_effect=status):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         m = re.search(r'<a href="/service/mapmaker" class="tag tag-([a-z]+)[^"]*" aria-label="MAP: ([^"]*)"'
                       r'[^>]*title="([^"]*)"', body)
         assert m, body
@@ -460,7 +460,7 @@ class TestServicesPartial:
         assert ">SKYMAP<" not in body and "/service/skymap" not in body
         # the host's own state, unprefixed, when it is the worse of the two
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB, health="degraded")):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         assert 'aria-label="MAP: degraded"' in body
         assert ">NOTES<" not in body and "/service/acqnotes" not in body
 
@@ -470,7 +470,7 @@ class TestServicesPartial:
         # word lives only in the tooltip and aria-label.
         login(client)
         self._set_statuses(app, ["DOWN", "DOWN", "DOWN"])
-        body = client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
         assert nodes and 'class="tag tag-bad"' in nodes.group(0)
         assert 'aria-label="NODES: all down"' in nodes.group(0)
@@ -481,7 +481,7 @@ class TestServicesPartial:
         login(client)
         degraded = dict(_JOB_STUB, health="degraded", unit="choco-bffs.service")
         with patch("choco.web.job_status", return_value=degraded):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         bffs = re.search(r'<a href="/service/bffs"[^>]*>(.*?)</a>', body, re.S)
         assert bffs and 'class="tag tag-warn"' in bffs.group(0)
         assert 'aria-label="BFFS: degraded"' in bffs.group(0)

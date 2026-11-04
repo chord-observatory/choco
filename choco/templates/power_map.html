@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Channel map — CHOCO{% endblock %}
+
+{% block styles %}
+.map-section table { font-size: 0.85em; }
+.map-note { font-size: 0.9em; margin: 0.25em 0; }
+.map-tags { font-size: 0.9em; }
+.map-tags code { margin-right: 0.4em; }
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Channel map</h2>
+</div>
+<p class="note">Which PDB channel powers which dish input, and whether that agrees with the
+    <code>dish_inputs</code> table kotekan runs.  Rendered once per load: reload after editing the CSV.</p>
+
+{% include "_pdb_map_section.html" %}
+{% endblock %}

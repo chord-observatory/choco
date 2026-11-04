@@ -14,7 +14,7 @@ table.ports tr.unwired td { color: var(--pico-muted-color); }
 
 {% block content %}
 <div class="page-head">
-    <h2><a href="{{ request.script_root }}/" class="crumb">Instrument</a><span class="crumb-sep">/</span>Switch</h2>
+    <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Switch</h2>
 </div>
 <p class="note">The Arista switch between the CRS boards and the X-engines, read-only.  Each board
     link is its switch port; each X-engine link is shown end to end, the switch port as the switch

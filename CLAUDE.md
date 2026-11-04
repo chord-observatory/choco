@@ -62,7 +62,7 @@ choco/
 ├── jobstatus.py    # job_status / timer_status / job_logs / read_state_json (systemd + state files)
 ├── metrics.py      # /metrics: Prometheus exposition of the status snapshots, the sync loop and the jobs' run/state files (no Flask)
 ├── manualflags.py  # the bffs manual override file, read and edited by one rule (shared with bffs)
-├── monitor.py      # PolledMonitor / HttpMonitor: the header strip's pollers' shared lifecycle
+├── monitor.py      # PolledMonitor / HttpMonitor: the menu's pollers' shared lifecycle
 ├── http.py         # fetch(): the one HTTP request helper (retries, OSError) for state, fpga, powerdb, upstream
 ├── hosttool.py     # run_tool(): systemctl / journalctl / dot, the one way
 ├── pdbmap.py       # Master dish-input <-> PDB channel CSV + kotekan cross-check + power_db wire conventions (stdlib; shared with bffs)
@@ -252,8 +252,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `tag-ok|bad|warn|info|maint|off` painted by the tokens in
   `static/choco.css` (loaded by `base.html` and the standalone pipeline and
   plot pages).  No hex literal for a state in a template, no brown, and the
-  CHOCO mark (`.brand`) stays grey.  The strip's tags are `quiet`: no tag
-  carries a word (it lives in the tooltip and `aria-label`), so the strip
+  CHOCO mark (`.brand`) stays grey.  The menu's tags are `quiet`: no tag
+  carries a word (it lives in the tooltip and `aria-label`), so the menu
   never shifts with the state; ok, info and off show label and dot on
   neutral ground, warn and bad keep their tint.
 - One page chrome: `.page-head` (title left, actions right), `.note` for

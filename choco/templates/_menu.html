@@ -1,9 +1,13 @@
 {% from "_service_macros.html" import monitor_tone, monitor_label, job_tone, job_label, data_tone, data_word, since, tag %}
 {% set now = now_ts %}
-{# Every badge is quiet: label and dot only, the state in the tooltip
-   and aria-label, so the strip's layout never shifts with the state.
-   Only the tint appears when the state is not ok, so the eye lands on
-   what needs attention. #}
+{# The menu's items (web.MENU): a badge where a monitor or a job stands
+   behind the page, a plain link otherwise.  Every badge is quiet: label
+   and dot only, the state in the tooltip and aria-label, so the menu's
+   layout never shifts with the state; only the tint appears when the
+   state is not ok, so the eye lands on what needs attention.  A page's
+   first paint renders this without health (every item plain); the
+   badges arrive from /partials/menu on load and every 30 s, with the
+   page the viewer is on marked. #}
 {# The tooltip lines every job shares: the last result, the run file's
    reasons, a run in flight, systemd unreachable. #}
 {% macro job_tip_tail(job) -%}
@@ -25,7 +29,7 @@
    folded into its page (the skymap in MAP), the tag shows the worst of
    them, a part's state prefixed with its name, and the tooltip lists
    each. #}
-{% macro job_tag(label, name, job, mtime_label, parts=[]) -%}
+{% macro job_tag(label, name, job, mtime_label, parts, href, extra) -%}
 {% set ns = namespace(tip=label ~ ' job (' ~ job.unit ~ ')'
                           ~ '\nhealth: ' ~ job.health
                           ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
@@ -33,45 +37,51 @@
 {% for word, j in parts %}{% set ns.tip = ns.tip ~ job_tip(word, word, j) %}{% endfor %}
 {% set jobs = [['', job]] + parts %}
 {{ tag(data_tone(none, jobs), data_word(none, jobs),
-       label=label, href=request.script_root ~ '/service/' ~ name, title=ns.tip ~ '\n\nclick for details', quiet=true) }}
+       label=label, href=href, title=ns.tip ~ '\n\nclick for details', quiet=true, extra=extra) }}
 {%- endmacro %}
 {# A hardware monitor's badge: where it is, its health, one line of its
-   own (extra), when it was last seen and its error. #}
-{% macro monitor_tag(label, name, m, extra, href) -%}
+   own (lines), when it was last seen and its error. #}
+{% macro monitor_tag(label, name, m, lines, href, extra) -%}
 {% set tip = name ~ ' at ' ~ (m.host or '?') ~ ':' ~ (m.port or '?')
              ~ '\nhealth: ' ~ m.health
-             ~ extra
+             ~ lines
              ~ ('\nlast seen: ' ~ since(m.last_seen, now) if m.last_seen else '')
              ~ ('\nerror: ' ~ m.error if m.error else '')
              ~ '\n\nclick for details' %}
-{{ tag(monitor_tone(m.health), monitor_label(m.health), label=label, href=href, title=tip, quiet=true) }}
+{{ tag(monitor_tone(m.health), monitor_label(m.health), label=label, href=href, title=tip, quiet=true, extra=extra) }}
 {%- endmacro %}
-{% if nodes %}
+{# A page with nothing to report on: the label alone. #}
+{% macro plain(label, href, extra) -%}
+<a href="{{ href }}" class="tag quiet plain{% if extra %} {{ extra }}{% endif %}"><strong>{{ label }}</strong></a>
+{%- endmacro %}
+{# One item: the badge its ``badge`` names, when that is configured and
+   health was passed, else the plain link. #}
+{% macro item(label, href, badge) -%}
+{% set url = request.script_root ~ href %}
+{% set extra = 'active' if href == menu_active else '' %}
+{% if not services or not badge %}{{ plain(label, url, extra) }}
+{% elif badge == 'nodes' and nodes %}
 {% set tip = 'kotekan nodes (' ~ nodes.total ~ ')'
              ~ '\nstarted: ' ~ nodes.started ~ ' · idle: ' ~ nodes.idle ~ ' · down: ' ~ nodes.down
              ~ ('\nsyncing: ' ~ nodes.syncing if nodes.syncing else '')
              ~ ('\nunknown: ' ~ nodes.unknown if nodes.unknown else '')
              ~ '\nin maintenance: ' ~ nodes.maintenance
              ~ '\n\nclick for the dashboard' %}
-{{ tag(monitor_tone(nodes.health), nodes.label, label='NODES', href=request.script_root ~ '/nodes', title=tip, quiet=true) }}
-{% endif %}
-{% if fpga %}
-{{ monitor_tag('FPGA', 'fpga_master', fpga, ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else ''), request.script_root ~ '/service/fpga') }}
-{% endif %}
+{{ tag(monitor_tone(nodes.health), nodes.label, label=label, href=url, title=tip, quiet=true, extra=extra) }}
+{% elif badge == 'fpga' and fpga %}
+{{ monitor_tag(label, 'fpga_master', fpga, ('\nframe0_ns: ' ~ fpga.frame0_ns if fpga.frame0_ns else ''), url, extra) }}
 {# POWER: the PDB controller, worse when the dish supply is not on #}
-{% if power %}
-{{ monitor_tag('POWER', 'power_db', power, ('\nchannels on: ' ~ power.n_on ~ ' / ' ~ power.n_channels if power.n_channels else '')
-               ~ ('\ndish supply: ' ~ power.supply if power.supply else ''), request.script_root ~ '/service/power') }}
-{% endif %}
-{% if instrument %}
-{{ monitor_tag('SWITCH', 'the switch and X-engine NIC monitor', instrument, ('\nlink problems: ' ~ instrument.n_problems if instrument.n_problems else ''), request.script_root ~ '/switch') }}
-{% endif %}
+{% elif badge == 'power' and power %}
+{{ monitor_tag(label, 'power_db', power, ('\nchannels on: ' ~ power.n_on ~ ' / ' ~ power.n_channels if power.n_channels else '')
+               ~ ('\ndish supply: ' ~ power.supply if power.supply else ''), url, extra) }}
+{% elif badge == 'instrument' and instrument %}
+{{ monitor_tag(label, 'the switch and X-engine NIC monitor', instrument, ('\nlink problems: ' ~ instrument.n_problems if instrument.n_problems else ''), url, extra) }}
 {# DATA is the mounts and the jobs that read them (the waterfall
    renderer, the acquisition notes), one tag (data_tone / data_word pick
    the worst part); the jobs have no badges of their own (their registry
    entries name this page). #}
+{% elif badge == 'data' and (data or services.waterfall or services.acqnotes) %}
 {% set wf = services.waterfall %}{% set notes = services.acqnotes %}
-{% if data or wf or notes %}
 {% set tip = 'Data-file roots' ~ (' (' ~ data.n_roots ~ ')' if data else '') ~ ', the waterfall renderer and the acquisition notes'
              ~ (('\nmounts: ' ~ data.health
                  ~ (' · reachable ' ~ data.n_ok ~ ' / ' ~ data.n_roots if data.n_roots else '')
@@ -81,18 +91,25 @@
              ~ job_tip('notes', 'acqnotes', notes)
              ~ '\n\nclick for details' %}
 {% set data_jobs = [['waterfall', wf], ['notes', notes]] %}
-{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs), label='DATA', href=request.script_root ~ '/files', title=tip, quiet=true) }}
-{% endif %}
-{% for name, s in svc.items() if s.kind == 'job' and not s.page %}
-{{ job_tag(s.label, name, services[name], s.mtime_label, folds.get(name, [])) }}
-{% endfor %}
+{{ tag(data_tone(data, data_jobs), data_word(data, data_jobs), label=label, href=url, title=tip, quiet=true, extra=extra) }}
 {# TRANSITS: the GNSS transit forecast; the sky's state and the next
    transit in the tooltip #}
-{% if gnss %}
-{{ monitor_tag('TRANSITS', 'the gnss-fengine forecast', gnss,
+{% elif badge == 'gnss' and gnss %}
+{{ monitor_tag(label, 'the gnss-fengine forecast', gnss,
                ('\nsky now: ' ~ ('quiet' if gnss.quiet_now else 'not quiet') if gnss.quiet_now is not none else '')
                ~ ('\nnext transit: ' ~ gnss.next_transit.name ~ ' ' ~ gnss.next_transit.in_fmt if gnss.next_transit else '')
                ~ ('\nquiet for gains: ' ~ gnss.gain_window.start_fmt ~ '–' ~ gnss.gain_window.end_fmt if gnss.gain_window else '')
                ~ ('\nnew passes in the forecast: ' ~ gnss.n_new if gnss.n_new else ''),
-               request.script_root ~ '/transits') }}
+               url, extra) }}
+{% elif badge in services and badge in svc and svc[badge].kind == 'job' %}
+{{ job_tag(label, badge, services[badge], svc[badge].mtime_label, folds.get(badge, []), url, extra) }}
+{% else %}{{ plain(label, url, extra) }}
 {% endif %}
+{%- endmacro %}
+{% for group, items in menu %}
+<div class="group">
+    <div class="group-title">{{ group }}</div>
+    {% for label, href, badge, _matches in items %}{{ item(label, href, badge) }}
+    {% endfor %}
+</div>
+{% endfor %}

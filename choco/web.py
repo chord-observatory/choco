@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import gevent
 from markupsafe import Markup
@@ -1050,7 +1050,7 @@ def fpga_gain_file():
     if raw is None:
         flash(f"Gain file unavailable: {archive.error or 'unknown error'}",
               "error")
-        return redirect(url_for("web.service_page", name="fpga"))
+        return redirect(url_for("web.fpga_page"))
     resp = Response(raw, mimetype="application/x-hdf5")
     resp.headers["Content-Disposition"] = \
         'attachment; filename="current_gain.h5"'
@@ -1073,12 +1073,12 @@ def fpga_gain_plot_page():
     dataset = request.args.get("dataset", "")
     if not _GAIN_DATASET_RE.fullmatch(dataset):
         flash("Invalid dataset name", "error")
-        return redirect(url_for("web.service_page", name="fpga"))
+        return redirect(url_for("web.fpga_page"))
     return render_template("plot.html", title=dataset, subtitle="F-engine gains",
                            source_url=request.script_root + "/api/fpga/gain-data?dataset="
                                       + quote(dataset, safe=""),
                            source_id="fpga-gain|" + dataset,
-                           back_url=url_for("web.service_page", name="fpga"),
+                           back_url=url_for("web.fpga_page"),
                            back_label="fpga",
                            poll_ms=GAIN_POLL_MS, fetch_bytes=GAIN_FETCH_BYTES)
 
@@ -1557,6 +1557,71 @@ def _service_registry() -> dict[str, dict]:
     return registry
 
 
+#: The menu: groups of pages, each item ``(label, href, badge, matches)``.
+#: ``badge`` names the health snapshot the item's tag shows (``nodes``, a
+#: monitor, ``data`` or a job; None for a plain link) and ``matches`` the
+#: paths the item is current for (a path, or a prefix ending in /); the
+#: longest match wins, so a node page is NODES and the registry editor
+#: REGISTRY.  ``_menu.html`` renders it; ``menu_group`` is the active
+#: group, for a page's crumb.
+MENU: tuple = (
+    ("Instrument", (
+        ("OVERVIEW", "/", None, ("/",)),
+        ("NODES", "/nodes", "nodes", ("/nodes", "/nodes/edit/", "/pipeline/", "/plot/")),
+        ("SWITCH", "/switch", "instrument", ("/switch",)),
+        ("FPGA", "/fpga", "fpga", ("/fpga", "/service/fpga")),
+    )),
+    ("Power", (
+        ("POWER", "/power/pdb", "power", ("/power/pdb", "/service/power", "/service/pdb")),
+        ("SUPPLIES", "/power/supplies", None, ("/power/supplies",)),
+        ("CHANNEL MAP", "/power/map", None, ("/power/map",)),
+    )),
+    ("Positioning", (
+        ("EOP", "/service/eop", "eop", ("/service/eop",)),
+        ("POINTING", "/service/pointing", "pointing", ("/service/pointing",)),
+        ("TRANSITS", "/transits", "gnss", ("/transits",)),
+    )),
+    ("Calibration", (
+        ("BFFS", "/service/bffs", "bffs", ("/service/bffs",)),
+        ("EIGENCAL", "/service/eigencal", "eigencal", ("/service/eigencal",)),
+    )),
+    ("Data", (
+        ("DATA", "/files", "data", ("/files", "/waterfall/")),
+        ("MAP", "/service/mapmaker", "mapmaker", ("/service/mapmaker", "/service/skymap")),
+    )),
+    ("Config", (
+        ("CONFIGS", "/configs", None, ("/configs",)),
+        ("REGISTRY", "/nodes/edit", None, ("/nodes/edit",)),
+        ("CHOCO", "/service/choco", "choco", ("/service/choco",)),
+    )),
+)
+
+
+def _menu_match(path: str, pattern: str) -> bool:
+    if pattern == "/":
+        return path == "/"
+    return path == pattern or path.startswith(pattern.rstrip("/") + "/")
+
+
+def menu_active(path: str) -> tuple[str | None, str | None]:
+    """``(group, href)`` of the menu item *path* belongs to, or Nones."""
+    best, best_len = (None, None), -1
+    for group, items in MENU:
+        for _label, href, _badge, matches in items:
+            for m in matches:
+                if len(m) > best_len and _menu_match(path, m):
+                    best, best_len = (group, href), len(m)
+    return best
+
+
+@bp.app_context_processor
+def _menu_context() -> dict:
+    """``menu`` (the groups) and the page's ``menu_group`` and
+    ``menu_active`` href, for the aside and the crumbs."""
+    group, href = menu_active(request.path) if request else (None, None)
+    return {"menu": MENU, "menu_group": group, "menu_active": href}
+
+
 def _folded(registry: dict) -> dict[str, list[str]]:
     """The jobs shown on another job's page, by host slug: every entry
     whose ``page`` is ``/service/<host>`` (the skymap on the MAP page).
@@ -1672,16 +1737,23 @@ def _nodes_health() -> dict:
     }
 
 
-@bp.route("/partials/services")
+@bp.route("/partials/menu")
 @login_required
-def partial_services():
-    """Render the NODES + monitor (FPGA, PDB, DATA) + job (EOP, bffs,
-    eigencal, MAP) strip.  DATA covers the mounts and the jobs that read
-    them; MAP carries the skymap (``_folded``)."""
+def partial_menu():
+    """The menu's items with their badges (htmx, on load and every 30 s):
+    NODES, the monitors (FPGA, POWER, SWITCH, DATA, TRANSITS) and the
+    jobs; DATA covers the mounts and the jobs that read them, MAP carries
+    the skymap (``_folded``).  The page the viewer is on comes from
+    HX-Current-URL, so its item stays marked through the swap."""
     registry = _service_registry()
     services = _services_health(registry)
+    current = urlsplit(request.headers.get("HX-Current-URL", "")).path
+    root = request.script_root
+    if root and current.startswith(root):
+        current = current[len(root):] or "/"
     return render_template(
-        "_services_status.html",
+        "_menu.html",
+        menu_active=menu_active(current)[1] if current else None,
         nodes=_nodes_health(),
         fpga=services["fpga"],
         power=_power_badge(services["pdb"]),
@@ -1764,24 +1836,11 @@ def _service_detail(name: str, svc: dict) -> dict | None:
 def service_page(name):
     """Detail page for one service badge: health, schedule, state, journal."""
     if name == "fpga":
-        monitor = current_app.config.get("fpga_monitor")
-        if monitor is None:
-            abort(404)
-        fpga_cfg = current_app.config.get("fpga_cfg") or {}
-        return render_template("service_fpga.html", control=bool(fpga_cfg.get("control", True)),
-                               **_fpga_context(monitor))
-    if name == "pdb":
-        # the page is Power now; the controls keep their /service/pdb/ URLs
+        return redirect(url_for("web.fpga_page"))
+    if name in ("pdb", "power"):
+        # the PDB grid is /power/pdb now; the controls keep their /service/pdb/ URLs
         query = request.query_string.decode()
-        return redirect(url_for("web.service_page", name="power") + ("?" + query if query else ""))
-    if name == "power":
-        if current_app.config.get("pdb_monitor") is None:
-            abort(404)
-        context = _pdb_context()
-        return render_template(
-            "service_pdb.html", **context, **_power_devices(),
-            check=_pdb_cross_check(context["pdb_map"]),
-        )
+        return redirect(url_for("web.power_pdb_page") + ("?" + query if query else ""))
     registry = _service_registry()
     svc = registry.get(name)
     if svc is None:
@@ -1818,6 +1877,47 @@ def _service_page_context(name: str, svc: dict) -> dict:
         "state_json": state_json,
         "now_ts": time.time(),
     }
+
+
+@bp.route("/fpga")
+@login_required
+def fpga_page():
+    """The F-engine's controller: fpga_master's state and boards, the
+    digital gains and the start/stop controls."""
+    monitor = current_app.config.get("fpga_monitor")
+    if monitor is None:
+        abort(404)
+    fpga_cfg = current_app.config.get("fpga_cfg") or {}
+    return render_template("fpga.html", control=bool(fpga_cfg.get("control", True)),
+                           **_fpga_context(monitor))
+
+
+@bp.route("/power/pdb")
+@login_required
+def power_pdb_page():
+    """The PDB channels as a grid, with their controls."""
+    if current_app.config.get("pdb_monitor") is None:
+        abort(404)
+    return render_template("power_pdb.html", **_pdb_context())
+
+
+@bp.route("/power/supplies")
+@login_required
+def power_supplies_page():
+    """The dish supply and the PDU outlets, from Prometheus."""
+    return render_template("power_supplies.html", **_power_devices())
+
+
+@bp.route("/power/map")
+@login_required
+def power_map_page():
+    """The master channel map and its cross-check against kotekan,
+    rendered once per load: the cross-check renders a kotekan config,
+    far too much for a poll, and wiring does not change while you watch."""
+    if current_app.config.get("pdb_monitor") is None:
+        abort(404)
+    pdb_map = current_app.config["pdb_map"].get()
+    return render_template("power_map.html", pdb_map=pdb_map, check=_pdb_cross_check(pdb_map))
 
 
 @bp.route("/partials/service-fpga")
@@ -2171,18 +2271,18 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
     else:
         supply = {"tone": "bad" if psu else "off", "line": "not answering" if psu else "no data"}
     cards = [{"name": "Dish supply", "sub": "Keysight N8732A", "title": "DC supply for the dishes' analog chain",
-              "href": root + "/service/power#supply",
+              "href": root + "/power/supplies#supply",
               **supply}]
     if pdb is not None and pdb.configured:
         pline = (f"answering · polled {ago(pdb.last_seen, now)}" if pdb.health == "ok"
                  else f"{pdb.health} · {pdb.error or ''}"[:60])
         cards.append({"name": "PDB controller", "sub": f"power_db {pdb.host}", "line": pline,
-                      "tone": health_tone(pdb.health), "href": root + "/service/power",
+                      "tone": health_tone(pdb.health), "href": root + "/power/pdb",
                       "title": f"power_db at {pdb.host}:{pdb.port}: {pdb.health}"
                                + (f" ({pdb.error})" if pdb.error else "")})
         stages["pdb"] = {"title": "Feeds", "tone": health_tone(pdb.health),
                          "word": f"{pdb.n_on}/{pdb.n_channels} on" if pdb.n_channels else pdb.health,
-                         "href": root + "/service/power", "notes": ["filled: powered", "red: bffs flagged"]}
+                         "href": root + "/power/pdb", "notes": ["filled: powered", "red: bffs flagged"]}
     else:
         cards.append({"name": "PDB controller", "sub": "power_db", "line": "not configured", "tone": "off"})
         stages["pdb"] = {"title": "Feeds", "tone": "off", "word": "no PDB"}
@@ -2190,7 +2290,7 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
         n = len(devices.get("outlets", []))
         cards.append({"name": "Rack PDU", "sub": ", ".join(sorted({o["pdu"] for o in devices["outlets"]})),
                       "line": f"{devices['inlet_w'] / 1e3:.1f} kW in · {n} outlets", "tone": "ok",
-                      "href": root + "/service/power#outlets",
+                      "href": root + "/power/supplies#outlets",
                       "title": "AC power for the switch, the crate and the servers"})
     stages["power"] = {"title": "Power"}
     stages["power_cards"] = cards
@@ -2204,7 +2304,7 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
              "links " + links_word(view["boards"], "tone")[1]]
     if watts(CRATE_OUTLET):
         notes.append(watts(CRATE_OUTLET))
-    stages["fpga"] = {"title": "CRS boards", "word": bword, "href": root + "/service/fpga", "notes": notes,
+    stages["fpga"] = {"title": "CRS boards", "word": bword, "href": root + "/fpga", "notes": notes,
                       "tone": btone if fstate.get("health") in ("ok", None) else health_tone(fstate.get("health"))}
     mon = monitor.switch_monitor or {}
     eapi = (monitor.sources or {}).get("switch")
@@ -2485,7 +2585,7 @@ def bffs_manual_toggle():
 @bp.route("/service/fpga/<action>", methods=["POST"])
 @login_required
 def fpga_control(action):
-    """Start or stop the FPGA master from the /service/fpga page.
+    """Start or stop the FPGA master from the /fpga page.
 
     /start returns immediately (fpga_master initializes in the
     background, reusing its launch config); /stop blocks until the
@@ -2519,7 +2619,7 @@ def fpga_control(action):
         gevent.spawn(_stop_and_record)
         flash("FPGA stop requested — the state below follows the shutdown.",
               "success")
-    return redirect(url_for("web.service_page", name="fpga"))
+    return redirect(url_for("web.fpga_page"))
 
 
 def _pdb_control_monitor():
@@ -2544,13 +2644,13 @@ def _pdb_result(ok: bool, message: str):
         return render_template("_service_pdb_result.html",
                                ok=ok, message=message, **_pdb_context())
     flash(f"PDB: {message}", "success" if ok else "error")
-    return redirect(url_for("web.service_page", name="power"))
+    return redirect(url_for("web.power_pdb_page"))
 
 
 @bp.route("/service/pdb/set", methods=["POST"])
 @login_required
 def pdb_control():
-    """Toggle one PDB channel from the /service/pdb page."""
+    """Toggle one PDB channel from the /power/pdb page."""
     _check_csrf()
     monitor = _pdb_control_monitor()
     try:
@@ -3017,7 +3117,7 @@ def api_pdb_map():
     One table, served rather than copied: bffs's power source reads it
     from here so choco's file stays the single authority for which
     breaker feeds which feed.  ``check`` is the same comparison against
-    kotekan's ``dish_inputs`` that the /service/pdb page shows, so a
+    kotekan's ``dish_inputs`` that the /power/pdb page shows, so a
     consumer can refuse to act on a map kotekan disagrees with.
     """
     pdb_map = current_app.config["pdb_map"].get()

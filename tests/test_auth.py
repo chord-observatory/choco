@@ -128,7 +128,7 @@ class TestLoginNextRedirect:
         # The polled partial is not a place a person can be; the page
         # they were on (HX-Current-URL) is.
         resp = client.get(
-            "/partials/services",
+            "/partials/menu",
             headers={"HX-Request": "true",
                      "HX-Current-URL": "https://choco.example/nodes"},
         )

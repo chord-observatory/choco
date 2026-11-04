@@ -34,8 +34,8 @@ away.  Until 2026-10-26 ``/`` was a services table (``landing.html``, one row pe
 header badge with the timer's next run and the sky-map card); the
 instrument flowchart replaced it, carrying each badge's state on its stage
 or card, and the sky map stayed on the MAP page.  Login lands on ``/`` and the CHOCO
-brand mark links there; the way to the dashboard is the strip's NODES badge
-(see the service-status-strip bullet) — plus the X-engine lane and, on the standalone pipeline/plot pages, which have no strip, a plain Nodes
+brand mark links there; the way to the dashboard is the menu's NODES item
+(see the service-status-strip section) — plus the X-engine lane and, on the standalone pipeline/plot pages, which have no strip, a plain Nodes
 nav link (``.brand.secondary``); the dashboard table only names each
 node and its file, with the Pipeline and Node buttons per row.  One
 test-visible consequence: the CSRF
@@ -148,6 +148,25 @@ refreshes add one, which is the point: the badge says when there is more to
 look at.  The quiet windows offered for a gain measurement are the ``all``
 windows at least ``gnss.min_quiet_s`` (600 s) long that are still ahead, a
 window already begun counted by its remainder.
+
+**The menu (2026-11-04).**  The strip became a menu: an aside at the left of
+every page (``base.html``, ``_menu.html``, ``web.MENU``), the pages in six
+groups -- Instrument, Power, Positioning, Calibration, Data, Config -- each
+item the service's quiet tag where a monitor or a job stands behind it (the
+same macros, the same ``aria-label`` and tooltip) and a plain link otherwise,
+the current page's item marked, and at the foot the presence line, logout and
+the theme toggle (the foot is outside the polled region, so the toggle keeps
+its listener).  The strip had ten badges, mixed monitors with jobs, and the
+pages behind it mixed concerns: the power page carried the PDB grid, the
+supplies and a channel-map cross-check that re-renders a kotekan config on
+every load.  Each concern has a page now (``/power/pdb``, ``/power/supplies``,
+``/power/map``; ``/fpga``), the old routes redirect, and the job pages keep
+``/service/<name>``.  ``/partials/menu`` replaces ``/partials/services``: it
+renders the items with their badges on load and every 30 s, the current page
+read from ``HX-Current-URL`` so the mark survives the swap; a page's first
+paint includes the items without health.  The menu is full height and sticky
+on a monitor; below 1024 px it is a bar above the page with the items as a
+wrapped row, the old strip's shape; ``?wall=1`` hides it.
 
 ## Service pages
 

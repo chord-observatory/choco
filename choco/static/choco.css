@@ -142,9 +142,6 @@ td code, th code, dd code, .group-bar code { padding: 0; background: none; color
 a.tag:hover { filter: brightness(0.96); }
 h2 .tag { font-size: 0.5em; }
 td .tag, dd .tag { font-size: 0.85em; }
-/* The strip is nine services wide: compact metrics so it fits one nav
-   line. */
-.services-strip .tag { padding: 0.25em 0.5em; }
 
 /* ---- brand mark ------------------------------------------------------ */
 .brand {
@@ -165,14 +162,36 @@ td .tag, dd .tag { font-size: 0.85em; }
 .brand.secondary { background: transparent; color: var(--pico-color); font-weight: 500; letter-spacing: 0.02em; }
 .brand:hover { filter: brightness(1.08); }
 
-/* ---- nav and the service strip --------------------------------------- */
-nav { margin-bottom: 1em; }
-/* Every nav item centres on one line regardless of its own font metrics:
-   text and SVGs have different line-height/baseline behaviour than a
-   padded tag, so without this each `li` can sit a few px off the others. */
-nav li { display: inline-flex; align-items: center; }
-.services-strip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.75em; font-size: 0.85em; }
-/* The two icon controls in the nav (theme, logout) and the standalone
+/* ---- the shell: the menu beside the page ------------------------------
+   The menu (base.html, _menu.html) is a column at the left of every
+   page: the mark, the pages in groups, each a quiet tag (its badge where
+   a monitor or a job stands behind it), and at the foot who is here,
+   logout and the theme.  It is full height and stays put while the page
+   scrolls; the current page's item is marked. */
+.shell { display: grid; grid-template-columns: 13rem minmax(0, 1fr); min-height: 100vh; }
+aside.menu {
+    position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 0;
+    padding: 1rem 0.75rem 0.75rem;
+    border-right: 1px solid var(--surface-border);
+    background: var(--surface);
+}
+.menu-head { padding: 0 0.1rem 0.5rem; }
+#menu-items { flex: 1 1 auto; }
+.menu .group { margin: 0.9rem 0 0; }
+.menu .group-title { padding: 0 0.6rem 0.25rem; font-size: 0.7em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pico-muted-color); }
+/* The items are the strip's tags, one per line, on the menu's own
+   ground; a tinted (warn / bad) tag keeps its tint.  The current page's
+   item takes the page background and a border. */
+.menu .tag { display: flex; width: 100%; margin: 0 0 0.15em; padding: 0.3em 0.6em; font-size: 0.82em; }
+.menu .tag.quiet { background: transparent; border-color: transparent; }
+.menu .tag.plain { padding-left: calc(0.6em + 0.55em + 0.45em); }
+.menu a.tag:hover { background: var(--hover); filter: none; }
+.menu .tag.active { background: var(--pico-background-color); border-color: var(--surface-border); font-weight: 600; }
+.menu .tag.active strong { font-weight: 600; }
+.menu-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em; margin-top: 1rem; padding: 0.75rem 0.5rem 0; border-top: 1px solid var(--surface-border); font-size: 0.85em; }
+.menu-foot #presence { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* The two icon controls in the menu's foot (theme, logout) and the standalone
    headers' theme toggle: bare glyphs in the muted grey, body colour on
    hover, no border or fill. */
 .logout-icon, .icon-btn { display: inline-flex; align-items: center; justify-content: center; margin: 0; padding: 0.25em 0.3em;
@@ -191,7 +210,8 @@ nav li { display: inline-flex; align-items: center; }
 .page-head h2 .crumb-sep { color: var(--pico-muted-color); font-weight: 400; margin: 0 0.1em; }
 /* ?wall=1 on the front page: a wall display.  No chrome, a wider
    container, the diagram without the tables. */
-body.wall nav, body.wall .note { display: none; }
+body.wall aside.menu, body.wall .note { display: none; }
+body.wall .shell { display: block; }
 body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
 
 /* The nav's who-is-here line (base.html polls /partials/presence). */
@@ -581,8 +601,9 @@ button.build-toggle {
    The pages are laid out for the operators' monitors.  Below Pico's
    1024 px container step (phones, tablets, a half-screen window) they
    reflow instead of scrolling sideways; below 576 px the base size drops
-   to Pico's own phone size as well.  The nav keeps the mark and the icons on one line and gives
-   the strip a line of its own.  A table marked .stack becomes one card
+   to Pico's own phone size as well.  The menu becomes a bar above the
+   page: the mark and the foot on one line, the items a wrapped row
+   without their group titles.  A table marked .stack becomes one card
    per row: .stack-lead (the row's name) and .stack-end (its status or
    action) share the first line, the plain cells follow inline with
    their data-label as a caption, and .stack-full cells take a line each
@@ -590,10 +611,16 @@ button.build-toggle {
    wrap rather than widen the page.  Wide grids (the PDB boards, the feed
    grid, the journal) keep their .scroll-x. */
 @media (max-width: 1023.98px) {
-    nav { flex-wrap: wrap; }
-    nav > ul:first-of-type { display: contents; }
-    nav > ul:first-of-type > li:first-child { margin-left: calc(var(--pico-nav-element-spacing-horizontal) * -1); }
-    nav .services-strip { order: 1; flex-basis: 100%; padding-left: 0; padding-right: 0; }
+    .shell { display: block; }
+    aside.menu { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; align-items: center;
+                 gap: 0.25rem 0.75rem; padding: 0.5rem 0.75rem; border-right: 0; border-bottom: 1px solid var(--surface-border); }
+    .menu-head { padding: 0; }
+    #menu-items { order: 1; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 0.25em 0.35em; }
+    .menu .group { display: contents; }
+    .menu .group-title { display: none; }
+    .menu .tag { display: inline-flex; width: auto; margin: 0; padding: 0.25em 0.5em; }
+    .menu .tag.plain { padding-left: 0.5em; }
+    .menu-foot { margin: 0 0 0 auto; padding: 0; border: 0; }
 
     .group-bar { flex-wrap: wrap; }
     .page-head h2 { flex-wrap: wrap; }

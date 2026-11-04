@@ -521,7 +521,7 @@ _RENDERER_OK = {"health": "ok", "running": False, "state_mtime": None,
 def _strip(client) -> str:
     from unittest.mock import patch
     with patch("choco.web.job_status", return_value=dict(_RENDERER_OK)):
-        return client.get("/partials/services").get_data(as_text=True)
+        return client.get("/partials/menu").get_data(as_text=True)
 
 
 class TestDataBadge:

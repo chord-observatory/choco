@@ -163,7 +163,7 @@ class TestServicePage:
 
     def test_fpga_page_renders(self, client):
         login(client)
-        resp = client.get("/service/fpga")
+        resp = client.get("/fpga")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "FPGA" in body
@@ -171,7 +171,7 @@ class TestServicePage:
 
     def test_pdb_page_renders(self, client):
         login(client)
-        resp = client.get("/service/power")
+        resp = client.get("/power/pdb")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "PDB" in body
@@ -185,7 +185,7 @@ class TestServicePage:
             {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
             {"board": 0, "chip": "B", "channels": [False] * 8},
         ]}
-        resp = client.get("/service/power")
+        resp = client.get("/power/pdb")
         body = resp.data.decode()
         assert "SPI bus 0" in body
         assert "board 0" in body
@@ -554,7 +554,7 @@ class TestServicePage:
         monitor.channels = {0: [
             {"board": 0, "chip": "A", "channels": [False] * 8},
         ]}
-        resp = client.get("/service/power")
+        resp = client.get("/power/pdb")
         body = resp.data.decode()
         assert "Controller not readable" in body
         # grid still rendered from the last read
@@ -599,7 +599,7 @@ class TestEigencalPage:
             reason="OSError: no N² data overlaps the transit window")))
         degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
         with patch("choco.web.job_status", return_value=degraded):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         assert "why: OSError: no N² data overlaps the transit window" in body
 
     def test_run_record_explains_a_quiet_job(self, client, app):
@@ -814,11 +814,11 @@ class TestBffsRunFile:
         (job_dir(app, "bffs") / "run.json").write_text(json.dumps(self.RUN))
         degraded = dict(_JOB_STUB, health="degraded", result="exit-code", exit_status="2")
         with patch("choco.web.job_status", return_value=degraded):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         assert "why: no usable kotekan file — skipped: power-outlier" in body
         assert "why: rfi: 2 of 14 /sk endpoints unreachable" in body
         # an ok badge carries no reasons, whatever the run file says
-        body = client.get("/partials/services").data.decode()
+        body = client.get("/partials/menu").data.decode()
         assert "why:" not in body
 
     def test_front_page_cards_carry_the_reasons(self, client, app, tmp_path):
@@ -837,7 +837,7 @@ class TestBffsRunFile:
             "degraded": [], "sources": []}))
         failed = dict(_JOB_STUB, health="failed", result="exit-code", exit_status="1")
         with patch("choco.web.job_status", return_value=failed):
-            body = client.get("/partials/services").data.decode()
+            body = client.get("/partials/menu").data.decode()
         assert "why: ValueError: unknown source kind" in body
 
     def test_api_nodes_carries_the_live_status(self, client):

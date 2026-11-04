@@ -493,7 +493,7 @@ class TestPage:
         assert "Processing" in body and "Control" in body and "BFFS" in body
         # the tables live on their own pages; the cards link there
         assert "Ethernet33" not in body and "PDU outlets" not in body
-        assert 'href="/switch"' in body and 'href="/service/power#supply"' in body
+        assert 'href="/switch"' in body and 'href="/power/supplies#supply"' in body
         part = client.get("/partials/instrument").data.decode()
         assert 'class="fl"' in part and "<html" not in part
 
@@ -517,21 +517,22 @@ class TestPage:
     def test_power_page_has_the_supply_and_the_outlets(self, inst_app):
         client = inst_app.test_client()
         login(client)
-        assert client.get("/service/pdb?layout=dish").headers["Location"].endswith("/service/power?layout=dish")
-        body = client.get("/service/power").data.decode()
+        assert client.get("/service/pdb?layout=dish").headers["Location"].endswith("/power/pdb?layout=dish")
+        assert client.get("/service/power").headers["Location"].endswith("/power/pdb")
+        body = client.get("/power/supplies").data.decode()
         assert "Dish supply" in body and "48.10 V" in body and "PDU outlets" in body and "750 W" in body
         part = client.get("/partials/power-devices").data.decode()
         assert "PDU outlets" in part and "<html" not in part
 
     def test_badges_appear_in_the_strip_when_configured(self, inst_app, client):
         login(client)
-        strip = client.get("/partials/services").data.decode()
+        strip = client.get("/partials/menu").data.decode()
         assert 'aria-label="SWITCH: degraded"' in strip and 'href="/switch"' in strip
-        assert "PATH" not in strip and 'href="/service/power"' in strip and "POWER" in strip
+        assert "PATH" not in strip and 'href="/power/pdb"' in strip and "POWER" in strip
 
     def test_unconfigured_page_says_how(self, client):
         login(client)
         body = client.get("/").data.decode()
         assert "instrument.prometheus_url" in body
-        assert "SWITCH" not in client.get("/partials/services").data.decode()
+        assert 'aria-label="SWITCH:' not in client.get("/partials/menu").data.decode()
         assert "Server" not in client.get("/nodes").data.decode()
