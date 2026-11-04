@@ -28,7 +28,7 @@ from .datafiles import (TIMELINE_NAME, baseband_facts, human_bytes, notes_html, 
 from . import dishlabels
 from .instrument import (CRATE_OUTLET, PAGE_POLL_S, SWITCH_OUTLET, worst_tone, ago, board_layout, flow_diagram,
                          health_tone, host_health, job_tone, job_word, node_tone, outlet_watts,
-                         overview as instrument_overview)
+                         overview as instrument_overview, transfer_state)
 from .pdbmap import (PdbMap, cross_check, dish_layout, kotekan_dish_labels, row_entries,
                      valid_channel_address)
 from .waterfalls import (coarse_image as wf_coarse_image, coarse_view_context as wf_coarse_view_context,
@@ -2417,6 +2417,22 @@ def _instrument_jobs(root: str) -> dict:
                                     else ""), fold=("skymap",)),
     ]
     jobs = [j for j in jobs if j]
+    inst = current_app.config.get("instrument_monitor")
+    t = inst.transfer if inst is not None and inst.url else None
+    if t:
+        now = time.time()
+        tone, word = transfer_state(t, now)
+        sent = t.get("sent_24h")
+        jobs.append({
+            "name": "TRANSFER", "sub": word, "tone": tone, "href": root + "/files",
+            "line": "to Fir" + (f" · {human_bytes(sent)} / 24 h" if sent else ""),
+            "title": "The acquisitions' transfer to the Alliance's Fir cluster "
+                     f"(kotekan-vis-transfer on {t.get('host', '?')})"
+                     + (f"\nsending since {ago(t['last_start'], now)}" if t.get("running") and t.get("last_start") else "")
+                     + f"\nlast success: {ago(t.get('last_success'), now)}"
+                     + (f"\n{t['failures']:.0f} failed run(s) in a row" if t.get("failures") else "")
+                     + (f"\nsent in the last 24 h: {human_bytes(sent)}" if sent is not None else ""),
+        })
     tones = [j["tone"] for j in jobs]
     out = {"control_cards": [cc for cc in control if cc], "job_cards": jobs}
     if jobs:

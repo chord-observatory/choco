@@ -8,7 +8,7 @@ from choco import instrument
 from choco.instrument import (InstrumentMonitor, SwitchEapi, Wiring, WiringFile, WiringRow, board_facts,
                               board_layout, board_state, flow_diagram, host_temps, idrac_state, in_port_state,
                               link_problems, job_tone, job_word, nic_state, out_port_state, outlet_watts,
-                              overview, parse_devices, parse_wiring, short_build, worst_tone)
+                              overview, parse_devices, parse_wiring, short_build, transfer_state, worst_tone)
 from tests.helpers import login
 
 WIRING = """\
@@ -57,6 +57,10 @@ REPLIES = {
     "rate(kotekan_dpdk_nic_rx_packets_total": [_result(4e5, instance="cx1.example:12048", port="0"),
                                                _result(2e5, instance="cx1.example:12048", port="1")],
     "keysight_psu_up": [_result(1, instance="10.222.0.31")],
+    "kotekan_vis_transfer_running": [_result(1, instance="alpenhorn.example")],
+    "kotekan_vis_transfer_consecutive_failures": [_result(0, instance="alpenhorn.example")],
+    "kotekan_vis_transfer_last_success_timestamp_seconds": [_result(1e10, instance="alpenhorn.example")],
+    "increase(kotekan_vis_transfer_transferred_bytes_total": [_result(2.5e12, instance="alpenhorn.example")],
     "keysight_psu_output_on": [_result(1, instance="10.222.0.31")],
     "keysight_psu_voltage_volts": [_result(48.1, instance="10.222.0.31")],
     "keysight_psu_current_amps": [_result(12.5, instance="10.222.0.31")],
@@ -476,6 +480,36 @@ def inst_app(app, configs_dir, monkeypatch, tmp_path):
     m.url, m.switch_instance, m.wiring = "http://prom.example:9090", None, WiringFile(tmp_path / "wiring.csv")
     m.poll_once()
     return app
+
+
+class TestTransfer:
+    """The acquisitions' transfer card, judged as chord-sysops' alerts judge it."""
+
+    NOW = 1e9
+
+    @pytest.mark.parametrize("series, expected", [
+        (None, ("off", "no data")),
+        ({"running": 1, "failures": 0, "last_start": NOW - 600, "last_success": NOW - 9000}, ("ok", "sending")),
+        ({"running": 0, "failures": 0, "last_success": NOW - 600}, ("ok", "idle")),
+        ({"running": 0, "failures": 0, "last_success": NOW - 7300}, ("warn", "stale")),
+        ({"running": 0, "failures": 1, "last_success": NOW - 600}, ("warn", "last run failed")),
+        ({"running": 1, "failures": 0, "last_start": NOW - 13 * 3600}, ("warn", "running long")),
+        ({"running": 0, "failures": 2, "last_success": NOW - 600}, ("bad", "2 runs failed")),
+    ])
+    def test_the_verdict(self, series, expected):
+        assert transfer_state(series, self.NOW) == expected
+
+    def test_the_card_ends_the_processing_lane(self, inst_app):
+        assert inst_app.config["instrument_monitor"].transfer["host"] == "alpenhorn"
+        client = inst_app.test_client()
+        login(client)
+        body = client.get("/partials/instrument").data.decode()
+        assert "TRANSFER" in body and "to Fir · 2.3 TiB / 24 h" in body
+        assert "kotekan-vis-transfer on alpenhorn" in body and "sent in the last 24 h: 2.3 TiB" in body
+
+    def test_no_card_without_the_series(self, client):
+        login(client)
+        assert "TRANSFER" not in client.get("/partials/instrument").data.decode()
 
 
 class TestPage:

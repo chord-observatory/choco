@@ -182,8 +182,9 @@ aside.menu { border-right: 1px solid var(--surface-border); background: var(--su
     padding: 1rem 0.75rem 0.75rem;
 }
 .menu-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.1rem 0.5rem; }
-/* The three-bar button that opens the menu on a small screen (below). */
-.menu-toggle { display: none; }
+/* The three-bar button that opens the menu on a small screen (below).
+   .menu-head in the selector outranks .icon-btn's display further down. */
+.menu-head .menu-toggle { display: none; }
 #menu-items { flex: 1 1 auto; }
 .menu-group { margin: 0.9rem 0 0; }
 .menu-group-title { padding: 0 0.6rem 0.25rem; font-size: 0.7em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pico-muted-color); }
@@ -625,7 +626,7 @@ button.build-toggle {
     .menu-inner { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
                   gap: 0.25rem 0.75rem; padding: 0.5rem 0.75rem; }
     .menu-head { padding: 0; gap: 0.5rem; }
-    .menu-toggle { display: inline-flex; }
+    .menu-head .menu-toggle { display: inline-flex; }
     #menu-items { display: none; order: 1; flex-basis: 100%; padding-bottom: 0.5rem; }
     aside.menu.open #menu-items { display: block; }
     .menu-group { margin-top: 0.5rem; }

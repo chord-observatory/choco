@@ -279,6 +279,44 @@ _PSU_QUERIES = {
 }
 
 
+#: The acquisitions' transfer to the Alliance's Fir cluster: chord-sysops'
+#: ``kotekan_vis_transfer`` timer on the transfer host, through
+#: node_exporter's textfile collector.  One host runs it.
+_TRANSFER_QUERIES = {
+    "running": "kotekan_vis_transfer_running",
+    "failures": "kotekan_vis_transfer_consecutive_failures",
+    "last_success": "kotekan_vis_transfer_last_success_timestamp_seconds",
+    "last_start": "kotekan_vis_transfer_last_start_timestamp_seconds",
+    "sent_24h": "increase(kotekan_vis_transfer_transferred_bytes_total[24h])",
+}
+#: The thresholds of chord-sysops' KotekanVisTransfer* alerts, so the card
+#: and Grafana agree: failing at two runs in a row, stale when idle with
+#: no success for 2 h, long when one run has gone 12 h (a baseband dump
+#: takes hours).
+TRANSFER_FAILING = 2
+TRANSFER_STALE_S = 2 * 3600
+TRANSFER_LONG_S = 12 * 3600
+
+
+def transfer_state(t: dict | None, now: float) -> tuple[str, str]:
+    """``(tone, word)`` of the transfer from its series (``_TRANSFER_QUERIES``
+    fields), judged as the chord-sysops alerts judge it."""
+    if not t:
+        return "off", "no data"
+    failures = t.get("failures") or 0
+    running = bool(t.get("running"))
+    last_success, last_start = t.get("last_success"), t.get("last_start")
+    if failures >= TRANSFER_FAILING:
+        return "bad", f"{failures:.0f} runs failed"
+    if running and last_start and now - last_start > TRANSFER_LONG_S:
+        return "warn", "running long"
+    if not running and (not last_success or now - last_success > TRANSFER_STALE_S):
+        return "warn", "stale"
+    if failures:
+        return "warn", "last run failed"
+    return "ok", "sending" if running else "idle"
+
+
 def _short_host(instance: str) -> str:
     """``cx27.site.chord-observatory.ca:12048`` -> ``cx27``."""
     return instance.split(":")[0].split(".")[0]
@@ -520,6 +558,7 @@ class InstrumentMonitor(PolledMonitor):
         self.psu: dict | None = None
         self.devices: dict = {}
         self.switch_monitor: dict = {}
+        self.transfer: dict | None = None
         self.sources: dict[str, dict] = {}
         self.problems: list[str] = []
         self.last_seen: float | None = None
@@ -675,7 +714,13 @@ class InstrumentMonitor(PolledMonitor):
                          ("last_success", f"switch_monitor_last_success_timestamp_seconds{sw}")):
             for r in self._query(q):
                 mon[field] = float(r["value"][1])
+        transfer = {}
+        for field, q in _TRANSFER_QUERIES.items():
+            for r in self._query(q):
+                transfer[field] = float(r["value"][1])
+                transfer["host"] = _short_host(r["metric"].get("instance", "?"))
         self._prom_switch, self.psu, self.devices, self.switch_monitor = switch, psu or None, devices, mon
+        self.transfer = transfer or None
 
     def to_dict(self) -> dict:
         return {

@@ -61,7 +61,7 @@
             <th>Span (UTC)</th>
             <th style="text-align: right;">Newest</th>
             {% if kind == 'acq' %}<th style="text-align: right;">Waterfalls</th>{% endif %}
-            {% if archived %}<th style="text-align: right;">Archive</th>{% endif %}
+            {% if archived %}<th style="text-align: right;" title="How much of each directory is on Fir, the Alliance (Compute Canada) cluster the transfer host sends the acquisitions and baseband dumps to: the files there at the same size and mtime as here.  A local copy can go once Fir holds all of it.">Transfer</th>{% endif %}
         </tr>
     </thead>
     <tbody>
@@ -117,7 +117,7 @@
             </td>
             {% endif %}
             {% if archived %}
-            <td class="num archive" data-label="archive">{{ archive_cell(d) }}</td>
+            <td class="num archive" data-label="transfer">{{ archive_cell(d) }}</td>
             {% endif %}
         </tr>
     {% endfor %}

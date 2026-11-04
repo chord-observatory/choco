@@ -233,7 +233,7 @@ class TestFilesTable:
         client = app.test_client()
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
-        assert body.count(">Archive</th>") == 1
+        assert body.count(">Transfer</th>") == 1 and "Fir, the Alliance (Compute Canada) cluster" in body
         assert all(line == "list -l\n" for line in verify_socket["seen"])
         assert "Check archive" not in body
 
@@ -241,7 +241,7 @@ class TestFilesTable:
         client = _app(configs_dir, roots).test_client()
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
-        assert ">Archive</th>" not in body
+        assert ">Transfer</th>" not in body
         assert "the archive holds" not in body and "archive only" not in body
 
     def test_cells_from_the_listing(self, configs_dir, roots, verify_socket):
@@ -260,7 +260,7 @@ class TestFilesTable:
         assert "1970-01-01 00:50 &rarr; 01-01 00:58" in m.group(0)       # mtimes 3000..3500
         assert "archive only</small></td>" in m.group(0)                   # the Archive cell
         # The empty acquisition has nothing to hold; the other root no column.
-        assert re.search(rf"{ACQ_C}.*?data-label=\"archive\"><small class=\"muted\">&mdash;<", body, re.S)
+        assert re.search(rf"{ACQ_C}.*?data-label=\"transfer\"><small class=\"muted\">&mdash;<", body, re.S)
         assert body.count("archive only") == 2                              # name cell + Archive cell, once
 
     def test_none_held(self, configs_dir, roots, verify_socket):
@@ -325,7 +325,7 @@ class TestBasebandTable:
         client = _app(configs_dir, roots, baseband=baseband).test_client()
         login(client)
         body = client.get("/partials/files").get_data(as_text=True)
-        assert MERGED in body and ">Archive</th>" not in body
+        assert MERGED in body and ">Transfer</th>" not in body
 
     def test_info_reads_the_log_and_the_part(self, configs_dir, roots, baseband):
         h5py = pytest.importorskip("h5py")

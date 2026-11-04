@@ -58,6 +58,16 @@ class TestMenu:
         head = body[body.index('class="menu-head"'):body.index('id="menu-items"')]
         assert 'id="menu-toggle"' in head and 'aria-controls="menu-items"' in head
 
+    def test_the_three_bar_button_shows_only_on_a_small_screen(self, app):
+        """``.icon-btn`` sets display after the menu's rules, so the hidden
+        state needs the higher specificity to hold on a monitor."""
+        import re as _re
+        css = (app.root_path and open(app.root_path + "/static/choco.css").read())
+        wide = css[:css.index("@media (max-width: 1023.98px)")]
+        narrow = css[css.index("@media (max-width: 1023.98px)"):]
+        assert _re.search(r"\.menu-head \.menu-toggle \{ display: none; \}", wide)
+        assert _re.search(r"\.menu-head \.menu-toggle \{ display: inline-flex; \}", narrow)
+
     def test_the_partial_fills_the_badges_and_marks_the_page(self, client, jobs):
         login(client)
         body = client.get("/partials/menu", headers={"HX-Current-URL": "https://x/service/eop"}).data.decode()
