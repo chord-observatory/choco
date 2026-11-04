@@ -280,7 +280,24 @@ class TestFpgaControl:
             resp = client.get("/partials/service-fpga")
         assert resp.status_code == 200
         assert "on" in resp.data.decode()
+        assert "Boards" not in resp.data.decode()        # no hardware map read yet
         pis.assert_called_once_with(5)
+
+    def test_status_partial_lists_the_boards(self, client, app):
+        monitor = self._configure(app)
+        monitor.state, monitor.crate = "on", "K7BP16-0011"
+        monitor.hw_map = {0: ["CRS-0228"], 1: []}
+        monitor.boards = {0: {"core_temp": 55.4, "board_temp": 44.1, "qsfp": True, "clock": "BP_CLK_10MHZ",
+                              "adc_overflow": 5.0, "fft_overflow": 0.0, "sample_ts": 1e12}}
+        login(client)
+        with patch.object(monitor, "poll_if_stale"):
+            body = client.get("/partials/service-fpga").data.decode()
+        assert "K7BP16-0011" in body and "1 boards in the hardware map" in body
+        row = body[body.index("CRS-0228") - 200:body.index("CRS-0228") + 600]
+        assert "55 °C" in row and "44 °C" in row and "present" in row and "BP_CLK_10MHZ" in row and "ADC 5 · FFT 0" in row
+        # the crate slot is fpga_master's index plus one; an empty slot shows dashes
+        assert body.index("<td class=\"num\">1</td>") < body.index("<td class=\"num\">0</td>") < body.index("CRS-0228")
+        assert body.count("—") >= 6
 
 
 class TestPdbControl:

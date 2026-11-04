@@ -43,15 +43,29 @@ devices directly where it can, for latency:
   the switch's `lastUpdateTimestamp`, since it refreshes its counters every
   few seconds, not at each read.  Until the account exists the switch comes
   from Prometheus, and the FEC counters and optics always do (they need
-  `phy detail` and `transceiver`, which the switch monitor already runs).
+  `phy detail` and `transceiver`, which the switch monitor already runs);
+- fpga_master, through choco's own `FpgaMonitor` (2026-11-04): beside
+  `/status` it reads `/get-hw-map` (the crate and the board in each slot)
+  and `/get-monitoring-data` (fpga_master's Prometheus text: each board's
+  core and rail temperatures, QSFP, PLL input and overflow counts, with
+  fpga_master's own sample times).  The text is `Metrics(latest_only=True)`
+  on fpga_master's side, so reading it beside the Prometheus exporter
+  takes nothing from the exporter (two reads 2 s apart carried the same
+  1387 samples).  This replaced the `crs_control_*` Prometheus queries,
+  whose exporter only curled the same two endpoints.
 
 Prometheus, read at most every 30 s, keeps what choco cannot read itself:
 
 - the Keysight supply: its SCPI socket may take one client, which the
   exporter holds;
 - the PDU and the iDRACs: SNMP, already scraped; slow-changing;
-- node_exporter: it accepts Prometheus alone (`IPAddressAllow`);
-- the CRS crate controller's `crs_control_*`.
+- node_exporter: it accepts Prometheus alone (`IPAddressAllow`).
+
+Still to move, cheapest first: node_exporter (one line in its
+`IPAddressAllow`; the text parses like kotekan's), the switch (the
+account), the iDRACs over Redfish, the PDU over its JSON-RPC API, and the
+supply last (choco would have to own the SCPI socket and publish it on
+`/metrics`).
 
 choco keeps talking to kotekan, power_db and fpga_master directly, as
 before; the page uses choco's registry for node state, the PDB monitor for
@@ -61,6 +75,25 @@ The PDU outlets are matched to devices by their labels on the PDU: a host's
 outlets carry its name (two per server, one per supply), `arista` is the
 switch and `f-engine` the CRS crate.  An outlet's onOff sensor value does
 not say whether it is switched on, so the page shows power, not state.
+
+## A board's card
+
+Until 2026-11-04 a board's card was painted from its switch port's
+receive rate, so with fpga_master down every card stayed green: the
+boards stream whether or not their controller is up.  Now the card
+carries two facts, like a feed's dot: the card itself is the board as
+fpga_master sees it (`board_state`: in the hardware map, sampled within
+`BOARD_STALE_S`, core temperature under the FPGACoreTemperature alert
+lines, QSFP present), and the link below it is the switch port.  The card
+goes grey, with the reason as its word, whenever fpga_master has nothing
+current to say: not configured, down, not running, the slot not in its
+map, an empty slot, no samples, or samples that stopped (fpga_master's
+rounds froze once on 2026-10-31 while it kept answering `/status`).  The
+"CRS boards" lane counts the boards fpga_master reports ok and keeps the
+links as a note; its tone is fpga_master's health when that is not ok.
+fpga_master's slot index is kotekan's source_id (crate slot − 1); the
+cards and the wiring table say crate slots, the FPGA page's board table
+shows both.
 
 ## A feed's dot
 

@@ -5,10 +5,10 @@ import pytest
 import yaml
 
 from choco import instrument
-from choco.instrument import (InstrumentMonitor, SwitchEapi, Wiring, WiringFile, WiringRow, board_layout,
-                              flow_diagram, host_temps, idrac_state, in_port_state, link_problems,
-                              job_tone, job_word, nic_state, out_port_state, outlet_watts, overview,
-                              parse_devices, parse_wiring, short_build, worst_tone)
+from choco.instrument import (InstrumentMonitor, SwitchEapi, Wiring, WiringFile, WiringRow, board_facts,
+                              board_layout, board_state, flow_diagram, host_temps, idrac_state, in_port_state,
+                              link_problems, job_tone, job_word, nic_state, out_port_state, outlet_watts,
+                              overview, parse_devices, parse_wiring, short_build, worst_tone)
 from tests.helpers import login
 
 WIRING = """\
@@ -85,8 +85,18 @@ DEVICE_RESULTS = {
     "idrac_psu": [_result(3, instance="cx1i.example", psu="PS1 Status"),
                   _result(3, instance="cx1i.example", psu="PS2 Status")],
     "host_up": [_result(1, instance="cx1.example:9100")],
-    "crate_ready": [_result(1, instance="crs")],
-    "crate_boards": [_result(16, instance="crs")],
+}
+
+#: FpgaMonitor.to_dict() with the four boards of TELESCOPE, slot 3 empty,
+#: sampled at t=1000.
+FPGA = {
+    "configured": True, "health": "ok", "state": "on",
+    "crate": "K7BP16-0011",
+    "hw_map": {"0": ["CRS-0228"], "1": ["CRS-0244"], "2": ["CRS-0214"], "3": []},
+    "boards": {"0": {"core_temp": 55.0, "board_temp": 46.0, "qsfp": True, "clock": "BP_CLK_10MHZ",
+                     "adc_overflow": 0.0, "fft_overflow": 0.0, "sample_ts": 1000.0},
+               "1": {"core_temp": 88.0, "qsfp": True, "sample_ts": 1000.0},
+               "2": {"core_temp": 50.0, "qsfp": False, "sample_ts": 1000.0}},
 }
 
 
@@ -209,6 +219,26 @@ class TestStates:
         assert in_port_state({"up": 1, "in_pps": 1.5e6, "fec_unc": 3}) == ("warn", "errors")
         assert in_port_state({"up": 1, "in_pps": 1.5e6}) == ("ok", "up")
 
+    def test_board_state_is_what_fpga_master_knows_now(self):
+        # grey whenever fpga_master has nothing current to say
+        assert board_state(0, None) == ("off", "no fpga_master")
+        assert board_state(0, {"configured": False}) == ("off", "no fpga_master")
+        assert board_state(0, {"configured": True, "health": "down"}) == ("off", "fpga_master down")
+        assert board_state(0, {"configured": True, "health": "ok", "state": "off"}) == ("off", "fpga_master off")
+        assert board_state(9, FPGA, 1010) == ("off", "not in the hardware map")
+        assert board_state(3, FPGA, 1010) == ("off", "empty slot")
+        assert board_state(0, {**FPGA, "boards": {}}, 1010) == ("off", "no samples")
+        assert board_state(0, FPGA, 1000 + 200) == ("off", "samples 3 min old")
+        # then the board's own facts
+        assert board_state(0, FPGA, 1010) == ("ok", "ok")
+        assert board_state(1, FPGA, 1010) == ("bad", "core 88 °C")
+        assert board_state(1, {**FPGA, "boards": {"1": {"core_temp": 76.0, "sample_ts": 1000.0}}}, 1010) == \
+            ("warn", "core 76 °C")
+        assert board_state(2, FPGA, 1010) == ("warn", "no QSFP")
+        assert board_facts(0, FPGA) == "CRS-0228 · core 55 °C · board 46 °C · QSFP present · clock BP_CLK_10MHZ"
+        assert board_facts(2, FPGA) == "CRS-0214 · core 50 °C · no QSFP"
+        assert board_facts(3, FPGA) == "" and board_facts(0, None) == ""
+
     def test_node_port_and_nic(self):
         assert out_port_state({"up": 1, "out_pps": 4e5, "out_discards": 2}) == ("warn", "errors")
         assert nic_state(None) == ("off", "no kotekan")
@@ -240,9 +270,15 @@ class TestOverview:
         nics = {("cx1", 0): {"up": 1, "pps": 4e5}, ("cx1", 1): {"up": 1, "pps": 2e5},
                 ("cx2", 0): {"up": 1, "pps": 4e5}}
         nodes = {"cx1": {"status": "started"}, "cx2": {"status": "started"}, "recv1": {"status": "idle"}}
-        v = overview(boards, Wiring(rows, []), switch, nics, {"A01X": True, "A02X": False}, nodes)
+        v = overview(boards, Wiring(rows, []), switch, nics, {"A01X": True, "A02X": False}, nodes, fpga=FPGA, now=1010)
         b1 = v["boards"][0]
         assert (b1["port"], b1["tone"]) == ("Ethernet9/1", "ok")
+        # the board's own state beside its link's
+        assert [(b["board_tone"], b["board_word"]) for b in v["boards"]] == \
+            [("ok", "ok"), ("bad", "core 88 °C"), ("warn", "no QSFP"), ("off", "empty slot")]
+        assert b1["board_facts"].startswith("CRS-0228")
+        assert [b["board_tone"] for b in overview(boards, Wiring(rows, []), switch, nics, {}, nodes)["boards"]] == \
+            ["off"] * 4
         assert [(f["power"], f["in_pdb"]) for f in b1["feeds"]] == [(True, True), (False, True)]
         assert v["boards"][3]["word"] == "silent (listed)"
         assert [(x["node"], x["nic_port"]) for x in v["nics"]] == [("cx1", 0), ("cx1", 1)]
@@ -267,7 +303,7 @@ class TestFlow:
                  "recv1": {"status": "idle", "group": "recv"}}
         devices = parse_devices(DEVICE_RESULTS)
         v = overview(boards, Wiring(rows, []), switch, nics, {"A01X": True, "A02X": False, "B01X": True}, nodes,
-                     devices, {"B01X": "autos: low"})
+                     devices, {"B01X": "autos: low"}, FPGA, 1010)
         stages = {"switch": {"title": "Switch", "tone": "warn", "word": "1/2 ok"},
                   "pdb": {"title": "Feeds", "tone": "ok", "word": "2/2 on"},
                   "power_cards": [{"name": "Dish supply", "line": "on", "tone": "ok"},
@@ -275,6 +311,13 @@ class TestFlow:
         f = flow_diagram(v, stages, "/choco")
         texts = [ln["text"] for c in f["cards"] for ln in c["lines"]]
         assert sum(t.startswith("slot ") for t in texts) == 4
+        # the card is the board as fpga_master sees it, the link below it the switch port
+        slot_cards = [c for c in f["cards"] if c["lines"][0]["text"].startswith("slot ")]
+        assert [c["tone"] for c in slot_cards] == ["ok", "bad", "warn", "off"]
+        assert slot_cards[0]["title"].endswith("ok (CRS-0228 · core 55 °C · board 46 °C · QSFP present · "
+                                               "clock BP_CLK_10MHZ); link up")
+        assert slot_cards[3]["lines"][0]["cls"] == "fl-t muted"
+        assert [l["tone"] for l in f["links"] if l["title"].startswith("slot 1 →")] == ["ok"]
         assert len([t for t in f["ticks"] if t["y"] == f["switch"]["y"]]) == 4
         assert [t["label"] for t in f["ticks"] if t["label"].startswith("p")] == ["p0", "p1"]
         assert [x["text"] for x in f["feeds"][:2]] == ["A01X", "A02X"]
@@ -331,7 +374,7 @@ class TestDevices:
         h = d["hosts"]["cx1"]
         assert h["power"] == 4 and h["psu"] == {"PS1 Status": 3, "PS2 Status": 3} and h["up"] == 1
         assert host_temps(h) == {"inlet": 18, "cpu": 41, "gpu": 33}
-        assert d["crate"] == {"ready": 1, "boards": 16}
+        assert "crate" not in d       # the boards come from fpga_master itself
 
     def test_idrac_state(self):
         assert idrac_state(None) == ("off", "not scraped")

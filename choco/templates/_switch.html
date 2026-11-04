@@ -33,12 +33,13 @@
 </div>
 
 <h3>CRS boards → switch</h3>
-<p class="note">One port per board.  FEC and error counts are per second over 5 min.
+<p class="note">One port per board.  Board is the board as fpga_master sees it; State is the switch port.
+    FEC and error counts are per second over 5 min.
     {%- if not (V.boards | selectattr('stats.rx_dbm', 'number') | list) %}  Optical receive power
     appears once the switch monitor exports it.{% endif %}</p>
 <div class="scroll-x">
 <table class="ports">
-    <thead><tr><th>Slot</th><th>Feeds</th><th>Port</th><th>State</th><th>Type</th><th>Signal</th><th>FEC lock</th>
+    <thead><tr><th>Slot</th><th>Feeds</th><th>Board</th><th>Port</th><th>State</th><th>Type</th><th>Signal</th><th>FEC lock</th>
         <th>Rx dBm</th><th>In</th><th>FEC corr/s</th><th>FEC uncorr/s</th><th>Errors/s</th><th>Discards/s</th></tr></thead>
     <tbody>
     {% for b in V.boards %}
@@ -46,6 +47,7 @@
     <tr>
         <td class="num">{{ b.slot }}</td>
         <td class="mono">{{ b.feeds[0].dish }}–{{ b.feeds[-1].dish }} {{ b.pol }}</td>
+        <td title="{{ b.board_facts }}">{{ tag(b.board_tone, b.board_word) }}</td>
         <td class="mono">{{ b.port or '—' }}</td>
         <td>{{ tag(b.tone, b.word) }}</td>
         <td>{{ s.type or '—' }}</td>
@@ -59,7 +61,7 @@
         <td class="num">{{ per_s(s.in_discards) }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="13">{{ board_problem or 'No boards.' }}</td></tr>
+    <tr><td colspan="14">{{ board_problem or 'No boards.' }}</td></tr>
     {% endfor %}
     </tbody>
 </table>

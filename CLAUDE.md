@@ -176,11 +176,17 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **The instrument page** ([instrument.md](docs/design/instrument.md)) — the front page, `/`
 - Read-only, and direct where choco can: the NIC counters from each node's
-  kotekan `/metrics`; the switch over eAPI only with a `show`-only account,
-  and `SwitchEapi` refuses any command that is not a `show` before sending
-  it — never add another verb.  The PDU, the iDRACs, the dish supply and
-  node_exporter come from Prometheus (at most every 30 s); a detail it lacks
-  is added to its exporter in chord-sysops.
+  kotekan `/metrics`; the CRS boards from fpga_master itself (`FpgaMonitor`
+  reads `/get-hw-map` and `/get-monitoring-data` beside `/status`); the
+  switch over eAPI only with a `show`-only account, and `SwitchEapi`
+  refuses any command that is not a `show` before sending it — never add
+  another verb.  The PDU, the iDRACs, the dish supply and node_exporter
+  come from Prometheus (at most every 30 s); a detail it lacks is added to
+  its exporter in chord-sysops.
+- A board's card is the board as fpga_master sees it (`board_state`): grey
+  whenever fpga_master has nothing current to say — down, not running, the
+  slot not in its map, samples older than `BOARD_STALE_S`.  The link below
+  the card is the switch port.  Never paint the card from the link.
 - The page polls every 5 s while open (`PAGE_POLL_S`); the 30 s background
   loop is for the header badge.  Overlapping polls are skipped, not queued.
 - Feeds are placed on boards from kotekan's own `dish_inputs` and
@@ -416,7 +422,7 @@ names) rather than coin new ones.  This file holds the rules for agents;
 - [auth.md](docs/design/auth.md) — config.yaml, the site proxy and roles, trusted hosts, dev mode
 - [ui.md](docs/design/ui.md) — URL layout, service strip, service pages, `/api/status`, `/metrics`
 - [fpga-pdb.md](docs/design/fpga-pdb.md) — gain archive, FPGA/PDB controls, master PDB map
-- [instrument.md](docs/design/instrument.md) — the signal-path page: Prometheus as the only source, the switch wiring table and how it was first inferred
+- [instrument.md](docs/design/instrument.md) — the signal-path page: the devices where choco can and Prometheus for the rest, a board's two facts, the switch wiring table and how it was first inferred
 - [pipeline.md](docs/design/pipeline.md) — pipeline page, frame peeks, `bufferplot.js`
 - [datafiles.md](docs/design/datafiles.md) — `/files` and the DATA badge
 - [waterfall.md](docs/design/waterfall.md) — the append-only PNG renderer and its read side

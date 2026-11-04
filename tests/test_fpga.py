@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 import responses
 
-from choco.fpga import FpgaMonitor
+from choco.fpga import FpgaMonitor, parse_hw_map, parse_monitoring
 
 
 HOST = "fpga.example"
@@ -30,6 +30,45 @@ def monitor():
     return FpgaMonitor(host=HOST, port=PORT, timeout=1)
 
 
+HW_MAP = {"FCC00": "K7BP16-0011", "FCC0000": ["CRS-0228"], "FCC0001": ["CRS-0244"], "FCC0002": []}
+
+#: /get-monitoring-data as fpga_master writes it: Prometheus text with
+#: millisecond timestamps; the controller's own samples carry no slot.
+MONITORING = """\
+# HELP crs_temperature Board temperature
+crs_temperature{crate_id="CRC4_SN011",id="(CRC4_SN011,0)",sensor="5v0",slot="0"} 44.125 1793748978294
+crs_temperature{crate_id="CRC4_SN011",id="(CRC4_SN011,0)",sensor="3v3",slot="0"} 28.3125 1793748978311
+crs_qsfp_present{crate_id="CRC4_SN011",id="(CRC4_SN011,0)",slot="0"} 1 1793748978216
+crs_pll_active_input{crate_id="CRC4_SN011",id="(CRC4_SN011,0)",input_name="BP_CLK_10MHZ",slot="0"} 1 1793748978214
+crs_pll_active_input{crate_id="CRC4_SN011",id="(CRC4_SN011,0)",input_name="EXT_10MHZ",slot="0"} 0 1793748978214
+fpga_core_temperature{crate_id="CRC4_SN011",id="CRS_SN0228",slot="0"} 55.0458778381348 1793748982017
+fpga_adc_overflow_count{chan="0",id="CRS_SN0228",slot="0"} 2 1793748981150
+fpga_adc_overflow_count{chan="1",id="CRS_SN0228",slot="0"} 3 1793748981150
+fpga_fft_overflow_count{chan="0",id="CRS_SN0228",slot="0"} 0 1793748981150
+fpga_core_temperature{crate_id="CRC4_SN011",id="CRS_SN0244",slot="1"} 61.5 1793748982020
+crs_qsfp_present{crate_id="CRC4_SN011",id="(CRC4_SN011,1)",slot="1"} 0 1793748978300
+ch_master_run_time 5514.33 1793748984713
+fpga_time_error{crate="CRC4_SN011",slot="0"} 2743024138240 1793748982060
+not a sample line
+"""
+
+
+class TestParsers:
+    def test_hw_map_is_crate_and_boards_by_slot(self):
+        assert parse_hw_map(HW_MAP) == ("K7BP16-0011", {0: ["CRS-0228"], 1: ["CRS-0244"], 2: []})
+        assert parse_hw_map(["not", "a", "map"]) == (None, {})
+        assert parse_hw_map({"FCC0101": ["CRS-0001"]}) == (None, {1: ["CRS-0001"]})
+
+    def test_monitoring_keeps_each_slots_facts_and_newest_time(self):
+        b = parse_monitoring(MONITORING)
+        assert sorted(b) == [0, 1]
+        assert b[0] == {"adc_overflow": 5.0, "fft_overflow": 0.0, "sample_ts": 1793748982.06, "board_temp": 44.125,
+                        "qsfp": True, "clock": "BP_CLK_10MHZ", "core_temp": 55.0458778381348}
+        assert b[1] == {"adc_overflow": 0.0, "fft_overflow": 0.0, "sample_ts": 1793748982.02, "core_temp": 61.5,
+                        "qsfp": False}
+        assert parse_monitoring("") == {}
+
+
 class TestFpgaMonitorPollOnce:
     @responses.activate
     def test_healthy_path(self, monitor):
@@ -41,6 +80,31 @@ class TestFpgaMonitorPollOnce:
         assert monitor.frame0_ns == 1700000000000000000
         assert monitor.error is None
         assert monitor.last_seen is not None
+        # the board reads are not the health: none answered here
+        assert monitor.boards == {} and monitor.boards_at is None and "boards:" in monitor.boards_error
+
+    @responses.activate
+    def test_boards_from_the_hardware_map_and_the_monitoring_text(self, monitor):
+        responses.get(f"{BASE}/status", json={"state": "on"})
+        responses.get(f"{BASE}/get-hw-map", json=HW_MAP)
+        responses.get(f"{BASE}/get-monitoring-data", body=MONITORING, content_type="text/plain")
+        responses.get(f"{BASE}/get-frame0-time", json={"frame0_nano": 1, "start_ctime": 0.0})
+        monitor.poll_once()
+        assert monitor.crate == "K7BP16-0011" and monitor.hw_map == {0: ["CRS-0228"], 1: ["CRS-0244"], 2: []}
+        assert monitor.boards[1]["core_temp"] == 61.5 and monitor.boards_error is None
+        assert monitor.boards_at == monitor.last_polled
+        d = monitor.to_dict()
+        assert d["hw_map"] == {"0": ["CRS-0228"], "1": ["CRS-0244"], "2": []} and d["boards"]["0"]["qsfp"] is True
+        # a failed read keeps the last boards; a down daemon clears them
+        responses.reset()
+        responses.get(f"{BASE}/status", json={"state": "on"})
+        responses.get(f"{BASE}/get-frame0-time", json={"frame0_nano": 1, "start_ctime": 0.0})
+        monitor.poll_once()
+        assert monitor.boards[1]["core_temp"] == 61.5 and monitor.boards_error
+        responses.reset()
+        responses.get(f"{BASE}/status", status=500)
+        monitor.poll_once()
+        assert monitor.health == "down" and monitor.boards == {} and monitor.hw_map == {} and monitor.crate is None
 
     @responses.activate
     def test_status_down(self, monitor):

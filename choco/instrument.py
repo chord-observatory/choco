@@ -12,12 +12,14 @@ Three inputs, all read-only:
 - the devices, polled by :class:`InstrumentMonitor` every few seconds while
   the page is watched: each node's kotekan ``/metrics`` (the DPDK NIC
   counters) and, given a read-only account, the switch's eAPI (``show``
-  commands only, :class:`SwitchEapi`);
+  commands only, :class:`SwitchEapi`); the CRS boards come from choco's
+  own fpga_master monitor (its hardware map and per-board samples,
+  :func:`board_state`);
 - Prometheus, at most every ``PROMETHEUS_EVERY_S``, for what choco cannot
   read itself: the dish supply (its SCPI socket takes the exporter alone),
   the PDU and the iDRACs (SNMP), node_exporter (which answers Prometheus
-  alone), the CRS crate controller, and the switch until choco has its
-  account (the switch monitor's ``switch_interface_*``, FEC and optics).
+  alone), and the switch until choco has its account (the switch
+  monitor's ``switch_interface_*``, FEC and optics).
 
 Stdlib only, apart from ``http.fetch`` for the requests.
 """
@@ -62,6 +64,13 @@ SWITCH_STALE_S = 180.0
 PAGE_POLL_S = 5.0
 #: Prometheus is read at most this often: its exporters scrape every 30-60 s.
 PROMETHEUS_EVERY_S = 30.0
+#: fpga_master samples every board about every 11 s; a board whose newest
+#: sample is older than this is not being read.
+BOARD_STALE_S = 90.0
+#: FPGA core temperature (°C): the warning and critical lines of the
+#: FPGACoreTemperature alerts.
+CORE_TEMP_WARN_C = 75.0
+CORE_TEMP_BAD_C = 85.0
 
 
 def port_key(name: str) -> tuple:
@@ -241,8 +250,8 @@ _SWITCH_QUERIES = {
     "fec_unc": "rate(switch_interface_fec_uncorrected_codewords_total{sw}[5m])",
     "rx_dbm": "min by (interface) (switch_interface_rx_power_dbm{sw})",
 }
-#: The power distribution unit, the servers' iDRACs (over SNMP), node_exporter
-#: and the CRS crate controller.  Raritan sensor 5 is active power (W).
+#: The power distribution unit, the servers' iDRACs (over SNMP) and
+#: node_exporter.  Raritan sensor 5 is active power (W).
 _DEVICE_QUERIES = {
     "outlet_w": 'pdu_outlet_sensor_value{sensor="5"}',
     "inlet_w": 'pdu_inlet_sensor_value{sensor="5"}',
@@ -254,8 +263,6 @@ _DEVICE_QUERIES = {
     "idrac_psu": "idrac_psu_status",
     "host_up": 'up{job="node"}',
     "host_rx": 'sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[2m])) * 8',
-    "crate_ready": "crs_control_ready",
-    "crate_boards": "crs_control_hw_device_count",
 }
 #: PDU outlet names of the devices that are not hosts (a host's outlets
 #: carry its name).
@@ -290,7 +297,7 @@ def _pdu_name(instance: str) -> str:
 
 
 def parse_devices(results: dict[str, list[dict]]) -> dict:
-    """The ``_DEVICE_QUERIES`` results as ``{"outlets", "inlet_w", "hosts", "crate"}``.
+    """The ``_DEVICE_QUERIES`` results as ``{"outlets", "inlet_w", "hosts"}``.
 
     ``hosts`` is keyed by short host name: ``idrac_up``, ``status``,
     ``power`` (3 off, 4 on), ``psu`` ({name: status}), ``temps``
@@ -324,12 +331,8 @@ def parse_devices(results: dict[str, list[dict]]) -> dict:
                        "pdu": _pdu_name(r["metric"].get("instance", "?")),
                        "watts": float(r["value"][1])}
                       for r in results.get("outlet_w", [])), key=lambda o: (o["pdu"], o["outlet"]))
-    crate = {}
-    for field in ("crate_ready", "crate_boards"):
-        for r in results.get(field, []):
-            crate[field[6:]] = float(r["value"][1])
     inlet = [float(r["value"][1]) for r in results.get("inlet_w", [])]
-    return {"outlets": outlets, "inlet_w": sum(inlet) if inlet else None, "hosts": hosts, "crate": crate}
+    return {"outlets": outlets, "inlet_w": sum(inlet) if inlet else None, "hosts": hosts}
 
 
 def outlet_watts(devices: dict | None, name: str) -> float | None:
@@ -711,6 +714,63 @@ def in_port_state(stats: dict | None, silent_expected: bool = False) -> tuple[st
     return "ok", "up"
 
 
+def board_state(source_id: int, fpga: dict | None, now: float | None = None) -> tuple[str, str]:
+    """(tone, word) for a CRS board as fpga_master sees it.
+
+    *source_id* is fpga_master's slot index (crate slot − 1), the key of
+    *fpga*, ``FpgaMonitor.to_dict()``.  ``off`` whenever fpga_master gives
+    nothing current about the board: not configured, down, not running,
+    the slot not in its hardware map, no samples or samples older than
+    :data:`BOARD_STALE_S`.  Otherwise the core temperature and the QSFP
+    decide.
+    """
+    if not fpga or not fpga.get("configured"):
+        return "off", "no fpga_master"
+    if fpga.get("health") == "down":
+        return "off", "fpga_master down"
+    if str(source_id) not in (fpga.get("hw_map") or {}):
+        state = fpga.get("state")
+        return "off", f"fpga_master {state}" if state and state != "on" else "not in the hardware map"
+    if not fpga["hw_map"][str(source_id)]:
+        return "off", "empty slot"
+    b = (fpga.get("boards") or {}).get(str(source_id))
+    if not b or not b.get("sample_ts"):
+        return "off", "no samples"
+    age = (time.time() if now is None else now) - b["sample_ts"]
+    if age > BOARD_STALE_S:
+        return "off", f"samples {age / 60:.0f} min old"
+    temp = b.get("core_temp")
+    if temp is not None and temp > CORE_TEMP_BAD_C:
+        return "bad", f"core {temp:.0f} °C"
+    if temp is not None and temp > CORE_TEMP_WARN_C:
+        return "warn", f"core {temp:.0f} °C"
+    if b.get("qsfp") is False:
+        return "warn", "no QSFP"
+    return "ok", "ok"
+
+
+def board_facts(source_id: int, fpga: dict | None) -> str:
+    """One line of what fpga_master knows about the board, for a tooltip."""
+    if not fpga:
+        return ""
+    parts = []
+    serials = (fpga.get("hw_map") or {}).get(str(source_id)) or []
+    if serials:
+        parts.append(", ".join(serials))
+    b = (fpga.get("boards") or {}).get(str(source_id)) or {}
+    if b.get("core_temp") is not None:
+        parts.append(f"core {b['core_temp']:.0f} °C")
+    if b.get("board_temp") is not None:
+        parts.append(f"board {b['board_temp']:.0f} °C")
+    if "qsfp" in b:
+        parts.append("QSFP present" if b["qsfp"] else "no QSFP")
+    if b.get("clock"):
+        parts.append(f"clock {b['clock']}")
+    if b.get("adc_overflow") or b.get("fft_overflow"):
+        parts.append(f"overflows ADC {b.get('adc_overflow', 0):.0f} FFT {b.get('fft_overflow', 0):.0f}")
+    return " · ".join(parts)
+
+
 def out_port_state(stats: dict | None) -> tuple[str, str]:
     """(tone, word) for a node-facing switch port."""
     if stats is None:
@@ -771,7 +831,8 @@ def link_problems(wiring: Wiring, switch: dict, nics: dict) -> list[str]:
 
 def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
              power: dict, nodes: dict, devices: dict | None = None,
-             flags: dict | None = None) -> dict:
+             flags: dict | None = None, fpga: dict | None = None,
+             now: float | None = None) -> dict:
     """Rows for the diagram and the tables.
 
     *boards*: :func:`board_layout`.  *power*: feed label -> True/False/None
@@ -779,7 +840,10 @@ def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
     *nodes*: node name -> ``{"status", "maintenance", "version", "branch",
     "commit", "group"}`` from choco's registry.  *devices*:
     :func:`parse_devices`.  *flags*: feed label -> why bffs flags it, for
-    the flagged feeds; None when bffs has not said.
+    the flagged feeds; None when bffs has not said.  *fpga*:
+    ``FpgaMonitor.to_dict()``, for each board's own state (``board_tone``
+    / ``board_word``, :func:`board_state`) beside its link's (``tone`` /
+    ``word``, the switch port).
     """
     by_slot = wiring.by_slot()
     by_port = wiring.by_port()
@@ -788,6 +852,7 @@ def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
         row = by_slot.get(b["slot"])
         stats = switch.get(row.switch_port) if row else None
         tone, word = in_port_state(stats, b["silent_expected"]) if row else ("off", "not in wiring table")
+        board_tone, board_word = board_state(b["source_id"], fpga, now)
         left.append({
             **b,
             "feeds": [{**f, "power": power.get(f["label"]) if f["label"] else None,
@@ -797,6 +862,7 @@ def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
             "port": row.switch_port if row else None,
             "notes": row.notes if row else "",
             "tone": tone, "word": word, "stats": stats or {},
+            "board_tone": board_tone, "board_word": board_word, "board_facts": board_facts(b["source_id"], fpga),
         })
     right = []
     nic_rows = sorted((r for r in wiring.rows if r.node), key=lambda r: (port_key(r.node), r.nic_port))
@@ -1013,10 +1079,12 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
         top = Y["feeds"] + len(b["feeds"]) * Y["feed_dy"] - 6
         links.append({"d": f"M{c},{top} V{by - 2}", "tone": "ok" if b["tone"] == "ok" else "off", "label": "",
                       "title": f"feeds → crate slot {b['slot']}"})
-        card(c - colw / 2 + 3, by, colw - 6, Y["board_h"], b["tone"],
-             [{"dy": 17, "text": f"slot {b['slot']}", "cls": "fl-t"},
+        # the card is the board as fpga_master sees it; the link below it, the switch port
+        card(c - colw / 2 + 3, by, colw - 6, Y["board_h"], b["board_tone"],
+             [{"dy": 17, "text": f"slot {b['slot']}", "cls": "fl-t" + (" muted" if b["board_tone"] == "off" else "")},
               {"dy": 31, "text": f"{_dish_span(b['feeds'])[:1]} · {b['pol']}", "cls": "fl-sm muted"}],
-             f"crate slot {b['slot']} (source_id {b['source_id']}), {_dish_span(b['feeds'])} {b['pol']}: {b['word']}",
+             f"crate slot {b['slot']} (source_id {b['source_id']}), {_dish_span(b['feeds'])} {b['pol']}: "
+             f"{b['board_word']}" + (f" ({b['board_facts']})" if b["board_facts"] else "") + f"; link {b['word']}",
              (stages.get("fpga") or {}).get("href"))
         sy = Y["switch"]
         links.append({"d": f"M{c},{by + Y['board_h']} V{sy - 3}", "tone": b["tone"],

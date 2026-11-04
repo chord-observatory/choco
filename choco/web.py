@@ -2115,8 +2115,9 @@ def _instrument_view() -> dict:
                       "branch": (n.version_info or {}).get("branch"),
                       "commit": (n.version_info or {}).get("git_commit_hash")}
              for n in _registry().nodes.values()}
+    fpga = current_app.config.get("fpga_monitor")
     view = instrument_overview(boards, wiring, monitor.switch, monitor.nics, _feed_power(), nodes,
-                               monitor.devices, _feed_flags())
+                               monitor.devices, _feed_flags(), fpga.to_dict() if fpga is not None else None)
     return {
         "inst": monitor.to_dict(),
         "view": view,
@@ -2188,11 +2189,12 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
     stages["power_cards"] = cards
 
     fstate = fpga.to_dict() if fpga is not None else {}
-    crate = devices.get("crate") or {}
-    btone, bword = links_word(view["boards"], "tone")
-    notes = ["fpga_master " + (fstate.get("state") or fstate.get("health") or "—")]
-    if crate.get("boards") is not None:
-        notes.append(f"{crate['boards']:.0f} boards seen")
+    # the word counts the boards fpga_master reports as ok; the links are a note
+    btone, bword = links_word(view["boards"], "board_tone")
+    if not any(b["board_tone"] != "off" for b in view["boards"]):
+        bword = view["boards"][0]["board_word"] if view["boards"] else "no boards"
+    notes = ["fpga_master " + (fstate.get("state") or fstate.get("health") or "—"),
+             "links " + links_word(view["boards"], "tone")[1]]
     if watts(CRATE_OUTLET):
         notes.append(watts(CRATE_OUTLET))
     stages["fpga"] = {"title": "CRS boards", "word": bword, "href": root + "/service/fpga", "notes": notes,
