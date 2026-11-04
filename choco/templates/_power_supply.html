@@ -1,11 +1,11 @@
-{# The analog power page's dish supply, from Prometheus through the
+{# The analog power page's dish supply, read through its exporter by the
    instrument monitor (30 s htmx poll on #power-supply). #}
 {% from "_service_macros.html" import tag %}
 <h3 id="supply">Dish supply</h3>
 {% if not power_source %}
-<p class="note">Set <code>instrument.prometheus_url</code> in config.yaml to read the dish supply.</p>
+<p class="note">Set <code>instrument.dish_supply</code> in config.yaml to read the dish supply.</p>
 {% elif not psu %}
-<p class="note">No dish supply series in Prometheus.</p>
+<p class="note">The dish supply's exporter has not answered.</p>
 {% else %}
 <p class="note">The Keysight N8732A DC supply for the dishes' analog chain, read-only here.  After a
     protection trip, <code>OUTP:PROT:CLE</code> on its SCPI port clears it.</p>

@@ -185,8 +185,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   another verb.  Every 30 s, each host's node_exporter (it must allow
   choco's address) and the rack PDU over SNMP (`PduSnmp`, the
   `snmpbulkwalk` host tool, walks only); the switch's PHY and optics over
-  the same eAPI.  Only the dish supply (its SCPI socket takes one client,
-  the exporter) and the switch without an account come from Prometheus.
+  the same eAPI; the dish supply live through its exporter, which holds
+  the supply's one SCPI session for Prometheus and choco both (never open
+  a second).  Only the switch without an account comes from Prometheus.
   choco does not read the iDRACs.
 - A board's card is the board as fpga_master sees it (`board_state`): grey
   whenever fpga_master has nothing current to say — down, not running, the

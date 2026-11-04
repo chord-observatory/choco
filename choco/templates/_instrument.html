@@ -96,5 +96,6 @@
     <span><b>Switch</b> {% if S.switch %}{{ 'eAPI' if S.switch.ok else '<span class="err">eAPI failed</span>' | safe }}{% else %}via Prometheus (no switch account){% endif %}</span>
     {% if S.node_exporter %}<span><b>Hosts</b> node_exporter on {{ S.node_exporter.n }} / {{ S.node_exporter.of }}</span>{% endif %}
     {% if S.pdu %}<span><b>PDU</b> {{ 'SNMP' if S.pdu.ok else '<span class="err">not answering</span>' | safe }}</span>{% endif %}
-    {% if S.prometheus %}<span><b>Prometheus</b> {{ 'answering' if S.prometheus.ok else '<span class="err">not answering</span>' | safe }} <small>(the dish supply{{ ', the switch' if not S.switch }}, every 30 s)</small></span>{% endif %}
+    {% if S.supply %}<span><b>Dish supply</b> {{ 'exporter' if S.supply.ok else '<span class="err">not answering</span>' | safe }}</span>{% endif %}
+    {% if S.prometheus %}<span><b>Prometheus</b> {{ 'answering' if S.prometheus.ok else '<span class="err">not answering</span>' | safe }} <small>(the switch, every 30 s)</small></span>{% endif %}
 </div>

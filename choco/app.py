@@ -337,6 +337,7 @@ def create_app(
     wiring_file = Path(inst_cfg.get("wiring_file") or DEFAULT_WIRING_FILENAME)
     eapi_cfg = inst_cfg.get("switch_eapi") or {}
     pdu_cfg = inst_cfg.get("pdu") or {}
+    supply_cfg = inst_cfg.get("dish_supply") or {}
     instrument_monitor = InstrumentMonitor(
         inst_cfg.get("prometheus_url") or None,
         switch_instance=inst_cfg.get("switch_instance") or None,
@@ -350,6 +351,8 @@ def create_app(
                     timeout=float(inst_cfg.get("timeout") or 5.0)) if pdu_cfg.get("host") else None,
         # the transfer runs on the host whose socket lists the archive
         transfer_host=arc_cfg.get("host") or None,
+        supply=(supply_cfg["exporter"], str(supply_cfg["target"]))
+        if supply_cfg.get("exporter") and supply_cfg.get("target") else None,
     )
 
     # Store on app for access in routes

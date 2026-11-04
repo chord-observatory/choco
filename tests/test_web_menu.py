@@ -95,7 +95,7 @@ class TestPowerPages:
         login(client)
         body = client.get("/power/analog").data.decode()
         assert "Analog power" in body and 'href="/power/rack"' in body
-        assert "<h3>PDB</h3>" in body and "Dish supply" in body and "instrument.prometheus_url" in body
+        assert "<h3>PDB</h3>" in body and "Dish supply" in body and "instrument.dish_supply" in body
         assert "Channel map" in body and "Not cross-checked" in body
         assert "PDU outlets" not in body
 

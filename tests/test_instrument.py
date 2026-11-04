@@ -10,8 +10,8 @@ from types import SimpleNamespace
 from choco.instrument import (InstrumentMonitor, PduSnmp, SwitchEapi, Wiring, WiringFile, WiringRow, board_facts,
                               board_layout, board_state, flow_diagram, in_port_state, link_problems, job_tone,
                               job_word, nic_state, out_port_state, outlet_watts, overview, parse_node_exporter,
-                              parse_snmp_walk, parse_switch_slow, parse_wiring, short_build, transfer_state,
-                              worst_tone)
+                              parse_snmp_walk, parse_supply, parse_switch_slow, parse_wiring, short_build,
+                              transfer_state, worst_tone)
 from tests.helpers import login
 
 WIRING = """\
@@ -59,10 +59,6 @@ REPLIES = {
                                  _result(1, instance="cx1.example:12048", port="1")],
     "rate(kotekan_dpdk_nic_rx_packets_total": [_result(4e5, instance="cx1.example:12048", port="0"),
                                                _result(2e5, instance="cx1.example:12048", port="1")],
-    "keysight_psu_up": [_result(1, instance="10.222.0.31")],
-    "keysight_psu_output_on": [_result(1, instance="10.222.0.31")],
-    "keysight_psu_voltage_volts": [_result(48.1, instance="10.222.0.31")],
-    "keysight_psu_current_amps": [_result(12.5, instance="10.222.0.31")],
     "switch_monitor_up": [_result(1)],
     "switch_monitor_last_success_timestamp_seconds": [_result(1e12)],
 }
@@ -93,6 +89,20 @@ def node_exporter_text(n: int, transfer: bool = False) -> str:
                   "kotekan_vis_transfer_last_success_timestamp_seconds 1e+10",
                   "kotekan_vis_transfer_last_run_bytes_transferred 2.5e+12"]
     return "\n".join(lines) + "\n"
+
+
+#: The dish supply exporter's answer for 10.222.0.31.
+SUPPLY_TEXT = """\
+keysight_psu_up 1
+keysight_psu_info{vendor="Keysight",model="N8732A",serial="US1",firmware="A.01"} 1
+keysight_psu_output_on 1
+keysight_psu_voltage_volts 48.1
+keysight_psu_current_amps 12.5
+keysight_psu_power_watts 601.25
+keysight_psu_fault{fault="ov"} 0
+keysight_psu_fault{fault="ot"} 0
+"""
+SUPPLY = ("http://grafana.example:9121", "10.222.0.31")
 
 
 def _oid(base, *index):
@@ -189,6 +199,10 @@ def fake_fetch(calls, reads=None):
 
     def fetch(method, url, *, timeout, params=None, **kw):
         reads[url] = reads.get(url, 0) + 1
+        if url.endswith(":9121/metrics"):
+            calls.append(url)
+            assert params == {"target": "10.222.0.31"}
+            return _Reply(None, SUPPLY_TEXT)
         if url.endswith(":9100/metrics"):
             calls.append(url)
             return _Reply(None, node_exporter_text(reads[url], transfer="alpenhorn" in url))
@@ -451,6 +465,13 @@ class TestDirectSources:
         with pytest.raises(OSError, match="not installed"):
             PduSnmp("10.222.0.27").read()
 
+    def test_the_dish_supply_from_its_exporter(self):
+        assert parse_supply(SUPPLY_TEXT) == {"up": 1.0, "output_on": 1.0, "volts": 48.1, "amps": 12.5, "fault": 0.0}
+        tripped = SUPPLY_TEXT.replace('fault="ot"} 0', 'fault="ot"} 1')
+        assert parse_supply(tripped)["fault"] == 1.0
+        assert parse_supply("keysight_psu_up 0\n") == {"up": 0.0, "fault": 0.0}   # the PSU did not answer
+        assert parse_supply("keysight_psu_exporter_up 1\n") is None             # not a supply's answer
+
     def test_the_switch_phy_and_optics(self):
         from choco.instrument import Rates
         rates = Rates()
@@ -480,6 +501,7 @@ class TestMonitor:
         kw.setdefault("url", "http://prom.example:9090/")
         kw.setdefault("pdu", PduSnmp("10.222.0.27"))
         kw.setdefault("transfer_host", "alpenhorn.example")
+        kw.setdefault("supply", SUPPLY)
         m = InstrumentMonitor(kw.pop("url"), switch_instance="10.0.0.21",
                               wiring=WiringFile(tmp_path / "wiring.csv"),
                               nodes=lambda: [("cx1", "http://cx1.example:12048")], **kw)
@@ -514,7 +536,8 @@ class TestMonitor:
         assert m.transfer == {"running": 1.0, "failures": 0.0, "last_success": 1e10,
                               "last_run_bytes": 2.5e12, "host": "alpenhorn"}
         assert not any("pdu_" in c or "idrac" in c or 'job="node"' in c or "kotekan_vis_transfer" in c
-                       for c in calls if isinstance(c, str))
+                       or "keysight" in c for c in calls if isinstance(c, str))
+        assert m.sources["supply"] == {"ok": True, "via": "exporter"}
         assert m.health == "degraded"
         assert "Ethernet12/1 (crate slot 4): down" in m.problems
         assert m.to_dict()["n_problems"] == len(m.problems)
@@ -584,7 +607,7 @@ def inst_app(app, configs_dir, monkeypatch, tmp_path):
     monkeypatch.setattr("choco.hosttool.run_tool", fake_snmp)
     m = app.config["instrument_monitor"]
     m.url, m.switch_instance, m.wiring = "http://prom.example:9090", None, WiringFile(tmp_path / "wiring.csv")
-    m.pdu, m.transfer_host = PduSnmp("10.222.0.27"), "alpenhorn.example"
+    m.pdu, m.transfer_host, m.supply = PduSnmp("10.222.0.27"), "alpenhorn.example", SUPPLY
     m.poll_once()
     return app
 

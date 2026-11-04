@@ -85,10 +85,16 @@ node_exporter and the PDU are reported in the monitor's `sources` but do
 not set its health, which is the signal path's (the Switch item): the PDU
 has its own item, the hosts their own column.
 
-Prometheus keeps two things: the Keysight supply (its SCPI socket takes
-very few sessions, slow to clean up, and the exporter holds one; choco
-would have to own it and publish it for Prometheus instead) and the
-switch until choco has its account.
+The Keysight supply's SCPI socket takes very few sessions and is slow to
+clean up a dropped one, and its exporter holds one session for good.
+Three ways were weighed (user's choice, 2026-11-04): choco owning the only
+session and publishing it for Prometheus (Grafana's supply panels and
+alerts would then depend on choco), a second session beside the
+exporter's (risks locking one out), or reading the exporter itself.  The
+exporter's port is published for choco and it serves only its configured
+targets (it would otherwise connect wherever a request pointed it); its
+per-target lock serializes Prometheus's and choco's reads on the one
+session.  Prometheus is left with the switch, until choco has its account.
 
 choco keeps talking to kotekan, power_db and fpga_master directly, as
 before; the page uses choco's registry for node state, the PDB monitor for

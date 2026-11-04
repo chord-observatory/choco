@@ -2101,21 +2101,22 @@ def _pdb_context() -> dict:
 
 def _power_devices() -> dict:
     """The power pages' supplies, as the instrument monitor last read them:
-    the dish supply from Prometheus (``psu``, the analog page;
-    ``power_source`` False without Prometheus) and the PDU's outlets over
-    SNMP (``devices``, the rack page; ``pdu_source`` False without a PDU)."""
+    the dish supply through its exporter (``psu``, the analog page;
+    ``power_source`` False without one configured) and the PDU's outlets
+    over SNMP (``devices``, the rack page; ``pdu_source`` False without a
+    PDU)."""
     monitor = current_app.config.get("instrument_monitor")
     if monitor is None:
         return {"power_source": False, "pdu_source": False, "psu": None, "devices": {}}
-    return {"power_source": bool(monitor.url), "pdu_source": monitor.pdu is not None,
-            "psu": monitor.psu if monitor.url else None, "devices": monitor.devices}
+    return {"power_source": monitor.supply is not None, "pdu_source": monitor.pdu is not None,
+            "psu": monitor.psu if monitor.supply is not None else None, "devices": monitor.devices}
 
 
 def _power_badge(pdb: dict | None) -> dict | None:
     """The POWER badge: the PDB controller's snapshot, made worse when the
     dish supply reports a fault, its output off or no answer."""
     monitor = current_app.config.get("instrument_monitor")
-    psu = monitor.psu if monitor is not None and monitor.url else None
+    psu = monitor.psu if monitor is not None and monitor.supply is not None else None
     if pdb is None and not psu:
         return None
     badge = dict(pdb or {"health": "ok", "error": None, "host": None, "port": None, "last_seen": None})

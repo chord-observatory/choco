@@ -20,10 +20,11 @@ Three inputs, all read-only:
   transfer host the transfer job's textfile series), the rack PDU over
   SNMP (:class:`PduSnmp`, the ``snmpbulkwalk`` host tool), and over eAPI
   the switch's error counters, PHY (signal, FEC) and optics;
-- Prometheus, on the same cadence, only for what choco cannot read
-  itself: the dish supply (its SCPI socket takes one client, the
-  exporter), and the switch until choco has its eAPI account (the switch
-  monitor's ``switch_interface_*``).
+- the dish supply through its exporter (``/metrics?target=``): the
+  supply's SCPI socket takes very few sessions, so the exporter holds the
+  one and serves Prometheus and choco from it, live;
+- Prometheus, on the same cadence, only for the switch until choco has
+  its eAPI account (the switch monitor's ``switch_interface_*``).
 
 Stdlib only, apart from ``http.fetch`` for the requests.
 """
@@ -259,13 +260,16 @@ _SWITCH_QUERIES = {
 #: carry its name).
 SWITCH_OUTLET = "arista"
 CRATE_OUTLET = "f-engine"
-_PSU_QUERIES = {
-    "up": "keysight_psu_up",
-    "output_on": "keysight_psu_output_on",
-    "volts": "keysight_psu_voltage_volts",
-    "amps": "keysight_psu_current_amps",
-    "fault": "keysight_psu_fault",
+#: The dish supply exporter's series, by the field they fill; any
+#: ``keysight_psu_fault{fault=...}`` set makes ``fault`` 1.
+_SUPPLY_SERIES = {
+    "keysight_psu_up": "up",
+    "keysight_psu_output_on": "output_on",
+    "keysight_psu_voltage_volts": "volts",
+    "keysight_psu_current_amps": "amps",
 }
+#: The exporter opens the SCPI session and runs ten queries on a cold read.
+SUPPLY_TIMEOUT_S = 15.0
 
 
 #: node_exporter's port and the collectors read: the network counters and
@@ -359,6 +363,30 @@ def parse_node_exporter(text: str) -> dict:
         elif name in _TRANSFER_SERIES:
             transfer[_TRANSFER_SERIES[name]] = v
     return {"rx": rx if seen else None, "tx": tx if seen else None, "transfer": transfer}
+
+
+def parse_supply(text: str) -> dict | None:
+    """The dish supply exporter's answer -> ``{up, output_on, volts, amps,
+    fault}``, ``fault`` 1 when any fault bit is set; None without
+    ``keysight_psu_up`` (not the exporter's answer for a supply)."""
+    out: dict[str, float] = {}
+    fault = 0.0
+    for line in text.splitlines():
+        m = _SAMPLE_RE.match(line) if line and line[0] != "#" else None
+        if not m:
+            continue
+        name, _labels, value = m.groups()
+        try:
+            v = float(value)
+        except ValueError:
+            continue
+        if name in _SUPPLY_SERIES:
+            out[_SUPPLY_SERIES[name]] = v
+        elif name == "keysight_psu_fault" and v:
+            fault = 1.0
+    if "up" not in out:
+        return None
+    return {**out, "fault": fault}
 
 
 def parse_snmp_walk(text: str, base: str) -> dict[tuple[int, ...], str]:
@@ -617,8 +645,8 @@ def parse_switch_slow(results: list[dict], rates: Rates, t: float) -> dict[str, 
 class InstrumentMonitor(PolledMonitor):
     """Reads the X-engine NICs from kotekan, the switch from its eAPI (with
     an account, else Prometheus), each host's node_exporter, the rack PDU
-    over SNMP (*pdu*, a :class:`PduSnmp`) and the dish supply from
-    Prometheus.
+    over SNMP (*pdu*, a :class:`PduSnmp`) and the dish supply through its
+    exporter (*supply*: ``(exporter URL, target)``).
 
     *nodes* returns ``[(short name, kotekan base URL)]``, read at each
     poll; their hosts, and *transfer_host* (the host that runs the
@@ -626,8 +654,8 @@ class InstrumentMonitor(PolledMonitor):
     signal path's: ``ok`` when kotekan, the switch and Prometheus (where
     used) answer and the switch numbers are fresh, ``degraded`` when one
     does not or a wired link is down, ``down`` when nothing answers.
-    node_exporter and the PDU are reported in ``sources`` but judged by
-    their own pages (the PDU has its own badge).
+    node_exporter, the PDU and the supply are reported in ``sources`` but
+    judged by their own pages (the PDU and the supply have their badges).
     """
 
     INTERVAL_S = 30
@@ -635,7 +663,8 @@ class InstrumentMonitor(PolledMonitor):
     def __init__(self, url: str | None, switch_instance: str | None = None,
                  wiring: WiringFile | None = None, timeout: float = 5.0,
                  nodes=None, switch_eapi: SwitchEapi | None = None,
-                 pdu: PduSnmp | None = None, transfer_host: str | None = None):
+                 pdu: PduSnmp | None = None, transfer_host: str | None = None,
+                 supply: tuple[str, str] | None = None):
         self.url = (url or "").rstrip("/") or None
         self.switch_instance = switch_instance or None
         self.wiring = wiring or WiringFile(None)
@@ -643,6 +672,7 @@ class InstrumentMonitor(PolledMonitor):
         self.nodes = nodes or (lambda: [])
         self.eapi = switch_eapi
         self.pdu = pdu
+        self.supply = supply
         self.transfer_host = transfer_host or None
         self.switch: dict[str, dict] = {}
         self.nics: dict[tuple[str, int], dict] = {}
@@ -662,7 +692,8 @@ class InstrumentMonitor(PolledMonitor):
 
     @property
     def configured(self) -> bool:
-        return bool(self.url) or self.eapi is not None or self.pdu is not None or bool(self.transfer_host)
+        return (bool(self.url) or self.eapi is not None or self.pdu is not None or bool(self.transfer_host)
+                or self.supply is not None)
 
     # host/port for the strip's tooltip, like the other monitors
     @property
@@ -716,7 +747,8 @@ class InstrumentMonitor(PolledMonitor):
             sources.update(self._poll_slow())
             self._slow_at = now
         else:
-            sources.update({k: v for k, v in self.sources.items() if k in ("prometheus", "node_exporter", "pdu")})
+            sources.update({k: v for k, v in self.sources.items()
+                            if k in ("prometheus", "node_exporter", "pdu", "supply")})
         switch = {k: dict(v) for k, v in self._prom_switch.items()} if direct is None else {}
         for name, fields in (direct or {}).items():
             switch.setdefault(name, {}).update(fields)
@@ -781,8 +813,9 @@ class InstrumentMonitor(PolledMonitor):
                       **({} if answered else {"error": "no kotekan /metrics answered"})}
 
     def _poll_slow(self) -> dict[str, dict]:
-        """The slow sources, each on its own: node_exporter, the PDU and
-        Prometheus; their states for ``sources``."""
+        """The slow sources, each on its own: node_exporter, the PDU, the
+        dish supply and (for the switch, without the account) Prometheus;
+        their states for ``sources``."""
         sources: dict[str, dict] = {}
         hosts, transfer, state = self._poll_node_exporters()
         if state:
@@ -797,7 +830,18 @@ class InstrumentMonitor(PolledMonitor):
                 sources["pdu"] = {"ok": False, "via": "SNMP", "error": f"PDU {self.pdu.host}: {e}"}
         self.devices = {**outlets, "hosts": hosts}
         self.transfer = transfer
-        if self.url:
+        if self.supply is not None:
+            url, target = self.supply
+            try:
+                text = fetch("GET", f"{url.rstrip('/')}/metrics", params={"target": target},
+                             timeout=max(self.timeout, SUPPLY_TIMEOUT_S)).text
+                self.psu = parse_supply(text)
+                sources["supply"] = ({"ok": True, "via": "exporter"} if self.psu is not None else
+                                     {"ok": False, "via": "exporter", "error": f"{url}: not a supply's answer"})
+            except OSError as e:
+                self.psu = None
+                sources["supply"] = {"ok": False, "via": "exporter", "error": f"dish supply exporter {url}: {e}"}
+        if self.url and self.eapi is None:
             try:
                 self._poll_prometheus()
                 sources["prometheus"] = {"ok": True}
@@ -845,15 +889,7 @@ class InstrumentMonitor(PolledMonitor):
                                  **({} if answered else {"error": "no node_exporter answered"})}
 
     def _poll_prometheus(self) -> None:
-        """The dish supply, and the switch while choco has no eAPI account."""
-        psu = {}
-        for field, q in _PSU_QUERIES.items():
-            for r in self._query(q):
-                psu[field] = float(r["value"][1])
-        self.psu = psu or None
-        if self.eapi is not None:
-            self._prom_switch, self.switch_monitor = {}, {}
-            return
+        """The switch, while choco has no eAPI account."""
         sw = f'{{instance="{self.switch_instance}"}}' if self.switch_instance else ""
         switch: dict[str, dict] = {}
         for field, q in _SWITCH_QUERIES.items():

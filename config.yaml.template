@@ -118,8 +118,8 @@ pdb:
 # Each kotekan host's node_exporter (port 9100) is read directly, and so is
 # the transfer host's (vis_files.archive.host), for the transfer job's
 # series; node_exporter must allow choco's address (chord-sysops
-# node_exporter_allowed_sources).  Prometheus is read only for the dish
-# supply and, until switch_eapi is set, for the switch.
+# node_exporter_allowed_sources).  Prometheus is read only for the switch,
+# until switch_eapi is set.
 instrument:
   prometheus_url: http://10.222.0.40:9090
   switch_instance: 10.222.0.21      # the switch monitor's instance label
@@ -144,6 +144,12 @@ instrument:
   pdu:
     host: 10.222.0.27
     community: public
+  # The dish supply (Keysight), read live through its exporter: the supply's
+  # SCPI socket takes very few sessions, so the exporter holds the one and
+  # serves Prometheus and choco.  Unset: no dish supply figures.
+  dish_supply:
+    exporter: http://grafana.site.chord-observatory.ca:9121
+    target: 10.222.0.31
 
 # The GNSS transit forecast: kvand's gnss-fengine service (kotekan
 # scripts/gnss/site/fengine_gains.py on the gnss VM), which forecasts the
