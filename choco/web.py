@@ -1566,33 +1566,32 @@ def _service_registry() -> dict[str, dict]:
 #: group, for a page's crumb.
 MENU: tuple = (
     ("Instrument", (
-        ("OVERVIEW", "/", None, ("/",)),
-        ("NODES", "/nodes", "nodes", ("/nodes", "/nodes/edit/", "/pipeline/", "/plot/")),
-        ("SWITCH", "/switch", "instrument", ("/switch",)),
-        ("FPGA", "/fpga", "fpga", ("/fpga", "/service/fpga")),
+        ("Overview", "/", None, ("/",)),
+        ("Nodes", "/nodes", "nodes", ("/nodes", "/nodes/edit/", "/pipeline/", "/plot/")),
+        ("Switch", "/switch", "instrument", ("/switch",)),
+        ("F-engine", "/fpga", "fpga", ("/fpga", "/service/fpga")),
     )),
     ("Power", (
-        ("POWER", "/power/pdb", "power", ("/power/pdb", "/service/power", "/service/pdb")),
-        ("SUPPLIES", "/power/supplies", None, ("/power/supplies",)),
-        ("CHANNEL MAP", "/power/map", None, ("/power/map",)),
+        ("Analog power", "/power/analog", "power", ("/power/analog", "/service/power", "/service/pdb")),
+        ("Rack power", "/power/rack", "rack", ("/power/rack",)),
     )),
     ("Positioning", (
         ("EOP", "/service/eop", "eop", ("/service/eop",)),
-        ("POINTING", "/service/pointing", "pointing", ("/service/pointing",)),
-        ("TRANSITS", "/transits", "gnss", ("/transits",)),
+        ("Pointing", "/service/pointing", "pointing", ("/service/pointing",)),
+        ("Transits", "/transits", "gnss", ("/transits",)),
     )),
     ("Calibration", (
-        ("BFFS", "/service/bffs", "bffs", ("/service/bffs",)),
-        ("EIGENCAL", "/service/eigencal", "eigencal", ("/service/eigencal",)),
+        ("Feed flags", "/service/bffs", "bffs", ("/service/bffs",)),
+        ("Eigencal", "/service/eigencal", "eigencal", ("/service/eigencal",)),
     )),
     ("Data", (
-        ("DATA", "/files", "data", ("/files", "/waterfall/")),
-        ("MAP", "/service/mapmaker", "mapmaker", ("/service/mapmaker", "/service/skymap")),
+        ("Acquisitions", "/files", "data", ("/files", "/waterfall/")),
+        ("Sky maps", "/service/mapmaker", "mapmaker", ("/service/mapmaker", "/service/skymap")),
     )),
     ("Config", (
-        ("CONFIGS", "/configs", None, ("/configs",)),
-        ("REGISTRY", "/nodes/edit", None, ("/nodes/edit",)),
-        ("CHOCO", "/service/choco", "choco", ("/service/choco",)),
+        ("Config library", "/configs", None, ("/configs",)),
+        ("Node registry", "/nodes/edit", None, ("/nodes/edit",)),
+        ("choco", "/service/choco", "choco", ("/service/choco",)),
     )),
 )
 
@@ -1760,6 +1759,7 @@ def partial_menu():
         instrument=services["instrument"],
         data=services["data"],
         gnss=services["gnss"],
+        rack=_rack_badge(),
         services=services,
         svc=registry,
         folds={host: [[n, services[n]] for n in names]
@@ -1838,9 +1838,9 @@ def service_page(name):
     if name == "fpga":
         return redirect(url_for("web.fpga_page"))
     if name in ("pdb", "power"):
-        # the PDB grid is /power/pdb now; the controls keep their /service/pdb/ URLs
+        # the PDB grid is /power/analog now; the controls keep their /service/pdb/ URLs
         query = request.query_string.decode()
-        return redirect(url_for("web.power_pdb_page") + ("?" + query if query else ""))
+        return redirect(url_for("web.power_analog_page") + ("?" + query if query else ""))
     registry = _service_registry()
     svc = registry.get(name)
     if svc is None:
@@ -1892,32 +1892,25 @@ def fpga_page():
                            **_fpga_context(monitor))
 
 
-@bp.route("/power/pdb")
+@bp.route("/power/analog")
 @login_required
-def power_pdb_page():
-    """The PDB channels as a grid, with their controls."""
+def power_analog_page():
+    """The analog chain's power: the PDB channels as a grid with their
+    controls, the dish supply, and the channel map with its cross-check
+    against kotekan (rendered once per load: it renders a kotekan config,
+    far too much for a poll, and wiring does not change while you watch)."""
     if current_app.config.get("pdb_monitor") is None:
         abort(404)
-    return render_template("power_pdb.html", **_pdb_context())
+    context = _pdb_context()
+    return render_template("power_analog.html", **context, **_power_devices(),
+                           check=_pdb_cross_check(context["pdb_map"]))
 
 
-@bp.route("/power/supplies")
+@bp.route("/power/rack")
 @login_required
-def power_supplies_page():
-    """The dish supply and the PDU outlets, from Prometheus."""
-    return render_template("power_supplies.html", **_power_devices())
-
-
-@bp.route("/power/map")
-@login_required
-def power_map_page():
-    """The master channel map and its cross-check against kotekan,
-    rendered once per load: the cross-check renders a kotekan config,
-    far too much for a poll, and wiring does not change while you watch."""
-    if current_app.config.get("pdb_monitor") is None:
-        abort(404)
-    pdb_map = current_app.config["pdb_map"].get()
-    return render_template("power_map.html", pdb_map=pdb_map, check=_pdb_cross_check(pdb_map))
+def power_rack_page():
+    """The rack PDU: its outlets and the inlet, from Prometheus."""
+    return render_template("power_rack.html", rack=_rack_badge(), **_power_devices())
 
 
 @bp.route("/partials/service-fpga")
@@ -2090,9 +2083,10 @@ def _pdb_context() -> dict:
 
 
 def _power_devices() -> dict:
-    """The power page's other supplies, as the instrument monitor last read
-    them from Prometheus: the dish supply (``psu``) and the PDU outlets
-    (``devices``); ``power_source`` False when it has no Prometheus."""
+    """The power pages' supplies, as the instrument monitor last read
+    them from Prometheus: the dish supply (``psu``, the analog page) and
+    the PDU outlets (``devices``, the rack page); ``power_source`` False
+    when it has no Prometheus."""
     monitor = current_app.config.get("instrument_monitor")
     if monitor is None or not monitor.url:
         return {"power_source": False, "psu": None, "devices": {}}
@@ -2114,6 +2108,30 @@ def _power_badge(pdb: dict | None) -> dict | None:
         badge["supply"] = supply or "on"
     if supply and badge["health"] == "ok":
         badge["health"], badge["error"] = "degraded", f"dish supply {supply}"
+    return badge
+
+
+def _rack_badge() -> dict | None:
+    """The rack PDU's badge, from the instrument monitor's last Prometheus
+    read: ok with outlets reported, down when Prometheus has no PDU
+    series (the SNMP target unreachable, or its series gone stale),
+    unknown before the first read or while Prometheus does not answer;
+    None without Prometheus."""
+    monitor = current_app.config.get("instrument_monitor")
+    if monitor is None or not monitor.url:
+        return None
+    devices = monitor.devices or {}
+    outlets = devices.get("outlets") or []
+    badge = {"pdus": sorted({o["pdu"] for o in outlets}), "n_outlets": len(outlets),
+             "inlet_w": devices.get("inlet_w"), "last_seen": monitor.last_seen, "error": None}
+    if monitor.last_polled is None:
+        badge["health"] = "unknown"
+    elif not (monitor.sources.get("prometheus") or {}).get("ok", True):
+        badge["health"], badge["error"] = "unknown", "Prometheus not answering"
+    elif outlets:
+        badge["health"] = "ok"
+    else:
+        badge["health"], badge["error"] = "down", "no PDU series in Prometheus"
     return badge
 
 
@@ -2271,18 +2289,18 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
     else:
         supply = {"tone": "bad" if psu else "off", "line": "not answering" if psu else "no data"}
     cards = [{"name": "Dish supply", "sub": "Keysight N8732A", "title": "DC supply for the dishes' analog chain",
-              "href": root + "/power/supplies#supply",
+              "href": root + "/power/analog#supply",
               **supply}]
     if pdb is not None and pdb.configured:
         pline = (f"answering · polled {ago(pdb.last_seen, now)}" if pdb.health == "ok"
                  else f"{pdb.health} · {pdb.error or ''}"[:60])
         cards.append({"name": "PDB controller", "sub": f"power_db {pdb.host}", "line": pline,
-                      "tone": health_tone(pdb.health), "href": root + "/power/pdb",
+                      "tone": health_tone(pdb.health), "href": root + "/power/analog",
                       "title": f"power_db at {pdb.host}:{pdb.port}: {pdb.health}"
                                + (f" ({pdb.error})" if pdb.error else "")})
         stages["pdb"] = {"title": "Feeds", "tone": health_tone(pdb.health),
                          "word": f"{pdb.n_on}/{pdb.n_channels} on" if pdb.n_channels else pdb.health,
-                         "href": root + "/power/pdb", "notes": ["filled: powered", "red: bffs flagged"]}
+                         "href": root + "/power/analog", "notes": ["filled: powered", "red: bffs flagged"]}
     else:
         cards.append({"name": "PDB controller", "sub": "power_db", "line": "not configured", "tone": "off"})
         stages["pdb"] = {"title": "Feeds", "tone": "off", "word": "no PDB"}
@@ -2290,7 +2308,7 @@ def _instrument_stages(view, monitor, pdb, fpga, data) -> dict:
         n = len(devices.get("outlets", []))
         cards.append({"name": "Rack PDU", "sub": ", ".join(sorted({o["pdu"] for o in devices["outlets"]})),
                       "line": f"{devices['inlet_w'] / 1e3:.1f} kW in · {n} outlets", "tone": "ok",
-                      "href": root + "/power/supplies#outlets",
+                      "href": root + "/power/rack#outlets",
                       "title": "AC power for the switch, the crate and the servers"})
     stages["power"] = {"title": "Power"}
     stages["power_cards"] = cards
@@ -2483,12 +2501,19 @@ def partial_switch():
     return render_template("_switch.html", **_instrument_view())
 
 
-@bp.route("/partials/power-devices")
+@bp.route("/partials/power-supply")
 @login_required
-def partial_power_devices():
-    """The power page's dish supply and PDU outlets (30 s htmx poll; the
-    instrument monitor reads Prometheus at most that often)."""
-    return render_template("_power_devices.html", **_power_devices())
+def partial_power_supply():
+    """The analog power page's dish supply (30 s htmx poll; the instrument
+    monitor reads Prometheus at most that often)."""
+    return render_template("_power_supply.html", **_power_devices())
+
+
+@bp.route("/partials/power-outlets")
+@login_required
+def partial_power_outlets():
+    """The rack power page's PDU outlets (30 s htmx poll)."""
+    return render_template("_power_outlets.html", **_power_devices())
 
 
 @bp.route("/partials/service-pdb")
@@ -2644,13 +2669,13 @@ def _pdb_result(ok: bool, message: str):
         return render_template("_service_pdb_result.html",
                                ok=ok, message=message, **_pdb_context())
     flash(f"PDB: {message}", "success" if ok else "error")
-    return redirect(url_for("web.power_pdb_page"))
+    return redirect(url_for("web.power_analog_page"))
 
 
 @bp.route("/service/pdb/set", methods=["POST"])
 @login_required
 def pdb_control():
-    """Toggle one PDB channel from the /power/pdb page."""
+    """Toggle one PDB channel from the /power/analog page."""
     _check_csrf()
     monitor = _pdb_control_monitor()
     try:
@@ -3117,7 +3142,7 @@ def api_pdb_map():
     One table, served rather than copied: bffs's power source reads it
     from here so choco's file stays the single authority for which
     breaker feeds which feed.  ``check`` is the same comparison against
-    kotekan's ``dish_inputs`` that the /power/pdb page shows, so a
+    kotekan's ``dish_inputs`` that the /power/analog page shows, so a
     consumer can refuse to act on a map kotekan disagrees with.
     """
     pdb_map = current_app.config["pdb_map"].get()

@@ -121,6 +121,10 @@ td code, th code, dd code, .group-bar code { padding: 0; background: none; color
     white-space: nowrap;
     text-decoration: none;
     color: inherit;
+    /* In running text (a heading, a fact list, a cell) an inline-flex
+       box would sit on the baseline of its first item, the dot, and
+       ride high; middle keeps it on the text. */
+    vertical-align: middle;
 }
 .tag .dot { flex: none; width: 0.55em; height: 0.55em; border-radius: 50%; background: currentColor; }
 .tag strong { font-weight: 600; }
@@ -169,6 +173,8 @@ td .tag, dd .tag { font-size: 0.85em; }
    logout and the theme.  It is full height and stays put while the page
    scrolls; the current page's item is marked. */
 .shell { display: grid; grid-template-columns: 13rem minmax(0, 1fr); min-height: 100vh; }
+/* The page's own top margin: the nav used to give it. */
+.shell > main { padding-top: 1.25rem; }
 aside.menu {
     position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
     display: flex; flex-direction: column; gap: 0;
@@ -178,17 +184,18 @@ aside.menu {
 }
 .menu-head { padding: 0 0.1rem 0.5rem; }
 #menu-items { flex: 1 1 auto; }
-.menu .group { margin: 0.9rem 0 0; }
-.menu .group-title { padding: 0 0.6rem 0.25rem; font-size: 0.7em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pico-muted-color); }
+.menu-group { margin: 0.9rem 0 0; }
+.menu-group-title { padding: 0 0.6rem 0.25rem; font-size: 0.7em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pico-muted-color); }
 /* The items are the strip's tags, one per line, on the menu's own
-   ground; a tinted (warn / bad) tag keeps its tint.  The current page's
-   item takes the page background and a border. */
-.menu .tag { display: flex; width: 100%; margin: 0 0 0.15em; padding: 0.3em 0.6em; font-size: 0.82em; }
+   ground, in the body weight (the tag's bold label is for the strip's
+   compact row); a tinted (warn / bad) tag keeps its tint.  The current
+   page's item takes the page background and a border. */
+.menu .tag { display: flex; width: 100%; margin: 0 0 0.15em; padding: 0.3em 0.6em; font-size: 0.85em; }
+.menu .tag strong { font-weight: 400; }
 .menu .tag.quiet { background: transparent; border-color: transparent; }
 .menu .tag.plain { padding-left: calc(0.6em + 0.55em + 0.45em); }
 .menu a.tag:hover { background: var(--hover); filter: none; }
-.menu .tag.active { background: var(--pico-background-color); border-color: var(--surface-border); font-weight: 600; }
-.menu .tag.active strong { font-weight: 600; }
+.menu .tag.active { background: var(--pico-background-color); border-color: var(--surface-border); }
 .menu-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em; margin-top: 1rem; padding: 0.75rem 0.5rem 0; border-top: 1px solid var(--surface-border); font-size: 0.85em; }
 .menu-foot #presence { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 /* The two icon controls in the menu's foot (theme, logout) and the standalone
@@ -616,8 +623,8 @@ button.build-toggle {
                  gap: 0.25rem 0.75rem; padding: 0.5rem 0.75rem; border-right: 0; border-bottom: 1px solid var(--surface-border); }
     .menu-head { padding: 0; }
     #menu-items { order: 1; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 0.25em 0.35em; }
-    .menu .group { display: contents; }
-    .menu .group-title { display: none; }
+    .menu-group { display: contents; }
+    .menu-group-title { display: none; }
     .menu .tag { display: inline-flex; width: auto; margin: 0; padding: 0.25em 0.5em; }
     .menu .tag.plain { padding-left: 0.5em; }
     .menu-foot { margin: 0 0 0 auto; padding: 0; border: 0; }

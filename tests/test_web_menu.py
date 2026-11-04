@@ -17,9 +17,9 @@ class TestActiveItem:
         ("/pipeline/cx/cx1", "Instrument", "/nodes"),
         ("/fpga", "Instrument", "/fpga"),
         ("/service/fpga", "Instrument", "/fpga"),
-        ("/power/pdb", "Power", "/power/pdb"),
-        ("/service/power", "Power", "/power/pdb"),
-        ("/power/map", "Power", "/power/map"),
+        ("/power/analog", "Power", "/power/analog"),
+        ("/service/power", "Power", "/power/analog"),
+        ("/power/rack", "Power", "/power/rack"),
         ("/transits", "Positioning", "/transits"),
         ("/service/skymap", "Data", "/service/mapmaker"),
         ("/waterfall/subset/acq_x/view/a.png", "Data", "/files"),
@@ -38,13 +38,15 @@ class TestActiveItem:
 class TestMenu:
     def test_every_page_carries_the_groups_and_marks_itself(self, client, jobs):
         login(client)
-        body = client.get("/power/supplies").data.decode()
-        assert re.findall(r'class="group-title">([^<]*)<', body) == [
+        body = client.get("/power/rack").data.decode()
+        assert re.findall(r'class="menu-group-title">([^<]*)<', body) == [
             "Instrument", "Power", "Positioning", "Calibration", "Data", "Config"]
-        assert '<a href="/power/supplies" class="tag quiet plain active">' in body
+        assert '<a href="/power/rack" class="tag quiet plain active">' in body
         assert '<span class="crumb">Power</span>' in body
         # the first paint has no health: every item is a plain link
-        assert 'aria-label="NODES' not in body
+        assert 'aria-label="Nodes' not in body
+        # the registry editor styles its own .group; the menu's classes are its own
+        assert 'class="group"' not in body
         assert 'id="menu-items"' in body and 'hx-get="/partials/menu"' in body
 
     def test_the_foot_has_who_is_here_logout_and_the_theme(self, client):
@@ -56,7 +58,7 @@ class TestMenu:
     def test_the_partial_fills_the_badges_and_marks_the_page(self, client, jobs):
         login(client)
         body = client.get("/partials/menu", headers={"HX-Current-URL": "https://x/service/eop"}).data.decode()
-        assert 'aria-label="NODES' in body and 'aria-label="EOP: ok"' in body
+        assert 'aria-label="Nodes' in body and 'aria-label="EOP: ok"' in body
         eop = re.search(r'<a href="/service/eop" class="tag ([^"]*)"', body)
         assert eop and "active" in eop.group(1)
         assert body.count(" active") == 1
@@ -76,20 +78,21 @@ class TestMenu:
 
 
 class TestPowerPages:
-    def test_the_grid_page_links_the_other_two(self, client, jobs):
+    def test_the_analog_page_has_the_pdb_the_supply_and_the_map(self, client, jobs):
         login(client)
-        body = client.get("/power/pdb").data.decode()
-        assert "PDB" in body and 'href="/power/supplies"' in body and 'href="/power/map"' in body
-        assert "PDU outlets" not in body and "Channel map" not in body.split("</p>", 2)[-1]
-
-    def test_the_supplies_page(self, client, jobs):
-        login(client)
-        body = client.get("/power/supplies").data.decode()
-        assert "Dish supply" in body and "instrument.prometheus_url" in body
-        assert "SPI bus" not in body
-
-    def test_the_map_page(self, client, jobs):
-        login(client)
-        body = client.get("/power/map").data.decode()
+        body = client.get("/power/analog").data.decode()
+        assert "Analog power" in body and 'href="/power/rack"' in body
+        assert "<h3>PDB</h3>" in body and "Dish supply" in body and "instrument.prometheus_url" in body
         assert "Channel map" in body and "Not cross-checked" in body
-        assert "SPI bus" not in body and "Dish supply" not in body
+        assert "PDU outlets" not in body
+
+    def test_the_rack_page(self, client, jobs):
+        login(client)
+        body = client.get("/power/rack").data.decode()
+        assert "Rack power" in body and "PDU outlets" in body and "instrument.prometheus_url" in body
+        assert "SPI bus" not in body and "Dish supply" not in body and 'href="/power/analog"' in body
+
+    def test_the_rack_badge_without_prometheus_is_absent(self, client, jobs):
+        login(client)
+        body = client.get("/partials/menu").data.decode()
+        assert '<a href="/power/rack" class="tag quiet plain">' in body

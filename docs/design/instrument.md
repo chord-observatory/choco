@@ -23,12 +23,14 @@ thing it describes, and the diagram's cards link there:
 - `/nodes`: each node's server (node_exporter, iDRAC, PSUs, temperatures,
   outlet power; `instrument.host_health`) as extra columns, from the
   monitor's last Prometheus read, so the 2 s table poll costs no query.
-- `/power/pdb` (was `/service/pdb`, then `/service/power`, both of which
-  redirect; the controls keep their `/service/pdb/set*` URLs): the PDB
-  grid; `/power/supplies` the dish supply and the PDU outlets;
-  `/power/map` the channel map and its cross-check (since 2026-11-04, one
-  page each).  The POWER badge is the PDB controller's health, made worse
-  when the dish supply reports a fault, output off or no answer.
+- `/power/analog` (was `/service/pdb`, then `/service/power`, both of
+  which redirect; the controls keep their `/service/pdb/set*` URLs): the
+  PDB grid, the Keysight dish supply and the channel map with its
+  cross-check; `/power/rack` the Raritan PDU's outlets and inlet (since
+  2026-11-04, the analog chain and the rack apart).  The Analog power
+  item is the PDB controller's health, made worse when the dish supply
+  reports a fault, output off or no answer; the Rack power item is the
+  PDU as Prometheus last read it (`web._rack_badge`).
 
 ## The devices where choco can, Prometheus for the rest
 

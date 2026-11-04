@@ -295,18 +295,18 @@ class TestServicesPartial:
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "EOP" in body
-        assert "BFFS" in body
-        assert "EIGENCAL" in body
+        assert "Feed flags" in body
+        assert "Eigencal" in body
         # Monitor badges are only rendered if a monitor is set on
         # app.config.  The test app installs both (unconfigured).
-        assert "FPGA" in body
-        assert "POWER" in body
+        assert "F-engine" in body
+        assert "Analog power" in body
         # Badges link to the service pages.
         assert '/service/eop' in body
         assert '/fpga' in body
-        assert '/power/pdb' in body
+        assert '/power/analog' in body
         # The cluster itself is a badge too, linking to the dashboard.
-        assert "NODES" in body
+        assert "Nodes" in body
 
     # --- The NODES badge: green all up, red all down, yellow between ---
 
@@ -321,7 +321,7 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         m = re.search(
             r'<a href="/nodes" class="tag tag-([a-z]+)( quiet)?[^"]*"'
-            r' aria-label="NODES: ([^"]*)"', body)
+            r' aria-label="Nodes: ([^"]*)"', body)
         assert m, body
         return m.group(1), m.group(3)
 
@@ -352,7 +352,7 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
         assert nodes and 'class="tag tag-ok quiet"' in nodes.group(0)
-        assert "<strong>NODES</strong>" in nodes.group(1)
+        assert "<strong>Nodes</strong>" in nodes.group(1)
         assert 'class="word"' not in nodes.group(1)
 
     def test_running_job_is_a_quiet_blue_dot(self, client, app):
@@ -379,7 +379,7 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         m = re.search(
             r'<a href="/files" class="tag tag-([a-z]+)( quiet)?[^"]*"'
-            r' aria-label="DATA: ([^"]*)"', body)
+            r' aria-label="Acquisitions: ([^"]*)"', body)
         assert m, body
         assert ">WF<" not in body          # no badge of its own
         return m.group(1), m.group(3)
@@ -434,7 +434,7 @@ class TestServicesPartial:
             return dict(_JOB_STUB, health=health, unit=unit)
         with patch("choco.web.job_status", side_effect=status):
             body = client.get("/partials/menu").data.decode()
-        m = re.search(r'<a href="/files" class="tag tag-([a-z]+)[^"]*" aria-label="DATA: ([^"]*)"'
+        m = re.search(r'<a href="/files" class="tag tag-([a-z]+)[^"]*" aria-label="Acquisitions: ([^"]*)"'
                       r'[^>]*title="([^"]*)"', body)
         assert m, body
         assert (m.group(1), m.group(2)) == ("bad", "notes failed")
@@ -451,17 +451,17 @@ class TestServicesPartial:
             return dict(_JOB_STUB, health=health, unit=unit)
         with patch("choco.web.job_status", side_effect=status):
             body = client.get("/partials/menu").data.decode()
-        m = re.search(r'<a href="/service/mapmaker" class="tag tag-([a-z]+)[^"]*" aria-label="MAP: ([^"]*)"'
+        m = re.search(r'<a href="/service/mapmaker" class="tag tag-([a-z]+)[^"]*" aria-label="Sky maps: ([^"]*)"'
                       r'[^>]*title="([^"]*)"', body)
         assert m, body
         assert (m.group(1), m.group(2)) == ("bad", "skymap failed")
-        assert "MAP job (choco-mapmaker.service)" in m.group(3)
+        assert "Sky maps job (choco-mapmaker.service)" in m.group(3)
         assert "skymap (choco-skymap.service): failed" in m.group(3)
         assert ">SKYMAP<" not in body and "/service/skymap" not in body
         # the host's own state, unprefixed, when it is the worse of the two
         with patch("choco.web.job_status", return_value=dict(_JOB_STUB, health="degraded")):
             body = client.get("/partials/menu").data.decode()
-        assert 'aria-label="MAP: degraded"' in body
+        assert 'aria-label="Sky maps: degraded"' in body
         assert ">NOTES<" not in body and "/service/acqnotes" not in body
 
     def test_nodes_badge_tinted_but_wordless_when_not_ok(self, client, app, jobs):
@@ -473,8 +473,8 @@ class TestServicesPartial:
         body = client.get("/partials/menu").data.decode()
         nodes = re.search(r'<a href="/nodes"[^>]*>(.*?)</a>', body, re.S)
         assert nodes and 'class="tag tag-bad"' in nodes.group(0)
-        assert 'aria-label="NODES: all down"' in nodes.group(0)
-        assert "<strong>NODES</strong>" in nodes.group(1)
+        assert 'aria-label="Nodes: all down"' in nodes.group(0)
+        assert "<strong>Nodes</strong>" in nodes.group(1)
         assert 'class="word"' not in nodes.group(1)
 
     def test_degraded_job_badge_is_tinted_and_wordless(self, client, app):
@@ -484,7 +484,7 @@ class TestServicesPartial:
             body = client.get("/partials/menu").data.decode()
         bffs = re.search(r'<a href="/service/bffs"[^>]*>(.*?)</a>', body, re.S)
         assert bffs and 'class="tag tag-warn"' in bffs.group(0)
-        assert 'aria-label="BFFS: degraded"' in bffs.group(0)
+        assert 'aria-label="Feed flags: degraded"' in bffs.group(0)
         assert 'class="word"' not in bffs.group(1)
 
 

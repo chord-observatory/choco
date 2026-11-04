@@ -159,9 +159,15 @@ the theme toggle (the foot is outside the polled region, so the toggle keeps
 its listener).  The strip had ten badges, mixed monitors with jobs, and the
 pages behind it mixed concerns: the power page carried the PDB grid, the
 supplies and a channel-map cross-check that re-renders a kotekan config on
-every load.  Each concern has a page now (``/power/pdb``, ``/power/supplies``,
-``/power/map``; ``/fpga``), the old routes redirect, and the job pages keep
-``/service/<name>``.  ``/partials/menu`` replaces ``/partials/services``: it
+every load.  The power pages are by chain now: ``/power/analog`` (the PDB
+grid, the Keysight dish supply, the channel map and its cross-check, which
+only that page renders) and ``/power/rack`` (the Raritan PDU, with an item of
+its own whose dot is the PDU as Prometheus last read it); ``/fpga`` for the
+F-engine; the old routes redirect, and the job pages keep ``/service/<name>``.
+The items are in the body weight and mixed case, with labels that say what
+the page is (Feed flags, Acquisitions, Sky maps), not the strip's
+upper-case badge names; a page's first split into ``/power/pdb``,
+``/power/supplies`` and ``/power/map`` lasted a day (user, 2026-11-04).  ``/partials/menu`` replaces ``/partials/services``: it
 renders the items with their badges on load and every 30 s, the current page
 read from ``HX-Current-URL`` so the mark survives the swap; a page's first
 paint includes the items without health.  The menu is full height and sticky

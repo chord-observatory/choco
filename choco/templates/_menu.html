@@ -74,6 +74,16 @@
 {% elif badge == 'power' and power %}
 {{ monitor_tag(label, 'power_db', power, ('\nchannels on: ' ~ power.n_on ~ ' / ' ~ power.n_channels if power.n_channels else '')
                ~ ('\ndish supply: ' ~ power.supply if power.supply else ''), url, extra) }}
+{# Rack power: the PDU as Prometheus last read it #}
+{% elif badge == 'rack' and rack %}
+{% set tip = 'the rack PDU' ~ (' ' ~ (rack.pdus | join(', ')) if rack.pdus else '') ~ ' over SNMP, through Prometheus'
+             ~ '\nhealth: ' ~ rack.health
+             ~ ('\noutlets: ' ~ rack.n_outlets if rack.n_outlets else '')
+             ~ ('\ninlet: ' ~ ('%.1f' | format(rack.inlet_w / 1000)) ~ ' kW' if rack.inlet_w is number else '')
+             ~ ('\nlast read: ' ~ since(rack.last_seen, now) if rack.last_seen else '')
+             ~ ('\nerror: ' ~ rack.error if rack.error else '')
+             ~ '\n\nclick for details' %}
+{{ tag(monitor_tone(rack.health), monitor_label(rack.health), label=label, href=url, title=tip, quiet=true, extra=extra) }}
 {% elif badge == 'instrument' and instrument %}
 {{ monitor_tag(label, 'the switch and X-engine NIC monitor', instrument, ('\nlink problems: ' ~ instrument.n_problems if instrument.n_problems else ''), url, extra) }}
 {# DATA is the mounts and the jobs that read them (the waterfall
@@ -107,8 +117,8 @@
 {% endif %}
 {%- endmacro %}
 {% for group, items in menu %}
-<div class="group">
-    <div class="group-title">{{ group }}</div>
+<div class="menu-group">
+    <div class="menu-group-title">{{ group }}</div>
     {% for label, href, badge, _matches in items %}{{ item(label, href, badge) }}
     {% endfor %}
 </div>

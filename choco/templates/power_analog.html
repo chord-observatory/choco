@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_service_macros.html" import monitor_tone, monitor_label, tag %}
 
-{% block title %}PDB — CHOCO{% endblock %}
+{% block title %}Analog power — CHOCO{% endblock %}
 
 {% block styles %}
 /* The grid is the frame as mounted: two rows of eight boards, each board
@@ -68,6 +68,13 @@ table.dish-grid tr.sep > * { border-top: 2px solid var(--surface-border); paddin
 table.dish-grid td.absent { color: var(--pico-muted-color); opacity: 0.5; }
 table.dish-grid td.rowctl { text-align: left; vertical-align: middle; white-space: nowrap; }
 table.dish-grid td.rowctl .bulk-group { margin-right: 0.6em; }
+.map-section table { font-size: 0.85em; }
+.map-note { font-size: 0.9em; margin: 0.25em 0; }
+.map-tags { font-size: 0.9em; }
+.map-tags code { margin-right: 0.4em; }
+table.ports { width: auto; }
+table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.8em; white-space: nowrap; }
+table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
 table.dish-grid form { margin: 0; display: inline; }
 .dish { display: inline-flex; flex-direction: column; align-items: center; gap: 0.15em; }
 .dish-name { font-family: var(--pico-font-family-monospace); font-size: 0.9em; color: var(--pico-muted-color); }
@@ -79,14 +86,16 @@ table.dish-grid form { margin: 0; display: inline; }
 {% block content %}
 <div class="page-head">
     <h2>
-        <span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>PDB
+        <span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Analog power
         {{ tag(monitor_tone(pdb.health), monitor_label(pdb.health)) }}
     </h2>
 </div>
-<p class="note">The power distribution boards (power_db): Infineon high-side switches powering the feed
-    amplifiers, one channel per output.  The dish supply and the rack PDU are on
-    <a href="{{ request.script_root }}/power/supplies">Supplies</a>, the channel map and its check against
-    kotekan on <a href="{{ request.script_root }}/power/map">Channel map</a>.</p>
+<p class="note">The analog chain's power: the power distribution boards (power_db, Infineon high-side
+    switches powering the feed amplifiers, one channel per output), the dish supply behind them, and
+    the map from channel to dish input.  The rack's PDU is on
+    <a href="{{ request.script_root }}/power/rack">Rack power</a>.</p>
+
+<h3>PDB</h3>
 
 {# Control outcomes land here as an out-of-band swap, so they survive the
    grid's 5s refresh and don't require a page reload to be seen. #}
@@ -100,6 +109,15 @@ table.dish-grid form { margin: 0; display: inline; }
      hx-vals='{"layout": "{{ layout }}"}'>
 {% include "_service_pdb_status.html" %}
 </div>
+
+<div id="power-supply"
+     hx-get="{{ request.script_root }}/partials/power-supply"
+     hx-trigger="every 30s"
+     hx-swap="innerHTML">
+{% include "_power_supply.html" %}
+</div>
+
+{% include "_pdb_map_section.html" %}
 {% endblock %}
 
 {% block scripts %}

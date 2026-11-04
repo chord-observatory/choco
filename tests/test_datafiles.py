@@ -529,7 +529,7 @@ class TestDataBadge:
         client = _app(configs_dir, roots).test_client()
         login(client)
         body = _strip(client)
-        assert "DATA" in body
+        assert "Acquisitions" in body
         assert 'href="/files"' in body
         assert 'class="tag tag-ok quiet"' in body    # monitor_tone('ok'), quiet while nominal
 
@@ -539,14 +539,14 @@ class TestDataBadge:
         login(client)
         app.config["datafile_scan"].poll_once()
         body = _strip(client)
-        assert "DATA" in body and 'class="tag tag-bad"' in body    # monitor_tone('down')
+        assert "Acquisitions" in body and 'class="tag tag-bad"' in body    # monitor_tone('down')
         assert "down" in body
 
     def test_unconfigured_pill_is_grey(self, configs_dir):
         client = _app(configs_dir, []).test_client()
         login(client)
         body = _strip(client)
-        assert "DATA" in body and "not configured" in body
+        assert "Acquisitions" in body and "not configured" in body
 
     def test_dashboard_has_no_data_button(self, configs_dir, roots):
         client = _app(configs_dir, roots).test_client()

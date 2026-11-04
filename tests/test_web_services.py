@@ -171,7 +171,7 @@ class TestServicePage:
 
     def test_pdb_page_renders(self, client):
         login(client)
-        resp = client.get("/power/pdb")
+        resp = client.get("/power/analog")
         assert resp.status_code == 200
         body = resp.data.decode()
         assert "PDB" in body
@@ -185,7 +185,7 @@ class TestServicePage:
             {"board": 0, "chip": "A", "channels": [True] + [False] * 7},
             {"board": 0, "chip": "B", "channels": [False] * 8},
         ]}
-        resp = client.get("/power/pdb")
+        resp = client.get("/power/analog")
         body = resp.data.decode()
         assert "SPI bus 0" in body
         assert "board 0" in body
@@ -554,7 +554,7 @@ class TestServicePage:
         monitor.channels = {0: [
             {"board": 0, "chip": "A", "channels": [False] * 8},
         ]}
-        resp = client.get("/power/pdb")
+        resp = client.get("/power/analog")
         body = resp.data.decode()
         assert "Controller not readable" in body
         # grid still rendered from the last read
