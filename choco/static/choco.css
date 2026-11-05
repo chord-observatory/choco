@@ -267,6 +267,10 @@ button.seg-btn {
 button.seg-btn:hover { filter: brightness(0.94); }
 button.seg-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 button.seg-btn.current { cursor: default; border-color: transparent; }
+/* A mode the node may not enter now: the word stays, greyed, with the
+   reason in its tooltip. */
+button.seg-btn.refused { color: var(--pico-muted-color); border-style: dashed; cursor: not-allowed; }
+button.seg-btn.refused:hover { filter: none; }
 .seg-btn.tone-ok { color: var(--ok-text); background: var(--ok-soft); }
 .seg-btn.tone-off { color: var(--off-text); background: var(--off-soft); }
 .seg-btn.tone-info { color: var(--info-text); background: var(--info-soft); }

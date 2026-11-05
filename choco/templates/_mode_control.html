@@ -1,19 +1,30 @@
 {% from "_service_macros.html" import mode_word, mode_tone %}
 {# The node's mode as a three-way control: the current mode's button
-   filled, plus a button for each mode the node may enter now
-   (Node.open_modes: normal is not offered from development, nor to a
-   node nodes.yaml declares a developer's, since it would restart that
-   kotekan onto the library; the operator goes through maintenance). #}
+   filled, a button for each mode the node may enter now, and a greyed
+   word, with the reason in its tooltip, for a mode it may not
+   (Node.refused_modes: normal from development, or to a node nodes.yaml
+   declares a developer's, since it would restart that kotekan onto the
+   library; the operator goes through maintenance).  Every word stays in
+   place: a button that vanished read as a bug. #}
 {%- set titles = {
     'normal': 'Normal: choco keeps the node on its desired config (start, kill, restart on drift, updatable values)',
     'maintenance': 'Maintenance: choco reads the node and never writes to it',
     'development': 'Development: the node runs its own config; choco never starts or kills it and pushes only its stored updatable values, to the endpoints that config has'} -%}
+{%- set refused = node.refused_modes -%}
 <span class="seg-ctl" hx-target="this" hx-swap="outerHTML"
       title="{{ 'mode: ' ~ node.mode.value ~ ('\n(nodes.yaml declares it a development node: lifting maintenance returns it to development)' if node.development else '') }}">
-    {%- for mode in ('normal', 'maintenance', 'development') if mode == node.mode.value or mode in node.open_modes %}
-    <button type="button" class="seg-btn tone-{{ mode_tone(mode) }}{% if node.mode.value == mode %} current{% endif %}"
-            title="{{ titles[mode] }}"{% if node.mode.value == mode %} aria-pressed="true"{% else %}
+    {%- for mode in ('normal', 'maintenance', 'development') %}
+    {%- if node.mode.value == mode %}
+    <button type="button" class="seg-btn tone-{{ mode_tone(mode) }} current"
+            title="{{ titles[mode] }}" aria-pressed="true">{{ mode_word(mode) }}</button>
+    {%- elif mode in refused %}
+    <button type="button" class="seg-btn refused" aria-disabled="true"
+            title="{{ titles[mode] ~ '\nRefused now: ' ~ refused[mode] }}">{{ mode_word(mode) }}</button>
+    {%- else %}
+    <button type="button" class="seg-btn tone-{{ mode_tone(mode) }}"
+            title="{{ titles[mode] }}"
             hx-post="{{ request.script_root }}/nodes/set-mode/{{ mode }}/{{ key }}"
-            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'{% endif %}>{{ mode_word(mode) }}</button>
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>{{ mode_word(mode) }}</button>
+    {%- endif %}
     {%- endfor %}
 </span>

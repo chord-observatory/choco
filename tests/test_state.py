@@ -826,10 +826,12 @@ class TestModeWrites:
         node = Node(name="t", group="t", host="example", mode=Mode.DEVELOPMENT)
         assert "put it in maintenance first" in node.refusal(Mode.NORMAL)
         assert node.open_modes == ["maintenance"]
+        assert node.refused_modes == {"normal": "in development; put it in maintenance first"}
         node.mode = Mode.MAINTENANCE
         assert node.maintenance is True
         assert node.refusal(Mode.NORMAL) is None and node.refusal(Mode.DEVELOPMENT) is None
         assert node.open_modes == ["normal", "development"]
+        assert node.refused_modes == {}
         node.mode = Mode.NORMAL
         assert node.open_modes == ["maintenance", "development"]
 

@@ -275,7 +275,12 @@ class TestMaintenanceToggles:
         assert node.mode is Mode.DEVELOPMENT
         assert 'class="seg-btn tone-dev current"' in body
         assert "/nodes/set-mode/maintenance/cx/cx1" in body
-        assert "/nodes/set-mode/normal/cx/cx1" not in body   # not offered from development
+        # Normal is not offered from development, but its word stays in
+        # place, greyed, with the reason.
+        assert "/nodes/set-mode/normal/cx/cx1" not in body
+        assert 'class="seg-btn refused" aria-disabled="true"' in body
+        assert "Refused now: in development; put it in maintenance first" in body
+        assert body.count(">normal</button>") == 1
         # Development straight to normal is refused (a stale page's click:
         # htmx gets the control as it stands); through maintenance it goes.
         resp = client.post("/nodes/set-mode/normal/cx/cx1",
@@ -305,7 +310,14 @@ class TestMaintenanceToggles:
                            headers={"HX-Request": "true"}).get_data(as_text=True)
         assert "/nodes/set-mode/normal/cx/cx1" not in body
         assert "/nodes/set-mode/maintenance/cx/cx1" in body
-        assert "nodes.yaml declares it" in body
+        assert "Refused now: in development; put it in maintenance first" in body
+        # In maintenance too: the declaration keeps normal greyed.
+        body = client.post("/nodes/set-mode/maintenance/cx/cx1",
+                           data={"_csrf_token": token},
+                           headers={"HX-Request": "true"}).get_data(as_text=True)
+        assert "/nodes/set-mode/normal/cx/cx1" not in body
+        assert "/nodes/set-mode/development/cx/cx1" in body
+        assert "Refused now: nodes.yaml declares it a development node" in body
 
     def test_lifting_returns_each_node_to_its_resting_mode(self, client, app):
         login(client)

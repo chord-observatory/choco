@@ -268,7 +268,10 @@ pushed, so a library default a developer's config also has
 button and takes development nodes too) or development.  Normal is
 refused from development, and to a declared development node in any mode
 (``Node.refusal``, the one statement of the rule; ``Orchestrator.set_mode``,
-all or none, asks it; the mode control offers only ``Node.open_modes``):
+all or none, asks it; the mode control shows every mode, a refused one
+greyed with the reason in its tooltip, ``Node.refused_modes`` — until
+2026-11-05 it offered only ``Node.open_modes``, and the button that
+vanished read as a bug):
 normal restarts the developer's kotekan onto
 the library within a poll, so a node leaves development into maintenance
 and the operator lifts that knowing what it starts, and a declared node

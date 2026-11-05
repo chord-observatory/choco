@@ -360,6 +360,13 @@ class Node:
         return [m.value for m in Mode if m is not self.mode and self.refusal(m) is None]
 
     @property
+    def refused_modes(self) -> dict[str, str]:
+        """The modes the node may not enter now, by their words, with the
+        reason: the mode control's greyed buttons."""
+        return {m.value: why for m in Mode
+                if m is not self.mode and (why := self.refusal(m))}
+
+    @property
     def config_problem(self) -> str | None:
         """Why there is no desired config to push, or None when there is."""
         if self.desired_config is not None:
