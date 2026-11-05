@@ -1,9 +1,14 @@
-{# The polled facts of the node page: everything the worker writes.
-   dt/dd pairs for the surrounding dl.node-facts (see edit.html). #}
-{% from "_service_macros.html" import node_status, node_version %}
+{# The polled facts of the node page: everything the worker writes, and
+   the two states summed up from it (updatable.node_states).  dt/dd pairs
+   for the surrounding dl.node-facts (see edit.html). #}
+{% from "_service_macros.html" import node_state, node_status, node_version %}
 {% set v = node.version_info or {} %}
 <dt>Status</dt>
 <dd>{{ node_status(node) }}</dd>
+<dt>Config</dt>
+<dd>{{ node_state(states[0]) }} <small class="muted">{{ states[0].note }}</small></dd>
+<dt>Updatable</dt>
+<dd>{{ node_state(states[1]) }} <small class="muted">{{ states[1].note }}</small></dd>
 <dt>Version</dt>
 <dd>{{ node_version(node, "ver-pop-edit-" ~ (node.key|replace('/', '-'))) }}</dd>
 {% if v.get("branch") %}

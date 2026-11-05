@@ -164,13 +164,18 @@
 {%- if total > shown %}<p class="note"{% if tight %} style="margin-top: -1em;"{% endif %}><em>{{ total }}{% if what %} {{ what }}{% endif %} in total; showing the {{ which }} {{ shown }}.</em></p>{% endif -%}
 {%- endmacro %}
 {# A node's status as the dashboard cell and the node page show it: the
-   tag, what the operator wants when that differs, the worker's error and
-   the config's load error (when it is not the same message). #}
+   tag, what the operator wants when that differs, and the worker's error.
+   The config's own problems are the Config and Updatable states beside it
+   (node_state). #}
 {% macro node_status(node) -%}
 {{ tag(node_tone(node.status.value), node.status.value, extra='status-' ~ node.status.value) }}
 {%- set wants = node_wants(node) %}{% if wants %} <small class="muted wants">{{ wants }}</small>{% endif %}
 {%- if node.error %}<br><small class="muted">{{ node.error }}</small>{% endif %}
-{%- if node.load_error and node.load_error != node.error %}<br><small class="muted">{{ node.load_error }}</small>{% endif %}
+{%- endmacro %}
+{# A node's config or updatable state (updatable.Cell): the word in its
+   tone, the detail in the tooltip. #}
+{% macro node_state(cell) -%}
+{{ tag(cell.tone, cell.word, title=cell.note) }}
 {%- endmacro %}
 {# What kotekan reported about its build (the /version reply). #}
 {% macro version_popover(v) -%}

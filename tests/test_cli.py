@@ -76,12 +76,14 @@ def test_nodes_table_and_raw_json(run):
     code, out, err = run("nodes")
     assert code == 0 and err == ""
     header, *rows = out.splitlines()
-    assert header.split() == ["KEY", "STATUS", "STARTED", "MODE",
+    assert header.split() == ["KEY", "STATUS", "CONFIG", "UPDATABLE", "STARTED", "MODE",
                               "VERSION", "WORKER", "ERROR"]
     keys = [r.split()[0] for r in rows if r.startswith(("cx/", "recv/"))]
     assert keys == ["cx/cx1", "cx/cx2", "recv/recv1"]
-    # Fresh registries are in maintenance; the table says so.
-    assert all(r.split()[3] == "maintenance" for r in rows if r.startswith("cx/"))
+    # Fresh registries are in maintenance; the table says so.  Nothing has
+    # been polled, so nothing runs ("none" in both state columns).
+    assert all(r.split()[2:6] == ["none", "none", "no", "maintenance"]
+               for r in rows if r.startswith("cx/"))
     assert "total 3" in out
 
     code, out, err = run("nodes", "-j")

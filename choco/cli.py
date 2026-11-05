@@ -210,13 +210,16 @@ def _configs_table(data: dict) -> str:
 
 
 def _nodes_table(data: dict) -> str:
-    cols = ("KEY", "STATUS", "STARTED", "MODE", "VERSION", "WORKER", "ERROR")
+    cols = ("KEY", "STATUS", "CONFIG", "UPDATABLE", "STARTED", "MODE", "VERSION", "WORKER",
+            "ERROR")
     rows = []
     for n in data.get("nodes", []):
         worker = n.get("worker") or {}
         rows.append((
             n.get("key", ""),
             n.get("status", ""),
+            str((n.get("config_state") or {}).get("state") or ""),
+            str((n.get("updatable_state") or {}).get("state") or ""),
             "yes" if n.get("started") else "no",
             str(n.get("mode") or ""),
             str(n.get("version") or ""),

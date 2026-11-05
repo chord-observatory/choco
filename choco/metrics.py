@@ -14,12 +14,14 @@ reported as zero.  No client library: the text format is a few lines.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from .jobclient import RUN_NAME, STATE_NAME
 from .jobstatus import read_state_json
 from .state import Mode, NodeStatus
 from .sync import WorkerPhase
+from .updatable import NODE_STATES, node_states
 
 #: Health states each service can report, for the one-hot
 #: ``choco_service_state`` gauges (alert rules key on these names).
@@ -152,6 +154,15 @@ def _nodes(g: Gauges, nodes: list, workers: list) -> None:
         counts[node.status] += 1
     for status in NodeStatus:
         g.add("choco_nodes", "Node count by kotekan runtime status.", counts[status], status=status.value)
+    now = time.time()
+    states = [node_states(n, now) for n in nodes]
+    for word in NODE_STATES:
+        g.add("choco_nodes_config", "Node count by config state: whether kotekan runs the "
+              "base config the node's file renders.",
+              sum(1 for config, _ in states if config.state == word), state=word)
+        g.add("choco_nodes_updatable", "Node count by updatable state: whether kotekan runs "
+              "choco's updatable values.",
+              sum(1 for _, updatable in states if updatable.state == word), state=word)
     g.add("choco_nodes_total", "Number of registered nodes.", len(nodes))
     g.add("choco_nodes_started_desired", "Nodes whose desired state is started.",
           sum(1 for n in nodes if n.started))

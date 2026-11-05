@@ -1,4 +1,4 @@
-"""The fleet's updatable config, endpoint by endpoint (no Flask).
+"""Desired against live, per endpoint and per node (no Flask).
 
 For each endpoint, what choco means every node to run (its desired value:
 the block its file renders with the node's stored override merged over
@@ -7,6 +7,12 @@ stored values, over the running config's blocks, as
 ``Node.desired_updatable`` has it) and whether that node's kotekan runs
 it, from the worker's last read of the live ``/config``
 (``NodeWorker._note_live``).  The X-engine page shows one row per endpoint.
+
+Per node, the same facts summed up as two states beside the kotekan
+status (``node_states``: the dashboard, the node page, ``/api/nodes/status``
+and ``/metrics``): whether kotekan runs the base config the file renders
+(``config_state``, from ``Node.live_differs``) and whether it runs choco's
+updatable values (``updatable_state``, the node's cells).
 """
 
 import json
@@ -25,13 +31,21 @@ LIVE_MAX_AGE_S = 3 * LIVE_READ_MAINTENANCE_S
 #: A list longer than this is summarised by its length.
 _SHORT_LIST = 4
 
-# A cell's state -> its tag's tone.
-TONES = {"live": "ok", "differs": "warn", "absent": "warn", "unread": "off", "extra": "info"}
+# A cell's state -> its tag's tone: the panel's cells (live, differs,
+# absent, unread, extra) and a node's config and updatable states.
+TONES = {"live": "ok", "differs": "warn", "absent": "warn", "unread": "off", "extra": "info",
+         "ok": "ok", "bad_file": "bad", "bad_store": "bad", "own": "dev", "pushing": "info",
+         "none": "off"}
+
+#: The vocabulary of a node's config and updatable states (``/metrics``
+#: counts nodes in each).
+NODE_STATES = ("ok", "differs", "bad_file", "bad_store", "own", "pushing", "none", "unread")
 
 
 @dataclass
 class Cell:
-    """One node's part of a row: the tag under "Live"."""
+    """One node's part of a row: the tag under "Live".  Also a node's
+    config or updatable state on the dashboard."""
     name: str
     state: str           # a TONES key
     note: str            # the tooltip
@@ -39,6 +53,11 @@ class Cell:
     @property
     def tone(self) -> str:
         return TONES[self.state]
+
+    @property
+    def word(self) -> str:
+        """The state as the tag shows it."""
+        return self.state.replace("_", " ")
 
 
 @dataclass
@@ -112,6 +131,17 @@ def _live_blocks(node, now: float) -> dict[str, dict] | None:
     return node.live_updatable
 
 
+def _unread_why(node, now: float) -> str:
+    """Why there is no current live read of a running kotekan."""
+    if node.status != NodeStatus.STARTED:
+        return f"kotekan is {node.status.value}"
+    if node.live_read_at is None:
+        return "not read yet"
+    if node.live_updatable is None:
+        return "the last read of /config failed"
+    return f"last read {now - node.live_read_at:.0f} s ago"
+
+
 def _compact(values) -> str:
     return json.dumps(values, separators=(",", ": "))
 
@@ -122,15 +152,7 @@ def _cell(node, endpoint: str, desired: dict | None,
     if live is None:
         if desired is None:
             return None
-        if node.status != NodeStatus.STARTED:
-            why = f"kotekan is {node.status.value}"
-        elif node.live_read_at is None:
-            why = "not read yet"
-        elif node.live_updatable is None:
-            why = "the last read of /config failed"
-        else:
-            why = f"last read {now - node.live_read_at:.0f} s ago"
-        return Cell(name, "unread", f"{name}: no live value ({why})")
+        return Cell(name, "unread", f"{name}: no live value ({_unread_why(node, now)})")
     age = f"read {now - node.live_read_at:.0f} s ago"
     held = " Maintenance: choco pushes nothing to it." if node.maintenance else ""
     value = live.get(endpoint)
@@ -201,3 +223,73 @@ def fleet_rows(nodes, owners: dict[str, str], now: float | None = None) -> list[
             cells=cells,
         ))
     return rows
+
+
+def _not_running(node) -> Cell | None:
+    """The state of a kotekan that is not running a config: a push in
+    flight, or nothing at all; None when it runs."""
+    if node.status == NodeStatus.SYNCING:
+        return Cell(node.name, "pushing", f"{node.name}: a push is in progress (kill, then /start).")
+    if node.status != NodeStatus.STARTED:
+        return Cell(node.name, "none", f"{node.name}: kotekan is {node.status.value}, so nothing runs.")
+    return None
+
+
+def config_state(node, now: float) -> Cell:
+    """Whether the node's kotekan runs the base config its file renders:
+    the live config without its updatable values against the file's
+    (``Node.live_differs``, kept by the worker at every read)."""
+    name = node.name
+    if node.mode is Mode.DEVELOPMENT:
+        return Cell(name, "own", f"{name} runs its own config: in development the file does not apply.")
+    if node.config_problem:
+        return Cell(name, "bad_file", f"{name}: {node.config_problem}")
+    if (cell := _not_running(node)) is not None:
+        return cell
+    if _live_blocks(node, now) is None or node.live_differs is None:
+        return Cell(name, "unread", f"{name}: no live config ({_unread_why(node, now)})")
+    age = f"read {now - node.live_read_at:.0f} s ago"
+    if not node.live_differs:
+        return Cell(name, "ok", f"{name} runs the config its file renders ({age}).")
+    if node.maintenance:
+        return Cell(name, "differs", f"{name} runs another config than its file renders ({age}). "
+                                     "Lifting maintenance restarts it onto the file.")
+    return Cell(name, "differs", f"{name} runs another config than its file renders ({age}); "
+                                 "choco restarts it, so a lasting difference is a failed push "
+                                 "(see the status).")
+
+
+def updatable_state(node, now: float) -> Cell:
+    """Whether the node's kotekan runs choco's updatable values: the
+    panel's cells for the node, summed up."""
+    name = node.name
+    if node.updatable_load_error:
+        return Cell(name, "bad_store", f"{name}: {node.updatable_load_error}")
+    desired = desired_blocks(node)
+    if not desired:
+        why = ("no stored value its running config takes" if node.mode is Mode.DEVELOPMENT
+               else "its file renders no updatable block")
+        return Cell(name, "none", f"{name}: {why}.")
+    if (cell := _not_running(node)) is not None:
+        return cell
+    live = _live_blocks(node, now)
+    if live is None:
+        return Cell(name, "unread", f"{name}: no live values ({_unread_why(node, now)})")
+    # A stored value the running config cannot take (development) is a
+    # difference too; _cell says so for an endpoint desired leaves out.
+    endpoints = list(desired) + [e for e in (node.updatable_config or {}) if e not in desired]
+    cells = [(e, c) for e in endpoints if (c := _cell(node, e, desired.get(e), live, now)) is not None]
+    off = [(e, c) for e, c in cells if c.state in ("differs", "absent")]
+    age = f"read {now - node.live_read_at:.0f} s ago"
+    if off:
+        held = (" Maintenance: choco pushes nothing to it." if node.maintenance else "")
+        return Cell(name, "differs", f"{name}: {len(off)} of {len(cells)} endpoints differ ({age}): "
+                                     + ", ".join(f"/{e} {c.state}" for e, c in off) + f".{held}")
+    return Cell(name, "ok", f"{name} runs the desired value at {len(cells)} "
+                            f"endpoint{'s' if len(cells) != 1 else ''} ({age}).")
+
+
+def node_states(node, now: float | None = None) -> tuple[Cell, Cell]:
+    """A node's config and updatable states, in that order."""
+    now = time.time() if now is None else now
+    return config_state(node, now), updatable_state(node, now)

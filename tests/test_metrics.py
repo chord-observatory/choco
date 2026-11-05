@@ -12,9 +12,15 @@ from tests.helpers import job_dir
 
 def _node(status=NodeStatus.STARTED, started=True, mode=Mode.NORMAL, config_problem=None,
           error=None, version=None, queue_depth=0):
-    return SimpleNamespace(status=status, started=started, mode=mode,
-                           config_problem=config_problem, error=error, version=version,
-                           queue_depth=queue_depth)
+    """A node as ``metrics._nodes`` and ``updatable.node_states`` read it:
+    never polled, no updatable block."""
+    return SimpleNamespace(name="n", status=status, started=started, mode=mode,
+                           maintenance=mode is Mode.MAINTENANCE,
+                           config_problem=config_problem, updatable_load_error=None,
+                           error=error, version=version, queue_depth=queue_depth,
+                           live_read_at=None, live_updatable=None, live_differs=None,
+                           updatable_config=None, updatable_base=lambda: {},
+                           desired_updatable=lambda: {})
 
 
 def _write(root, job, name, data):
@@ -99,6 +105,16 @@ class TestRender:
         assert 'choco_nodes{status="idle"} 1' in body
         assert 'choco_nodes{status="syncing"} 0' in body
         assert "choco_nodes_total 4" in body
+        # The started node's config was never read, the idle one's file
+        # does not render, the development one runs its own, the down one
+        # runs nothing; none has an updatable block.
+        assert 'choco_nodes_config{state="unread"} 1' in body
+        assert 'choco_nodes_config{state="bad_file"} 1' in body
+        assert 'choco_nodes_config{state="own"} 1' in body
+        assert 'choco_nodes_config{state="none"} 1' in body
+        assert 'choco_nodes_config{state="ok"} 0' in body
+        assert 'choco_nodes_updatable{state="none"} 4' in body
+        assert 'choco_nodes_updatable{state="differs"} 0' in body
         assert "choco_nodes_started_desired 3" in body
         assert "choco_nodes_maintenance 1" in body
         assert "choco_nodes_development 1" in body

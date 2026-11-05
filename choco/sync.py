@@ -353,10 +353,7 @@ class NodeWorker:
             self._indeterminate()
             return
 
-        base_drift = (strip_updatable_values(actual)
-                      != strip_updatable_values(desired))
-
-        if had_base_change or base_drift:
+        if had_base_change or node.live_differs:
             self._push_config(desired)
         else:
             node.status = NodeStatus.STARTED
@@ -383,11 +380,16 @@ class NodeWorker:
         self._sync_updatable()
 
     def _note_live(self, live_config: dict | None) -> dict[str, dict] | None:
-        """Keep the updatable blocks of the live config just read (None:
-        the read failed) for the X-engine page, and return them."""
+        """Keep the live config just read (None: the read failed): its
+        updatable blocks for the X-engine page and its base, compared with
+        the file's, for the drift check and the dashboard's Config state
+        (``Node.compare_live``).  Returns the blocks."""
         node = self.node
         node.live_updatable = (find_updatable_blocks(live_config)
                                if live_config is not None else None)
+        node.live_base = (strip_updatable_values(live_config)
+                          if live_config is not None else None)
+        node.compare_live()
         node.live_read_at = time.time()
         return node.live_updatable
 

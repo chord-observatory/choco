@@ -126,6 +126,19 @@ returns — no job-side re-send needed (an unreachable node's checks back off
 towards ``sync.max_retry_interval``, default 60 s, so "first poll after it
 returns" can be up to that far behind the return)
 
+Since 2026-11-05 the worker keeps what it compared: ``Node.live_base`` (the
+live config without its updatable values, at every read, maintenance's
+30 s read included) and ``Node.live_differs`` (against ``rendered_base``,
+recomputed by ``compare_live`` when either side changes, so a library
+edit in maintenance shows at once).  ``_sync`` restarts on
+``live_differs``, and ``updatable.node_states`` turns the same facts, with
+the panel's per-endpoint cells, into the dashboard's Config and Updatable
+states (user: three statuses — the process, the main config, the updatable
+config; until then one Status tag and a muted error line carried all
+three).  In normal mode both states self-heal within a poll, so they earn
+their keep in maintenance (what lifting would restart or push), in
+development (an endpoint the running config lacks) and on a failed push.
+
 ## One worker greenlet per node
 
 every ``Node`` has exactly one owner (``sync.NodeWorker``) that drains its

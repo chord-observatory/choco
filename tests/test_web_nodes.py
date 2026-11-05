@@ -737,6 +737,56 @@ class TestNodeStatusPartial:
         assert client.get("/nodes/partials/node-status/cx/nope").status_code == 404
 
 
+class TestNodeStatesOnPages:
+    """The config and updatable states on the dashboard, the node page
+    and the API (one summary: updatable.node_states)."""
+
+    def _live(self, node):
+        node.status = NodeStatus.STARTED
+        node.live_base = node.rendered_base
+        node.live_updatable = dict(node.rendered_blocks)
+        node.compare_live()
+        node.live_read_at = time.time()
+
+    def test_dashboard_node_page_and_api(self, client, app):
+        login(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.mode = Mode.NORMAL
+        self._live(node)
+        body = client.get("/partials/dashboard-table").data.decode()
+        assert '<th title="Whether kotekan runs the base config the node\'s file renders">Config</th>' in body
+        assert ('<td data-label="config"><span class="tag tag-ok" '
+                'title="cx1 runs the config its file renders (read 0 s ago)."><span class="dot">'
+                '</span><span class="word">ok</span></span></td>') in body
+        assert ('<td data-label="updatable"><span class="tag tag-off" '
+                'title="cx1: its file renders no updatable block.">') in body
+        # cx2 was never polled: nothing runs.
+        assert 'title="cx2: kotekan is unknown, so nothing runs."' in body
+        partial = client.get("/nodes/partials/node-status/cx/cx1").data.decode()
+        assert "<dt>Config</dt>" in partial and "<dt>Updatable</dt>" in partial
+        assert "cx1 runs the config its file renders (read 0 s ago).</small>" in partial
+        page = client.get("/nodes/edit/cx/cx1").data.decode()
+        assert "<dt>Updatable</dt>" in page
+        by_key = {n["key"]: n for n in client.get("/api/nodes/status").get_json()["nodes"]}
+        assert by_key["cx/cx1"]["config_state"] == {
+            "state": "ok", "note": "cx1 runs the config its file renders (read 0 s ago)."}
+        assert by_key["cx/cx1"]["updatable_state"]["state"] == "none"
+        assert by_key["cx/cx2"]["config_state"]["state"] == "none"
+
+    def test_a_bad_file_is_the_config_state(self, client, app, configs_dir):
+        login(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.mode = Mode.MAINTENANCE
+        (configs_dir / "cx" / "cx1.yaml").write_text("not: [valid")
+        node.load_config()
+        body = client.get("/partials/dashboard-table").data.decode()
+        assert '<span class="word">bad file</span>' in body
+        cx1 = next(n for n in client.get("/api/nodes/status").get_json()["nodes"]
+                   if n["key"] == "cx/cx1")
+        assert cx1["config_state"]["state"] == "bad_file"
+        assert "cx1.yaml" in cx1["config_state"]["note"]
+
+
 class TestNodeLogsPartial:
     """The node page's log panel: kotekan's /logs buffer, read per request."""
 

@@ -126,9 +126,13 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **Node ownership** ([sync.md](docs/design/sync.md))
 - Each `Node` has exactly one owner, its `NodeWorker`.  Only the worker
-  writes `status`, `last_seen`, `version`, `error`, `live_updatable`.  Request handlers set the
+  writes `status`, `last_seen`, `version`, `error`, `live_updatable`,
+  `live_base`.  Request handlers set the
   desired flags (`started`, the mode) and enqueue a `POLL`; they never
-  probe kotekan to write status themselves.
+  probe kotekan to write status themselves.  `updatable.node_states` is
+  the one summary of a node's config and updatable states (the dashboard,
+  the node page, `/api/nodes/status`, the CLI, `/metrics`); the sync loop
+  restarts on the same `live_differs`.
 - Every path through `NodeWorker._sync` leaves `node.status` reflecting that
   cycle's probe; the worker reads it to choose its cadence.
 - The wake protocol in `NodeWorker.run` clears the event before testing the

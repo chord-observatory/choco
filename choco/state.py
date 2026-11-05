@@ -279,9 +279,11 @@ class Node:
         self.template_vars: dict = template_vars or {}
         self.base_content: str | None = None
         self._rendered_config: dict | None = None
-        # The updatable blocks of rendered_config, found once per render
-        # (the config is ~380 kB on a cx node; see the setter below).
+        # The updatable blocks of rendered_config, and the config without
+        # their values (what the live config is compared with), found once
+        # per render (the config is ~380 kB on a cx node; see the setter).
         self.rendered_blocks: dict[str, dict] = {}
+        self.rendered_base: dict | None = None
         self._file_suffix: str = ".yaml"
         self.updatable_config: dict[str, dict] | None = None
         # nodes.yaml's ``config:``, validated here so a bad value shows
@@ -309,6 +311,11 @@ class Node:
         # NodeWorker._note_live.
         self.live_updatable: dict[str, dict] | None = None
         self.live_read_at: float | None = None
+        # The live config without its updatable values at that read (None:
+        # the read failed) and whether it differs from the file's
+        # (``rendered_base``; None without both); see compare_live.
+        self.live_base: dict | None = None
+        self.live_differs: bool | None = None
 
         # Per-file config-load errors; combined into `load_error` for
         # display.  Each method clears its own slot on a successful
@@ -514,6 +521,17 @@ class Node:
     def rendered_config(self, config: dict | None) -> None:
         self._rendered_config = config
         self.rendered_blocks = find_updatable_blocks(config) if config is not None else {}
+        self.rendered_base = strip_updatable_values(config) if config is not None else None
+        self.compare_live()
+
+    def compare_live(self) -> None:
+        """Set ``live_differs``: whether the live config the worker last
+        read runs another base than the file renders.  Called when either
+        side changes (``NodeWorker._note_live``, the setter above), so
+        the sync loop and the pages read one answer."""
+        self.live_differs = (self.live_base != self.rendered_base
+                             if self.live_base is not None and self.rendered_base is not None
+                             else None)
 
     @property
     def desired_config(self) -> dict | None:

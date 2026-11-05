@@ -471,7 +471,16 @@ NODES tooltip carries the count.  The Start switch says
 what the operator asked for and the tag what is true; when they differ a
 muted "wants started" / "wants idle" (``node_wants`` in
 ``_service_macros.html``) sits beside the tag on the dashboard and the node
-page, which is what the removed Synced column was reaching for.  A group
+page, which is what the removed Synced column was reaching for.  Since
+2026-11-05 two more tags per node follow the status: Config (does kotekan
+run the base config the file renders) and Updatable (does it run choco's
+updatable values), ``updatable.node_states`` being the one summary for
+the dashboard, the node page (which prints the detail beside the tag),
+``/api/nodes/status`` (``config_state``, ``updatable_state``), the CLI's
+``nodes`` table and ``/metrics`` (``choco_nodes_config`` and
+``choco_nodes_updatable`` by state); the Status tag keeps the process and
+the worker's error, and the config's load error moved to the Config tag.
+A group
 whose nodes all render one file says so once in its bar ("renders
 chord/pathfinder.j2") and drops the Config column; the column appears only
 for a group whose nodes differ.  The landing table folded Last activity and

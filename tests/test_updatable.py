@@ -10,7 +10,8 @@ import yaml
 
 from choco.state import Mode, NodeStatus, Registry
 from choco.sync import LIVE_READ_MAINTENANCE_S, ChangeItem, ChangeType, NodeWorker, Orchestrator
-from choco.updatable import LIVE_MAX_AGE_S, desired_blocks, fleet_rows, is_switch, summarize
+from choco.updatable import (LIVE_MAX_AGE_S, NODE_STATES, desired_blocks, fleet_rows, is_switch,
+                             node_states, summarize)
 
 from tests.helpers import csrf, login
 
@@ -223,6 +224,18 @@ class TestWorkerLiveRead:
         assert node.get_config.call_count == 2
         assert node.live_updatable["updatable_config/bad_inputs"] == BAD
         assert time.time() - node.live_read_at < 5
+        # The base of the live config is kept and compared with the file's.
+        assert node.live_base == node.rendered_base and node.live_differs is False
+        node.start.assert_not_called()
+
+    def test_a_changed_file_is_recompared_with_the_last_read(self, orchestrator):
+        node = self._node(orchestrator, maintenance=True)
+        self._poll(node, orchestrator)
+        assert node.live_differs is False
+        node.rendered_config = {**node.rendered_config, "num_elements": 4096}
+        assert node.live_differs is True
+        node.rendered_config = None
+        assert node.live_differs is None
 
     def test_maintenance_reads_but_never_writes(self, orchestrator):
         node = self._node(orchestrator, maintenance=True)
@@ -249,6 +262,149 @@ class TestWorkerLiveRead:
         node.get_config.return_value = None
         self._poll(node, orchestrator)
         assert node.live_updatable is None and node.live_read_at is not None
+        assert node.live_base is None and node.live_differs is None
+
+
+class TestNodeStates:
+    """A node's config and updatable states (updatable.node_states): the
+    dashboard's two columns beside the kotekan status."""
+
+    def _live(self, node, now, base=None, blocks=None, age=1.0):
+        """*node* as its worker leaves it after reading a live config whose
+        base is *base* (default: the file's) and whose updatable blocks are
+        *blocks* (default: the desired values)."""
+        node.status = NodeStatus.STARTED
+        node.live_base = node.rendered_base if base is None else base
+        node.live_updatable = desired_blocks(node) if blocks is None else blocks
+        node.compare_live()
+        node.live_read_at = now - age
+
+    def test_running_the_file_and_the_values(self, registry):
+        now = time.time()
+        cx1 = registry.get_node("cx/cx1")
+        cx1.mode = Mode.NORMAL
+        self._live(cx1, now)
+        config, updatable = node_states(cx1, now)
+        assert (config.state, config.tone, config.word) == ("ok", "ok", "ok")
+        assert config.note == "cx1 runs the config its file renders (read 1 s ago)."
+        assert (updatable.state, updatable.tone) == ("ok", "ok")
+        assert updatable.note == "cx1 runs the desired value at 3 endpoints (read 1 s ago)."
+
+    def test_another_base_config(self, registry):
+        now = time.time()
+        cx1 = registry.get_node("cx/cx1")
+        cx1.mode = Mode.MAINTENANCE
+        self._live(cx1, now, base={**cx1.rendered_base, "num_elements": 4096})
+        config, updatable = node_states(cx1, now)
+        assert (config.state, config.tone) == ("differs", "warn")
+        assert "Lifting maintenance restarts it onto the file" in config.note
+        assert updatable.state == "ok"
+        cx1.mode = Mode.NORMAL
+        config, _ = node_states(cx1, now)
+        assert config.state == "differs" and "a lasting difference is a failed push" in config.note
+
+    def test_values_the_node_does_not_run(self, registry):
+        now = time.time()
+        cx1 = registry.get_node("cx/cx1")
+        cx1.mode = Mode.MAINTENANCE
+        blocks = desired_blocks(cx1)
+        blocks["updatable_config/bad_inputs"] = {"bad_inputs": [], "update_id": "initial"}
+        self._live(cx1, now, blocks=blocks)
+        config, updatable = node_states(cx1, now)
+        assert config.state == "ok"
+        assert (updatable.state, updatable.tone) == ("differs", "warn")
+        assert updatable.note == ("cx1: 1 of 3 endpoints differ (read 1 s ago): "
+                                  "/updatable_config/bad_inputs differs. "
+                                  "Maintenance: choco pushes nothing to it.")
+        # An endpoint the running config lacks counts too.
+        del blocks["fringestop_enabled"]
+        cx1.mode = Mode.NORMAL
+        updatable = node_states(cx1, now)[1]
+        assert "2 of 3 endpoints differ" in updatable.note
+        assert "/fringestop_enabled absent" in updatable.note and "Maintenance" not in updatable.note
+
+    def test_development(self, registry):
+        now = time.time()
+        cx2 = registry.get_node("cx/cx2")
+        cx2.mode = Mode.DEVELOPMENT
+        # cx2 stores the bffs list (which the running config has) and the
+        # switch with valid_at_time_ns 1 (which it runs at 0).
+        self._live(cx2, now, base={"their": "config"},
+                   blocks={"updatable_config/bad_inputs": dict(BAD), "fringestop_enabled": FS_OFF})
+        config, updatable = node_states(cx2, now)
+        assert (config.state, config.tone) == ("own", "dev")
+        assert "in development the file does not apply" in config.note
+        assert updatable.state == "differs" and "1 of 2 endpoints differ" in updatable.note
+        assert "/fringestop_enabled differs" in updatable.note
+        # A stored value the running block cannot take is a difference too.
+        self._live(cx2, now, base={"their": "config"},
+                   blocks={"updatable_config/bad_inputs": {"bad_inputs": "none"},
+                           "fringestop_enabled": {"enabled": False, "valid_at_time_ns": 1}})
+        updatable = node_states(cx2, now)[1]
+        assert "1 of 2 endpoints differ" in updatable.note
+        assert "/updatable_config/bad_inputs differs" in updatable.note
+        # No stored value at all: nothing to compare.
+        cx1 = registry.get_node("cx/cx1")
+        cx1.mode = Mode.DEVELOPMENT
+        cx1.updatable_config = {}
+        self._live(cx1, now, base={}, blocks={"fringestop_enabled": FS_OFF})
+        updatable = node_states(cx1, now)[1]
+        assert updatable.state == "none" and "no stored value its running config takes" in updatable.note
+
+    def test_not_running_not_read_or_stale(self, registry):
+        now = time.time()
+        cx1 = registry.get_node("cx/cx1")
+        cx1.mode = Mode.NORMAL
+        cx1.status = NodeStatus.IDLE
+        config, updatable = node_states(cx1, now)
+        assert (config.state, config.tone) == ("none", "off") and "kotekan is idle" in config.note
+        assert updatable.state == "none" and "kotekan is idle" in updatable.note
+        cx1.status = NodeStatus.SYNCING
+        config, updatable = node_states(cx1, now)
+        assert (config.state, config.tone) == ("pushing", "info") and updatable.state == "pushing"
+        cx1.status = NodeStatus.STARTED
+        config, updatable = node_states(cx1, now)
+        assert (config.state, config.tone) == ("unread", "off") and "not read yet" in config.note
+        assert updatable.state == "unread" and "not read yet" in updatable.note
+        self._live(cx1, now, age=LIVE_MAX_AGE_S + 1)
+        config, updatable = node_states(cx1, now)
+        assert config.state == "unread" and "last read" in config.note
+        assert updatable.state == "unread"
+        cx1.live_read_at = now
+        cx1.live_updatable = cx1.live_base = None
+        cx1.compare_live()
+        assert "the last read of /config failed" in node_states(cx1, now)[0].note
+
+    def test_a_file_or_store_that_does_not_load(self, registry, configs_dir):
+        now = time.time()
+        cx1 = registry.get_node("cx/cx1")
+        cx1.mode = Mode.MAINTENANCE
+        self._live(cx1, now)
+        (configs_dir / ".updatable" / "cx" / "cx1.json").write_text("{not json")
+        cx1.load_updatable()
+        config, updatable = node_states(cx1, now)
+        assert config.state == "ok"
+        assert (updatable.state, updatable.tone, updatable.word) == ("bad_store", "bad", "bad store")
+        assert "cx1.json" in updatable.note
+        (configs_dir / "cx" / "cx1.yaml").write_text("not: [valid")
+        cx1.load_config()
+        config = node_states(cx1, now)[0]
+        assert (config.state, config.tone, config.word) == ("bad_file", "bad", "bad file")
+        assert "cx1.yaml" in config.note
+
+    def test_no_updatable_block_in_the_file(self, registry):
+        now = time.time()
+        recv1 = registry.get_node("recv/recv1")
+        recv1.mode = Mode.NORMAL
+        recv1.rendered_config = {"buffer_depth": 12}
+        self._live(recv1, now)
+        config, updatable = node_states(recv1, now)
+        assert config.state == "ok"
+        assert updatable.state == "none" and "its file renders no updatable block" in updatable.note
+
+    def test_every_state_has_a_tone(self):
+        from choco.updatable import TONES
+        assert all(word in TONES for word in NODE_STATES)
 
 
 class TestPanel:

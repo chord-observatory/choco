@@ -1,4 +1,4 @@
-{% from "_service_macros.html" import mode_ctl, node_status, node_version, start_ctl, tag with context %}
+{% from "_service_macros.html" import mode_ctl, node_state, node_status, node_version, start_ctl, tag with context %}
 {# hosts: each node's server as the instrument monitor read it (its
    node_exporter and PDU outlet power; every 30 s), None when the monitor
    is not configured. #}
@@ -23,9 +23,11 @@
             <th>Node</th>
             <th title="normal: choco keeps the node on its desired config; maint: choco reads only; dev: the node runs its own config and choco pushes only its stored updatable values">Mode</th>
             <th>Start</th>
-            <th>Status</th>
+            <th title="kotekan's state: started, idle, down, syncing, unknown">Status</th>
+            <th title="Whether kotekan runs the base config the node's file renders">Config</th>
+            <th title="Whether kotekan runs choco's updatable values (the panel below, per node)">Updatable</th>
             <th>Version</th>
-            {% if not one_file %}<th>Config</th>{% endif %}
+            {% if not one_file %}<th>File</th>{% endif %}
             {% if hosts %}<th title="node_exporter on the host">Server</th><th title="Active power on the node's PDU outlets">Power</th>{% endif %}
             <th></th>
         </tr>
@@ -38,8 +40,10 @@
             <td data-label="mode">{% include "_mode_control.html" %}</td>
             <td data-label="start">{% include "_toggle_started.html" %}</td>
             <td class="stack-end">{{ node_status(node) }}</td>
+            <td data-label="config">{{ node_state(states[key][0]) }}</td>
+            <td data-label="updatable">{{ node_state(states[key][1]) }}</td>
             <td class="stack-full">{{ node_version(node, "ver-pop-" ~ node.group ~ "-" ~ node.name) }}</td>
-            {% if not one_file %}<td class="stack-full" data-label="config"><code>{{ node.config_filename }}</code></td>{% endif %}
+            {% if not one_file %}<td class="stack-full" data-label="file"><code>{{ node.config_filename }}</code></td>{% endif %}
             {% if hosts %}{% set h = hosts[node.name] %}
             <td data-label="server" class="server-tags" title="node_exporter on the host">
                 {%- if h.host_up is none %}{{ tag('off', 'no data') }}{% elif h.host_up %}{{ tag('ok', 'answering') }}{% else %}{{ tag('bad', 'no answer') }}{% endif -%}

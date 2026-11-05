@@ -95,12 +95,12 @@ class TestPageChrome:
     def test_uniform_group_names_its_file_once(self, client, app):
         login(client)
         body = client.get("/partials/dashboard-table").data.decode()
-        # cx: cx1.yaml and cx2.yaml differ -> a Config column; recv: one
+        # cx: cx1.yaml and cx2.yaml differ -> a File column; recv: one
         # node, one file -> named in the group bar, no column
         cx = body[body.index("group <code>cx</code>"):body.index("group <code>recv</code>")]
         recv = body[body.index("group <code>recv</code>"):]
-        assert "<th>Config</th>" in cx and "<code>cx/cx1.yaml</code>" in cx and "<code>cx/cx2.yaml</code>" in cx
-        assert "<th>Config</th>" not in recv
+        assert "<th>File</th>" in cx and "<code>cx/cx1.yaml</code>" in cx and "<code>cx/cx2.yaml</code>" in cx
+        assert "<th>File</th>" not in recv
         assert 'renders <code>recv/recv1.yaml</code>' in recv
 
     def test_wall_mode_drops_the_chrome(self, client):

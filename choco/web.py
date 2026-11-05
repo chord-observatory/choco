@@ -47,7 +47,7 @@ from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import Mode, NodeStatus, find_updatable_blocks, fits_block, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
-from .updatable import endpoint_block, fleet_rows, switch_values
+from .updatable import endpoint_block, fleet_rows, node_states, switch_values
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +103,18 @@ def _dashboard_reply():
 
 
 def _dashboard_context() -> dict:
-    """The nodes, and each node's server as the instrument monitor last
-    read it: node_exporter and the PDU outlets (``hosts``; None when the
-    monitor is not configured)."""
+    """The nodes, each node's config and updatable states (``states``, by
+    key), and each node's server as the instrument monitor last read it:
+    node_exporter and the PDU outlets (``hosts``; None when the monitor
+    is not configured)."""
     nodes = _registry().nodes
     monitor = current_app.config.get("instrument_monitor")
     hosts = None
     if monitor is not None and monitor.configured:
         hosts = {n.name: host_health(n.name, monitor.devices) for n in nodes.values()}
-    return {"nodes": nodes, "hosts": hosts}
+    now = time.time()
+    states = {n.key: node_states(n, now) for n in nodes.values()}
+    return {"nodes": nodes, "states": states, "hosts": hosts}
 
 
 # The words a URL or form may carry: the started routes' actions, the
@@ -455,6 +458,7 @@ def node_edit(node_key):
         shared_with=shared_with,
         config_files=registry.config_files(),
         nlines=_journal_lines_arg(),
+        states=node_states(node),
     )
 
 
@@ -854,7 +858,7 @@ def partial_node_status(node_key):
     node = registry.get_node(node_key)
     if node is None:
         abort(404)
-    return render_template("_node_status.html", node=node)
+    return render_template("_node_status.html", node=node, states=node_states(node))
 
 
 #: How a kotekan log level is painted on the node page: errors and
@@ -3203,6 +3207,7 @@ def oneshot(group, node=None):
 # --- JSON API endpoints for read-only status (localhost bypass) ---
 
 def _node_to_dict(node) -> dict:
+    config, updatable = node_states(node)
     return {
         "key": node.key,
         "group": node.group,
@@ -3215,6 +3220,8 @@ def _node_to_dict(node) -> dict:
         "maintenance": node.maintenance,
         "development": node.development,
         "status": node.status.value,
+        "config_state": {"state": config.state, "note": config.note},
+        "updatable_state": {"state": updatable.state, "note": updatable.note},
         "last_seen": node.last_seen,
         "last_seen_ago": node.last_seen_ago,
         "version": node.version,

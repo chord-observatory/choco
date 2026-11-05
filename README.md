@@ -242,16 +242,26 @@ A board or NIC port counts as idle below 1000 packets/s. A NIC is flagged for dr
 
 ### Dashboard (`/nodes`)
 
-The **X-engine** item leads to the dashboard at `/nodes`, one table per group with live-updating columns: node name, the two switches, status, version (the version string opens the build details), the config file when a group's nodes differ (a group that renders one file names it once in its heading), and Pipeline/Node buttons.
+The **X-engine** item leads to the dashboard at `/nodes`, one table per group with live-updating columns: node name, the mode control and the Start switch, three states (status, config, updatable), version (the version string opens the build details), the file when a group's nodes differ (a group that renders one file names it once in its heading), and Pipeline/Node buttons.
 
-Status tags:
-- **started** (green) — kotekan is running and config matches the desired state
+Status tags say what kotekan's process is doing:
+- **started** (green) — kotekan is running
 - **idle** (grey) — kotekan is reachable but not running (ready for `/start`)
 - **syncing** (blue) — config push in progress (kill → restart → start)
 - **down** (red) — kotekan is unreachable
 - **unknown** (grey) — not yet polled or state indeterminate
 
-When what you asked for differs from what is true — the Start switch on but the node down, or off but the node still running — a muted *wants started* / *wants idle* note sits beside the tag.
+When what you asked for differs from what is true — the Start switch on but the node down, or off but the node still running — a muted *wants started* / *wants idle* note sits beside the tag, and the worker's last error under it.
+
+Config tags say whether kotekan runs the base config the node's file renders (the live `/config` with its updatable values stripped, against the file's; the worker compares them at every read, in maintenance every 30 s):
+- **ok** (green) — it does
+- **differs** (yellow) — it runs another config. In maintenance, lifting restarts it onto the file. In normal mode choco restarts it on its own, so a lasting *differs* is a failed push; the status line says why.
+- **bad file** (red) — the file does not render; the message is in the tooltip
+- **own** (violet) — in development the file does not apply
+- **pushing** (blue) — a push is in progress
+- **none** / **unread** (grey) — kotekan is not running, or its config has not been read yet
+
+Updatable tags say whether kotekan runs choco's updatable values, the panel below summed up per node: **ok**, **differs** (the tooltip names the endpoints; in maintenance choco pushes nothing, in development only its stored values), **bad store** (the node's `.updatable` file does not load, so nothing is pushed), **none** (the file renders no updatable block) or **unread**. Hover a tag for the detail; the node page prints it beside the tag.
 
 Each node also has a mode control and a switch:
 
@@ -279,7 +289,7 @@ choco reads `/config` from a node in maintenance every 30 s, and does not write 
 
 ### Node page (`/nodes/edit/<group>/<node>`)
 
-Click **Node** on a dashboard row for the node's page: host, the two switches, the live status, version, branch, commit and last-seen facts (polled every 2 s), and which config file it renders — with an **Edit config** button into the config library — then:
+Click **Node** on a dashboard row for the node's page: host, the two switches, the live status with the config and updatable states and their detail, version, branch, commit and last-seen facts (polled every 2 s), and which config file it renders — with an **Edit config** button into the config library — then:
 - **Config** — a selector for the library file this node renders (blank means its own `<group>/<node>` file). **Apply** rewrites `nodes.yaml` and rebuilds the registry, which pauses every node in maintenance until you lift it. The file's text is edited in the library, not here.
 - **Actions** — **Re-push current** kills and starts the node on its current desired config (skipped in maintenance). **One-off** starts a chosen library file on a node that is in maintenance and idle without saving it anywhere (lifting maintenance later reverts it).
 - **Updatable config** — edit individual updatable blocks. Changes are pushed to kotekan's updatable endpoints without a restart.
