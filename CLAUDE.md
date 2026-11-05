@@ -54,6 +54,7 @@ choco/
 ├── jobdetail.py    # what each job's page summarises from its files (JOB_DETAILS; no Flask)
 ├── state.py        # Node (config state, queue, kotekan REST client), Registry
 ├── sync.py         # ChangeItem, NodeWorker, Orchestrator
+├── updatable.py    # the X-engine page's updatable panel: desired vs live per endpoint and node (no Flask)
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
 ├── fpga.py         # FpgaMonitor (fpga_master poll + controls), GainArchive, FileArchive (h5read subprocess)
 ├── powerdb.py      # PdbMonitor: power_db poll and the one read-modify-write-verify behind every power control
@@ -125,7 +126,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **Node ownership** ([sync.md](docs/design/sync.md))
 - Each `Node` has exactly one owner, its `NodeWorker`.  Only the worker
-  writes `status`, `last_seen`, `version`, `error`.  Request handlers set the
+  writes `status`, `last_seen`, `version`, `error`, `live_updatable`.  Request handlers set the
   desired flags (`started`, `maintenance`) and enqueue a `POLL`; they never
   probe kotekan to write status themselves.
 - Every path through `NodeWorker._sync` leaves `node.status` reflecting that
@@ -141,7 +142,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 
 **Maintenance and started** ([sync.md](docs/design/sync.md))
 - `maintenance=True` means no REST write to the node: `push_updatable`,
-  `start` and `kill` all return `False`.  Every registry build (startup and
+  `start` and `kill` all return `False`.  Reads go on (status, version,
+  and `/config` every `LIVE_READ_MAINTENANCE_S` for the updatable panel).  Every registry build (startup and
   every `nodes.yaml` reload) puts the whole cluster in maintenance.
 - `Node.start(override_maintenance=True)` exists only for the operator's
   one-off start (`web._run_oneshot`).  The sync loop never passes it.

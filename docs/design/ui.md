@@ -43,6 +43,24 @@ token is seeded lazily by the ``csrf_token`` context processor, so a session
 is established by fetching a page that renders a CSRF form (the dashboard),
 not the front page.
 
+**The updatable panel (2026-11-05).**  Below the dashboard's group tables,
+one row per updatable endpoint across the fleet (``updatable.fleet_rows``,
+``/partials/updatable``, polled every 5 s): the desired value (the rendered
+block with the node's override merged over it, the merge ``desired_config``
+does, without its deep copy of the whole config), who sets it (library,
+override and on which nodes, or the job whose ``_JOBS`` entry ``pushes`` it)
+and a tag per node from the worker's last live read: ok when the node runs
+the desired value, warn when it runs another or has no such endpoint, off
+with no current read (not STARTED, a failed read, or one older than
+``LIVE_MAX_AGE_S``), info for an endpoint only the live config has.  Values
+that differ between nodes get a line each, so a stray override shows (the
+first look found cx27 holding ``rfi_second_stage_enabled`` with
+``valid_at_time_ns: 1``, which RfiFrameMask ignores as before its start).
+Built as step one of three, read-only: the user's plan is to set one value
+on every node that renders it from here, switches (a bool ``enabled`` and
+at most ``valid_at_time_ns``, ``updatable.is_switch``) as toggles, and to
+reset an override to the library's value.
+
 ## Service status strip
 
 Three small monitors feed the strip, all ``monitor.PolledMonitor`` subclasses

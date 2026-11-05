@@ -262,6 +262,14 @@ Each scope (group heading, dashboard header) has two captioned pairs of ▼/▲ 
 
 The dashboard table refreshes itself every 2 seconds via htmx polling - no need to refresh the page.
 
+Below the tables, **Updatable config** has one row for each updatable endpoint that a node's config renders:
+
+- **Desired value** — the value choco pushes: the library's block, with the node's stored override merged over it. When the nodes differ, each value has its own line, with the nodes that have it.
+- **Set by** — `library` when no node has an override; `override`, with the nodes, when some do. An endpoint that a job pushes names the job (Earth orientation, Bad feeds, Eigencal) and links to its page.
+- **Live** — one tag for each node, from the last read of its kotekan's `/config`. Green: the node runs the desired value. Amber: it runs a different value, or its running config does not have the endpoint (the tooltip gives the live value). Grey: there is no current read (kotekan is not running, or the read failed). Blue: kotekan runs an endpoint that its config file does not render.
+
+choco reads `/config` from a node in maintenance every 30 s, and does not write to it. Thus, before you lift maintenance, you can see which desired values the node does not run. The panel is read-only and refreshes every 5 s. To change a value on one node, use the node's page.
+
 ### Node page (`/nodes/edit/<group>/<node>`)
 
 Click **Node** on a dashboard row for the node's page: host, the two switches, the live status, version, branch, commit and last-seen facts (polled every 2 s), and which config file it renders — with an **Edit config** button into the config library — then:
@@ -411,7 +419,7 @@ Each worker schedules its own drift check: every `sync.poll_interval` while the 
 
 **Startup state discovery.** When choco starts, `Orchestrator.discover_node_states()` probes every node in parallel and sets each `node.started` from the actual runtime state (STARTED → `True`, IDLE → `False`, unreachable → `False`). This happens before the node workers start, so choco never "resets" a running node back to idle just because the local default was `False`.
 
-**Maintenance mode.** Every node has a `maintenance` flag that defaults to **on** at startup. When maintenance is on, all REST calls that mutate the node — `Node.push_updatable`, `Node.start`, and `Node.kill` — are no-ops (they log and return `False`), and `Orchestrator._sync_node` short-circuits before reaching them. Drift is still observed and the dashboard reflects the node's actual state, but choco never writes to a paused node, even to enforce `started=False`. Operators flip nodes out of maintenance once they're ready for choco to reconcile. Maintenance state is ephemeral; a choco restart puts everything back into maintenance and re-runs state discovery.
+**Maintenance mode.** Every node has a `maintenance` flag that defaults to **on** at startup. When maintenance is on, all REST calls that mutate the node — `Node.push_updatable`, `Node.start`, and `Node.kill` — are no-ops (they log and return `False`), and `Orchestrator._sync_node` short-circuits before reaching them. Drift is still observed and the dashboard reflects the node's actual state (its live `/config` is read every 30 s for the updatable panel), but choco never writes to a paused node, even to enforce `started=False`. Operators flip nodes out of maintenance once they're ready for choco to reconcile. Maintenance state is ephemeral; a choco restart puts everything back into maintenance and re-runs state discovery.
 
 ## EOP Broadcast
 

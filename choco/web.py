@@ -47,6 +47,7 @@ from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import NodeStatus, find_updatable_blocks, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
+from .updatable import fleet_rows
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ def partial_skymap():
 @bp.route("/nodes")
 @login_required
 def dashboard():
-    return render_template("dashboard.html", **_dashboard_context())
+    return render_template("dashboard.html", **_dashboard_context(), **_updatable_context())
 
 
 @bp.route("/nodes/edit/<path:node_key>", methods=["GET", "POST"])
@@ -1117,6 +1118,19 @@ def partial_dashboard_table():
     return render_template("_dashboard_table.html", **_dashboard_context())
 
 
+def _updatable_context() -> dict:
+    """The X-engine page's updatable panel: a row per endpoint
+    (``updatable.fleet_rows``) and the jobs that push some of them."""
+    owners = {job["pushes"]: name for name, job in _JOBS.items() if "pushes" in job}
+    return {"rows": fleet_rows(list(_registry().nodes.values()), owners), "jobs": _JOBS}
+
+
+@bp.route("/partials/updatable")
+@login_required
+def partial_updatable():
+    return render_template("_updatable_table.html", **_updatable_context())
+
+
 bp.add_app_template_filter(human_bytes, "filesize")
 bp.add_app_template_filter(utc_minute, "utc_minute")
 
@@ -1428,13 +1442,17 @@ def waterfall_view(root, acq, name):
 #: run gets a ``stale_after_s``.  ``page`` is where a folded job is
 #: shown (see ``_service_registry``) and ``card`` a partial that page
 #: loads above the job's status block; ``description`` heads the page,
-#: or the folded job's section.
+#: or the folded job's section.  ``pushes`` is the kotekan updatable
+#: endpoint the job sets, as its own config names it (``endpoint`` in
+#: eop.yaml, ``choco.endpoint`` in bffs.yaml and eigencal.yaml); the
+#: X-engine page credits the job with that row.
 _JOBS: dict[str, dict] = {
     # EOP rewrites its state file on every successful (daily) run, so
     # the mtime doubles as "last successful run" and goes stale.
     "eop": {
         "label": "Earth orientation", "unit": "choco-eop-broadcast.service",
         "state": STATE_NAME, "stale_after_s": EOP_STALE_AFTER_S, "mtime_label": "last run",
+        "pushes": "earth_rotation_data",
         "description": "Earth-orientation-parameter broadcast — merges IERS data and "
                        "pushes the EOP table to kotekan daily.",
     },
@@ -1448,7 +1466,7 @@ _JOBS: dict[str, dict] = {
     "bffs": {
         "label": "Bad feeds", "unit": "choco-bffs-flag.service",
         "state": STATE_NAME, "run": RUN_NAME, "manual": MANUAL_OVERRIDES_NAME,
-        "mtime_label": "last change",
+        "mtime_label": "last change", "pushes": "updatable_config/bad_inputs",
         "description": "Feed flagging — combines per-feed health sources and pushes the "
                        "bad-input list to kotekan on change.",
     },
@@ -1458,6 +1476,7 @@ _JOBS: dict[str, dict] = {
     "eigencal": {
         "label": "Eigencal", "unit": "choco-eigencal.service",
         "state": STATE_NAME, "run": RUN_NAME, "mtime_label": "last calibration",
+        "pushes": "updatable_config/gains",
         "description": "Point-source gain calibration — fits per-input complex gains once "
                        "per calibrator transit, at night.",
     },

@@ -1,0 +1,43 @@
+{% from "_service_macros.html" import tag with context %}
+{# rows: updatable.fleet_rows, one per endpoint; jobs: web._JOBS, for the
+   label of the job that pushes a row. #}
+{% if not rows %}
+<p class="note">No node renders an updatable block.</p>
+{% else %}
+<table class="updatable stack">
+    <thead>
+        <tr>
+            <th>Endpoint</th>
+            <th>Desired value</th>
+            <th>Set by</th>
+            <th title="Each node's kotekan, as choco last read its /config">Live</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td class="stack-lead"><code>/{{ row.endpoint }}</code>{% if row.switch %} <small class="muted">switch</small>{% endif %}</td>
+            <td class="stack-full" data-label="desired">
+                {%- for summary, full, names in row.values %}
+                {%- if not loop.first %}<br>{% endif %}
+                <span class="mono" title="{{ full }}">{{ summary }}</span>
+                {%- if row.values | length > 1 %} <small class="muted">{% if loop.first and names | length > 3 %}{{ names | length }} nodes{% else %}{{ names | join(' ') }}{% endif %}</small>{% endif %}
+                {%- else %}<span class="muted">—</span>
+                {%- endfor -%}
+            </td>
+            <td data-label="set by">
+                {%- if row.owner %}<a href="{{ request.script_root }}/service/{{ row.owner }}" title="The {{ row.owner }} job pushes this value">{{ jobs[row.owner].label }}</a>
+                {%- elif not row.rendered_on %}<span class="muted" title="No node's config file renders it">live only</span>
+                {%- elif not row.overrides %}library
+                {%- elif row.overrides | length == row.rendered_on %}override <small class="muted">every node</small>
+                {%- else %}override <small class="muted">{{ row.overrides | join(' ') }}</small>
+                {%- endif -%}
+            </td>
+            <td class="stack-full" data-label="live">
+                {%- for cell in row.cells %}{{ tag(cell.tone, cell.name, title=cell.note) }} {% endfor -%}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}

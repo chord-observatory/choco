@@ -46,6 +46,11 @@ from .state import (
 
 logger = logging.getLogger(__name__)
 
+#: How often a worker reads the live /config of a node in maintenance.
+#: Nothing is pushed then, so the read is only for the X-engine page's
+#: updatable panel; outside maintenance the drift check reads it every cycle.
+LIVE_READ_MAINTENANCE_S = 30
+
 
 # --- Queue data types ---
 
@@ -324,9 +329,13 @@ class NodeWorker:
         # mutates a node the operator has paused.
         if node.maintenance:
             node.status = probe
+            if (probe == NodeStatus.STARTED
+                    and time.time() - (node.live_read_at or 0) >= LIVE_READ_MAINTENANCE_S):
+                self._note_live(node.get_config())
             return
 
         actual = node.get_config()
+        self._note_live(actual)
 
         # Node idle with no config -> start it.
         if probe == NodeStatus.IDLE and actual is None:
@@ -346,6 +355,14 @@ class NodeWorker:
         else:
             node.status = NodeStatus.STARTED
             self._sync_updatable(actual)
+
+    def _note_live(self, live_config: dict | None) -> None:
+        """Keep the updatable blocks of the live config just read (None:
+        the read failed) for the X-engine page."""
+        node = self.node
+        node.live_updatable = (find_updatable_blocks(live_config)
+                               if live_config is not None else None)
+        node.live_read_at = time.time()
 
     def _push_config(self, desired: dict) -> None:
         """Kill -> wait for idle -> start with *desired* config; the

@@ -271,6 +271,11 @@ class Node:
         self.last_seen: float | None = None
         self.error: str | None = None
         self.version_info: dict | None = None
+        # The updatable blocks of kotekan's live /config at the worker's
+        # last read (None: the read failed) and when it read them; see
+        # NodeWorker._note_live.
+        self.live_updatable: dict[str, dict] | None = None
+        self.live_read_at: float | None = None
 
         # Per-file config-load errors; combined into `load_error` for
         # display.  Each method clears its own slot on a successful

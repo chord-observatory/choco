@@ -212,7 +212,16 @@ REST call that mutates the node is blocked: ``Node.push_updatable``,
 ``Orchestrator._sync_node`` short-circuits before reaching them (including the
 kill-on-not-started branch). Polling, status display, version reads, and
 config-file writes are unaffected — the rule is "no REST writes", and
-``started=False`` is no longer enforced while a node is paused. Toggles live
+``started=False`` is no longer enforced while a node is paused.  A paused
+node's live ``/config`` is still read, every ``LIVE_READ_MAINTENANCE_S``
+(30 s) rather than every cycle, for the X-engine page's updatable panel
+(2026-11-05): the worker keeps only its updatable blocks
+(``node.live_updatable``, ``live_read_at``; ``NodeWorker._note_live``, which
+the drift check's own read feeds outside maintenance).  The panel is how an
+operator sees, before lifting maintenance, which stored values the node does
+not run yet; the paused kotekan is often someone else's (in 2026-11 kvand's
+gnss-node on port 12048), so the read is spaced out rather than every 5 s.
+The config is ~380 kB on a cx node. Toggles live
 in ``web.py`` (per-node ``/nodes/toggle-maintenance/<key>``, group
 ``/nodes/set-maintenance-group/<group>/<on|off>``, all ``/nodes/set-
 maintenance-all/<on|off>``, JSON API ``set_maintenance``) and templates
