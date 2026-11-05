@@ -689,6 +689,18 @@ class Node:
             write_json_atomic(path, self.updatable_config)
         self._updatable_load_error = None
 
+    def forget_updatable(self, endpoint: str) -> bool:
+        """Drop the stored value for *endpoint* and rewrite the store;
+        False when there was none (an unreadable store included: nothing
+        is overwritten).  The node keeps running the value until it
+        restarts or another is set."""
+        if not self.updatable_config or endpoint not in self.updatable_config:
+            return False
+        del self.updatable_config[endpoint]
+        if self.updatable_path is not None:
+            write_json_atomic(self.updatable_path, self.updatable_config)
+        return True
+
     def render(self, base_content: str, *,
                overlay: dict[Path, str] | None = None) -> dict:
         """Render base config text through Jinja2 and parse as YAML.

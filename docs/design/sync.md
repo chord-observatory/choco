@@ -226,9 +226,9 @@ not run yet; the paused kotekan is often someone else's (in 2026-11 kvand's
 gnss-node on port 12048), so the read is spaced out rather than every 5 s.
 The config is ~380 kB on a cx node. The controls live
 in ``web.py`` (per-node ``/nodes/set-mode/<mode>/<key>``, group
-``/nodes/set-maintenance-group/<group>/<on|off>``, all ``/nodes/set-
-maintenance-all/<on|off>``, JSON API ``set_maintenance`` and ``set_mode``)
-and templates ``_mode_control.html`` and the ``maint_ctl`` macro in
+``/nodes/set-mode-group/<group>/<mode>``, all ``/nodes/set-mode-all/<mode>``,
+where ``normal`` lifts; JSON API ``set_maintenance`` and ``set_mode``)
+and templates ``_mode_control.html`` and the ``mode_ctl`` macro in
 ``_service_macros.html``. The
 orange/blue colour pair distinguishes it from the green/yellow started toggle,
 and the per-node slider is mirrored relative to the started toggle
@@ -296,6 +296,33 @@ sync loop restarts nothing; a development node is never restarted and does
 not run the library, and pausing it would stop the relay development is
 for, so only normal nodes are paused (``held`` in the pull's reply names
 the rest with their mode).
+
+## Bulk edits from the updatable panel (2026-11-05)
+
+The X-engine page's panel got a **Set** column: on / off for a switch,
+edit (a JSON form) for any endpoint a job does not own, library to drop
+the overrides.  ``POST /nodes/updatable/<endpoint>`` is one queue item per
+node, never a direct POST to kotekan: the value becomes that node's stored
+override (``.updatable/<node>.json``) and the sync loop pushes it where the
+mode allows, so a node in maintenance stores it and runs it when lifted, a
+node that is down catches up, and the Live tags show it land — the same
+path a job's push takes.  The scope is every node that *has* the endpoint,
+decided per node by ``updatable.endpoint_block``: the file's block in
+normal mode and maintenance, the running config's in development; a node
+whose block cannot take the value's fields (``state.fits_block``) is
+skipped and named, which is what lets one switch click serve a fleet of
+mixed builds (``valid_at_time_ns: 0`` rides along only where the block has
+it).  **library** is ``ChangeItem(UPDATABLE_CONFIG, values=None)``, which
+the drain turns into ``Node.forget_updatable``: the override is gone, so
+choco stops enforcing it, and the node keeps the value it runs until it
+restarts (the library's value then goes with ``/start``) or another is set
+— choco does not push a library value it was not asked to, since the
+worker enforces stored values only.  The panel shows the gap honestly
+(amber "differs" against the library's value).  A job-owned endpoint has
+no control: a hand value would be overwritten on the job's next run, and
+bffs has its manual override file for that.  The edit form lives in a
+popover marked ``hx-preserve`` so the table's 5 s morph does not reset it
+mid-edit, the pattern of the version popover.
 
 ## One-off configs
 

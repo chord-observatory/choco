@@ -154,10 +154,16 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   puts the whole cluster in maintenance.
 - Lifting maintenance returns a node to its resting mode
   (`Node.rest_mode`: development when `nodes.yaml` says `development:
-  true`, else normal).  Development to normal is refused
-  (`Node.set_mode`): a node leaves development into maintenance.  The
-  pauses (pull, config selection, the pointing job) move only normal
-  nodes into maintenance.
+  true`, else normal).  Normal is refused from development, and to a
+  declared node in any mode (`Node.refusal`, asked by `Node.set_mode`,
+  `Orchestrator.set_mode` and the mode control): a node leaves
+  development into maintenance.  The pauses (pull, config selection,
+  the pointing job) move only normal nodes into maintenance.
+- The updatable panel's Set controls queue one `UPDATABLE_CONFIG` item
+  per node that has the endpoint (`updatable.endpoint_block`, the value
+  checked with `fits_block`), never a direct POST to kotekan; an item
+  with `values=None` drops the stored value (`Node.forget_updatable`).
+  A job-owned endpoint has no control.
 - `Node.start(override_maintenance=True)` exists only for the operator's
   one-off start (`web._run_oneshot`, which requires maintenance).  The
   sync loop never passes it.
@@ -280,11 +286,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   prose, `h3` for sections, `.btn-sm secondary outline` for row-level
   actions with Pico's filled primary kept for the page's one main action,
   `.notice` for static warnings (`.flash` is transient only).  Controls are
-  not status: switches are tinted only when on, group buttons colour their
-  glyph text on the tone's soft tint, never a solid fill.  The one
-  exception is the mode control's current mode, filled solid because the
-  column reads as the node's status at rest (the switch it replaced
-  carried that colour when on).
+  not status: switches are tinted only when on, group and segmented word
+  buttons (`.group-btn`, `.seg-btn`) colour their glyph or word on the
+  tone's soft tint, never a solid fill.  The one exception is the
+  per-node mode control's current mode, filled solid because the column
+  reads as the node's status at rest (the switch it replaced carried
+  that colour when on).
 - Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
   `static/fonts/*` in pyproject's package-data); no page loads anything from
   an outside host.  600 is the site's bold, never 700.  The base size is

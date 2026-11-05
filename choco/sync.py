@@ -73,7 +73,7 @@ class ChangeItem:
     type: ChangeType
     config_content: str | None = None  # BASE_CONFIG: base config text (YAML/Jinja2)
     endpoint: str | None = None        # UPDATABLE_CONFIG: REST path
-    values: dict | None = None         # UPDATABLE_CONFIG: JSON payload
+    values: dict | None = None         # UPDATABLE_CONFIG: JSON payload; None drops the stored value
 
 
 # --- Per-node worker ---
@@ -260,6 +260,9 @@ class NodeWorker:
                     node.save_updatable(item.endpoint, item.values)
                     logger.info(f"Wrote updatable config for {node.key} "
                                 f"at /{item.endpoint}")
+                elif item.endpoint and node.forget_updatable(item.endpoint):
+                    logger.info(f"Dropped the stored updatable config for "
+                                f"{node.key} at /{item.endpoint}")
             elif item.type == ChangeType.RESYNC:
                 had_base_change = True  # force restart
             # POLL: no file changes

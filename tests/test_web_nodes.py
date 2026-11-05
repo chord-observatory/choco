@@ -272,7 +272,7 @@ class TestMaintenanceToggles:
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
         assert node.mode is Mode.DEVELOPMENT
-        assert 'class="mode-btn tone-dev current"' in body
+        assert 'class="seg-btn tone-dev current"' in body
         assert "/nodes/set-mode/maintenance/cx/cx1" in body
         assert "/nodes/set-mode/normal/cx/cx1" not in body   # not offered from development
         # Development straight to normal is refused (a stale page's click:
@@ -280,7 +280,7 @@ class TestMaintenanceToggles:
         resp = client.post("/nodes/set-mode/normal/cx/cx1",
                            data={"_csrf_token": token}, headers={"HX-Request": "true"})
         assert resp.status_code == 200 and node.mode is Mode.DEVELOPMENT
-        assert 'class="mode-btn tone-dev current"' in resp.get_data(as_text=True)
+        assert 'class="seg-btn tone-dev current"' in resp.get_data(as_text=True)
         resp = client.post("/nodes/set-mode/normal/cx/cx1",
                            data={"_csrf_token": token}, follow_redirects=True)
         assert "cx/cx1: in development; put it in maintenance first" in resp.get_data(as_text=True)
@@ -315,15 +315,19 @@ class TestMaintenanceToggles:
         cx2.mode = Mode.DEVELOPMENT          # a runtime handover, not declared
         recv1.mode = Mode.NORMAL
         # ▼ is the stop button: every node, development included.
-        client.post("/nodes/set-maintenance-all/on", data={"_csrf_token": token})
+        client.post("/nodes/set-mode-all/maintenance", data={"_csrf_token": token})
         assert all(n.maintenance for n in registry.nodes.values())
-        client.post("/nodes/set-maintenance-all/off", data={"_csrf_token": token})
+        client.post("/nodes/set-mode-all/normal", data={"_csrf_token": token})
         assert cx1.mode is Mode.DEVELOPMENT
         assert cx2.mode is Mode.NORMAL and recv1.mode is Mode.NORMAL
         # ▲ leaves a node not in maintenance alone.
         cx2.mode = Mode.DEVELOPMENT
-        client.post("/nodes/set-maintenance-group/cx/off", data={"_csrf_token": token})
+        client.post("/nodes/set-mode-group/cx/normal", data={"_csrf_token": token})
         assert cx2.mode is Mode.DEVELOPMENT
+        # dev puts every node in scope in development.
+        client.post("/nodes/set-mode-group/cx/development", data={"_csrf_token": token})
+        assert cx1.mode is Mode.DEVELOPMENT and cx2.mode is Mode.DEVELOPMENT
+        assert recv1.mode is Mode.NORMAL
 
     def test_set_group_scopes_to_group(self, client, app):
         login(client)
@@ -333,7 +337,7 @@ class TestMaintenanceToggles:
             n.mode = Mode.NORMAL
 
         resp = client.post(
-            "/nodes/set-maintenance-group/cx/on",
+            "/nodes/set-mode-group/cx/maintenance",
             data={"_csrf_token": token},
             follow_redirects=False,
         )
@@ -351,13 +355,13 @@ class TestMaintenanceToggles:
             n.mode = Mode.NORMAL
 
         client.post(
-            "/nodes/set-maintenance-all/on",
+            "/nodes/set-mode-all/maintenance",
             data={"_csrf_token": token},
         )
         assert all(n.maintenance for n in registry.nodes.values())
 
         client.post(
-            "/nodes/set-maintenance-all/off",
+            "/nodes/set-mode-all/normal",
             data={"_csrf_token": token},
         )
         assert not any(n.maintenance for n in registry.nodes.values())
@@ -366,7 +370,7 @@ class TestMaintenanceToggles:
         login(client)
         token = csrf(client)
         resp = client.post(
-            "/nodes/set-maintenance-all/frobnicate",
+            "/nodes/set-mode-all/frobnicate",
             data={"_csrf_token": token},
         )
         assert resp.status_code == 400

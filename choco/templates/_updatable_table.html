@@ -1,6 +1,8 @@
-{% from "_service_macros.html" import tag with context %}
+{% from "_service_macros.html" import flash, tag with context %}
 {# rows: updatable.fleet_rows, one per endpoint; jobs: web._JOBS, for the
-   label of the job that pushes a row. #}
+   label of the job that pushes a row; notice: (category, text) after a
+   Set control's post, flashed out of band above the table. #}
+{% if notice %}<div id="updatable-flash" hx-swap-oob="true">{{ flash(notice[0], notice[1]) }}</div>{% endif %}
 {% if not rows %}
 <p class="note">No node renders an updatable block.</p>
 {% else %}
@@ -10,11 +12,14 @@
             <th>Endpoint</th>
             <th>Desired value</th>
             <th>Set by</th>
+            <th title="Queue a value on every node that has the endpoint">Set</th>
             <th title="Each node's kotekan, as choco last read its /config">Live</th>
         </tr>
     </thead>
     <tbody>
         {% for row in rows %}
+        {% set url = request.script_root ~ '/nodes/updatable/' ~ row.endpoint %}
+        {% set pop_id = 'up-' ~ row.endpoint | replace('/', '-') %}
         <tr>
             <td class="stack-lead"><code>/{{ row.endpoint }}</code>{% if row.switch %} <small class="muted">switch</small>{% endif %}</td>
             <td class="stack-full" data-label="desired">
@@ -31,6 +36,38 @@
                 {%- elif not row.overrides %}library
                 {%- elif row.overrides | length == row.rendered_on %}override <small class="muted">every node</small>
                 {%- else %}override <small class="muted">{{ row.overrides | join(' ') }}</small>
+                {%- endif -%}
+            </td>
+            <td data-label="set" class="set-cell">
+                {%- if row.owner %}<span class="muted" title="The {{ row.owner }} job sets it; a hand value would be overwritten on its next run">—</span>
+                {%- else %}
+                <span class="seg-ctl" hx-target="#updatable-table" hx-swap="morph:innerHTML">
+                    {%- if row.switch %}
+                    <button type="button" class="seg-btn tone-ok" title="Switch /{{ row.endpoint }} on, on every node that has it"
+                            hx-post="{{ url }}" hx-vals='{"_csrf_token": "{{ csrf_token() }}", "action": "on"}'
+                            hx-confirm="Switch /{{ row.endpoint }} on, on every node that has it?">on</button>
+                    <button type="button" class="seg-btn tone-off" title="Switch /{{ row.endpoint }} off, on every node that has it"
+                            hx-post="{{ url }}" hx-vals='{"_csrf_token": "{{ csrf_token() }}", "action": "off"}'
+                            hx-confirm="Switch /{{ row.endpoint }} off, on every node that has it?">off</button>
+                    {%- endif %}
+                    <button type="button" class="seg-btn tone-info" popovertarget="{{ pop_id }}"
+                            title="Queue a value of your own on every node that has /{{ row.endpoint }}">edit</button>
+                    {%- if row.overrides %}
+                    <button type="button" class="seg-btn tone-maint" title="Drop the stored override on every node that has one; a node then keeps its value until it restarts or another is set"
+                            hx-post="{{ url }}" hx-vals='{"_csrf_token": "{{ csrf_token() }}", "action": "library"}'
+                            hx-confirm="Drop the override of /{{ row.endpoint }} on {{ row.overrides | join(', ') }}?">library</button>
+                    {%- endif %}
+                </span>
+                <div id="{{ pop_id }}" popover class="edit-popover" hx-preserve="true">
+                    <form hx-post="{{ url }}" hx-target="#updatable-table" hx-swap="morph:innerHTML">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                        <label><code>/{{ row.endpoint }}</code>
+                            <textarea name="values" rows="4" spellcheck="false">{{ row.values[0][1] if row.values else '{}' }}</textarea>
+                        </label>
+                        <small class="muted">A JSON object. Queued as the override of every node that has the endpoint and whose block takes these fields; the sync loop pushes it (not in maintenance).</small>
+                        <button type="submit" class="write-control btn-inline">Queue</button>
+                    </form>
+                </div>
                 {%- endif -%}
             </td>
             <td class="stack-full" data-label="live">

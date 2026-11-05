@@ -139,17 +139,17 @@ class TestCsrfStaysOn:
                 web._check_csrf_header()
 
     def test_post_without_token_is_forbidden(self, trusted_app):
-        action = next(iter(web._MAINTENANCE_ACTIONS))
+        action = next(iter(web._MODES))
         client = trusted_app.test_client()
         client.get("/nodes")  # logged in as localhost, session established
-        resp = client.post(f"/nodes/set-maintenance-all/{action}", data={})
+        resp = client.post(f"/nodes/set-mode-all/{action}", data={})
         assert resp.status_code == 403
 
     def test_post_with_token_goes_through(self, trusted_app):
-        action = next(iter(web._MAINTENANCE_ACTIONS))
+        action = next(iter(web._MODES))
         client = trusted_app.test_client()
         token = csrf(client)
-        resp = client.post(f"/nodes/set-maintenance-all/{action}",
+        resp = client.post(f"/nodes/set-mode-all/{action}",
                            data={"_csrf_token": token},
                            headers={"HX-Request": "true"})
         assert resp.status_code == 200  # the dashboard partial, not a 403

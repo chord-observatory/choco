@@ -524,13 +524,16 @@ the control that issued the request (``label.toggle-switch.htmx-request``,
 ``form.htmx-request``, ``button.group-btn.htmx-request``), because htmx
 also marks a polling container in flight and an unscoped rule dimmed every
 control on the PDB page for the length of each 5 s poll.  The
-group-wide ▲▼ buttons (``.group-ctl``) are a muted caption ("maint",
-"start") plus a pair of outlined glyph buttons whose *text* takes the tone
-of the switch state it sets — amber ▼ into maintenance and blue ▲ out,
-green ▲ started and grey ▼ idle — on the tone's soft tint, so the
-association with the switch columns below is learnable; two uncaptioned
-neutral pairs were indistinguishable, and text colour alone read as
-plain outlines.  The soft tints themselves were deepened one notch across
+group-wide controls (``.group-ctl``) are a muted caption ("mode",
+"start") plus the buttons: for start a pair of outlined glyph buttons
+whose *text* takes the tone of the switch state it sets — green ▲ started
+and grey ▼ idle — on the tone's soft tint, so the association with the
+switch column below is learnable (two uncaptioned neutral pairs were
+indistinguishable, and text colour alone read as plain outlines); for
+the mode the per-node control's three word buttons (``.seg-btn``, equal
+widths) with none current, since the nodes in scope may differ — a third
+triangle was considered and dropped, ▼/▲ being a two-state metaphor.  The
+same word buttons are the updatable panel's Set controls.  The soft tints themselves were deepened one notch across
 the family in the same round (the green read too pale), every pairing
 still at AA.  They are styled with ``all: unset`` rather than Pico's
 button classes because Pico's hover rules outrank any tone colour.  The

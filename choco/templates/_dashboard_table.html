@@ -1,4 +1,4 @@
-{% from "_service_macros.html" import maint_ctl, node_status, node_version, start_ctl, tag with context %}
+{% from "_service_macros.html" import mode_ctl, node_status, node_version, start_ctl, tag with context %}
 {# hosts: each node's server as the instrument monitor read it (its
    node_exporter and PDU outlet power; every 30 s), None when the monitor
    is not configured. #}
@@ -13,7 +13,7 @@
 <div class="group-bar">
     <h3>group <code>{{ group }}</code>{% if one_file %} <small class="muted">renders <code>{{ files[0] }}</code></small>{% endif %}</h3>
     <div class="group-controls">
-        {{ maint_ctl(group) }}
+        {{ mode_ctl(group) }}
         {{ start_ctl(group) }}
     </div>
 </div>

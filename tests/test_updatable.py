@@ -12,7 +12,7 @@ from choco.state import Mode, NodeStatus, Registry
 from choco.sync import LIVE_READ_MAINTENANCE_S, ChangeItem, ChangeType, NodeWorker, Orchestrator
 from choco.updatable import LIVE_MAX_AGE_S, desired_blocks, fleet_rows, is_switch, summarize
 
-from tests.helpers import login
+from tests.helpers import csrf, login
 
 CX = """\
 fringestop_enabled:
@@ -256,6 +256,95 @@ class TestPanel:
         login(client)
         page = client.get("/nodes").data.decode()
         assert 'id="updatable-table"' in page and "/partials/updatable" in page
+        assert 'id="updatable-flash"' in page
+
+    def test_the_set_controls(self, client, app):
+        login(client)
+        body = client.get("/partials/updatable").get_data(as_text=True)
+        # The switch: on, off and edit, and library for cx2's override;
+        # the thresholds: edit alone; bffs's and eop's rows: the jobs'.
+        assert body.count('"action": "on"') == 1 and body.count('"action": "off"') == 1
+        assert body.count('"action": "library"') == 1
+        assert 'hx-confirm="Drop the override of /fringestop_enabled on cx2?"' in body
+        assert 'popovertarget="up-fringestop_enabled"' in body
+        assert 'popovertarget="up-rfi_second_stage_thresholds"' in body
+        assert 'popovertarget="up-updatable_config-bad_inputs"' not in body
+        assert 'hx-post="/nodes/updatable/updatable_config/bad_inputs"' not in body
+        assert 'hx-post="/nodes/updatable/earth_rotation_data"' not in body
+        assert "The bffs job sets it" in body
+        # The edit form starts from the most common desired value (the
+        # quotes escaped in the source; the browser decodes them in a textarea).
+        assert ('<textarea name="values" rows="4" spellcheck="false">'
+                '{&#34;thresholds&#34;: [],&#34;valid_at_time_ns&#34;: 0}</textarea>') in body
+
+    def test_set_a_switch_on_every_node_that_has_it(self, client, app):
+        login(client)
+        token = csrf(client)
+        registry, orch = app.config["registry"], app.config["orchestrator"]
+        submitted = []
+        orch.submit_node = lambda key, item: submitted.append((key, item))
+        resp = client.post("/nodes/updatable/fringestop_enabled",
+                           data={"_csrf_token": token, "action": "on"},
+                           headers={"HX-Request": "true"})
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert 'id="updatable-flash"' in body and "flash-success" in body
+        assert "/fringestop_enabled: on queued on cx/cx1, cx/cx2" in body
+        assert [(k, i.type, i.endpoint, i.values) for k, i in submitted] == [
+            ("cx/cx1", ChangeType.UPDATABLE_CONFIG, "fringestop_enabled",
+             {"enabled": True, "valid_at_time_ns": 0}),
+            ("cx/cx2", ChangeType.UPDATABLE_CONFIG, "fringestop_enabled",
+             {"enabled": True, "valid_at_time_ns": 0})]
+        # A node in development takes it from its running block, which
+        # here has no valid_at_time_ns; its file (the EOP table) does not count.
+        submitted.clear()
+        recv1 = registry.get_node("recv/recv1")
+        recv1.mode = Mode.DEVELOPMENT
+        recv1.live_updatable = {"fringestop_enabled": {"enabled": True}}
+        client.post("/nodes/updatable/fringestop_enabled",
+                    data={"_csrf_token": token, "action": "off"})
+        assert [(k, i.values) for k, i in submitted] == [
+            ("cx/cx1", {"enabled": False, "valid_at_time_ns": 0}),
+            ("cx/cx2", {"enabled": False, "valid_at_time_ns": 0}),
+            ("recv/recv1", {"enabled": False})]
+
+    def test_edit_any_value_and_drop_the_overrides(self, client, app):
+        login(client)
+        token = csrf(client)
+        orch = app.config["orchestrator"]
+        submitted = []
+        orch.submit_node = lambda key, item: submitted.append((key, item))
+
+        def post(endpoint, **form):
+            return client.post(f"/nodes/updatable/{endpoint}",
+                               data={"_csrf_token": token, **form},
+                               headers={"HX-Request": "true"})
+
+        resp = post("rfi_second_stage_thresholds", values='{"thresholds": [1, 2]}')
+        assert resp.status_code == 200
+        assert "value queued on cx/cx1, cx/cx2" in resp.get_data(as_text=True)
+        assert [(k, i.values) for k, i in submitted] == [
+            ("cx/cx1", {"thresholds": [1, 2]}), ("cx/cx2", {"thresholds": [1, 2]})]
+        submitted.clear()
+        # A value the blocks cannot take is queued nowhere, and said.
+        body = post("rfi_second_stage_thresholds", values='{"thresholds": "x"}').get_data(as_text=True)
+        assert "queued on no node; skipped cx/cx1, cx/cx2" in body and "flash-error" in body
+        assert not submitted
+        assert "invalid JSON" in post("rfi_second_stage_thresholds", values="{").get_data(as_text=True)
+        assert "must be a JSON object" in post("rfi_second_stage_thresholds", values="[1]").get_data(as_text=True)
+        assert post("rfi_second_stage_thresholds").status_code == 400
+        # An endpoint no node has: nothing queued.
+        assert "queued on no node" in post("nothing", values="{}").get_data(as_text=True)
+        # library drops the stored override where there is one: bffs's list on both cx nodes.
+        body = post("updatable_config/bad_inputs", action="library").get_data(as_text=True)
+        assert "override dropped queued on cx/cx1, cx/cx2" in body
+        assert [(k, i.endpoint, i.values) for k, i in submitted] == [
+            ("cx/cx1", "updatable_config/bad_inputs", None),
+            ("cx/cx2", "updatable_config/bad_inputs", None)]
+        # A plain form post flashes and returns to the dashboard.
+        resp = client.post("/nodes/updatable/fringestop_enabled",
+                           data={"_csrf_token": token, "action": "on"})
+        assert resp.status_code == 302 and resp.headers["Location"].endswith("/nodes")
         cx1 = app.config["registry"].get_node("cx/cx1")
         _running(cx1, {"fringestop_enabled": FS_OFF}, time.time())
         body = client.get("/partials/updatable").data.decode()

@@ -285,14 +285,19 @@ button.group-btn:focus-visible { outline: 2px solid var(--info); outline-offset:
 .group-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
 button.group-btn.htmx-request { opacity: 0.45; }
 
-/* ---- the mode control (normal / maint / dev) --------------------------
-   Three rectangular buttons in a row, each the tone of the mode it sets on
-   the soft tint like a group button; the current one is filled solid, so
-   the control reads as a status at rest and as a control on hover. */
-.mode-ctl { display: inline-flex; gap: 2px; }
-button.mode-btn {
+/* ---- segmented word buttons --------------------------------------------
+   The mode control (normal / maint / dev, per node and per group) and the
+   updatable panel's Set controls: equal-width rectangular buttons in a
+   row, each the tone of what it sets on the soft tint like a group button.
+   A control that is also a status at rest (the per-node mode) fills its
+   current button solid. */
+.seg-ctl { display: inline-flex; gap: 2px; align-items: center; }
+button.seg-btn {
     all: unset;
     box-sizing: border-box;
+    display: inline-flex;
+    justify-content: center;
+    min-width: 4.6em;
     padding: 0.05em 0.45em;
     border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
     border-radius: 3px;
@@ -301,16 +306,31 @@ button.mode-btn {
     letter-spacing: 0.03em;
     cursor: pointer;
 }
-button.mode-btn:hover { filter: brightness(0.94); }
-button.mode-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-button.mode-btn.current { cursor: default; border-color: transparent; }
-.mode-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
-.mode-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
-.mode-btn.tone-dev { color: var(--dev-text); background: var(--dev-soft); }
-.mode-btn.tone-info.current { color: var(--info-ink); background: var(--info); }
-.mode-btn.tone-maint.current { color: var(--maint-ink); background: var(--maint); }
-.mode-btn.tone-dev.current { color: var(--dev-ink); background: var(--dev); }
-.mode-ctl.htmx-request .mode-btn { opacity: 0.45; }
+button.seg-btn:hover { filter: brightness(0.94); }
+button.seg-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+button.seg-btn.current { cursor: default; border-color: transparent; }
+.seg-btn.tone-ok { color: var(--ok-text); background: var(--ok-soft); }
+.seg-btn.tone-off { color: var(--off-text); background: var(--off-soft); }
+.seg-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
+.seg-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
+.seg-btn.tone-dev { color: var(--dev-text); background: var(--dev-soft); }
+.seg-btn.tone-info.current { color: var(--info-ink); background: var(--info); }
+.seg-btn.tone-maint.current { color: var(--maint-ink); background: var(--maint); }
+.seg-btn.tone-dev.current { color: var(--dev-ink); background: var(--dev); }
+.seg-ctl.htmx-request .seg-btn { opacity: 0.45; }
+/* The panel's edit form, behind a row's edit button (a popover kept
+   across the table's morphs, like the version popover). */
+.edit-popover {
+    width: min(40em, 92vw);
+    padding: 0.75em 1em;
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    background: var(--pico-background-color);
+    color: var(--pico-color);
+}
+.edit-popover textarea { width: 100%; margin: 0.25em 0; font-family: var(--pico-font-family-monospace); font-size: 0.85em; }
+.edit-popover small { display: block; margin-bottom: 0.5em; }
+.set-cell { white-space: nowrap; }
 /* The same for every power control on the PDB page: the form issuing the
    request gets htmx-request, so its button dims until the reply lands. */
 form.htmx-request .chan, form.htmx-request .bulk { opacity: 0.45; }

@@ -794,6 +794,22 @@ class TestDevelopmentMode:
         assert node.error is None
 
 
+class TestForgetUpdatable:
+    def test_an_item_without_values_drops_the_stored_value(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.save_updatable("foo/bar", {"v": 1})
+        node.save_updatable("other", {"v": 2})
+        node.get_status = MagicMock(return_value=NodeStatus.DOWN)
+        node.queue_put(ChangeItem(ChangeType.UPDATABLE_CONFIG, endpoint="foo/bar"))
+        NodeWorker(node, orchestrator).process()
+        assert node.updatable_config == {"other": {"v": 2}}
+        assert yaml.safe_load(node.updatable_path.read_text()) == {"other": {"v": 2}}
+        # Nothing stored for it: a no-op, the store untouched.
+        assert node.forget_updatable("foo/bar") is False
+        assert node.forget_updatable("other") is True
+        assert yaml.safe_load(node.updatable_path.read_text()) == {}
+
+
 class TestSetMode:
     def test_all_or_none_and_a_poll_per_node(self, orchestrator):
         reg = orchestrator.registry

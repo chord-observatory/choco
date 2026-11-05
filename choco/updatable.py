@@ -90,6 +90,18 @@ def desired_blocks(node, live: dict[str, dict] | None = None) -> dict[str, dict]
             for endpoint, values in find_updatable_blocks(node.rendered_config).items()}
 
 
+def endpoint_block(node, endpoint: str) -> dict | None:
+    """The block a new value at *endpoint* would merge over on *node*:
+    the file's in normal mode and maintenance, the running config's in
+    development (as the worker last read it); None when the node has no
+    such endpoint."""
+    if node.mode is Mode.DEVELOPMENT:
+        return (node.live_updatable or {}).get(endpoint)
+    if node.rendered_config is None:
+        return None
+    return find_updatable_blocks(node.rendered_config).get(endpoint)
+
+
 def _live_blocks(node, now: float) -> dict[str, dict] | None:
     """The live blocks the worker last read, or None when there is no
     current read of a running kotekan to show."""

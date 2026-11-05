@@ -45,9 +45,9 @@ from .manualflags import toggle_manual_flag
 from .metrics import render as render_metrics
 from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
-from .state import Mode, NodeStatus, find_updatable_blocks, validate_nodes_payload
+from .state import Mode, NodeStatus, find_updatable_blocks, fits_block, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
-from .updatable import fleet_rows
+from .updatable import endpoint_block, fleet_rows
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +108,8 @@ def _dashboard_context() -> dict:
 
 # URL action words of the bulk toggle routes -> flag value.
 _STARTED_ACTIONS = {"start": True, "stop": False}
-_MAINTENANCE_ACTIONS = {"on": True, "off": False}
 _MODES = {mode.value: mode for mode in Mode}
+_SWITCH_ACTIONS = {"on": True, "off": False}
 
 
 # --- Authentication routes ---
@@ -748,18 +748,95 @@ def set_node_mode(mode, node_key):
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
-@bp.route("/nodes/set-maintenance-all/<action>", methods=["POST"])
-@bp.route("/nodes/set-maintenance-group/<group>/<action>", methods=["POST"])
+@bp.route("/nodes/set-mode-all/<mode>", methods=["POST"])
+@bp.route("/nodes/set-mode-group/<group>/<mode>", methods=["POST"])
 @login_required
-def set_maintenance(action, group=None):
-    """Put every node, or every node in *group*, into maintenance
-    (``on``), or lift it (``off``): each node in maintenance returns to
-    its resting mode, the others are left as they are."""
+def set_bulk_mode(mode, group=None):
+    """The group mode control: put every node, or every node in
+    *group*, in maintenance or development, or (``normal``) lift
+    maintenance, each node in it returning to its resting mode and the
+    others left as they are."""
     _check_csrf()
-    if action not in _MAINTENANCE_ACTIONS:
+    if mode not in _MODES:
         abort(400)
-    _orchestrator().set_maintenance(_scope_nodes(group), _MAINTENANCE_ACTIONS[action])
+    nodes = _scope_nodes(group)
+    if _MODES[mode] is Mode.DEVELOPMENT:
+        _orchestrator().set_mode(nodes, Mode.DEVELOPMENT)
+    else:
+        _orchestrator().set_maintenance(nodes, _MODES[mode] is Mode.MAINTENANCE)
     return _dashboard_reply()
+
+
+@bp.route("/nodes/updatable/<path:endpoint>", methods=["POST"])
+@login_required
+def set_updatable(endpoint):
+    """Bulk-edit one updatable endpoint from the X-engine panel: queue a
+    value on every node that has it, as that node's override (one
+    ``UPDATABLE_CONFIG`` item per node; the sync loop pushes it).  A node
+    has the endpoint when its file renders it or, in development, when
+    its running config does (``updatable.endpoint_block``); a node whose
+    block cannot take the value's fields (``fits_block``) is skipped and
+    named.  The form carries ``action``: ``on`` / ``off`` for a switch
+    (``valid_at_time_ns: 0`` rides along where the block has it), or
+    ``library``, which drops the stored override on every node that has
+    one (the node keeps its value until it restarts or another is set);
+    else ``values``, a JSON object.  htmx gets the panel back with the
+    outcome as an out-of-band flash; a form post a flash."""
+    _check_csrf()
+    action = request.form.get("action", "")
+    values = None
+    if action in _SWITCH_ACTIONS:
+        values = {"enabled": _SWITCH_ACTIONS[action]}
+    elif action == "library":
+        pass
+    elif "values" in request.form:
+        try:
+            values = json.loads(request.form["values"])
+        except json.JSONDecodeError as e:
+            return _updatable_reply(f"/{endpoint}: invalid JSON ({e})", "error")
+        if not isinstance(values, dict):
+            return _updatable_reply(f"/{endpoint}: the value must be a JSON object", "error")
+    else:
+        abort(400)
+    orchestrator = _orchestrator()
+    queued, skipped = [], []
+    for node in _registry().nodes.values():
+        if action == "library":
+            if endpoint in (node.updatable_config or {}):
+                orchestrator.submit_node(node.key, ChangeItem(
+                    ChangeType.UPDATABLE_CONFIG, endpoint=endpoint))
+                queued.append(node.key)
+            continue
+        block = endpoint_block(node, endpoint)
+        if block is None:
+            continue
+        value = dict(values)
+        if action in _SWITCH_ACTIONS and "valid_at_time_ns" in block:
+            value["valid_at_time_ns"] = 0
+        if not fits_block(value, block):
+            skipped.append(node.key)
+            continue
+        orchestrator.submit_node(node.key, ChangeItem(
+            ChangeType.UPDATABLE_CONFIG, endpoint=endpoint, values=value))
+        queued.append(node.key)
+    what = ("override dropped" if action == "library"
+            else action if action in _SWITCH_ACTIONS else "value")
+    logger.warning(f"updatable /{endpoint} {what} by {_audit_user()}: "
+                   f"queued {queued}; skipped {skipped}")
+    text = f"/{endpoint}: {what} queued on " + (", ".join(queued) if queued else "no node")
+    if skipped:
+        text += f"; skipped {', '.join(skipped)} (the block it runs cannot take the value)"
+    return _updatable_reply(text, "success" if queued else "error")
+
+
+def _updatable_reply(text: str, category: str):
+    """Reply to a panel edit: the panel for htmx, with *text* as an
+    out-of-band flash; else a flash and the dashboard."""
+    if request.headers.get("HX-Request"):
+        return render_template("_updatable_table.html", **_updatable_context(),
+                               notice=(category, text))
+    flash(text, category)
+    return redirect(url_for("web.dashboard"))
 
 
 @bp.route("/nodes/partials/node-status/<path:node_key>")
