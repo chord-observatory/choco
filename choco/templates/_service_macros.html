@@ -209,48 +209,42 @@
 {{ node.version or "—" }}
 {%- endif -%}
 {%- endmacro %}
-{# The dashboard's bulk control for the started flag: ▼ / ▲ post the
-   flag's two actions for every node, or for group's, and morph the
-   table.  down and up are (tone, action word, title with %s for the
-   scope).  Imported with context: the buttons carry the CSRF token. #}
-{% macro group_ctl(label, base, group, down, up) -%}
+{# A dashboard bulk control: a caption and one word button per action,
+   each posting base-all/<action> or base-group/<group>/<action> for
+   every node in scope and morphing the table.  buttons: (action, word,
+   tone, title with %s for the scope), in the order the per-node column
+   shows the states.  Imported with context: the buttons carry the CSRF
+   token. #}
+{% macro group_ctl(label, base, group, buttons) -%}
 {%- set url = base ~ ('-group/' ~ group if group else '-all') -%}
 {%- set scope = '"' ~ group ~ '"' if group else 'all' -%}
-<span class="group-ctl" hx-ext="morph">
-    <span class="group-ctl-label">{{ label }}</span>
-    {%- for tone, action, title in (down, up) %}
-    <button class="group-btn tone-{{ tone }}" title="{{ title | format(scope) }}"
-            hx-post="{{ url }}/{{ action }}" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
-            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>{% if loop.first %}&#x25BC;{% else %}&#x25B2;{% endif %}</button>
-    {%- endfor %}
-</span>
-{%- endmacro %}
-{# ▼ sets the nodes idle (grey, the switch's idle colour), ▲ sets them
-   started (green). #}
-{% macro start_ctl(group=none) -%}
-{{ group_ctl('start', request.script_root ~ '/nodes/set-started', group,
-             ('off', 'stop', 'Set %s nodes to idle'), ('ok', 'start', 'Set %s nodes to started')) }}
-{%- endmacro %}
-{# The group mode control: the per-node control's three buttons for every
-   node in scope (none current, since the nodes may differ).  maint puts
-   them all in maintenance; normal lifts it, each node in maintenance
-   returning to its resting mode (development where nodes.yaml declares
-   it) and nodes in development staying; dev puts them all in
-   development.  Imported with context for the CSRF token. #}
-{% macro mode_ctl(group=none) -%}
-{%- set url = request.script_root ~ '/nodes/set-mode' ~ ('-group/' ~ group if group else '-all') -%}
-{%- set scope = '"' ~ group ~ '"' if group else 'all' -%}
 <span class="seg-ctl group-ctl" hx-ext="morph">
-    <span class="group-ctl-label">mode</span>
-    {%- for mode, word, tone, title in (
-        ('maintenance', 'maint', 'maint', 'Put %s nodes in maintenance (choco will not write to them)'),
-        ('normal', 'normal', 'info', 'Lift maintenance on %s nodes: each returns to normal, or to development where nodes.yaml declares it; nodes in development stay'),
-        ('development', 'dev', 'dev', 'Put %s nodes in development (choco pushes only their stored updatable values, and never starts or kills them)')) %}
+    <span class="group-ctl-label">{{ label }}</span>
+    {%- for action, word, tone, title in buttons %}
     <button type="button" class="seg-btn tone-{{ tone }}" title="{{ title | format(scope) }}"
-            hx-post="{{ url }}/{{ mode }}" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
+            hx-post="{{ url }}/{{ action }}" hx-target="#dashboard-table" hx-swap="morph:innerHTML"
             hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>{{ word }}</button>
     {%- endfor %}
 </span>
+{%- endmacro %}
+{# start sets the nodes started (green, the switch's on colour), stop
+   sets them idle (grey). #}
+{% macro start_ctl(group=none) -%}
+{{ group_ctl('start', request.script_root ~ '/nodes/set-started', group, (
+    ('start', 'start', 'ok', 'Set %s nodes to started'),
+    ('stop', 'stop', 'off', 'Set %s nodes to idle'))) }}
+{%- endmacro %}
+{# The group mode control: the per-node control's three buttons, in its
+   order, for every node in scope (none current, since the nodes may
+   differ).  normal lifts maintenance, each node in it returning to its
+   resting mode (development where nodes.yaml declares it) and nodes in
+   development staying; maint puts them all in maintenance; dev puts them
+   all in development. #}
+{% macro mode_ctl(group=none) -%}
+{{ group_ctl('mode', request.script_root ~ '/nodes/set-mode', group, (
+    ('normal', 'normal', 'info', 'Lift maintenance on %s nodes: each returns to normal, or to development where nodes.yaml declares it; nodes in development stay'),
+    ('maintenance', 'maint', 'maint', 'Put %s nodes in maintenance (choco will not write to them)'),
+    ('development', 'dev', 'dev', 'Put %s nodes in development (choco pushes only their stored updatable values, and never starts or kills them)'))) }}
 {%- endmacro %}
 {# The live-plot panel for an HDF5 gain archive (the F-engine's digital
    gains, eigencal's solution): a dataset picker, the full-screen and

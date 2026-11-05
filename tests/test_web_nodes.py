@@ -329,6 +329,20 @@ class TestMaintenanceToggles:
         assert cx1.mode is Mode.DEVELOPMENT and cx2.mode is Mode.DEVELOPMENT
         assert recv1.mode is Mode.NORMAL
 
+    def test_group_controls_are_words_in_the_columns_order(self, client):
+        """The header and each group bar carry the same word buttons, in
+        the order the per-node column shows the states."""
+        login(client)
+        body = client.get("/nodes").get_data(as_text=True)
+        for scope in ("all", "group/cx"):
+            urls = [f"/nodes/set-mode-{scope}/{m}" for m in ("normal", "maintenance", "development")]
+            urls += [f"/nodes/set-started-{scope}/{a}" for a in ("start", "stop")]
+            at = [body.index(u) for u in urls]
+            assert at == sorted(at), scope
+        assert ">normal</button>" in body and ">maint</button>" in body and ">dev</button>" in body
+        assert ">start</button>" in body and ">stop</button>" in body
+        assert "&#x25BC;" not in body and "▼" not in body and "group-btn" not in body
+
     def test_set_group_scopes_to_group(self, client, app):
         login(client)
         token = csrf(client)

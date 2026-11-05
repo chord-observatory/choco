@@ -286,9 +286,11 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   prose, `h3` for sections, `.btn-sm secondary outline` for row-level
   actions with Pico's filled primary kept for the page's one main action,
   `.notice` for static warnings (`.flash` is transient only).  Controls are
-  not status: switches are tinted only when on, group and segmented word
-  buttons (`.group-btn`, `.seg-btn`) colour their glyph or word on the
-  tone's soft tint, never a solid fill.  The one exception is the
+  not status: switches are tinted only when on, segmented word buttons
+  (`.seg-btn`: the mode controls, the group start control, the panel's
+  Set) colour their word on the tone's soft tint, never a solid fill,
+  and a group control lists its words in the per-node column's order
+  (normal, maint, dev; start, stop).  The one exception is the
   per-node mode control's current mode, filled solid because the column
   reads as the node's status at rest (the switch it replaced carried
   that colour when on).

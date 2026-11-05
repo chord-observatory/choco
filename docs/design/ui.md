@@ -521,19 +521,21 @@ silently stops pushes, so it keeps the amber that the switch had; an
 in-flight htmx request dims the control rather
 than greying it, so idle and "request pending" look different — scoped to
 the control that issued the request (``label.toggle-switch.htmx-request``,
-``form.htmx-request``, ``button.group-btn.htmx-request``), because htmx
+``form.htmx-request``, ``.seg-ctl.htmx-request``), because htmx
 also marks a polling container in flight and an unscoped rule dimmed every
 control on the PDB page for the length of each 5 s poll.  The
-group-wide controls (``.group-ctl``) are a muted caption ("mode",
-"start") plus the buttons: for start a pair of outlined glyph buttons
-whose *text* takes the tone of the switch state it sets — green ▲ started
-and grey ▼ idle — on the tone's soft tint, so the association with the
-switch column below is learnable (two uncaptioned neutral pairs were
-indistinguishable, and text colour alone read as plain outlines); for
-the mode the per-node control's three word buttons (``.seg-btn``, equal
-widths) with none current, since the nodes in scope may differ — a third
-triangle was considered and dropped, ▼/▲ being a two-state metaphor.  The
-same word buttons are the updatable panel's Set controls.  The soft tints themselves were deepened one notch across
+group-wide controls (``.group-ctl``, one ``group_ctl`` macro) are a
+muted caption ("mode", "start") plus one word button per action
+(``.seg-btn``, equal widths; none current, since the nodes in scope may
+differ), in the order the per-node column shows the states: normal,
+maint, dev; start, stop.  They began as pairs of outlined ▼/▲ glyph
+buttons whose text took the tone of the switch state it set (two
+uncaptioned neutral pairs were indistinguishable, and text colour alone
+read as plain outlines); when the mode grew a third state a third
+triangle was considered and dropped, ▼/▲ being a two-state metaphor, and
+the start pair became words too so the header reads one way
+(2026-11-05).  The same word buttons are the updatable panel's Set
+controls.  The soft tints themselves were deepened one notch across
 the family in the same round (the green read too pale), every pairing
 still at AA.  They are styled with ``all: unset`` rather than Pico's
 button classes because Pico's hover rules outrank any tone colour.  The

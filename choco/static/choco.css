@@ -236,54 +236,12 @@ body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
 .t-ok { color: var(--ok-text); }
 .muted { color: var(--pico-muted-color); }
 
-/* ---- tables and the dashboard ---------------------------------------- */
-table { margin-top: 1em; }
-/* A group's heading row on the dashboard, with its group-wide controls. */
-.group-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5em;
-    margin-top: 1.25em;
-    padding: 0.5em 0.75em;
-    border-radius: 4px;
-    background: var(--surface);
-}
-.group-bar h3 { margin: 0; }
-.group-bar .group-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em 1.5em; }
-/* the nodes table's server columns (Prometheus: iDRAC, temperatures, PDU) */
-table.nodes td.num { text-align: right; font-family: var(--pico-font-family-monospace); font-size: 0.85em;
-                     white-space: nowrap; }
-table.nodes td.server-tags { white-space: nowrap; }
-/* The group-wide controls: a caption ("maint", "start") and a pair of
-   glyph buttons whose *text* takes the tone of the switch state it sets
-   (amber into maintenance, blue out; green started, grey idle), matching
-   the switches in the column below, on the tone's soft tint like a tag.  `all: unset` keeps them out of Pico's button
-   cascade, whose hover rules would otherwise override the tone. */
-.group-ctl { display: inline-flex; align-items: center; gap: 0.3em; }
-.group-ctl-label { margin-right: 0.1em; font-size: 0.72em; letter-spacing: 0.05em; text-transform: uppercase; color: var(--pico-muted-color); }
-button.group-btn {
-    all: unset;
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.9em;
-    padding: 0.1em 0.45em;
-    border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
-    border-radius: 3px;
-    font-size: 0.8em;
-    line-height: 1.5;
-    color: var(--pico-muted-color);
-    cursor: pointer;
-}
-button.group-btn:hover { filter: brightness(0.94); }
-button.group-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.group-btn.tone-ok { color: var(--ok-text); background: var(--ok-soft); }
-.group-btn.tone-off { color: var(--off-text); background: var(--off-soft); }
-.group-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
-.group-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
-button.group-btn.htmx-request { opacity: 0.45; }
+/* ---- group controls --------------------------------------------------
+   The dashboard's bulk controls (mode, start): a muted caption and the
+   segmented word buttons below, one per action, in the order the per-node
+   column shows the states.  None is current: the nodes in scope may differ. */
+.group-ctl { display: inline-flex; align-items: center; gap: 2px; }
+.group-ctl-label { margin-right: 0.3em; font-size: 0.72em; letter-spacing: 0.05em; text-transform: uppercase; color: var(--pico-muted-color); }
 
 /* ---- segmented word buttons --------------------------------------------
    The mode control (normal / maint / dev, per node and per group) and the

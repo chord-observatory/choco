@@ -263,7 +263,7 @@ Each node also has a mode control and a switch:
   Lifting maintenance returns a node to its *resting* mode: normal, or development where `nodes.yaml` declares it (`development: true`, the **dev** box in the registry editor). A node leaves development only into maintenance, never straight to normal: normal would restart the developer's kotekan onto the library within a poll, so the operator lifts maintenance knowing what it starts. A declared development node is never offered normal, in any mode; it returns to production when the declaration is removed from `nodes.yaml`.
 - **Start** (green = started, grey = idle) — desired runtime state. On startup choco discovers the actual state and sets this from what kotekan reports; in normal mode the switch then controls whether choco keeps kotekan running.
 
-Each scope (group heading, dashboard header) has the same controls for every node in scope at once: *mode* — **maint** puts them all in maintenance, development included; **normal** lifts it, each node in maintenance returning to its resting mode and nodes in development staying; **dev** puts them all in development — and *start*, a pair of ▼/▲ buttons (grey ▼ idle, green ▲ started).
+Each scope (group heading, dashboard header) has the same controls, as words, for every node in scope at once: *mode* — **normal** lifts maintenance, each node in it returning to its resting mode and nodes in development staying; **maint** puts them all in maintenance, development included; **dev** puts them all in development — and *start* — **start** sets them started, **stop** idle.
 
 The dashboard table refreshes itself every 2 seconds via htmx polling - no need to refresh the page.
 
