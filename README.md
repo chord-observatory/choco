@@ -283,6 +283,7 @@ Click **Node** on a dashboard row for the node's page: host, the two switches, t
 - **Config** — a selector for the library file this node renders (blank means its own `<group>/<node>` file). **Apply** rewrites `nodes.yaml` and rebuilds the registry, which pauses every node in maintenance until you lift it. The file's text is edited in the library, not here.
 - **Actions** — **Re-push current** kills and starts the node on its current desired config (skipped in maintenance). **One-off** starts a chosen library file on a node that is in maintenance and idle without saving it anywhere (lifting maintenance later reverts it).
 - **Updatable config** — edit individual updatable blocks. Changes are pushed to kotekan's updatable endpoints without a restart.
+- **Log** — the last lines of kotekan's own log on the node, newest last (`GET /logs`: the 1000 lines kotekan keeps in memory when its config sets `log_buffer: true`, as the site's `chord/common.j2` does), read every 10 s; 50 to 1000 lines, warnings amber and errors red. The view follows the newest line until you scroll up. It is a read, so it works in every mode. A build from before the endpoint, or a config without the buffer, says so.
 
 ### Config library (`/configs`)
 

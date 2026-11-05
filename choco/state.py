@@ -895,6 +895,31 @@ class Node:
                              "(internal error — often uninitialised frame metadata)"}
         return self._json_dict(resp)
 
+    def get_logs(self) -> list | dict | None:
+        """The lines of kotekan's log buffer (``GET /logs``), oldest first.
+
+        kotekan keeps its last 1000 log lines in memory when the config
+        sets ``log_buffer: true`` (chord.2021.10+1327; the site's
+        ``chord/common.j2`` sets it) and serves them as a list of
+        ``{"time", "level", "msg"}``.  Returns that list; ``{"error":
+        ...}`` when kotekan answers 404 — the buffer is off, or the
+        build is from before the endpoint — which is a fact about the
+        node, not an outage; None if the node is unreachable or the
+        reply is malformed.
+        """
+        resp = self._request("GET", "/logs", accept_statuses=(404,), retries=1)
+        if resp is None:
+            return None
+        if resp.status_code == 404:
+            return {"error": "kotekan keeps no log buffer on this node (its "
+                             "config has no log_buffer: true, or the build "
+                             "predates /logs)"}
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        return data if isinstance(data, list) else None
+
 
 class Registry:
     """Node registry: loads node definitions from nodes.yaml and provides lookup.

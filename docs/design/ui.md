@@ -9,8 +9,9 @@ measurements and dates are from when each part was built.
 [instrument.md](instrument.md)), not the node dashboard: node
 management lives under ``/nodes/*`` — the dashboard at ``/nodes``, the
 ``nodes.yaml`` registry editor at ``/nodes/edit``, the node page at
-``/nodes/edit/<key>``, the started switch and the mode control, and the node-status
-partial — and the config library under ``/configs`` (the files under the
+``/nodes/edit/<key>``, the started switch and the mode control, the node-status
+partial and the node-logs partial (kotekan's ``/logs`` buffer, read per
+request like the pipeline partial, 2026-11-05) — and the config library under ``/configs`` (the files under the
 configs directory with the nodes that render or include each, a New-file
 form, and in the page head the "Pull chord from GitHub" button that mirrors
 kotekan's ``config/chord/`` into the library as one validated set, see

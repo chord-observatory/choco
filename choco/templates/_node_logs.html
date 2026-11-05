@@ -1,0 +1,20 @@
+{# The newest lines of kotekan's in-memory log buffer on one node
+   (GET /logs; Node.get_logs).  Swapped into #node-log on the node page
+   every 10 s; the page's script keeps the view at the newest line unless
+   the reader has scrolled up. #}
+<div class="journal-head">
+    <small>GET {{ node.host }}:{{ node.port }}/logs{% if total is not none %} · {% if total > lines | length %}last {{ lines | length }} of {% endif %}{{ total }} line{{ 's' if total != 1 }}{% endif %}</small>
+    <button hx-get="{{ request.script_root }}/nodes/partials/node-logs/{{ node_key }}?lines={{ nlines }}"
+            hx-target="closest .journal-log" hx-swap="innerHTML"
+            title="Refresh" class="secondary outline btn-sm" style="margin-left: auto;">&#x21bb;</button>
+</div>
+{% if error %}
+<p class="note"><em>{{ error }}</em></p>
+{% elif lines is none %}
+<p class="note"><em>kotekan on {{ node_key }} is unreachable.</em></p>
+{% elif not lines %}
+<p class="note"><em>The buffer is empty.</em></p>
+{% else %}
+<pre>{% for l in lines %}{% if not loop.first %}
+{% endif %}<span{% if l.tone %} class="t-{{ l.tone }}"{% endif %}>{{ l.time }} {{ "%-7s" | format(l.level) }} {{ l.msg }}</span>{% endfor %}</pre>
+{% endif %}

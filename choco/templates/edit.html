@@ -99,8 +99,44 @@
 {% endfor %}
 {% endif %}
 
+<section class="journal">
+    <div class="section-head">
+        <h3>Log</h3>
+        <span class="lines-picker">
+            {% for n in (50, 100, 500, 1000) %}
+            {% if n == nlines %}<strong>{{ n }}</strong>{% else %}<a href="{{ request.script_root }}/nodes/edit/{{ node_key }}?lines={{ n }}#node-log">{{ n }}</a>{% endif %}
+            {%- if not loop.last %} · {% endif %}
+            {% endfor %}
+            lines
+        </span>
+    </div>
+    <p class="note">kotekan's own log on the node, newest last: the last 1000 lines it keeps in memory
+    (<code>log_buffer: true</code> in its config), read every 10 s. A read, so it works in every mode.</p>
+    <div id="node-log" class="journal-log"
+         hx-get="{{ request.script_root }}/nodes/partials/node-logs/{{ node_key }}?lines={{ nlines }}"
+         hx-trigger="load, every 10s"
+         hx-swap="innerHTML"></div>
+</section>
+
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='idiomorph-ext.min.js') }}"></script>
+<script>
+(function () {
+    // The log follows its newest line across swaps unless the reader has
+    // scrolled up, in which case the view stays where it was.
+    const log = document.getElementById("node-log");
+    let stick = true, top = 0;
+    log.addEventListener("htmx:beforeSwap", function () {
+        const pre = log.querySelector("pre");
+        stick = !pre || pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+        top = pre ? pre.scrollTop : 0;
+    });
+    log.addEventListener("htmx:afterSettle", function () {
+        const pre = log.querySelector("pre");
+        if (pre) pre.scrollTop = stick ? pre.scrollHeight : top;
+    });
+})();
+</script>
 {% endblock %}

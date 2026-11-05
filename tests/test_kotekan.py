@@ -263,3 +263,44 @@ class TestGetPipelineDot:
     def test_unreachable(self, node):
         responses.get(f"{BASE}/pipeline_dot", body=ConnectionError())
         assert node.get_pipeline_dot() is None
+
+
+class TestGetLogs:
+    LINES = [
+        {"time": 1793903562.9375, "level": "INFO", "msg": "Number of CUDA GPUs: 2"},
+        {"time": 1793903565.2336, "level": "WARNING",
+         "msg": "/dpdk: Port 0: NIC dropped 374536 packets"},
+    ]
+
+    @responses.activate
+    def test_returns_the_lines(self, node):
+        responses.get(f"{BASE}/logs", json=self.LINES)
+        assert node.get_logs() == self.LINES
+
+    @responses.activate
+    def test_buffer_off_is_error_reply_not_none(self, node):
+        # kotekan answers 404 when its config has no log_buffer: true,
+        # and a build from before the endpoint answers 404 too: a fact
+        # about the node, not an outage.
+        responses.get(f"{BASE}/logs", status=404)
+        reply = node.get_logs()
+        assert reply is not None
+        assert "log_buffer" in reply["error"]
+
+    @responses.activate
+    def test_one_quick_retry_on_transport_failure(self, node):
+        responses.get(f"{BASE}/logs", body=ConnectionError())
+        responses.get(f"{BASE}/logs", json=self.LINES)
+        assert node.get_logs() == self.LINES
+        assert len(responses.calls) == 2
+
+    @responses.activate
+    def test_unreachable(self, node):
+        responses.get(f"{BASE}/logs", body=ConnectionError())
+        responses.get(f"{BASE}/logs", body=ConnectionError())
+        assert node.get_logs() is None
+
+    @responses.activate
+    def test_malformed_reply_is_none(self, node):
+        responses.get(f"{BASE}/logs", json={"not": "a list"})
+        assert node.get_logs() is None

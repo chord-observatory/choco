@@ -412,7 +412,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   route fills it in from the pushed `dish_inputs` table
   (`dishlabels.connected_elements`), count-checked, never guessed.
 - Peeks speak only `GET /buffer_frame?name=&len=`; 402/404/500 from kotekan
-  are meaningful replies, not outages.
+  are meaningful replies, not outages.  A 404 from `/logs` is one too:
+  kotekan keeps no log buffer (no `log_buffer: true` in its config, or a
+  build from before the endpoint).
 - Imaging conventions, fixed on a Cyg A transit ([mapmaker.md](docs/design/mapmaker.md)):
   hour angle is the file's `bin_ERA_deg` + `itrs_lon_deg` − CIRS RA; a
   baseline is `feed_positions_m[input_b] − feed_positions_m[input_a]`

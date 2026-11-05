@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import time
 from unittest.mock import patch
 
 import pytest
@@ -722,3 +723,72 @@ class TestNodeStatusPartial:
     def test_unknown_node_404s(self, client):
         login(client)
         assert client.get("/nodes/partials/node-status/cx/nope").status_code == 404
+
+
+class TestNodeLogsPartial:
+    """The node page's log panel: kotekan's /logs buffer, read per request."""
+
+    LINES = [
+        {"time": 1793903562.9375, "level": "INFO", "msg": "Number of CUDA GPUs: 2"},
+        {"time": 1793903564.228, "level": "WARNING",
+         "msg": "/dpdk: Port 0: NIC dropped 374536 packets"},
+        {"time": 1793903570.0, "level": "ERROR", "msg": "a <b>tag</b> in the text"},
+    ]
+
+    def test_page_carries_the_panel(self, client):
+        login(client)
+        body = client.get("/nodes/edit/cx/cx1?lines=500").data.decode()
+        assert 'id="node-log"' in body
+        assert "/nodes/partials/node-logs/cx/cx1?lines=500" in body
+        assert "<strong>500</strong>" in body
+        assert "/nodes/edit/cx/cx1?lines=1000#node-log" in body
+
+    def test_lines_painted_by_level_and_escaped(self, client):
+        login(client)
+        with patch.object(Node, "get_logs", return_value=self.LINES):
+            body = client.get("/nodes/partials/node-logs/cx/cx1").data.decode()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(1793903564.228))
+        assert f'<span class="t-warn">{stamp}.228 WARNING /dpdk' in body
+        assert 'class="t-bad"' in body
+        assert "INFO    Number of CUDA" in body  # the level column is padded
+        assert "a &lt;b&gt;tag&lt;/b&gt;" in body
+        assert "<b>tag</b>" not in body
+        assert "3 lines" in body
+
+    def test_lines_arg_trims_the_tail(self, client):
+        login(client)
+        lines = [{"time": 1793903562.0 + i, "level": "INFO", "msg": f"line {i}"}
+                 for i in range(12)]
+        with patch.object(Node, "get_logs", return_value=lines):
+            body = client.get("/nodes/partials/node-logs/cx/cx1?lines=10").data.decode()
+        assert "last 10 of 12 lines" in body
+        assert "line 1\n" not in body
+        assert "line 2" in body and "line 11" in body
+
+    def test_buffer_off_says_so(self, client):
+        login(client)
+        with patch.object(Node, "get_logs",
+                          return_value={"error": "kotekan keeps no log buffer"}):
+            body = client.get("/nodes/partials/node-logs/cx/cx1").data.decode()
+        assert "keeps no log buffer" in body
+        assert "<pre>" not in body
+
+    def test_unreachable(self, client):
+        login(client)
+        with patch.object(Node, "get_logs", return_value=None):
+            body = client.get("/nodes/partials/node-logs/cx/cx1").data.decode()
+        assert "unreachable" in body
+        assert "<pre>" not in body
+
+    def test_odd_entries_do_not_break_the_page(self, client):
+        login(client)
+        odd = [None, {"time": "soon", "level": 3, "msg": ["x"]},
+               {"time": float("nan"), "level": "INFO", "msg": "still shown"}]
+        with patch.object(Node, "get_logs", return_value=odd):
+            resp = client.get("/nodes/partials/node-logs/cx/cx1")
+        assert resp.status_code == 200
+        assert "still shown" in resp.data.decode()
+
+    def test_unknown_node_404s(self, client):
+        login(client)
+        assert client.get("/nodes/partials/node-logs/cx/nope").status_code == 404

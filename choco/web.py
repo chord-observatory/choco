@@ -454,6 +454,7 @@ def node_edit(node_key):
         updatable_json=updatable_json,
         shared_with=shared_with,
         config_files=registry.config_files(),
+        nlines=_journal_lines_arg(),
     )
 
 
@@ -854,6 +855,60 @@ def partial_node_status(node_key):
     if node is None:
         abort(404)
     return render_template("_node_status.html", node=node)
+
+
+#: How a kotekan log level is painted on the node page: errors and
+#: worse red, warnings amber, the rest plain.
+_LOG_LEVEL_TONES = {"EMERGENCY": "bad", "ALERT": "bad", "CRITICAL": "bad",
+                    "ERROR": "bad", "WARNING": "warn"}
+
+
+def _log_line(entry) -> dict:
+    """One entry of kotekan's ``/logs`` reply as the node page shows it:
+    the time to the millisecond in UTC, the level and its tone, the
+    text.  A field of the wrong type shows blank, never raises."""
+    if not isinstance(entry, dict):
+        entry = {}
+    ts, level, msg = entry.get("time"), entry.get("level"), entry.get("msg")
+    stamp = ""
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        try:
+            stamp = (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts))
+                     + f".{int(ts * 1000) % 1000:03d}")
+        except (ValueError, OverflowError, OSError):
+            pass
+    level = level if isinstance(level, str) else ""
+    return {"time": stamp, "level": level,
+            "msg": msg if isinstance(msg, str) else "",
+            "tone": _LOG_LEVEL_TONES.get(level)}
+
+
+@bp.route("/nodes/partials/node-logs/<path:node_key>")
+@login_required
+def partial_node_logs(node_key):
+    """The newest lines of kotekan's log buffer on one node.
+
+    A read of the node (``GET /logs``) per request, like the pipeline
+    partial, so it works in every mode; nothing the worker owns is
+    written.  kotekan sends its whole buffer (1000 lines at most) and
+    ``?lines=`` trims what is shown.
+    """
+    registry = _registry()
+    node = registry.get_node(node_key)
+    if node is None:
+        abort(404)
+    nlines = _journal_lines_arg()
+    reply = node.get_logs()
+    lines = error = total = None
+    if isinstance(reply, dict):
+        error = reply["error"]
+    elif reply is not None:
+        total = len(reply)
+        lines = [_log_line(entry) for entry in reply[-nlines:]]
+    return render_template(
+        "_node_logs.html", node=node, node_key=node_key, lines=lines,
+        error=error, total=total, nlines=nlines,
+    )
 
 
 # Kotekan buffer names are config keys; anything else is rejected before
