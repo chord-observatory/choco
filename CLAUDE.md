@@ -415,6 +415,11 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `DishInputs` descriptor from kotekan develop carries no list: the peek
   route fills it in from the pushed `dish_inputs` table
   (`dishlabels.connected_elements`), count-checked, never guessed.
+- `/status` carries `starting` on builds that start the pipeline on a
+  thread of its own (kotekan `jbm/async-start`, 2026-11-05):
+  `NodeStatus.STARTING`, during which the worker reads and waits, never
+  pushes or kills.  Older builds answer nothing while they start, which
+  reads as down; do not add a workaround for that.
 - Peeks speak only `GET /buffer_frame?name=&len=`; 402/404/500 from kotekan
   are meaningful replies, not outages.  A 404 from `/logs` is one too:
   kotekan keeps no log buffer (no `log_buffer: true` in its config, or a

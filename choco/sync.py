@@ -296,6 +296,12 @@ class NodeWorker:
         node.last_seen = time.time()
         node.version_info = node.get_version_info()
 
+        if probe == NodeStatus.STARTING:
+            # kotekan is building the pipeline: nothing to compare yet,
+            # and a kill now would only restart it.
+            node.status = NodeStatus.STARTING
+            return
+
         if node.mode is Mode.DEVELOPMENT:
             self._sync_development(probe)
             return

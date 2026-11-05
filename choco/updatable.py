@@ -35,11 +35,12 @@ _SHORT_LIST = 4
 # absent, unread, extra) and a node's config and updatable states.
 TONES = {"live": "ok", "differs": "warn", "absent": "warn", "unread": "off", "extra": "info",
          "ok": "ok", "bad_file": "bad", "bad_store": "bad", "own": "dev", "pushing": "info",
-         "none": "off"}
+         "starting": "info", "none": "off"}
 
 #: The vocabulary of a node's config and updatable states (``/metrics``
 #: counts nodes in each).
-NODE_STATES = ("ok", "differs", "bad_file", "bad_store", "own", "pushing", "none", "unread")
+NODE_STATES = ("ok", "differs", "bad_file", "bad_store", "own", "pushing", "starting", "none",
+               "unread")
 
 
 @dataclass
@@ -230,6 +231,8 @@ def _not_running(node) -> Cell | None:
     flight, or nothing at all; None when it runs."""
     if node.status == NodeStatus.SYNCING:
         return Cell(node.name, "pushing", f"{node.name}: a push is in progress (kill, then /start).")
+    if node.status == NodeStatus.STARTING:
+        return Cell(node.name, "starting", f"{node.name}: kotekan is building the pipeline.")
     if node.status != NodeStatus.STARTED:
         return Cell(node.name, "none", f"{node.name}: kotekan is {node.status.value}, so nothing runs.")
     return None

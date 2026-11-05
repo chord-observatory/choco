@@ -248,6 +248,7 @@ Status tags say what kotekan's process is doing:
 - **started** (green) — kotekan is running
 - **idle** (grey) — kotekan is reachable but not running (ready for `/start`)
 - **syncing** (blue) — config push in progress (kill → restart → start)
+- **starting** (blue) — kotekan is building the pipeline after a start; choco waits for it. Only builds that start the pipeline on a thread of its own report this; older builds answer nothing while they start, which reads as down.
 - **down** (red) — kotekan is unreachable
 - **unknown** (grey) — not yet polled or state indeterminate
 

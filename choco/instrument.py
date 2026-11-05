@@ -1164,7 +1164,8 @@ def health_tone(health: str | None) -> str:
 
 def node_tone(state: dict | None) -> str:
     status = (state or {}).get("status")
-    return {"started": "ok", "down": "bad", "unknown": "off", None: "off"}.get(status, "warn")
+    return {"started": "ok", "starting": "info", "down": "bad", "unknown": "off",
+            None: "off"}.get(status, "warn")
 
 
 #: A node mode's word on its card and the card's tone, for the modes that

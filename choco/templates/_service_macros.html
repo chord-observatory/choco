@@ -99,7 +99,7 @@
 {% macro node_tone(status) -%}
 {%- if status == 'started' -%}ok
 {%- elif status == 'down' -%}bad
-{%- elif status == 'syncing' -%}info
+{%- elif status in ('syncing', 'starting') -%}info
 {%- else -%}off
 {%- endif -%}
 {%- endmacro %}

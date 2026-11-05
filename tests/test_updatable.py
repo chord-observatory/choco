@@ -362,6 +362,9 @@ class TestNodeStates:
         cx1.status = NodeStatus.SYNCING
         config, updatable = node_states(cx1, now)
         assert (config.state, config.tone) == ("pushing", "info") and updatable.state == "pushing"
+        cx1.status = NodeStatus.STARTING
+        config, updatable = node_states(cx1, now)
+        assert (config.state, config.tone) == ("starting", "info") and updatable.state == "starting"
         cx1.status = NodeStatus.STARTED
         config, updatable = node_states(cx1, now)
         assert (config.state, config.tone) == ("unread", "off") and "not read yet" in config.note

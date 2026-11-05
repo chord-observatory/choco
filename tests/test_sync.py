@@ -130,6 +130,30 @@ class TestProcessNode:
 
         assert node.status == NodeStatus.STARTED
 
+    def test_poll_node_starting_waits(self, orchestrator):
+        """A kotekan building its pipeline is left alone: no config read,
+        no push, no kill, whatever the file says or the mode is."""
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        node.get_status = MagicMock(return_value=NodeStatus.STARTING)
+        node.get_version_info = MagicMock(return_value={})
+        node.get_config = MagicMock(return_value={"wrong": "config"})
+        node.kill, node.start, node.push_updatable = MagicMock(), MagicMock(), MagicMock()
+        for mode in (Mode.NORMAL, Mode.DEVELOPMENT, Mode.MAINTENANCE):
+            node.mode = mode
+            node.queue_put(ChangeItem(type=ChangeType.POLL))
+            NodeWorker(node, orchestrator).process()
+            assert node.status == NodeStatus.STARTING and node.error is None
+        node.started = False
+        node.mode = Mode.NORMAL
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
+        assert node.status == NodeStatus.STARTING
+        node.get_config.assert_not_called()
+        node.kill.assert_not_called()
+        node.start.assert_not_called()
+        node.push_updatable.assert_not_called()
+
     def test_poll_node_drift_triggers_push(self, orchestrator):
         """POLL detects drift and pushes config (kill -> start)."""
         node = orchestrator.registry.get_node("cx/cx1")

@@ -195,6 +195,7 @@ class NodeStatus(Enum):
     UNKNOWN = "unknown"
     DOWN = "down"       # Unreachable
     IDLE = "idle"       # Reachable but kotekan not running (ready for /start)
+    STARTING = "starting" # kotekan building the pipeline (/status says starting; new builds only)
     STARTED = "started" # kotekan running (whatever config; drift is checked separately)
     SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
@@ -768,12 +769,19 @@ class Node:
         return data if isinstance(data, dict) else None
 
     def get_status(self) -> NodeStatus:
-        """Probe kotekan: returns DOWN, IDLE, STARTED, or UNKNOWN."""
+        """Probe kotekan: returns DOWN, IDLE, STARTING, STARTED, or UNKNOWN.
+
+        ``starting`` is in the reply of builds that start the pipeline on
+        a thread of its own; older builds answer nothing while they
+        start, which reads as DOWN.
+        """
         resp = self._request("GET", "/status", retries=1)
         if resp is None:
             return NodeStatus.DOWN
         try:
             data = resp.json()
+            if data.get("starting", False):
+                return NodeStatus.STARTING
             return NodeStatus.STARTED if data.get("running", False) else NodeStatus.IDLE
         except Exception:
             return NodeStatus.UNKNOWN

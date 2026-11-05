@@ -29,6 +29,14 @@ class TestGetStatus:
         assert node.get_status() == NodeStatus.IDLE
 
     @responses.activate
+    def test_starting(self, node):
+        # A build that starts the pipeline on its own thread says so.
+        responses.get(f"{BASE}/status", json={"running": False, "starting": True})
+        assert node.get_status() == NodeStatus.STARTING
+        responses.get(f"{BASE}/status", json={"running": True, "starting": False})
+        assert node.get_status() == NodeStatus.STARTED
+
+    @responses.activate
     def test_unreachable(self, node):
         responses.get(f"{BASE}/status", body=ConnectionError("refused"))
         assert node.get_status() == NodeStatus.DOWN

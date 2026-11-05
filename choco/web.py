@@ -3111,6 +3111,7 @@ def update(group, node=None):
 
 _ONESHOT_SKIP_REASONS = {
     NodeStatus.DOWN: "unreachable",
+    NodeStatus.STARTING: "starting",
     NodeStatus.STARTED: "running",
     NodeStatus.UNKNOWN: "unknown state",
 }

@@ -716,6 +716,16 @@ class TestOneshot:
 
 
 class TestNodeStatusPartial:
+    def test_a_starting_node_is_blue_in_both_states(self, client, app):
+        login(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.status = NodeStatus.STARTING
+        body = client.get("/nodes/partials/node-status/cx/cx1").data.decode()
+        assert 'class="tag tag-info status-starting"' in body
+        assert "cx1: kotekan is building the pipeline." in body
+        row = client.get("/partials/dashboard-table").data.decode()
+        assert '<td data-label="config"><span class="tag tag-info" title="cx1: kotekan is building the pipeline.">' in row
+
     def test_renders_cached_status_without_probing(self, client, app):
         """The worker is the only writer of node.status; the partial
         must render what it last recorded, not probe kotekan itself."""
