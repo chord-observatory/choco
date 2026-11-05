@@ -255,8 +255,8 @@ button.seg-btn {
     box-sizing: border-box;
     display: inline-flex;
     justify-content: center;
-    min-width: 4.6em;
-    padding: 0.05em 0.45em;
+    min-width: 4em;
+    padding: 0.05em 0.25em;
     border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
     border-radius: 3px;
     font-size: 0.72em;
