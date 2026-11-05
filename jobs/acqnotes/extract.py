@@ -104,7 +104,8 @@ def summarize_file(path):
                 s[tk] = [int(t[0]), int(t[-1]), int(t.size)]
         for tk in ("rfi_frame_excision_enabled",):
             if tk in f:
-                s[tk] = sorted(set(jsonable(f[tk][()])))
+                # (time) in older files, (frequency, time) in newer ones
+                s[tk] = np.unique(f[tk][()]).tolist()
         for tk in ("rfi_frame_excision_threshold", "rfi_frame_excision_fraction"):
             if tk in f:
                 a = f[tk][()]
