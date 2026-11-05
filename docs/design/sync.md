@@ -197,7 +197,7 @@ swap of the same partial the poll targets), so those actions never round-trip
 through a redirect either. UI assets (pico.css, htmx, idiomorph, Sortable) are
 vendored in `choco/static/` so the UI works without internet access.
 
-## Started/stopped toggle
+## Started / idle
 
 each node has a ``started`` boolean representing the desired runtime state.
 ``nodes.yaml``'s ``started`` field is read as the pre-discovery default, but

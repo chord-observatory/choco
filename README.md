@@ -142,7 +142,7 @@ groups:
     recv1: {host: recv1.site.chord-observatory.ca, port: 12048}
 ```
 
-The optional `started` field is a pre-discovery default for the desired runtime state. On startup, choco polls every node and **preserves whatever kotekan is actually doing** — reachable nodes that are running come up with `started=True`, idle ones with `started=False`, and unreachable nodes fall back to `started=False`. The `nodes.yaml` value is overwritten by this observation. The started state can also be toggled at runtime via the dashboard or the JSON API. Runtime toggles are ephemeral (reset on choco restart, at which point the discovery pass runs again).
+The optional `started` field is a pre-discovery default for the desired runtime state. On startup, choco polls every node and **preserves whatever kotekan is actually doing** — reachable nodes that are running come up with `started=True`, idle ones with `started=False`, and unreachable nodes fall back to `started=False`. The `nodes.yaml` value is overwritten by this observation. The started state can also be set at runtime via the dashboard or the JSON API. Runtime changes are ephemeral (reset on choco restart, at which point the discovery pass runs again).
 
 #### Per-Node Config Files
 
@@ -242,7 +242,7 @@ A board or NIC port counts as idle below 1000 packets/s. A NIC is flagged for dr
 
 ### Dashboard (`/nodes`)
 
-The **X-engine** item leads to the dashboard at `/nodes`, one table per group with live-updating columns: node name, the mode control and the Start switch, three states (status, config, updatable), version (the version string opens the build details), the file when a group's nodes differ (a group that renders one file names it once in its heading), and Pipeline/Node buttons.
+The **X-engine** item leads to the dashboard at `/nodes`, one table per group with live-updating columns: node name, the mode and start controls, three states (status, config, updatable), version (the version string opens the build details), the file when a group's nodes differ (a group that renders one file names it once in its heading), and Pipeline/Node buttons.
 
 Status tags say what kotekan's process is doing:
 - **started** (green) — kotekan is running
@@ -252,7 +252,7 @@ Status tags say what kotekan's process is doing:
 - **down** (red) — kotekan is unreachable
 - **unknown** (grey) — not yet polled or state indeterminate
 
-When what you asked for differs from what is true — the Start switch on but the node down, or off but the node still running — a muted *wants started* / *wants idle* note sits beside the tag, and the worker's last error under it.
+When what you asked for differs from what is true — **start** chosen but the node down, or **idle** chosen but the node still running — a muted *wants started* / *wants idle* note sits beside the tag, and the worker's last error under it.
 
 Config tags say whether kotekan runs the base config the node's file renders (the live `/config` with its updatable values stripped, against the file's; the worker compares them at every read, in maintenance every 30 s):
 - **ok** (green) — it does
@@ -264,17 +264,17 @@ Config tags say whether kotekan runs the base config the node's file renders (th
 
 Updatable tags say whether kotekan runs choco's updatable values, the panel below summed up per node: **ok**, **differs** (the tooltip names the endpoints; in maintenance choco pushes nothing, in development only its stored values), **bad store** (the node's `.updatable` file does not load, so nothing is pushed), **none** (the file renders no updatable block) or **unread**. Hover a tag for the detail; the node page prints it beside the tag.
 
-Each node also has a mode control and a switch:
+Each node also has two controls, each a row of word buttons with the current one filled in:
 
-- **Mode** — three buttons, the current mode filled in:
-  - **normal** (blue): choco keeps the node on its desired config — it starts and kills kotekan as the Start switch says, restarts it when the running config drifts from the file, and pushes its stored updatable values.
+- **Mode** — three words:
+  - **normal** (blue): choco keeps the node on its desired config — it starts and kills kotekan as the start control says, restarts it when the running config drifts from the file, and pushes its stored updatable values.
   - **maint** (amber): choco observes the node but never writes to it (no `/start`, no `/kill`, no updatable POSTs). Useful when an operator is intervening on a node manually. **Every node starts in maintenance** after a choco restart or a registry save; lift it (per node, per group, or for the whole cluster) when you're ready for choco to reconcile drift.
   - **dev** (violet): the node runs a config choco did not render — a developer's build, started by hand. choco never starts or kills it and ignores its config file; what it keeps current are the node's stored updatable values (the bffs flags, the EOP table, overrides), pushed to the endpoints the running config has, as long as the stored value's fields fit the running block. Nothing else is pushed: a switch the library sets stays as the developer left it.
 
   Lifting maintenance returns a node to its *resting* mode: normal, or development where `nodes.yaml` declares it (`development: true`, the **dev** box in the registry editor). A node leaves development only into maintenance, never straight to normal: normal would restart the developer's kotekan onto the library within a poll, so the operator lifts maintenance knowing what it starts. A declared development node is never offered normal, in any mode; it returns to production when the declaration is removed from `nodes.yaml`.
-- **Start** (green = started, grey = idle) — desired runtime state. On startup choco discovers the actual state and sets this from what kotekan reports; in normal mode the switch then controls whether choco keeps kotekan running.
+- **Start** — two words, **start** (green) and **idle** (grey): the desired runtime state. On startup choco discovers the actual state and sets this from what kotekan reports; in normal mode the control then decides whether choco keeps kotekan running (start) or kills it and starts nothing (idle).
 
-Each scope (group heading, dashboard header) has the same controls, as words, for every node in scope at once: *mode* — **normal** lifts maintenance, each node in it returning to its resting mode and nodes in development staying; **maint** puts them all in maintenance, development included; **dev** puts them all in development — and *start* — **start** sets them started, **stop** idle.
+Each scope (group heading, dashboard header) has the same controls, as words, for every node in scope at once: *mode* — **normal** lifts maintenance, each node in it returning to its resting mode and nodes in development staying; **maint** puts them all in maintenance, development included; **dev** puts them all in development — and *start* — **start** sets them all started, **idle** sets them all idle.
 
 The dashboard table refreshes itself every 2 seconds via htmx polling - no need to refresh the page.
 

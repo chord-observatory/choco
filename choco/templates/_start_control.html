@@ -1,0 +1,21 @@
+{# The node's desired run state as a two-way control, like the mode
+   control beside it: the current word filled (the column reads as the
+   node's wish at rest), the other a button.  start: the sync loop keeps
+   kotekan running; idle: it kills kotekan and starts nothing. #}
+{%- set titles = {
+    'start': 'Start: in normal mode choco starts kotekan and keeps it running',
+    'idle': 'Idle: in normal mode choco kills kotekan and starts nothing'} -%}
+{%- set wish = 'start' if node.started else 'idle' -%}
+<span class="seg-ctl" hx-target="this" hx-swap="outerHTML" title="desired state: {{ 'started' if node.started else 'idle' }}">
+    {%- for action, tone in (('start', 'ok'), ('idle', 'off')) %}
+    {%- if action == wish %}
+    <button type="button" class="seg-btn tone-{{ tone }} current"
+            title="{{ titles[action] }}" aria-pressed="true">{{ action }}</button>
+    {%- else %}
+    <button type="button" class="seg-btn tone-{{ tone }}"
+            title="{{ titles[action] }}"
+            hx-post="{{ request.script_root }}/nodes/set-started/{{ action }}/{{ key }}"
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'>{{ action }}</button>
+    {%- endif %}
+    {%- endfor %}
+</span>

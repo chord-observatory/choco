@@ -119,7 +119,7 @@ def _dashboard_context() -> dict:
 
 # The words a URL or form may carry: the started routes' actions, the
 # modes, and the updatable panel's switch actions.
-_STARTED_ACTIONS = {"start": True, "stop": False}
+_STARTED_ACTIONS = {"start": True, "idle": False}
 _MODES = {mode.value: mode for mode in Mode}
 _SWITCH_ACTIONS = {"on": True, "off": False}
 
@@ -733,21 +733,25 @@ def _enter_mode(nodes, mode: Mode):
     return orchestrator.lift(nodes) if mode is Mode.NORMAL else orchestrator.set_mode(nodes, mode)
 
 
-@bp.route("/nodes/toggle-started/<path:node_key>", methods=["POST"])
+@bp.route("/nodes/set-started/<action>/<path:node_key>", methods=["POST"])
 @login_required
-def toggle_started(node_key):
-    """Toggle the started/idle desired state for a node."""
-    def flip(node):
-        _orchestrator().set_flag([node], "started", not node.started)
-        return f"{node_key} {'started' if node.started else 'stopped'}", "success"
-    return _node_control(node_key, "_toggle_started.html", flip)
+def set_node_started(action, node_key):
+    """Set one node's desired run state, ``start`` or ``idle``.  htmx
+    gets the control back in place."""
+    if action not in _STARTED_ACTIONS:
+        abort(400)
+
+    def want(node):
+        _orchestrator().set_flag([node], "started", _STARTED_ACTIONS[action])
+        return f"{node_key} {'started' if node.started else 'idle'}", "success"
+    return _node_control(node_key, "_start_control.html", want)
 
 
 @bp.route("/nodes/set-started-all/<action>", methods=["POST"])
 @bp.route("/nodes/set-started-group/<group>/<action>", methods=["POST"])
 @login_required
 def set_started(action, group=None):
-    """Set every node, or every node in *group*, to started or stopped."""
+    """Set every node, or every node in *group*, to started or idle."""
     return _bulk(_STARTED_ACTIONS, action, group,
                  lambda nodes, on: _orchestrator().set_flag(nodes, "started", on))
 

@@ -38,7 +38,7 @@
         <tr>
             <td class="stack-lead">{{ node.name }}</td>
             <td data-label="mode">{% include "_mode_control.html" %}</td>
-            <td data-label="start">{% include "_toggle_started.html" %}</td>
+            <td data-label="start">{% include "_start_control.html" %}</td>
             <td class="stack-end">{{ node_status(node) }}</td>
             <td data-label="config">{{ node_state(states[key][0]) }}</td>
             <td data-label="updatable">{{ node_state(states[key][1]) }}</td>

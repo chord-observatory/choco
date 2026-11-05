@@ -119,7 +119,7 @@ class TestLoginNextRedirect:
 
     def test_unauthorized_post_gets_no_next(self, client):
         # Replaying a POST-only URL as a GET after login would 405.
-        resp = client.post("/nodes/toggle-started/cx/cx1",
+        resp = client.post("/nodes/set-started/idle/cx/cx1",
                            follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["Location"] == "/login"

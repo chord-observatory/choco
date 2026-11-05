@@ -252,6 +252,71 @@ class TestSetStartedGroup:
         assert resp.status_code == 403
 
 
+# --- POST /nodes/set-started/<action>/<node_key> ---
+
+class TestSetStartedNode:
+    def test_htmx_sets_the_flag_and_returns_the_control(self, client, app):
+        """The word set becomes the current (filled, inert) one and the
+        other word posts; the switch is gone."""
+        login(client)
+        token = csrf(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.started = True
+        resp = client.post(
+            "/nodes/set-started/idle/cx/cx1",
+            data={"_csrf_token": token},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert node.started is False
+        body = resp.get_data(as_text=True)
+        assert 'class="seg-btn tone-off current"' in body
+        assert "/nodes/set-started/start/cx/cx1" in body
+        assert "/nodes/set-started/idle/cx/cx1" not in body
+        assert "toggle-switch" not in body
+
+    def test_form_post_redirects(self, client, app):
+        login(client)
+        token = csrf(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.started = False
+        resp = client.post(
+            "/nodes/set-started/start/cx/cx1",
+            data={"_csrf_token": token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert node.started is True
+
+    def test_bad_action_400(self, client):
+        login(client)
+        token = csrf(client)
+        resp = client.post(
+            "/nodes/set-started/stop/cx/cx1",
+            data={"_csrf_token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_unknown_node_404(self, client):
+        login(client)
+        token = csrf(client)
+        resp = client.post(
+            "/nodes/set-started/start/cx/nope",
+            data={"_csrf_token": token},
+        )
+        assert resp.status_code == 404
+
+    def test_dashboard_and_node_page_carry_the_control(self, client, app):
+        login(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.started = True
+        for url in ("/nodes", "/nodes/edit/cx/cx1"):
+            body = client.get(url).get_data(as_text=True)
+            assert "/nodes/set-started/idle/cx/cx1" in body, url
+            assert 'class="seg-btn tone-ok current"' in body, url
+            assert "toggle-switch" not in body, url
+
+
 class TestMaintenanceToggles:
     def test_set_mode_per_node(self, client, app):
         login(client)
@@ -349,11 +414,12 @@ class TestMaintenanceToggles:
         body = client.get("/nodes").get_data(as_text=True)
         for scope in ("all", "group/cx"):
             urls = [f"/nodes/set-mode-{scope}/{m}" for m in ("normal", "maintenance", "development")]
-            urls += [f"/nodes/set-started-{scope}/{a}" for a in ("start", "stop")]
+            urls += [f"/nodes/set-started-{scope}/{a}" for a in ("start", "idle")]
             at = [body.index(u) for u in urls]
             assert at == sorted(at), scope
         assert ">normal</button>" in body and ">maint</button>" in body and ">dev</button>" in body
-        assert ">start</button>" in body and ">stop</button>" in body
+        assert ">start</button>" in body and ">idle</button>" in body
+        assert ">stop</button>" not in body
         assert "&#x25BC;" not in body and "▼" not in body and "group-btn" not in body
 
     def test_set_group_scopes_to_group(self, client, app):

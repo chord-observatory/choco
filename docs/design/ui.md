@@ -9,7 +9,7 @@ measurements and dates are from when each part was built.
 [instrument.md](instrument.md)), not the node dashboard: node
 management lives under ``/nodes/*`` — the dashboard at ``/nodes``, the
 ``nodes.yaml`` registry editor at ``/nodes/edit``, the node page at
-``/nodes/edit/<key>``, the started switch and the mode control, the node-status
+``/nodes/edit/<key>``, the start and mode controls, the node-status
 partial and the node-logs partial (kotekan's ``/logs`` buffer, read per
 request like the pipeline partial, 2026-11-05) — and the config library under ``/configs`` (the files under the
 configs directory with the nodes that render or include each, a New-file
@@ -467,7 +467,7 @@ diagram, and widens the container.
 maintenance with a "Lift maintenance on all" button was added in the
 review round and removed the same day as unnecessary: the maintenance
 switches and the group ▲ buttons already show and fix it, and the strip's
-NODES tooltip carries the count.  The Start switch says
+NODES tooltip carries the count.  The start control says
 what the operator asked for and the tag what is true; when they differ a
 muted "wants started" / "wants idle" (``node_wants`` in
 ``_service_macros.html``) sits beside the tag on the dashboard and the node
@@ -518,27 +518,34 @@ Pico's near-black page.  Under ``[data-theme="dark"]`` the notices and
 flashes take a faint wash — the tint mixed 40–60 % into the page colour —
 and the coloured left rule carries the tone.
 
-**Controls are not status.**  The started switch takes the tone of what
-it enables when on (``--ok``) and is neutral when off.  The mode control
+**Controls are not status.**  The mode control
 that replaced the maintenance switch (2026-11-05: three modes, see
 [sync.md](sync.md)) is three rectangular buttons, each the tone of the mode
 it sets on the soft tint like a group button (``--info`` normal,
 ``--maint`` maintenance, ``--dev`` development, a muted violet added for
 it), with the current mode's button filled solid: the column has to read
 as a status at rest, as the switch's amber did, and a row of three equal
-tints did not say which one held.  Maintenance is the one state that
+tints did not say which one held.  The start control beside it followed
+the same day (``_start_control.html``, ``POST
+/nodes/set-started/<action>/<key>``): two words, start (``--ok``) and
+idle (``--off``), the current one filled, in place of a switch that took
+``--ok`` when on and was neutral off, so the two columns read one way.
+Its off word is *idle*, the status word the tag and the "wants idle"
+note already use, not *stop*: choco kills kotekan (there is no
+``Node.stop()``), and a stop that is really a kill would mislead.
+Maintenance is the one state that
 silently stops pushes, so it keeps the amber that the switch had; an
 in-flight htmx request dims the control rather
 than greying it, so idle and "request pending" look different — scoped to
-the control that issued the request (``label.toggle-switch.htmx-request``,
-``form.htmx-request``, ``.seg-ctl.htmx-request``), because htmx
+the control that issued the request (``form.htmx-request``,
+``.seg-ctl.htmx-request``), because htmx
 also marks a polling container in flight and an unscoped rule dimmed every
 control on the PDB page for the length of each 5 s poll.  The
 group-wide controls (``.group-ctl``, one ``group_ctl`` macro) are a
 muted caption ("mode", "start") plus one word button per action
 (``.seg-btn``, equal widths; none current, since the nodes in scope may
 differ), in the order the per-node column shows the states: normal,
-maint, dev; start, stop.  They began as pairs of outlined ▼/▲ glyph
+maint, dev; start, idle.  They began as pairs of outlined ▼/▲ glyph
 buttons whose text took the tone of the switch state it set (two
 uncaptioned neutral pairs were indistinguishable, and text colour alone
 read as plain outlines); when the mode grew a third state a third

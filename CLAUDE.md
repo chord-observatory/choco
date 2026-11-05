@@ -291,13 +291,14 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   actions with Pico's filled primary kept for the page's one main action,
   `.notice` for static warnings (`.flash` is transient only).  Controls are
   not status: switches are tinted only when on, segmented word buttons
-  (`.seg-btn`: the mode controls, the group start control, the panel's
-  Set) colour their word on the tone's soft tint, never a solid fill,
-  and a group control lists its words in the per-node column's order
-  (normal, maint, dev; start, stop).  The one exception is the
-  per-node mode control's current mode, filled solid because the column
-  reads as the node's status at rest (the switch it replaced carried
-  that colour when on).
+  (`.seg-btn`: the mode and start controls, the panel's Set) colour
+  their word on the tone's soft tint, never a solid fill, and a group
+  control lists its words in the per-node column's order (normal, maint,
+  dev; start, idle).  The one exception is the per-node mode and start
+  controls' current word, filled solid because the column reads as the
+  node's status at rest (the switches they replaced carried that colour
+  when on).  The start control's off word is `idle`, the status word,
+  never `stop`: choco kills, it does not stop.
 - Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
   `static/fonts/*` in pyproject's package-data); no page loads anything from
   an outside host.  600 is the site's bold, never 700.  The base size is

@@ -244,11 +244,11 @@ body.wall main.container { max-width: none; padding: 1.5rem 2rem; }
 .group-ctl-label { margin-right: 0.3em; font-size: 0.72em; letter-spacing: 0.05em; text-transform: uppercase; color: var(--pico-muted-color); }
 
 /* ---- segmented word buttons --------------------------------------------
-   The mode control (normal / maint / dev, per node and per group) and the
-   updatable panel's Set controls: equal-width rectangular buttons in a
-   row, each the tone of what it sets on the soft tint like a group button.
-   A control that is also a status at rest (the per-node mode) fills its
-   current button solid. */
+   The mode and start controls (normal / maint / dev; start / idle, per
+   node and per group) and the updatable panel's Set controls: equal-width
+   rectangular buttons in a row, each the tone of what it sets on the soft
+   tint like a group button.  A control that is also a status at rest (the
+   per-node mode and start controls) fills its current button solid. */
 .seg-ctl { display: inline-flex; gap: 2px; align-items: center; }
 button.seg-btn {
     all: unset;
@@ -276,9 +276,15 @@ button.seg-btn.refused:hover { filter: none; }
 .seg-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
 .seg-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
 .seg-btn.tone-dev { color: var(--dev-text); background: var(--dev-soft); }
+.seg-btn.tone-ok.current { color: var(--ok-ink); background: var(--ok); }
+.seg-btn.tone-off.current { color: var(--off-ink); background: var(--off); }
 .seg-btn.tone-info.current { color: var(--info-ink); background: var(--info); }
 .seg-btn.tone-maint.current { color: var(--maint-ink); background: var(--maint); }
 .seg-btn.tone-dev.current { color: var(--dev-ink); background: var(--dev); }
+/* In-flight dimming is scoped to the control that issued the request: htmx
+   also puts htmx-request on a polling container (#dashboard-table every 2 s,
+   #pdb-status every 5 s with a round trip to the controller), and an unscoped
+   `.htmx-request .x` dimmed every control on the page for each poll. */
 .seg-ctl.htmx-request .seg-btn { opacity: 0.45; }
 /* The panel's edit form, behind a row's edit button (a popover kept
    across the table's morphs, like the version popover). */
@@ -289,48 +295,6 @@ button.seg-btn.refused:hover { filter: none; }
 /* The same for every power control on the PDB page: the form issuing the
    request gets htmx-request, so its button dims until the reply lands. */
 form.htmx-request .chan, form.htmx-request .bulk { opacity: 0.45; }
-
-/* ---- the started switch ---------------------------------------------- */
-label.toggle-switch {
-    position: relative;
-    display: inline-block;
-    width: 2rem;
-    height: 1.125rem;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-    cursor: pointer;
-}
-.toggle-switch input[type="checkbox"] { display: none !important; }
-.toggle-switch .toggle-slider {
-    position: absolute;
-    inset: 0;
-    display: block;
-    width: 2rem;
-    height: 1.125rem;
-    border-radius: 1.125rem;
-    transition: background 0.2s, opacity 0.2s;
-}
-.toggle-switch .toggle-slider::before {
-    content: "";
-    position: absolute;
-    left: 0.1875rem;
-    top: 0.1875rem;
-    width: 0.75rem;
-    height: 0.75rem;
-    border-radius: 50%;
-    background: #fff;
-    transition: transform 0.2s;
-}
-/* On takes the tone of what it enables; off is neutral. */
-.toggle-slider.started { background: var(--ok); }
-.toggle-slider.started::before { transform: translateX(0.875rem); }
-.toggle-slider.idle { background: var(--off); }
-/* In-flight dimming is scoped to the control that issued the request: htmx
-   also puts htmx-request on a polling container (#dashboard-table every 2 s,
-   #pdb-status every 5 s with a round trip to the controller), and an unscoped
-   `.htmx-request .x` dimmed every control on the page for each poll. */
-label.toggle-switch.htmx-request .toggle-slider { opacity: 0.45; }
 
 /* ---- bffs element grid ----------------------------------------------
    One cell per element, kotekan's order down each column.  Good cells
@@ -663,7 +627,6 @@ button.build-toggle {
         color: var(--pico-muted-color);
         vertical-align: middle;
     }
-    table.stack td[data-label] > label.toggle-switch { vertical-align: middle; }
     table.services td.timing { font-size: 0.85em; color: var(--pico-muted-color); }
     table.nodes td.actions { margin-left: auto; }
 }

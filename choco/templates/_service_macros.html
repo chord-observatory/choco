@@ -104,7 +104,7 @@
 {%- endif -%}
 {%- endmacro %}
 {# What the operator asked for when it differs from what is true: the
-   Start switch says the wish, the status tag the fact, and when they
+   start control says the wish, the status tag the fact, and when they
    disagree nothing else points at the gap.  Empty while syncing (the gap
    is being closed) and while unknown (nothing has been polled). #}
 {% macro node_wants(node) -%}
@@ -236,12 +236,12 @@
     {%- endfor %}
 </span>
 {%- endmacro %}
-{# start sets the nodes started (green, the switch's on colour), stop
-   sets them idle (grey). #}
+{# The group start control: the per-node control's two words, start
+   (green) and idle (grey), for every node in scope. #}
 {% macro start_ctl(group=none) -%}
 {{ group_ctl('start', request.script_root ~ '/nodes/set-started', group, (
     ('start', 'start', 'ok', 'Set %s nodes to started'),
-    ('stop', 'stop', 'off', 'Set %s nodes to idle'))) }}
+    ('idle', 'idle', 'off', 'Set %s nodes to idle'))) }}
 {%- endmacro %}
 {# The group mode control: the per-node control's three buttons, in its
    order, for every node in scope (none current, since the nodes may
