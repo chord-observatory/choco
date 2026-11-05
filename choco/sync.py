@@ -698,9 +698,11 @@ class Orchestrator:
     def _discover_one(self, node: Node):
         """Probe ``node`` once and set its runtime state from the result."""
         status = node.get_status()
-        node.started = (status == NodeStatus.STARTED)
+        # A node still building its pipeline was told to start; counting it
+        # as stopped would have the first poll after it runs /kill it.
+        node.started = status in (NodeStatus.STARTED, NodeStatus.STARTING)
         node.status = status
-        if status in (NodeStatus.STARTED, NodeStatus.IDLE):
+        if status in (NodeStatus.STARTED, NodeStatus.STARTING, NodeStatus.IDLE):
             node.last_seen = time.time()
 
     def discover_node_states(self):

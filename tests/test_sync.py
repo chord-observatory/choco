@@ -657,6 +657,14 @@ class TestDiscoverNodeStates:
         assert node.started is False
         assert node.status == NodeStatus.IDLE
 
+    def test_starting_node_marked_started(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = False
+        node.get_status = MagicMock(return_value=NodeStatus.STARTING)
+        orchestrator.discover_node_states()
+        assert node.started is True
+        assert node.status == NodeStatus.STARTING
+
     def test_unreachable_node_defaults_to_stopped(self, orchestrator):
         node = orchestrator.registry.get_node("cx/cx1")
         node.started = True
