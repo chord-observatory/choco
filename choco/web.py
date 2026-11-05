@@ -45,7 +45,7 @@ from .manualflags import toggle_manual_flag
 from .metrics import render as render_metrics
 from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
-from .state import NodeStatus, find_updatable_blocks, validate_nodes_payload
+from .state import Mode, NodeStatus, find_updatable_blocks, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
 from .updatable import fleet_rows
 
@@ -87,9 +87,8 @@ def _orchestrator():
     return current_app.config["orchestrator"]
 
 
-def _flag_response(nodes, attr: str, value: bool):
-    """Reply to a bulk toggle: the dashboard table for htmx, else a redirect."""
-    _orchestrator().set_flag(nodes, attr, value)
+def _dashboard_reply():
+    """Reply to a bulk control: the dashboard table for htmx, else a redirect."""
     if request.headers.get("HX-Request"):
         return render_template("_dashboard_table.html", **_dashboard_context())
     return redirect(url_for("web.dashboard"))
@@ -110,6 +109,7 @@ def _dashboard_context() -> dict:
 # URL action words of the bulk toggle routes -> flag value.
 _STARTED_ACTIONS = {"start": True, "stop": False}
 _MAINTENANCE_ACTIONS = {"on": True, "off": False}
+_MODES = {mode.value: mode for mode in Mode}
 
 
 # --- Authentication routes ---
@@ -691,16 +691,22 @@ def _toggle(node_key: str, flag: str, words: tuple[str, str]):
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
+def _scope_nodes(group: str | None) -> list:
+    """The nodes a bulk route addresses: *group*'s, or every node."""
+    registry = _registry()
+    nodes = registry.in_group(group) if group is not None else list(registry.nodes.values())
+    if group is not None and not nodes:
+        abort(404)
+    return nodes
+
+
 def _bulk(flag: str, actions: dict, action: str, group: str | None):
     """Set *flag* on every node, or on *group*'s, from the URL's action word."""
     _check_csrf()
     if action not in actions:
         abort(400)
-    registry = _registry()
-    nodes = registry.in_group(group) if group is not None else list(registry.nodes.values())
-    if group is not None and not nodes:
-        abort(404)
-    return _flag_response(nodes, flag, actions[action])
+    _orchestrator().set_flag(_scope_nodes(group), flag, actions[action])
+    return _dashboard_reply()
 
 
 @bp.route("/nodes/toggle-started/<path:node_key>", methods=["POST"])
@@ -718,19 +724,46 @@ def set_started(action, group=None):
     return _bulk("started", _STARTED_ACTIONS, action, group)
 
 
-@bp.route("/nodes/toggle-maintenance/<path:node_key>", methods=["POST"])
+@bp.route("/nodes/set-mode/<mode>/<path:node_key>", methods=["POST"])
 @login_required
-def toggle_maintenance(node_key):
-    """Toggle maintenance mode for a single node."""
-    return _toggle(node_key, "maintenance", ("maintenance on", "maintenance off"))
+def set_node_mode(mode, node_key):
+    """Put one node in *mode*.  htmx gets the control back in place; a
+    plain form post a flash and a redirect.  The one step refused,
+    development straight to normal (``Node.set_mode``), is a 409."""
+    _check_csrf()
+    node = _registry().get_node(node_key)
+    if node is None:
+        abort(404)
+    if mode not in _MODES:
+        abort(400)
+    if _orchestrator().set_mode([node], _MODES[mode]):
+        message = f"{node_key} is in development; put it in maintenance first"
+        if request.headers.get("HX-Request"):
+            return message, 409
+        flash(message, "error")
+        return redirect(request.referrer or url_for("web.dashboard"))
+    if request.headers.get("HX-Request"):
+        return render_template("_mode_control.html", node=node, key=node_key)
+    flash(f"{node_key} {mode}", "success")
+    return redirect(request.referrer or url_for("web.dashboard"))
 
 
 @bp.route("/nodes/set-maintenance-all/<action>", methods=["POST"])
 @bp.route("/nodes/set-maintenance-group/<group>/<action>", methods=["POST"])
 @login_required
 def set_maintenance(action, group=None):
-    """Put every node, or every node in *group*, into or out of maintenance."""
-    return _bulk("maintenance", _MAINTENANCE_ACTIONS, action, group)
+    """Put every node, or every node in *group*, into maintenance
+    (``on``), or lift it (``off``): each node in maintenance returns to
+    its resting mode, the others are left as they are."""
+    _check_csrf()
+    if action not in _MAINTENANCE_ACTIONS:
+        abort(400)
+    nodes = _scope_nodes(group)
+    if _MAINTENANCE_ACTIONS[action]:
+        _orchestrator().set_mode(nodes, Mode.MAINTENANCE)
+    else:
+        _orchestrator().lift(nodes)
+    return _dashboard_reply()
 
 
 @bp.route("/nodes/partials/node-status/<path:node_key>")
@@ -1716,6 +1749,8 @@ def _node_counts(registry) -> dict:
         "total": len(registry.nodes),
         "started_desired": sum(1 for n in registry.nodes.values() if n.started),
         "maintenance": sum(1 for n in registry.nodes.values() if n.maintenance),
+        "development": sum(1 for n in registry.nodes.values()
+                           if n.mode is Mode.DEVELOPMENT),
         **counts,
     }
 
@@ -1757,6 +1792,7 @@ def _nodes_health() -> dict:
         "unknown": counts["unknown"],
         "syncing": counts["syncing"],
         "maintenance": counts["maintenance"],
+        "development": counts["development"],
     }
 
 
@@ -1825,6 +1861,7 @@ def _choco_detail(state, run, svc) -> dict:
         "started_at": fmt_utc(_STARTED_AT),
         "nodes_total": counts["total"],
         "maintenance": counts["maintenance"],
+        "development": counts["development"],
         "started_desired": counts["started_desired"],
         "queued": sum(n.queue_depth for n in registry.nodes.values()),
         "configs_dir": str(current_app.config.get("configs_dir")),
@@ -2309,7 +2346,7 @@ def _instrument_view() -> dict:
     monitor = current_app.config["instrument_monitor"]
     wiring = monitor.wiring.get()
     boards, board_problem = _instrument_boards()
-    nodes = {n.name: {"status": n.status.value, "maintenance": n.maintenance,
+    nodes = {n.name: {"status": n.status.value, "mode": n.mode.value,
                       "version": n.version, "group": n.group,
                       "branch": (n.version_info or {}).get("branch"),
                       "commit": (n.version_info or {}).get("git_commit_hash")}
@@ -2851,10 +2888,12 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
     """One ``/update`` body applied to *nodes* (a group or a single node).
 
     ``base_config`` and ``updatable_config`` queue one :class:`ChangeItem`
-    on every node; ``set_started`` / ``set_maintenance`` set the flag and
-    wake the workers exactly as the dashboard toggles do; ``set_config``
-    rewrites nodes.yaml and rebuilds the registry.  *scope* is echoed in
-    the reply (``{"group": g}`` or ``{"node": key}``).
+    on every node; ``set_started`` sets the flag, ``set_mode`` the mode
+    and ``set_maintenance`` enters maintenance or lifts it (each node to
+    its resting mode), waking the workers exactly as the dashboard
+    controls do; ``set_config`` rewrites nodes.yaml and rebuilds the
+    registry.  *scope* is echoed in the reply (``{"group": g}`` or
+    ``{"node": key}``).
     """
     action = data.get("action", "")
     if action == "base_config":
@@ -2871,13 +2910,31 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
             return {"error": "endpoint and values are required"}, 400
         item = ChangeItem(ChangeType.UPDATABLE_CONFIG,
                           endpoint=endpoint, values=values)
-    elif action in ("set_started", "set_maintenance"):
-        attr = action.removeprefix("set_")
-        value = data.get(attr)
+    elif action == "set_started":
+        value = data.get("started")
         if not isinstance(value, bool):
-            return {"error": f"{attr} must be a boolean"}, 400
-        _orchestrator().set_flag(nodes, attr, value)
-        return {"status": "ok", **scope, attr: value}, 200
+            return {"error": "started must be a boolean"}, 400
+        _orchestrator().set_flag(nodes, "started", value)
+        return {"status": "ok", **scope, "started": value}, 200
+    elif action == "set_maintenance":
+        value = data.get("maintenance")
+        if not isinstance(value, bool):
+            return {"error": "maintenance must be a boolean"}, 400
+        if value:
+            _orchestrator().set_mode(nodes, Mode.MAINTENANCE)
+        else:
+            _orchestrator().lift(nodes)
+        return {"status": "ok", **scope, "maintenance": value}, 200
+    elif action == "set_mode":
+        mode = data.get("mode")
+        if mode not in _MODES:
+            return {"error": "mode must be one of " + ", ".join(_MODES)}, 400
+        refused = _orchestrator().set_mode(nodes, _MODES[mode])
+        if refused:
+            return {"error": "in development; put in maintenance first: "
+                             + ", ".join(n.key for n in refused),
+                    "refused": [n.key for n in refused]}, 409
+        return {"status": "ok", **scope, "mode": mode}, 200
     elif action == "set_config":
         # Which library file the nodes render (null: their per-node
         # files).  Not a queue item: a nodes.yaml edit and registry
@@ -3031,7 +3088,9 @@ def _node_to_dict(node) -> dict:
         "port": node.port,
         "config": node.config_filename,
         "started": node.started,
+        "mode": node.mode.value,
         "maintenance": node.maintenance,
+        "development": node.development,
         "status": node.status.value,
         "last_seen": node.last_seen,
         "last_seen_ago": node.last_seen_ago,
@@ -3175,8 +3234,10 @@ def api_config_put(name):
     file must still render.  This is how a config reaches the configs
     directory without a root shell (``choco config put``).  With
     ``"pause": true`` the nodes the file re-renders are put in
-    maintenance first, as a pull does, so the write restarts nothing
-    until the operator lifts it; ``paused`` in the reply names them."""
+    maintenance first, as a pull does (those in normal mode: a node in
+    development does not run the library), so the write restarts
+    nothing until the operator lifts it; ``paused`` in the reply names
+    them."""
     registry = _registry()
     try:
         library.file_path(registry, name)
@@ -3195,9 +3256,8 @@ def api_config_put(name):
     created = not (registry.configs_dir / name).exists()
     paused = []
     if pause:
-        to_pause = [registry.get_node(key) for key in affected
-                    if not registry.get_node(key).maintenance]
-        _orchestrator().set_flag(to_pause, "maintenance", True)
+        to_pause = [n for n in map(registry.get_node, affected) if n.mode is Mode.NORMAL]
+        _orchestrator().set_mode(to_pause, Mode.MAINTENANCE)
         paused = [n.key for n in to_pause]
     library.write_file(registry, _orchestrator(), name, content, _audit_user())
     return {"status": "saved", "path": name, "created": created,

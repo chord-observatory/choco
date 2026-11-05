@@ -66,6 +66,7 @@
              ~ ('\nsyncing: ' ~ nodes.syncing if nodes.syncing else '')
              ~ ('\nunknown: ' ~ nodes.unknown if nodes.unknown else '')
              ~ '\nin maintenance: ' ~ nodes.maintenance
+             ~ ('\nin development: ' ~ nodes.development if nodes.development else '')
              ~ '\n\nclick for the dashboard' %}
 {{ tag(monitor_tone(nodes.health), nodes.label, label=label, href=url, title=tip, quiet=true, extra=extra) }}
 {% elif badge == 'fpga' and fpga %}

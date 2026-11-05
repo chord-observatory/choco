@@ -9,7 +9,7 @@ import pytest
 import responses
 import yaml
 
-from choco.state import Node, NodeStatus
+from choco.state import Mode, Node, NodeStatus
 from choco.sync import ChangeType
 
 from tests.helpers import csrf, login
@@ -178,7 +178,7 @@ class TestNodeConfigSelection:
         token = csrf(client)
         registry = app.config["registry"]
         for n in registry.nodes.values():
-            n.maintenance = False
+            n.mode = Mode.NORMAL
         with patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
             resp = client.post("/nodes/edit/cx/cx1",
                                data={"_csrf_token": token, "action": "set_config",
@@ -392,7 +392,7 @@ class TestConfigPull:
         (configs_dir / "nodes.yaml").write_text(yaml.safe_dump(data))
         app.config["registry"].reload()
         for node in app.config["registry"].nodes.values():
-            node.maintenance = False     # running fleet: the pull must pause
+            node.mode = Mode.NORMAL      # running fleet: the pull must pause
         orch = app.config["orchestrator"]
         orch._file_mtimes = orch._config_file_mtimes()  # scan baseline
         return configs_dir
@@ -560,13 +560,27 @@ class TestConfigPull:
     def test_nodes_already_paused_stay_so_and_are_said_to_be(self, client, app, library):
         self._github(self.UPSTREAM)
         cx1 = app.config["registry"].get_node("cx/cx1")
-        cx1.maintenance = True
+        cx1.mode = Mode.MAINTENANCE
         done = client.post("/api/configs/pull").get_json()
         assert done["status"] == "pulled"
         assert done["reloaded"] == ["cx/cx1"] and done["paused"] == []
         assert ("re-rendered cx/cx1 (already in maintenance); lift maintenance "
                 "to restart them onto it") in done["summary"]
         assert cx1.maintenance is True
+
+    @responses.activate
+    def test_a_development_node_is_not_paused(self, client, app, library):
+        """It does not run the library, and pausing it would stop the
+        updatable pushes development is for."""
+        self._github(self.UPSTREAM)
+        cx1 = app.config["registry"].get_node("cx/cx1")
+        cx1.mode = Mode.DEVELOPMENT
+        done = client.post("/api/configs/pull").get_json()
+        assert done["status"] == "pulled"
+        assert done["reloaded"] == ["cx/cx1"] and done["paused"] == []
+        assert "re-rendered cx/cx1 (not paused: cx/cx1 in development)" in done["summary"]
+        assert done["held"] == {"cx/cx1": "development"}
+        assert cx1.mode is Mode.DEVELOPMENT
 
     @responses.activate
     def test_api_refusal_is_409_with_the_nodes_error(self, client, library):

@@ -9,7 +9,7 @@ measurements and dates are from when each part was built.
 [instrument.md](instrument.md)), not the node dashboard: node
 management lives under ``/nodes/*`` — the dashboard at ``/nodes``, the
 ``nodes.yaml`` registry editor at ``/nodes/edit``, the node page at
-``/nodes/edit/<key>``, the started/maintenance toggles, and the node-status
+``/nodes/edit/<key>``, the started switch and the mode control, and the node-status
 partial — and the config library under ``/configs`` (the files under the
 configs directory with the nodes that render or include each, a New-file
 form, and in the page head the "Pull chord from GitHub" button that mirrors
@@ -508,10 +508,17 @@ Pico's near-black page.  Under ``[data-theme="dark"]`` the notices and
 flashes take a faint wash — the tint mixed 40–60 % into the page colour —
 and the coloured left rule carries the tone.
 
-**Controls are not status.**  The started/maintenance switches take the
-tone of what they enable when on (``--ok``, ``--info``) and are neutral
-when off, except maintenance, the one off-state that silently stops pushes,
-which stays ``--maint``; an in-flight htmx request dims the switch rather
+**Controls are not status.**  The started switch takes the tone of what
+it enables when on (``--ok``) and is neutral when off.  The mode control
+that replaced the maintenance switch (2026-11-05: three modes, see
+[sync.md](sync.md)) is three rectangular buttons, each the tone of the mode
+it sets on the soft tint like a group button (``--info`` normal,
+``--maint`` maintenance, ``--dev`` development, a muted violet added for
+it), with the current mode's button filled solid: the column has to read
+as a status at rest, as the switch's amber did, and a row of three equal
+tints did not say which one held.  Maintenance is the one state that
+silently stops pushes, so it keeps the amber that the switch had; an
+in-flight htmx request dims the control rather
 than greying it, so idle and "request pending" look different — scoped to
 the control that issued the request (``label.toggle-switch.htmx-request``,
 ``form.htmx-request``, ``button.group-btn.htmx-request``), because htmx

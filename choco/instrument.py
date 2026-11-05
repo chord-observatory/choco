@@ -1074,7 +1074,7 @@ def overview(boards: list[dict], wiring: Wiring, switch: dict, nics: dict,
 
     *boards*: :func:`board_layout`.  *power*: feed label -> True/False/None
     (the PDB channel; absent when the PDB table does not name the feed).
-    *nodes*: node name -> ``{"status", "maintenance", "version", "branch",
+    *nodes*: node name -> ``{"status", "mode", "version", "branch",
     "commit", "group"}`` from choco's registry.  *devices*: the monitor's
     ``devices`` (the PDU's outlets, each host's node_exporter).  *flags*: feed label -> why bffs flags it, for
     the flagged feeds; None when bffs has not said.  *fpga*:
@@ -1165,6 +1165,11 @@ def health_tone(health: str | None) -> str:
 def node_tone(state: dict | None) -> str:
     status = (state or {}).get("status")
     return {"started": "ok", "down": "bad", "unknown": "off", None: "off"}.get(status, "warn")
+
+
+def _mode_word(state: dict | None) -> str:
+    """The card's suffix for a node not in normal mode."""
+    return {"maintenance": " · maint", "development": " · dev"}.get((state or {}).get("mode"), "")
 
 
 
@@ -1357,8 +1362,9 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
         left, right = cx(g["cols"][0]) - colw / 2 + 4, cx(g["cols"][-1]) + colw / 2 - 4
         pline = f"{h['watts']:.0f} W" if h.get("watts") is not None else ""
         tone = node_tone(h)
-        status = (h.get("status") or "not in nodes.yaml") + (" · maint" if h.get("maintenance") else "")
-        card(left, ny, right - left, Y["node_h"], "maint" if tone == "ok" and h.get("maintenance") else tone,
+        status = (h.get("status") or "not in nodes.yaml") + _mode_word(h)
+        card(left, ny, right - left, Y["node_h"],
+             "maint" if tone == "ok" and h.get("mode") == "maintenance" else tone,
              [{"dy": 30, "text": g["name"], "cls": "fl-b"},
               {"dy": 44, "text": status, "cls": "fl-sm muted"},
               {"dy": 59, "text": short_build(h.get("branch"), h.get("version")), "cls": "fl-sm mono"},
@@ -1382,7 +1388,7 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
                           ([f"receiving {rx_bps / 1e9:.2f} Gb/s"] if isinstance(rx_bps, (int, float)) else []))
         card(x, Y["recv"], _CARD_W, Y["recv_h"], node_tone(d),
              [{"dy": 20, "text": d["name"], "cls": "fl-b",
-               "sub": (d.get("status") or "?") + (" · maint" if d.get("maintenance") else "")},
+               "sub": (d.get("status") or "?") + _mode_word(d)},
               {"dy": 38, "text": line, "cls": "fl-sm muted"}],
              f"{d['name']}: {d.get('status') or '?'}" + (f" · kotekan {h['version']}" if h.get("version") else ""),
              f"{root}/pipeline/{d['group']}/{d['name']}" if d.get("group") else None)

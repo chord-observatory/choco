@@ -5,7 +5,7 @@ import json
 import pytest
 import responses
 
-from choco.state import Node, NodeStatus
+from choco.state import Mode, Node, NodeStatus
 
 HOST = "localhost"
 PORT = 12048
@@ -69,7 +69,7 @@ class TestLifecycle:
     @responses.activate
     def test_start_blocked_in_maintenance(self, node):
         responses.post(f"{BASE}/start", json={"status": "ok"})
-        node.maintenance = True
+        node.mode = Mode.MAINTENANCE
         assert node.start({"config": "data"}) is False
         assert len(responses.calls) == 0
 
@@ -78,7 +78,7 @@ class TestLifecycle:
         """The one-off route's explicit override reaches kotekan; the
         default path above stays blocked."""
         responses.post(f"{BASE}/start", json={"status": "ok"})
-        node.maintenance = True
+        node.mode = Mode.MAINTENANCE
         assert node.start({"config": "data"},
                           override_maintenance=True) is True
         assert len(responses.calls) == 1

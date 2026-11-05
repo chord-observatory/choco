@@ -38,7 +38,7 @@ from gevent.event import Event
 from gevent.lock import BoundedSemaphore
 
 from .state import (
-    Node, Registry, NodeStatus,
+    Mode, Node, Registry, NodeStatus,
     strip_updatable_values, find_updatable_blocks,
     CONFIG_SUFFIXES,
     UPDATABLE_DIR,
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 #: How often a worker reads the live /config of a node in maintenance.
 #: Nothing is pushed then, so the read is only for the X-engine page's
-#: updatable panel; outside maintenance the drift check reads it every cycle.
+#: updatable panel; in the other modes the sync reads it every cycle.
 LIVE_READ_MAINTENANCE_S = 30
 
 
@@ -293,9 +293,13 @@ class NodeWorker:
         node.last_seen = time.time()
         node.version_info = node.get_version_info()
 
+        if node.mode is Mode.DEVELOPMENT:
+            self._sync_development(probe)
+            return
+
         # If the node's desired state is not started, ensure kotekan is not running.
         if not node.started:
-            if probe == NodeStatus.STARTED and not node.maintenance:
+            if probe == NodeStatus.STARTED and node.mode is Mode.NORMAL:
                 logger.info(f"Node {node.key} should be idle; sending /kill")
                 if node.kill():
                     node.status = NodeStatus.IDLE
@@ -327,7 +331,7 @@ class NodeWorker:
         # Maintenance mode: poll status but make no changes.  Push paths
         # are skipped here and kill is skipped above so choco never
         # mutates a node the operator has paused.
-        if node.maintenance:
+        if node.mode is Mode.MAINTENANCE:
             node.status = probe
             if (probe == NodeStatus.STARTED
                     and time.time() - (node.live_read_at or 0) >= LIVE_READ_MAINTENANCE_S):
@@ -335,7 +339,7 @@ class NodeWorker:
             return
 
         actual = node.get_config()
-        self._note_live(actual)
+        live = self._note_live(actual)
 
         # Node idle with no config -> start it.
         if probe == NodeStatus.IDLE and actual is None:
@@ -354,15 +358,38 @@ class NodeWorker:
             self._push_config(desired)
         else:
             node.status = NodeStatus.STARTED
-            self._sync_updatable(actual)
+            self._sync_updatable(live)
 
-    def _note_live(self, live_config: dict | None) -> None:
+    def _sync_development(self, probe: NodeStatus) -> None:
+        """Development: the node runs a config choco did not render.
+        Nothing starts or kills it (``started`` is not enforced, as in
+        maintenance), and its config file does not matter; what choco
+        keeps current are its stored updatable values, on the endpoints
+        the running config has (``Node.desired_updatable``)."""
+        node = self.node
+        node.status = probe
+        if probe != NodeStatus.STARTED:
+            return
+        # A corrupt store would push stale values; the base config's
+        # own load error is irrelevant here.
+        if node.updatable_load_error:
+            node.error = node.updatable_load_error
+            return
+        live = self._note_live(node.get_config())
+        if live is None:
+            node.status = NodeStatus.UNKNOWN
+            node.error = "Unable to get remote config; status indeterminate."
+            return
+        self._sync_updatable(live)
+
+    def _note_live(self, live_config: dict | None) -> dict[str, dict] | None:
         """Keep the updatable blocks of the live config just read (None:
-        the read failed) for the X-engine page."""
+        the read failed) for the X-engine page, and return them."""
         node = self.node
         node.live_updatable = (find_updatable_blocks(live_config)
                                if live_config is not None else None)
         node.live_read_at = time.time()
+        return node.live_updatable
 
     def _push_config(self, desired: dict) -> None:
         """Kill -> wait for idle -> start with *desired* config; the
@@ -422,20 +449,13 @@ class NodeWorker:
                 node.status = NodeStatus.UNKNOWN
                 node.error = "Failed to push config via /start"
 
-    def _sync_updatable(self, live_config: dict):
-        """Push stored updatable values that differ from the live config."""
+    def _sync_updatable(self, live: dict[str, dict]):
+        """Push the stored updatable values the node does not run
+        (``Node.desired_updatable``: which endpoints, by the mode), given
+        the updatable blocks of its live config."""
         node = self.node
-        stored = node.updatable_config
-        if not stored:
-            return
-        # Only push endpoints that still exist in the rendered base config.
-        rendered_blocks = (find_updatable_blocks(node.rendered_config)
-                           if node.rendered_config else {})
-        live_blocks = find_updatable_blocks(live_config)
-        for endpoint, values in stored.items():
-            if endpoint not in rendered_blocks:
-                continue
-            if live_blocks.get(endpoint) != values:
+        for endpoint, values in node.desired_updatable(live).items():
+            if live.get(endpoint) != values:
                 logger.info(f"Updatable config drift on {node.key} "
                             f"at /{endpoint}")
                 if not node.push_updatable(f"/{endpoint}", values):
@@ -515,13 +535,38 @@ class Orchestrator:
                 self._enqueue(node, item)
 
     def set_flag(self, nodes, attr: str, value: bool) -> None:
-        """Set a desired flag (``started`` / ``maintenance``) on *nodes* and
-        wake each node's worker with a POLL, so the change takes effect now
-        rather than at the node's next scheduled check (which for a
-        backed-off node is up to ``max_retry_interval`` away)."""
+        """Set a desired flag (``started``) on *nodes* and wake each
+        node's worker with a POLL, so the change takes effect now rather
+        than at the node's next scheduled check (which for a backed-off
+        node is up to ``max_retry_interval`` away)."""
         for node in nodes:
             setattr(node, attr, value)
             self.submit_node(node.key, ChangeItem(ChangeType.POLL))
+
+    def set_mode(self, nodes, mode: Mode) -> list[Node]:
+        """Put *nodes* in *mode* and wake their workers as ``set_flag``
+        does.  All or none: the nodes whose step is refused
+        (``Node.set_mode``, development to normal) are returned and
+        nothing changes."""
+        nodes = list(nodes)
+        refused = [n for n in nodes
+                   if n.mode is Mode.DEVELOPMENT and mode is Mode.NORMAL]
+        if refused:
+            return refused
+        for node in nodes:
+            node.set_mode(mode)
+            self.submit_node(node.key, ChangeItem(ChangeType.POLL))
+        return []
+
+    def lift(self, nodes) -> list[Node]:
+        """Take the *nodes* in maintenance out of it, each to its resting
+        mode (``Node.rest_mode``); the others are left as they are.
+        Returns the nodes changed."""
+        lifted = [n for n in nodes if n.mode is Mode.MAINTENANCE]
+        for node in lifted:
+            node.set_mode(node.rest_mode)
+            self.submit_node(node.key, ChangeItem(ChangeType.POLL))
+        return lifted
 
     # --- Config-directory change detection ---
 
@@ -677,9 +722,9 @@ class Orchestrator:
         self._file_mtimes = self._config_file_mtimes()
 
         # Set node.started from each node's actual runtime state before
-        # any worker acts on it.  All nodes default to maintenance=True
-        # so this is purely an observation pass; no pushes occur until
-        # the operator takes nodes out of maintenance.
+        # any worker acts on it.  All nodes start in maintenance, so
+        # this is purely an observation pass; no pushes occur until the
+        # operator lifts it.
         self.discover_node_states()
 
         with self._submit_lock:
@@ -745,10 +790,10 @@ class Orchestrator:
         toggles are discarded.  Held under the submit lock so in-flight
         submissions don't race the rebuild.
 
-        Freshly-built nodes default to ``maintenance=True`` (set by
+        Freshly-built nodes start in maintenance (set by
         :meth:`Registry.reload`), so the registry edit acts as a pause:
-        choco won't push anything until the operator takes nodes back
-        out of maintenance.  After the rebuild we run state discovery
+        choco won't push anything until the operator lifts it, each node
+        then returning to its resting mode.  After the rebuild we run state discovery
         so each new :class:`Node`'s ``started`` flag matches the actual
         kotekan runtime state rather than the cold default.
         """

@@ -301,7 +301,7 @@ class TestRoleConfig:
 
     def test_unset_write_groups_means_everyone_may(self, client):
         token = csrf(client, **_via("alice", groups="chord-users"))
-        resp = client.post("/nodes/toggle-maintenance/cx/cx1",
+        resp = client.post("/nodes/set-mode/maintenance/cx/cx1",
                            data={"_csrf_token": token}, **_via("alice", groups="chord-users"))
         assert _went_through(resp)
 
@@ -325,7 +325,7 @@ class TestReadOnly:
     def test_a_choco_user_may_write(self, roles_client):
         via = _via("cara", groups="chord-users,choco-users")
         token = csrf(roles_client, **via)
-        resp = roles_client.post("/nodes/toggle-maintenance/cx/cx1",
+        resp = roles_client.post("/nodes/set-mode/maintenance/cx/cx1",
                                  data={"_csrf_token": token}, **via)
         assert _went_through(resp)
         assert "Read-only access" not in roles_client.get("/nodes", **via).get_data(as_text=True)
@@ -333,7 +333,7 @@ class TestReadOnly:
     def test_a_group_change_applies_on_the_next_request(self, roles_client):
         reader = _via("cara", groups="chord-users")
         token = csrf(roles_client, **reader)
-        url = "/nodes/toggle-maintenance/cx/cx1"
+        url = "/nodes/set-mode/maintenance/cx/cx1"
         assert roles_client.post(url, data={"_csrf_token": token}, **reader).status_code == 403
         writer = _via("cara", groups="chord-users,choco-admins")
         assert _went_through(roles_client.post(url, data={"_csrf_token": token}, **writer))
@@ -341,7 +341,7 @@ class TestReadOnly:
     def test_trusted_hosts_keep_full_access(self, roles_client):
         chive = {"environ_base": {"REMOTE_ADDR": CHIVE}}
         token = csrf(roles_client, **chive)
-        resp = roles_client.post("/nodes/toggle-maintenance/cx/cx1",
+        resp = roles_client.post("/nodes/set-mode/maintenance/cx/cx1",
                                  data={"_csrf_token": token}, **chive)
         assert _went_through(resp)
 

@@ -1,5 +1,6 @@
 """Tests for the queue-based sync system."""
 
+import copy
 import os
 import time
 
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock
 
 import yaml
 
-from choco.state import Registry, Node, NodeStatus
+from choco.state import Mode, Registry, Node, NodeStatus
 from choco.sync import (
     ChangeType, ChangeItem, Orchestrator, NodeWorker, WorkerPhase,
 )
@@ -19,10 +20,10 @@ from choco.sync import (
 def registry(configs_dir):
     reg = Registry(configs_dir)
     # Registry constructs nodes in maintenance mode; flip back to normal
-    # for tests that exercise the push paths.  Maintenance-specific tests
-    # set ``node.maintenance = True`` explicitly.
+    # for tests that exercise the push paths.  Mode-specific tests set
+    # ``node.mode`` explicitly.
     for node in reg.nodes.values():
-        node.maintenance = False
+        node.mode = Mode.NORMAL
     return reg
 
 
@@ -499,7 +500,7 @@ class TestPushBlockedByLoadError:
         """Registry + Orchestrator with maintenance turned off everywhere."""
         registry = Registry(configs_dir)
         for node in registry.nodes.values():
-            node.maintenance = False
+            node.mode = Mode.NORMAL
         orchestrator = Orchestrator(registry, poll_interval=1, max_concurrent_pushes=2)
         return registry, orchestrator
 
@@ -663,7 +664,7 @@ class TestMaintenanceMode:
         """Drift detected but maintenance is on -> no /kill, no /start."""
         node = orchestrator.registry.get_node("cx/cx1")
         node.started = True
-        node.maintenance = True
+        node.mode = Mode.MAINTENANCE
 
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_config = MagicMock(return_value={"wrong": "config"})
@@ -684,7 +685,7 @@ class TestMaintenanceMode:
         """started=False + maintenance -> kill is skipped; status reflects probe."""
         node = orchestrator.registry.get_node("cx/cx1")
         node.started = False
-        node.maintenance = True
+        node.mode = Mode.MAINTENANCE
 
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_version_info = MagicMock(return_value={"kotekan_version": "2024.11"})
@@ -704,6 +705,120 @@ class TestMaintenanceMode:
         registry = Registry(configs_dir)
         for node in registry.nodes.values():
             assert node.maintenance is True
+
+    def test_registry_reads_the_development_declaration(self, configs_dir):
+        """nodes.yaml's ``development: true`` is the node's resting mode;
+        the registry still builds it in maintenance."""
+        path = configs_dir / "nodes.yaml"
+        data = yaml.safe_load(path.read_text())
+        data["groups"]["cx"]["cx2"]["development"] = True
+        path.write_text(yaml.safe_dump(data))
+        registry = Registry(configs_dir)
+        cx1, cx2 = registry.get_node("cx/cx1"), registry.get_node("cx/cx2")
+        assert cx1.mode is Mode.MAINTENANCE and cx2.mode is Mode.MAINTENANCE
+        assert (cx1.rest_mode, cx2.rest_mode) == (Mode.NORMAL, Mode.DEVELOPMENT)
+
+
+class TestDevelopmentMode:
+    """In development the worker never starts or kills the node, its
+    config file does not matter, and the stored updatable values are
+    pushed where the running config can take them."""
+
+    LIVE = {"telescope": {"name": "dev"},
+            "updatable_config": {"bad_inputs": {"kotekan_update_endpoint": "json",
+                                                "bad_inputs": [], "start_time": 0.0,
+                                                "update_id": "initial"}},
+            "fringestop_enabled": {"kotekan_update_endpoint": "json", "enabled": False,
+                                   "valid_at_time_ns": 0}}
+    BFFS = {"bad_inputs": [1, 2], "start_time": 5.0, "update_id": "bffs-5"}
+
+    def _cycle(self, orchestrator, probe=NodeStatus.STARTED, live=...):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.mode = Mode.DEVELOPMENT
+        node.started = False            # not enforced in development
+        node.updatable_config = {
+            "updatable_config/bad_inputs": self.BFFS,
+            "earth_rotation_data": {"earth_orientation_parameter_table": []},
+            "fringestop_enabled": {"enabled": True, "extra": 1}}
+        node.get_status = MagicMock(return_value=probe)
+        node.get_version_info = MagicMock(return_value={"kotekan_version": "dev"})
+        node.get_config = MagicMock(return_value=self.LIVE if live is ... else live)
+        node.kill, node.start = MagicMock(), MagicMock()
+        node.push_updatable = MagicMock(return_value=True)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
+        return node
+
+    def test_pushes_the_stored_values_the_running_config_can_take(self, orchestrator):
+        node = self._cycle(orchestrator)
+        node.kill.assert_not_called()
+        node.start.assert_not_called()
+        # bad_inputs differs and fits; the EOP table is not live; the
+        # stored fringestop value has a field the running block lacks.
+        node.push_updatable.assert_called_once_with("/updatable_config/bad_inputs", self.BFFS)
+        assert node.status == NodeStatus.STARTED and node.error is None
+        assert node.live_updatable["fringestop_enabled"] == {"enabled": False, "valid_at_time_ns": 0}
+
+    def test_nothing_to_push_when_the_node_runs_the_values(self, orchestrator):
+        live = copy.deepcopy(self.LIVE)
+        live["updatable_config"]["bad_inputs"].update(self.BFFS)
+        node = self._cycle(orchestrator, live=live)
+        node.push_updatable.assert_not_called()
+        assert node.status == NodeStatus.STARTED
+
+    def test_a_kotekan_that_is_not_running_is_left_alone(self, orchestrator):
+        node = self._cycle(orchestrator, probe=NodeStatus.IDLE)
+        node.get_config.assert_not_called()
+        node.start.assert_not_called()
+        node.push_updatable.assert_not_called()
+        assert node.status == NodeStatus.IDLE
+
+    def test_a_failed_config_read_is_indeterminate(self, orchestrator):
+        node = self._cycle(orchestrator, live=None)
+        node.push_updatable.assert_not_called()
+        assert node.status == NodeStatus.UNKNOWN and "remote config" in node.error
+
+    def test_a_corrupt_store_blocks_the_push(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node._updatable_load_error = "Bad updatable JSON (cx1.json): x"
+        node = self._cycle(orchestrator)
+        node.get_config.assert_not_called()
+        node.push_updatable.assert_not_called()
+        assert node.status == NodeStatus.STARTED and "Bad updatable JSON" in node.error
+
+    def test_the_config_file_does_not_matter(self, orchestrator):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.rendered_config, node._base_load_error = None, "render failed"
+        node = self._cycle(orchestrator)
+        node.push_updatable.assert_called_once()
+        assert node.error is None
+
+
+class TestSetMode:
+    def test_all_or_none_and_a_poll_per_node(self, orchestrator):
+        reg = orchestrator.registry
+        cx1, cx2 = reg.get_node("cx/cx1"), reg.get_node("cx/cx2")
+        cx1.mode = Mode.DEVELOPMENT
+        assert orchestrator.set_mode([cx1, cx2], Mode.NORMAL) == [cx1]
+        assert cx1.mode is Mode.DEVELOPMENT and cx2.mode is Mode.NORMAL
+        assert cx1.queue_empty and cx2.queue_empty
+        assert orchestrator.set_mode([cx1, cx2], Mode.MAINTENANCE) == []
+        assert cx1.maintenance and cx2.maintenance
+        assert [i.type for i in cx1._queue] == [ChangeType.POLL]
+        assert [i.type for i in cx2._queue] == [ChangeType.POLL]
+
+    def test_lift_returns_each_node_to_its_resting_mode(self, orchestrator):
+        reg = orchestrator.registry
+        cx1, cx2 = reg.get_node("cx/cx1"), reg.get_node("cx/cx2")
+        cx1.development, cx1.mode = True, Mode.MAINTENANCE
+        cx2.mode = Mode.MAINTENANCE
+        assert orchestrator.lift([cx1, cx2]) == [cx1, cx2]
+        assert cx1.mode is Mode.DEVELOPMENT and cx2.mode is Mode.NORMAL
+        # A node not in maintenance is left as it is, and not woken.
+        cx2.mode = Mode.DEVELOPMENT
+        cx2._queue.clear()
+        assert orchestrator.lift([cx1, cx2]) == []
+        assert cx2.mode is Mode.DEVELOPMENT and cx2.queue_empty
 
 
 class TestConfigFileScan:

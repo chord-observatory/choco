@@ -18,8 +18,8 @@
     <dt>Host</dt><dd>{{ node.host }}:{{ node.port }}</dd>
     <dt>Desired state</dt>
     <dd>{% with key=node_key %}{% include "_toggle_started.html" %}{% endwith %}</dd>
-    <dt>Maintenance</dt>
-    <dd>{% with key=node_key %}{% include "_toggle_maintenance.html" %}{% endwith %}</dd>
+    <dt>Mode</dt>
+    <dd>{% with key=node_key %}{% include "_mode_control.html" %}{% endwith %}</dd>
 </dl>
 <dl id="node-status" class="service-facts node-facts"
     hx-ext="morph"

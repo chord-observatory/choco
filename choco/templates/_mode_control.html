@@ -1,0 +1,17 @@
+{# The node's mode as a three-way control: one button per mode, the
+   current one filled.  A node nodes.yaml declares development rests in
+   development, so normal is not offered: it would restart the developer's
+   kotekan onto the library.  Posting development -> normal is refused
+   (409) in any case; the operator goes through maintenance. #}
+{%- set modes = [('normal', 'info', 'Normal: choco keeps the node on its desired config (start, kill, restart on drift, updatable values)'),
+                 ('maintenance', 'maint', 'Maintenance: choco reads the node and never writes to it'),
+                 ('development', 'dev', 'Development: the node runs its own config; choco never starts or kills it and pushes only its stored updatable values, to the endpoints that config has')] -%}
+<span class="mode-ctl" hx-target="this" hx-swap="outerHTML"
+      title="{{ 'mode: ' ~ node.mode.value ~ ('\n(nodes.yaml declares it a development node: lifting maintenance returns it to development)' if node.development else '') }}">
+    {%- for mode, tone, title in modes if not (mode == 'normal' and node.development) %}
+    <button type="button" class="mode-btn tone-{{ tone }}{% if node.mode.value == mode %} current{% endif %}"
+            title="{{ title }}"{% if node.mode.value == mode %} aria-pressed="true"{% else %}
+            hx-post="{{ request.script_root }}/nodes/set-mode/{{ mode }}/{{ key }}"
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'{% endif %}>{{ {'normal': 'normal', 'maintenance': 'maint', 'development': 'dev'}[mode] }}</button>
+    {%- endfor %}
+</span>

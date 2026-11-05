@@ -231,12 +231,14 @@
 {{ group_ctl('start', request.script_root ~ '/nodes/set-started', group,
              ('off', 'stop', 'Set %s nodes to idle'), ('ok', 'start', 'Set %s nodes to started')) }}
 {%- endmacro %}
-{# ▼ puts the nodes into maintenance (amber, the switch's maintenance
-   colour), ▲ takes them out (blue, the switch's normal colour). #}
+{# ▼ puts the nodes into maintenance (amber, the mode control's
+   maintenance colour), ▲ lifts it (blue, normal's colour): each node in
+   maintenance returns to its resting mode, development where nodes.yaml
+   declares it. #}
 {% macro maint_ctl(group=none) -%}
 {{ group_ctl('maint', request.script_root ~ '/nodes/set-maintenance', group,
-             ('maint', 'on', 'Put %s nodes in maintenance (choco will not push)'),
-             ('info', 'off', 'Take %s nodes out of maintenance (choco will push)')) }}
+             ('maint', 'on', 'Put %s nodes in maintenance (choco will not write to them)'),
+             ('info', 'off', 'Lift maintenance on %s nodes (each returns to normal, or to development where nodes.yaml declares it)')) }}
 {%- endmacro %}
 {# The live-plot panel for an HDF5 gain archive (the F-engine's digital
    gains, eigencal's solution): a dataset picker, the full-screen and

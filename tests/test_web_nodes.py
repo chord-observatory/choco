@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from choco.state import Node, NodeStatus
+from choco.state import Mode, Node, NodeStatus
 from choco.sync import ChangeType
 
 from tests.helpers import csrf, login
@@ -147,7 +147,7 @@ class TestNodesSave:
         # Pre-save: flip maintenance off and force a started value so
         # we can prove neither leaks across the rebuild.
         for n in registry.nodes.values():
-            n.maintenance = False
+            n.mode = Mode.NORMAL
         registry.get_node("cx/cx1").started = False
 
         # Make discovery deterministic: pretend cx1 is currently running.
@@ -170,6 +170,34 @@ class TestNodesSave:
         # And started follows reality (probe returned STARTED), not the
         # cold default.
         assert cx1.started is True
+
+    def test_save_keeps_the_development_declaration(self, client, app, configs_dir):
+        login(client)
+        token = csrf(client)
+
+        def save(groups):
+            with patch.object(Node, "get_status", return_value=NodeStatus.IDLE):
+                return client.post("/nodes/edit", data=json.dumps({"groups": groups}),
+                                   content_type="application/json",
+                                   headers={"X-CSRF-Token": token})
+
+        resp = save({"cx": [
+            {"name": "cx1", "host": "cx1.example", "port": 12048, "development": True},
+            {"name": "cx2", "host": "cx2.example", "port": 12048, "development": False}]})
+        assert resp.status_code == 200
+        on_disk = yaml.safe_load((configs_dir / "nodes.yaml").read_text())
+        assert on_disk["groups"]["cx"]["cx1"] == {"host": "cx1.example", "port": 12048,
+                                                  "development": True}
+        assert "development" not in on_disk["groups"]["cx"]["cx2"]
+        registry = app.config["registry"]
+        cx1 = registry.get_node("cx/cx1")
+        assert cx1.maintenance and cx1.development and cx1.rest_mode is Mode.DEVELOPMENT
+        assert not registry.get_node("cx/cx2").development
+        page = client.get("/nodes/edit").get_data(as_text=True)
+        assert page.count('class="node-development" checked') == 1
+        resp = save({"cx": [{"name": "cx1", "host": "cx1.example", "development": "yes"}]})
+        assert resp.status_code == 400
+        assert "development must be a boolean" in resp.get_json()["error"]
 
 
 # --- POST /nodes/set-started-group/<group>/<action> ---
@@ -224,27 +252,83 @@ class TestSetStartedGroup:
 
 
 class TestMaintenanceToggles:
-    def test_toggle_flips_per_node(self, client, app):
+    def test_set_mode_per_node(self, client, app):
         login(client)
         token = csrf(client)
         registry = app.config["registry"]
         node = registry.get_node("cx/cx1")
-        node.maintenance = False
+        node.mode = Mode.NORMAL
 
         resp = client.post(
-            "/nodes/toggle-maintenance/cx/cx1",
+            "/nodes/set-mode/maintenance/cx/cx1",
             data={"_csrf_token": token},
             follow_redirects=False,
         )
         assert resp.status_code == 302
         assert node.maintenance is True
+        # htmx gets the control back, with the new mode filled in.
+        resp = client.post("/nodes/set-mode/development/cx/cx1",
+                           data={"_csrf_token": token}, headers={"HX-Request": "true"})
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert node.mode is Mode.DEVELOPMENT
+        assert 'class="mode-btn tone-dev current"' in body
+        assert "/nodes/set-mode/maintenance/cx/cx1" in body
+        assert "/nodes/set-mode/normal/cx/cx1" in body     # not declared: normal is offered
+        # Development straight to normal is refused; through maintenance it goes.
+        resp = client.post("/nodes/set-mode/normal/cx/cx1",
+                           data={"_csrf_token": token}, headers={"HX-Request": "true"})
+        assert resp.status_code == 409 and node.mode is Mode.DEVELOPMENT
+        resp = client.post("/nodes/set-mode/normal/cx/cx1",
+                           data={"_csrf_token": token}, follow_redirects=True)
+        assert "put it in maintenance first" in resp.get_data(as_text=True)
+        assert node.mode is Mode.DEVELOPMENT
+        client.post("/nodes/set-mode/maintenance/cx/cx1", data={"_csrf_token": token})
+        client.post("/nodes/set-mode/normal/cx/cx1", data={"_csrf_token": token})
+        assert node.mode is Mode.NORMAL
+        assert client.post("/nodes/set-mode/sideways/cx/cx1",
+                           data={"_csrf_token": token}).status_code == 400
+        assert client.post("/nodes/set-mode/normal/cx/nope",
+                           data={"_csrf_token": token}).status_code == 404
+
+    def test_a_declared_development_node_is_not_offered_normal(self, client, app):
+        login(client)
+        token = csrf(client)
+        node = app.config["registry"].get_node("cx/cx1")
+        node.development = True
+        node.mode = Mode.DEVELOPMENT
+        body = client.post("/nodes/set-mode/development/cx/cx1",
+                           data={"_csrf_token": token},
+                           headers={"HX-Request": "true"}).get_data(as_text=True)
+        assert "/nodes/set-mode/normal/cx/cx1" not in body
+        assert "/nodes/set-mode/maintenance/cx/cx1" in body
+        assert "nodes.yaml declares it" in body
+
+    def test_lifting_returns_each_node_to_its_resting_mode(self, client, app):
+        login(client)
+        token = csrf(client)
+        registry = app.config["registry"]
+        cx1, cx2, recv1 = (registry.get_node(k) for k in ("cx/cx1", "cx/cx2", "recv/recv1"))
+        cx1.development = True
+        cx2.mode = Mode.DEVELOPMENT          # a runtime handover, not declared
+        recv1.mode = Mode.NORMAL
+        # ▼ is the stop button: every node, development included.
+        client.post("/nodes/set-maintenance-all/on", data={"_csrf_token": token})
+        assert all(n.maintenance for n in registry.nodes.values())
+        client.post("/nodes/set-maintenance-all/off", data={"_csrf_token": token})
+        assert cx1.mode is Mode.DEVELOPMENT
+        assert cx2.mode is Mode.NORMAL and recv1.mode is Mode.NORMAL
+        # ▲ leaves a node not in maintenance alone.
+        cx2.mode = Mode.DEVELOPMENT
+        client.post("/nodes/set-maintenance-group/cx/off", data={"_csrf_token": token})
+        assert cx2.mode is Mode.DEVELOPMENT
 
     def test_set_group_scopes_to_group(self, client, app):
         login(client)
         token = csrf(client)
         registry = app.config["registry"]
         for n in registry.nodes.values():
-            n.maintenance = False
+            n.mode = Mode.NORMAL
 
         resp = client.post(
             "/nodes/set-maintenance-group/cx/on",
@@ -262,7 +346,7 @@ class TestMaintenanceToggles:
         token = csrf(client)
         registry = app.config["registry"]
         for n in registry.nodes.values():
-            n.maintenance = False
+            n.mode = Mode.NORMAL
 
         client.post(
             "/nodes/set-maintenance-all/on",
@@ -289,7 +373,7 @@ class TestMaintenanceToggles:
         login(client)
         registry = app.config["registry"]
         node = registry.get_node("cx/cx1")
-        node.maintenance = False
+        node.mode = Mode.NORMAL
 
         resp = client.post(
             "/update/cx/cx1",
@@ -306,6 +390,34 @@ class TestMaintenanceToggles:
             json={"action": "set_maintenance", "maintenance": "yes"},
         )
         assert resp.status_code == 400
+
+    def test_json_api_set_mode(self, client, app):
+        login(client)
+        registry = app.config["registry"]
+        cx1, cx2 = registry.get_node("cx/cx1"), registry.get_node("cx/cx2")
+        resp = client.post("/update/cx/cx1", json={"action": "set_mode", "mode": "development"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"status": "ok", "node": "cx/cx1", "mode": "development"}
+        assert cx1.mode is Mode.DEVELOPMENT and cx2.maintenance
+        # All or none: one development node refuses the group's step to normal.
+        resp = client.post("/update/cx", json={"action": "set_mode", "mode": "normal"})
+        assert resp.status_code == 409
+        assert resp.get_json()["refused"] == ["cx/cx1"]
+        assert "put in maintenance first" in resp.get_json()["error"]
+        assert cx1.mode is Mode.DEVELOPMENT and cx2.maintenance
+        resp = client.post("/update/cx/cx1", json={"action": "set_mode", "mode": "sideways"})
+        assert resp.status_code == 400
+        # set_maintenance false is the lift: each node to its resting mode.
+        cx2.development = True
+        client.post("/update/cx", json={"action": "set_maintenance", "maintenance": True})
+        assert cx1.maintenance and cx2.maintenance
+        resp = client.post("/update/cx", json={"action": "set_maintenance", "maintenance": False})
+        assert resp.status_code == 200 and resp.get_json()["maintenance"] is False
+        assert cx1.mode is Mode.NORMAL and cx2.mode is Mode.DEVELOPMENT
+        status = client.get("/api/nodes/status").get_json()["nodes"]
+        by_key = {n["key"]: n for n in status}
+        assert by_key["cx/cx2"]["mode"] == "development" and by_key["cx/cx2"]["development"]
+        assert by_key["cx/cx1"]["mode"] == "normal" and not by_key["cx/cx1"]["maintenance"]
 
 
     def test_json_api_flags_wake_the_worker(self, client, app):
@@ -391,7 +503,7 @@ class TestOneshot:
     def _pause(app, *keys):
         registry = app.config["registry"]
         for n in registry.nodes.values():
-            n.maintenance = n.key in keys
+            n.mode = Mode.MAINTENANCE if n.key in keys else Mode.NORMAL
 
     def test_unknown_targets_404(self, client):
         login(client)

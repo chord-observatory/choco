@@ -188,6 +188,21 @@ class NodeStatus(Enum):
     SYNCING = "syncing" # Push in progress (kill -> wait -> start with new config)
 
 
+class Mode(Enum):
+    """What choco may do to a node.
+
+    NORMAL: converge it on its desired config (start, kill, restart on
+    drift, keep its stored updatable values current).  MAINTENANCE: read
+    it, never write.  DEVELOPMENT: the node runs a config choco did not
+    render (a developer's build, started by hand); choco never starts or
+    kills it, and keeps its stored updatable values current on the
+    endpoints that running config has.
+    """
+    NORMAL = "normal"
+    MAINTENANCE = "maintenance"
+    DEVELOPMENT = "development"
+
+
 class Node:
     """A kotekan instance on the cluster.
 
@@ -223,7 +238,8 @@ class Node:
     def __init__(self, name: str, group: str, host: str,
                  port: int = DEFAULT_PORT, timeout: int = 10, *,
                  started: bool = False,
-                 maintenance: bool = False,
+                 mode: Mode = Mode.NORMAL,
+                 development: bool = False,
                  configs_dir: Path | None = None,
                  template_vars: dict | None = None,
                  config: str | None = None):
@@ -234,14 +250,17 @@ class Node:
         self.port = port
         self.timeout = timeout
         self.started = started
-        # Maintenance mode: when True, push_updatable(), start() and kill()
-        # are no-ops.  Ephemeral, never persisted to nodes.yaml.  The
-        # ``Registry`` always constructs nodes with ``maintenance=True``
-        # for production so a freshly-started choco never pushes before
-        # the operator has reviewed the cluster state; the default here
-        # is ``False`` so direct ``Node()`` construction in tests stays
-        # in "normal mode" unless explicitly set.
-        self.maintenance = maintenance
+        # The mode (see ``Mode``) is ephemeral, never persisted to
+        # nodes.yaml.  The ``Registry`` always constructs nodes in
+        # maintenance for production, so a freshly-started choco never
+        # writes before the operator has reviewed the cluster state; the
+        # default here is normal so direct ``Node()`` construction in
+        # tests stays in normal mode unless explicitly set.
+        # ``development`` is nodes.yaml's declaration that the node is a
+        # developer's: lifting maintenance returns it to development,
+        # not to normal (see ``rest_mode``).
+        self.mode = mode
+        self.development = development
         self._base_url = f"http://{host}:{port}"
 
         # Config state (loaded from disk by load_config / load_updatable)
@@ -294,6 +313,28 @@ class Node:
     def version(self) -> str | None:
         """kotekan's version string, from the last ``/version`` probe."""
         return (self.version_info or {}).get("kotekan_version")
+
+    @property
+    def maintenance(self) -> bool:
+        """In maintenance: choco reads the node and never writes to it."""
+        return self.mode is Mode.MAINTENANCE
+
+    @property
+    def rest_mode(self) -> Mode:
+        """The mode lifting maintenance returns the node to: development
+        where nodes.yaml declares it, else normal."""
+        return Mode.DEVELOPMENT if self.development else Mode.NORMAL
+
+    def set_mode(self, mode: Mode) -> bool:
+        """Change the mode.  The one step refused (False, nothing changed)
+        is development straight to normal: normal would restart the
+        developer's kotekan onto the library within a poll, so a node
+        leaves development into maintenance and the operator lifts that
+        knowing what it starts."""
+        if self.mode is Mode.DEVELOPMENT and mode is Mode.NORMAL:
+            return False
+        self.mode = mode
+        return True
 
     @property
     def config_problem(self) -> str | None:
@@ -455,12 +496,44 @@ class Node:
                     target.update(values)
         return desired
 
+    def desired_updatable(self, live: dict[str, dict] | None = None
+                          ) -> dict[str, dict]:
+        """What choco means the node to run at every endpoint it holds a
+        stored value for: the stored value merged over the endpoint's
+        block, as ``desired_config`` merges it before a ``/start``.
+
+        In normal mode the block is the file's, so an endpoint the file
+        does not render is left out (its stored value is stale).  In
+        development the node runs a config choco did not render, so the
+        block is the running one (*live*: the updatable blocks of its
+        ``/config`` as the worker last read them); an endpoint that
+        config lacks is left out, and so is one whose stored value
+        carries a field the running block does not, since kotekan
+        refuses such an update.
+        """
+        stored = self.updatable_config or {}
+        if self.mode is Mode.DEVELOPMENT:
+            blocks = live or {}
+            return {endpoint: {**blocks[endpoint], **values}
+                    for endpoint, values in stored.items()
+                    if endpoint in blocks and set(values) <= set(blocks[endpoint])}
+        blocks = (find_updatable_blocks(self.rendered_config)
+                  if self.rendered_config is not None else {})
+        return {endpoint: {**blocks[endpoint], **values}
+                for endpoint, values in stored.items() if endpoint in blocks}
+
     @property
     def load_error(self) -> str | None:
         """Combined message for any config-load errors on this node."""
         parts = [e for e in (self._base_load_error,
                              self._updatable_load_error) if e]
         return "; ".join(parts) if parts else None
+
+    @property
+    def updatable_load_error(self) -> str | None:
+        """The updatable store's load error alone: what blocks a push in
+        development, where the config file does not matter."""
+        return self._updatable_load_error
 
     def load_config(self):
         """Load (or reload) the base config from disk and render it.
@@ -651,7 +724,7 @@ class Node:
 
         A no-op (returns ``False``) when the node is in maintenance mode.
         """
-        if self.maintenance:
+        if self.mode is Mode.MAINTENANCE:
             logger.info(
                 f"Maintenance: skipping push_updatable to {self.key}{path}"
             )
@@ -662,14 +735,15 @@ class Node:
               override_maintenance: bool = False) -> bool:
         """Start kotekan with the desired config via POST /start.
 
-        A no-op (returns ``False``) when the node is in maintenance mode,
-        unless *override_maintenance* is set.  The override is for an
-        operator's explicit one-off start (``web._run_oneshot``), never
-        for the sync loop — maintenance constrains choco's automation,
-        not the operator acting through it.
+        A no-op (returns ``False``) outside normal mode, unless
+        *override_maintenance* is set.  The override is for an
+        operator's explicit one-off start (``web._run_oneshot``, which
+        requires maintenance), never for the sync loop — the mode
+        constrains choco's automation, not the operator acting through
+        it.
         """
-        if self.maintenance and not override_maintenance:
-            logger.info(f"Maintenance: skipping /start of {self.key}")
+        if self.mode is not Mode.NORMAL and not override_maintenance:
+            logger.info(f"{self.mode.value.capitalize()}: skipping /start of {self.key}")
             return False
         return self._request("POST", "/start", json=desired_config) is not None
 
@@ -679,10 +753,10 @@ class Node:
         This is the reliable way to stop a running config — the ``/stop``
         endpoint is unreliable, so we always use ``/kill`` instead.
 
-        A no-op (returns ``False``) when the node is in maintenance mode.
+        A no-op (returns ``False``) outside normal mode.
         """
-        if self.maintenance:
-            logger.info(f"Maintenance: skipping /kill of {self.key}")
+        if self.mode is not Mode.NORMAL:
+            logger.info(f"{self.mode.value.capitalize()}: skipping /kill of {self.key}")
             return False
         return self._request("GET", "/kill") is not None
 
@@ -864,7 +938,8 @@ class Registry:
                     started=started,
                     # Always start in maintenance mode at the registry
                     # level — choco should observe before pushing.
-                    maintenance=True,
+                    mode=Mode.MAINTENANCE,
+                    development=bool(node_info.get("development", False)),
                     configs_dir=self.configs_dir,
                     template_vars=template_vars,
                     config=None if config is None else str(config),
@@ -917,12 +992,13 @@ def validate_nodes_payload(payload, configs_dir: Path) -> dict:
     """The nodes.yaml data a registry edit asks for, checked.
 
     *payload* is the editor's JSON: ``{"groups": {name: [{"name", "host",
-    "port"?, "config"?}, ...]}}``.  Returns the mapping to write
-    (``{"groups": {group: {node: {"host", "port", "config"?}}}}``) or
-    raises ``ValueError`` naming the first problem.  A node's optional
-    ``config`` is validated as a path (so a bad value is refused here,
-    not joined to anything later); its existence is the node's own "No
-    config file" error if it is missing.
+    "port"?, "config"?, "development"?}, ...]}}``.  Returns the mapping
+    to write (``{"groups": {group: {node: {"host", "port", "config"?,
+    "development"?}}}}``) or raises ``ValueError`` naming the first
+    problem.  A node's optional ``config`` is validated as a path (so a
+    bad value is refused here, not joined to anything later); its
+    existence is the node's own "No config file" error if it is missing.
+    ``development`` is written only when true.
     """
     groups_in = payload.get("groups") if isinstance(payload, dict) else None
     if not isinstance(groups_in, dict):
@@ -965,5 +1041,10 @@ def validate_nodes_payload(payload, configs_dir: Path) -> dict:
                 except ValueError as e:
                     raise ValueError(f"Node {key}: {e}") from None
                 members[name]["config"] = config
+            development = item.get("development", False)
+            if not isinstance(development, bool):
+                raise ValueError(f"Node {key}: development must be a boolean")
+            if development:
+                members[name]["development"] = True
         new_data["groups"][group_name] = members
     return new_data

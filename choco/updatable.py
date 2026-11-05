@@ -2,8 +2,10 @@
 
 For each endpoint, what choco means every node to run (its desired value:
 the block its file renders with the node's stored override merged over
-it, as ``Node.desired_config`` merges them) and whether that node's
-kotekan runs it, from the worker's last read of the live ``/config``
+it, as ``Node.desired_config`` merges them; in development only the
+stored values, over the running config's blocks, as
+``Node.desired_updatable`` has it) and whether that node's kotekan runs
+it, from the worker's last read of the live ``/config``
 (``NodeWorker._note_live``).  The X-engine page shows one row per endpoint.
 """
 
@@ -11,7 +13,7 @@ import json
 import time
 from dataclasses import dataclass
 
-from .state import NodeStatus, find_updatable_blocks
+from .state import Mode, NodeStatus, find_updatable_blocks
 from .sync import LIVE_READ_MAINTENANCE_S
 
 #: A live read older than this is not shown.  The worker reads every poll
@@ -75,8 +77,12 @@ def summarize(values: dict) -> str:
     return ", ".join(parts)
 
 
-def desired_blocks(node) -> dict[str, dict]:
-    """The node's desired value of every block its file renders."""
+def desired_blocks(node, live: dict[str, dict] | None = None) -> dict[str, dict]:
+    """The node's desired value of every block its file renders; in
+    development, of every stored endpoint the running config (*live*)
+    can take."""
+    if node.mode is Mode.DEVELOPMENT:
+        return node.desired_updatable(live)
     if node.rendered_config is None:
         return {}
     stored = node.updatable_config or {}
@@ -118,8 +124,17 @@ def _cell(node, endpoint: str, desired: dict | None,
     if desired is None:
         if value is None:
             return None
-        return Cell(name, "extra", f"{name} runs {_compact(value)}, which its "
-                                   f"config file does not render ({age}).")
+        stored = (node.updatable_config or {}).get(endpoint)
+        if node.mode is Mode.DEVELOPMENT and stored is not None:
+            # A stored value the running block cannot take (desired_updatable
+            # left it out): say so rather than show it as merely extra.
+            return Cell(name, "differs",
+                        f"{name} runs {_compact(value)} ({age}). The stored value "
+                        f"{_compact(stored)} has a field the running block does "
+                        f"not, so it is not pushed.")
+        why = ("choco does not set it on a node in development"
+               if node.mode is Mode.DEVELOPMENT else "its config file does not render")
+        return Cell(name, "extra", f"{name} runs {_compact(value)}, which {why} ({age}).")
     if value is None:
         return Cell(name, "absent", f"{name}: the running config has no "
                                     f"/{endpoint} ({age}).{held}")
@@ -136,8 +151,10 @@ def fleet_rows(nodes, owners: dict[str, str], now: float | None = None) -> list[
     job that pushes it.
     """
     now = time.time() if now is None else now
-    desired = {node.key: desired_blocks(node) for node in nodes}
     live = {node.key: _live_blocks(node, now) for node in nodes}
+    # A development node's desired set follows its last read, current or
+    # not, so a stale read shows its endpoints as unread rather than as none.
+    desired = {node.key: desired_blocks(node, node.live_updatable) for node in nodes}
     endpoints = list(dict.fromkeys(
         [e for node in nodes for e in desired[node.key]]
         + [e for node in nodes for e in (live[node.key] or {})]))

@@ -50,6 +50,7 @@
     .node .node-host { flex: 2 1 18em; }
     .node .node-port { width: 6.5em; flex: 0 0 auto; }
     .node .node-config { flex: 2 1 16em; font-family: monospace; }
+    .node .node-dev { flex: 0 0 auto; margin: 0; font-size: 0.85em; white-space: nowrap; }
     .remove-btn {
         background: transparent;
         border: none;
@@ -106,6 +107,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
                 <input type="text" class="node-host" value="{{ node.host }}" placeholder="host">
                 <input type="number" class="node-port" value="{{ node.port }}" placeholder="port" min="1" max="65535">
                 <input type="text" class="node-config" list="config-files" value="{{ node.explicit_config or '' }}" placeholder="config file (blank: group/name)">
+                <label class="node-dev" title="A development node: it runs its own config, and lifting maintenance returns it to development, not to normal"><input type="checkbox" class="node-development"{% if node.development %} checked{% endif %}> dev</label>
                 <button type="button" class="remove-btn remove-node-btn" title="Remove node">&times;</button>
             </li>
             {% endfor %}
@@ -138,6 +140,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
         <input type="text" class="node-host" value="" placeholder="host">
         <input type="number" class="node-port" value="12048" placeholder="port" min="1" max="65535">
         <input type="text" class="node-config" list="config-files" value="" placeholder="config file (blank: group/name)">
+        <label class="node-dev" title="A development node: it runs its own config, and lifting maintenance returns it to development, not to normal"><input type="checkbox" class="node-development"> dev</label>
         <button type="button" class="remove-btn remove-node-btn" title="Remove node">&times;</button>
     </li>
 </template>
@@ -207,6 +210,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
                     host: n.querySelector('.node-host').value.trim(),
                     port: parseInt(n.querySelector('.node-port').value, 10) || 12048,
                     config: n.querySelector('.node-config').value.trim(),
+                    development: n.querySelector('.node-development').checked,
                 };
                 if (!item.name) throw new Error('Every node needs a name.');
                 if (!item.host) throw new Error('Node ' + name + '/' + item.name + ' needs a host.');

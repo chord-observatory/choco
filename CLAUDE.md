@@ -103,7 +103,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   (rendered + updatable overrides; what is pushed), **updatable_config**
   (blocks marked `kotekan_update_endpoint`, stored in `.updatable/*.json`).
 - No database.  Desired state is the YAML on disk; runtime state (status,
-  started, maintenance) is ephemeral and rebuilt by polling.
+  started, the mode) is ephemeral and rebuilt by polling.
 - A node renders the file nodes.yaml's `config:` names (a library file,
   typically shared), else its legacy `<group>/<node>.{yaml,yml,j2}`.
   Includes resolve against the file's own directory first, then the configs
@@ -127,7 +127,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 **Node ownership** ([sync.md](docs/design/sync.md))
 - Each `Node` has exactly one owner, its `NodeWorker`.  Only the worker
   writes `status`, `last_seen`, `version`, `error`, `live_updatable`.  Request handlers set the
-  desired flags (`started`, `maintenance`) and enqueue a `POLL`; they never
+  desired flags (`started`, the mode) and enqueue a `POLL`; they never
   probe kotekan to write status themselves.
 - Every path through `NodeWorker._sync` leaves `node.status` reflecting that
   cycle's probe; the worker reads it to choose its cadence.
@@ -140,13 +140,27 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Restart concurrency is bounded by `sync.max_concurrent_pushes`; polling
   concurrency is unbounded by design.
 
-**Maintenance and started** ([sync.md](docs/design/sync.md))
-- `maintenance=True` means no REST write to the node: `push_updatable`,
-  `start` and `kill` all return `False`.  Reads go on (status, version,
-  and `/config` every `LIVE_READ_MAINTENANCE_S` for the updatable panel).  Every registry build (startup and
-  every `nodes.yaml` reload) puts the whole cluster in maintenance.
+**Modes and started** ([sync.md](docs/design/sync.md))
+- A node's `mode` is `normal`, `maintenance` or `development`
+  (`state.Mode`).  Maintenance means no REST write to the node:
+  `push_updatable`, `start` and `kill` all return `False`.  Reads go on
+  (status, version, and `/config` every `LIVE_READ_MAINTENANCE_S` for the
+  updatable panel).  Development means `start` and `kill` return `False`
+  and the config file is ignored: the worker pushes only the stored
+  updatable values, to the endpoints the running config has, with the
+  stored fields fitting the running block (`Node.desired_updatable`, the
+  one definition of what is pushed, per mode, for the worker and the
+  panel).  Every registry build (startup and every `nodes.yaml` reload)
+  puts the whole cluster in maintenance.
+- Lifting maintenance returns a node to its resting mode
+  (`Node.rest_mode`: development when `nodes.yaml` says `development:
+  true`, else normal).  Development to normal is refused
+  (`Node.set_mode`): a node leaves development into maintenance.  The
+  pauses (pull, config selection, the pointing job) move only normal
+  nodes into maintenance.
 - `Node.start(override_maintenance=True)` exists only for the operator's
-  one-off start (`web._run_oneshot`).  The sync loop never passes it.
+  one-off start (`web._run_oneshot`, which requires maintenance).  The
+  sync loop never passes it.
 - `started` is discovered from kotekan at startup and after each registry
   rebuild; `nodes.yaml`'s value is only the pre-discovery default.
 - Stopping is always `/kill`; kotekan's `/stop` is unreliable.  There is no
@@ -255,7 +269,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 **UI palette** ([ui.md](docs/design/ui.md))
 - Status colour is a tone, never a hex value: templates call the `*_tone`
   macros and `tag()` in `_service_macros.html`, which emit
-  `tag-ok|bad|warn|info|maint|off` painted by the tokens in
+  `tag-ok|bad|warn|info|maint|dev|off` painted by the tokens in
   `static/choco.css` (loaded by `base.html` and the standalone pipeline and
   plot pages).  No hex literal for a state in a template, no brown, and the
   CHOCO mark (`.brand`) stays grey.  The menu's tags are `quiet`: no tag

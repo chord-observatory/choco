@@ -253,12 +253,17 @@ Status tags:
 
 When what you asked for differs from what is true — the Start switch on but the node down, or off but the node still running — a muted *wants started* / *wants idle* note sits beside the tag.
 
-Each node also has two switches:
+Each node also has a mode control and a switch:
 
-- **Start** (green = started, grey = idle) — desired runtime state. On startup choco discovers the actual state and sets this from what kotekan reports; the switch then controls whether choco keeps kotekan running.
-- **Maint** (amber = in maintenance, blue = normal) — when on, choco observes the node but never writes to it (no `/start`, no `/kill`, no updatable POSTs). Useful when an operator is intervening on a node manually. **Every node starts in maintenance mode** after a choco restart; flip it off (per node, per group, or for the whole cluster) when you're ready for choco to reconcile drift.
+- **Mode** — three buttons, the current mode filled in:
+  - **normal** (blue): choco keeps the node on its desired config — it starts and kills kotekan as the Start switch says, restarts it when the running config drifts from the file, and pushes its stored updatable values.
+  - **maint** (amber): choco observes the node but never writes to it (no `/start`, no `/kill`, no updatable POSTs). Useful when an operator is intervening on a node manually. **Every node starts in maintenance** after a choco restart or a registry save; lift it (per node, per group, or for the whole cluster) when you're ready for choco to reconcile drift.
+  - **dev** (violet): the node runs a config choco did not render — a developer's build, started by hand. choco never starts or kills it and ignores its config file; what it keeps current are the node's stored updatable values (the bffs flags, the EOP table, overrides), pushed to the endpoints the running config has, as long as the stored value's fields fit the running block. Nothing else is pushed: a switch the library sets stays as the developer left it.
 
-Each scope (group heading, dashboard header) has two captioned pairs of ▼/▲ buttons — *maint* (amber ▼ into maintenance, blue ▲ out) and *start* (grey ▼ idle, green ▲ started) — that flip every node in scope at once.
+  Lifting maintenance returns a node to its *resting* mode: normal, or development where `nodes.yaml` declares it (`development: true`, the **dev** box in the registry editor). A node leaves development only into maintenance, never straight to normal: normal would restart the developer's kotekan onto the library within a poll, so the operator lifts maintenance knowing what it starts.
+- **Start** (green = started, grey = idle) — desired runtime state. On startup choco discovers the actual state and sets this from what kotekan reports; in normal mode the switch then controls whether choco keeps kotekan running.
+
+Each scope (group heading, dashboard header) has two captioned pairs of ▼/▲ buttons — *maint* (amber ▼ puts every node in scope in maintenance, development included; blue ▲ lifts it, each node to its resting mode) and *start* (grey ▼ idle, green ▲ started) — that act on every node in scope at once.
 
 The dashboard table refreshes itself every 2 seconds via htmx polling - no need to refresh the page.
 
@@ -268,7 +273,7 @@ Below the tables, **Updatable config** has one row for each updatable endpoint t
 - **Set by** — `library` when no node has an override; `override`, with the nodes, when some do. An endpoint that a job pushes names the job (Earth orientation, Bad feeds, Eigencal) and links to its page.
 - **Live** — one tag for each node, from the last read of its kotekan's `/config`. Green: the node runs the desired value. Amber: it runs a different value, or its running config does not have the endpoint (the tooltip gives the live value). Grey: there is no current read (kotekan is not running, or the read failed). Blue: kotekan runs an endpoint that its config file does not render.
 
-choco reads `/config` from a node in maintenance every 30 s, and does not write to it. Thus, before you lift maintenance, you can see which desired values the node does not run. The panel is read-only and refreshes every 5 s. To change a value on one node, use the node's page.
+choco reads `/config` from a node in maintenance every 30 s, and does not write to it. Thus, before you lift maintenance, you can see which desired values the node does not run. A node in development is desired only its stored values, on the endpoints its own config has; a stored value whose fields the running block cannot take is shown amber with the reason, and is not pushed. The panel is read-only and refreshes every 5 s. To change a value on one node, use the node's page.
 
 ### Node page (`/nodes/edit/<group>/<node>`)
 
@@ -295,7 +300,7 @@ Buffers with `peek_hold` carry a persistent amber outline marking them clickable
 
 ### Edit Nodes (registry)
 
-The **Edit nodes** button on the dashboard opens `/nodes/edit`, a drag-and-drop editor for `nodes.yaml`. Saving rewrites the YAML, rebuilds the in-memory registry from scratch (dropping queued changes), then automatically puts **every** node into maintenance mode and re-runs state discovery so each node's started/idle flag is set from the live kotekan runtime rather than a cold default. Take nodes back out of maintenance individually or via the cluster-wide toggle once you've reviewed the new layout. Config files on disk are *not* moved when nodes change groups — that's an operator task.
+The **Edit nodes** button on the dashboard opens `/nodes/edit`, a drag-and-drop editor for `nodes.yaml`. Each node has a name, a host, a port, the library file it renders and a **dev** box (`development: true`: the node rests in development, see the mode control). Saving rewrites the YAML, rebuilds the in-memory registry from scratch (dropping queued changes), then automatically puts **every** node into maintenance mode and re-runs state discovery so each node's started/idle flag is set from the live kotekan runtime rather than a cold default. Lift maintenance individually or via the cluster-wide control once you've reviewed the new layout. Config files on disk are *not* moved when nodes change groups — that's an operator task.
 
 ### JSON API
 
@@ -308,7 +313,8 @@ Both accept JSON with:
 - `{"action": "base_config", "config_content": "..."}`
 - `{"action": "updatable_config", "endpoint": "...", "values": {...}}`
 - `{"action": "set_started", "started": true}` — set the started/stopped state
-- `{"action": "set_maintenance", "maintenance": true}` — put the node(s) into or out of maintenance mode
+- `{"action": "set_mode", "mode": "normal" | "maintenance" | "development"}` — set the node(s)' mode; development to normal is refused (409, `refused` names the nodes) and nothing changes
+- `{"action": "set_maintenance", "maintenance": true}` — put the node(s) into maintenance; `false` lifts it, each node to its resting mode
 
 Read-only status endpoints:
 - `GET /api/status` — simple overall health: choco itself (`up`, `started_at`), each service's health string (`fpga`, `pdb`, `data`, `eop`, `bffs`, `eigencal`, `waterfall`, `skymap`, `mapmaker`), and node counts by status (plus `total`, `started_desired`, `maintenance`)
@@ -332,7 +338,8 @@ choco nodes                         # per-node table (-j for the JSON)
 choco get /api/config/cx            # any GET endpoint: /api/pdb/map, /api/files, /metrics, ...
 choco stop cx recv/recv1            # desired state -> idle; targets are <group> or <group>/<node>
 choco start cx/cx19
-choco maint off cx                  # leave maintenance mode (on = pause)
+choco maint off cx                  # lift maintenance (on = pause); each node returns to its resting mode
+choco mode development cx/cx19      # or normal, maintenance; development -> normal is refused
 choco push cx/cx19 new.yaml         # queue a base config (- reads stdin)
 choco set cx updatable_config/bad_inputs '{"bad_inputs": [3, 7]}'   # or @values.json, or -
 choco oneshot cx/cx19 once.yaml     # start an unrecorded config on a paused, idle node
@@ -368,7 +375,7 @@ and provisions the **CHOCO** Grafana dashboard and the `Choco*` alerts from it.
   `choco_pdb_channels`, `choco_pdb_channels_on`, `choco_data_roots`, `choco_data_roots_ok`,
   `choco_instrument_problems`, `choco_archive_acquisitions`, `choco_archive_listing_timestamp_seconds`
 - `choco_nodes{status}`, `choco_nodes_total`, `choco_nodes_started_desired`,
-  `choco_nodes_maintenance`, `choco_nodes_config_error`, `choco_nodes_error`,
+  `choco_nodes_maintenance`, `choco_nodes_development`, `choco_nodes_config_error`, `choco_nodes_error`,
   `choco_kotekan_versions` (distinct versions the nodes report), `choco_queued_changes`,
   `choco_workers{phase}`, `choco_workers_failing` — the cluster as the sync loop sees it
 - `choco_job_running{job}`, `choco_job_state_timestamp_seconds{job}` (the state file's
@@ -419,7 +426,7 @@ Each worker schedules its own drift check: every `sync.poll_interval` while the 
 
 **Startup state discovery.** When choco starts, `Orchestrator.discover_node_states()` probes every node in parallel and sets each `node.started` from the actual runtime state (STARTED → `True`, IDLE → `False`, unreachable → `False`). This happens before the node workers start, so choco never "resets" a running node back to idle just because the local default was `False`.
 
-**Maintenance mode.** Every node has a `maintenance` flag that defaults to **on** at startup. When maintenance is on, all REST calls that mutate the node — `Node.push_updatable`, `Node.start`, and `Node.kill` — are no-ops (they log and return `False`), and `Orchestrator._sync_node` short-circuits before reaching them. Drift is still observed and the dashboard reflects the node's actual state (its live `/config` is read every 30 s for the updatable panel), but choco never writes to a paused node, even to enforce `started=False`. Operators flip nodes out of maintenance once they're ready for choco to reconcile. Maintenance state is ephemeral; a choco restart puts everything back into maintenance and re-runs state discovery.
+**Node modes.** Every node has a mode: `normal`, `maintenance` or `development`. In maintenance all REST calls that mutate the node — `Node.push_updatable`, `Node.start`, and `Node.kill` — are no-ops (they log and return `False`), and the sync loop short-circuits before reaching them. Drift is still observed and the dashboard reflects the node's actual state (its live `/config` is read every 30 s for the updatable panel), but choco never writes to a paused node, even to enforce `started=False`. In development `start` and `kill` are the no-ops: the node runs its own config, and the sync loop reads `/config` every poll and pushes only the stored updatable values whose endpoint that config has, with the stored value's fields fitting the running block (kotekan refuses any other update). The mode is ephemeral: a choco restart puts everything back into maintenance and re-runs state discovery, and lifting maintenance returns each node to its resting mode — development where `nodes.yaml` says `development: true`, else normal. Development leaves only into maintenance.
 
 ## EOP Broadcast
 
@@ -459,7 +466,8 @@ startup and on every timer tick; bffs records its state only after a
 successful POST, so a run that fails while choco is still coming up is retried
 on the next tick. Note that nodes sitting in **maintenance mode** receive no
 pushes — choco stores the flags and reconciles them once maintenance is
-lifted.
+lifted. A node in **development** receives them like a normal node, as
+long as its own config has the `bad_inputs` endpoint with the same fields.
 
 ```bash
 sudo systemctl status choco-bffs-flag.timer   # cadence

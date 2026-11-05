@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from choco.state import NodeStatus, Registry
+from choco.state import Mode, NodeStatus, Registry
 from choco.sync import LIVE_READ_MAINTENANCE_S, ChangeItem, ChangeType, NodeWorker, Orchestrator
 from choco.updatable import LIVE_MAX_AGE_S, desired_blocks, fleet_rows, is_switch, summarize
 
@@ -137,7 +137,7 @@ class TestRows:
         _running(cx2, {"fringestop_enabled": FS_OFF, "updatable_config/bad_inputs": BAD}, now)
         _running(recv1, {"earth_rotation_data": {"earth_orientation_parameter_table": []},
                          "gnss_gain": {"x": 1}}, now)
-        cx2.maintenance = True
+        cx2.mode = Mode.MAINTENANCE
         rows = fleet_rows([cx1, cx2, recv1], OWNERS, now=now)
         assert _states(_row(rows, "fringestop_enabled")) == {"cx1": "live", "cx2": "differs"}
         assert "Maintenance" in _row(rows, "fringestop_enabled").cells[1].note
@@ -165,6 +165,37 @@ class TestRows:
         fs = _row(fleet_rows([cx1], OWNERS), "fringestop_enabled")
         assert fs.cells[0].state == "unread" and "failed" in fs.cells[0].note
 
+    def test_a_development_node_desires_only_its_stored_values(self, registry):
+        now = time.time()
+        cx2 = registry.get_node("cx/cx2")
+        cx2.mode = Mode.DEVELOPMENT
+        # Its own config: the switch with a field the stored value lacks
+        # (so the stored value fits), bffs's endpoint, and a block of its
+        # own; the thresholds its file renders are not run and not desired.
+        _running(cx2, {"fringestop_enabled": {**FS_OFF, "extra": 1},
+                       "updatable_config/bad_inputs": {"bad_inputs": [], "update_id": "x"},
+                       "gnss_gain": {"x": 1}}, now)
+        rows = fleet_rows([cx2], OWNERS, now=now)
+        assert [r.endpoint for r in rows] == [
+            "updatable_config/bad_inputs", "fringestop_enabled", "gnss_gain"]
+        bad = _row(rows, "updatable_config/bad_inputs")
+        assert _states(bad) == {"cx2": "differs"}
+        assert bad.values[0][2] == ["cx2"] and bad.overrides == ["cx2"]
+        fs = _row(rows, "fringestop_enabled")
+        assert _states(fs) == {"cx2": "differs"}
+        assert fs.values[0][1] == '{"enabled": false,"valid_at_time_ns": 1,"extra": 1}'
+        gain = _row(rows, "gnss_gain")
+        assert _states(gain) == {"cx2": "extra"} and "development" in gain.cells[0].note
+        # A stored value with a field the running block lacks is not pushed, and says so.
+        cx2.live_updatable["fringestop_enabled"] = {"enabled": False}
+        fs = _row(fleet_rows([cx2], OWNERS, now=now), "fringestop_enabled")
+        assert _states(fs) == {"cx2": "differs"} and "not pushed" in fs.cells[0].note
+        assert not fs.values
+        # A stale read: the desired set follows the last read, shown unread.
+        cx2.live_read_at = now - 1000
+        bad = _row(fleet_rows([cx2], OWNERS, now=now), "updatable_config/bad_inputs")
+        assert _states(bad) == {"cx2": "unread"}
+
 
 class TestWorkerLiveRead:
     @pytest.fixture
@@ -177,7 +208,8 @@ class TestWorkerLiveRead:
 
     def _node(self, orchestrator, maintenance: bool):
         node = orchestrator.registry.get_node("cx/cx1")
-        node.started, node.maintenance = True, maintenance
+        node.started = True
+        node.mode = Mode.MAINTENANCE if maintenance else Mode.NORMAL
         node.get_status = MagicMock(return_value=NodeStatus.STARTED)
         node.get_version_info = MagicMock(return_value={})
         node.get_config = MagicMock(return_value=node.desired_config)

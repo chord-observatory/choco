@@ -10,7 +10,8 @@ the jobs talk to choco the same way (``choco.jobclient``).
     choco nodes [-j]                     per-node table (or the raw JSON)
     choco get /api/config/cx             any GET endpoint, printed as JSON
     choco start|stop  <target>...        desired run state
-    choco maint on|off <target>...       maintenance mode
+    choco maint on|off <target>...       enter maintenance, or lift it
+    choco mode <mode> <target>...        normal, maintenance or development
     choco push    <target> <file|->      queue a base config
     choco set     <target> <endpoint> <json|@file|->   queue an updatable push
     choco oneshot <target> <file|->      start an unrecorded config
@@ -27,7 +28,11 @@ choco prints them; a library *path* is relative to the configs directory
 state for the sync loop to apply, and the loop makes no REST write to a
 node in maintenance -- so on a paused node nothing reaches kotekan until
 ``maint off`` (a choco restart pauses the whole cluster, and so does
-``config use``, which rebuilds the node registry).  Exit status
+``config use``, which rebuilds the node registry).  ``maint off`` returns
+each node to its resting mode: normal, or development where nodes.yaml
+declares it.  In development the node runs its own config; choco never
+starts or kills it and pushes only its stored updatable values.  A node
+leaves development into maintenance, never straight to normal.  Exit status
 follows the jobs' convention: 0 ok, 1 the request was rejected (the
 server's error on stderr) or misused, 2 choco unreachable.
 """
@@ -205,7 +210,7 @@ def _configs_table(data: dict) -> str:
 
 
 def _nodes_table(data: dict) -> str:
-    cols = ("KEY", "STATUS", "STARTED", "MAINT", "VERSION", "WORKER", "ERROR")
+    cols = ("KEY", "STATUS", "STARTED", "MODE", "VERSION", "WORKER", "ERROR")
     rows = []
     for n in data.get("nodes", []):
         worker = n.get("worker") or {}
@@ -213,7 +218,7 @@ def _nodes_table(data: dict) -> str:
             n.get("key", ""),
             n.get("status", ""),
             "yes" if n.get("started") else "no",
-            "yes" if n.get("maintenance") else "no",
+            str(n.get("mode") or ""),
             str(n.get("version") or ""),
             str(worker.get("phase") or ""),
             str(n.get("error") or ""),
@@ -267,6 +272,12 @@ def cmd_stop(c: Client, a) -> int:
 def cmd_maint(c: Client, a) -> int:
     return _set_flag(c, a.targets, "set_maintenance", "maintenance",
                      a.state == "on")
+
+
+def cmd_mode(c: Client, a) -> int:
+    paths = [target_path(t) for t in a.targets]
+    return _emit_each([c.post("/update" + p, {"action": "set_mode", "mode": a.mode})
+                       for p in paths])
 
 
 def cmd_push(c: Client, a) -> int:
@@ -370,8 +381,16 @@ def build_parser() -> argparse.ArgumentParser:
             f"set nodes' desired state to idle: choco kills kotekan ({DESIRED})")
     s.add_argument("targets", nargs="+", metavar="<target>", help=TARGET)
     s = add("maint", cmd_maint,
-            "maintenance mode: on pauses every REST write to the nodes, off resumes")
+            "maintenance mode: on pauses every REST write to the nodes, off lifts it "
+            "(each node returns to normal, or to development where nodes.yaml declares it)")
     s.add_argument("state", choices=("on", "off"), metavar="on|off")
+    s.add_argument("targets", nargs="+", metavar="<target>", help=TARGET)
+    s = add("mode", cmd_mode,
+            "set the mode: normal (choco converges the node), maintenance (reads only) or "
+            "development (the node runs its own config; choco pushes only its stored "
+            "updatable values).  Development to normal is refused: go through maintenance")
+    s.add_argument("mode", choices=("normal", "maintenance", "development"),
+                   metavar="normal|maintenance|development")
     s.add_argument("targets", nargs="+", metavar="<target>", help=TARGET)
 
     s = add("push", cmd_push,

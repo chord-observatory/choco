@@ -28,7 +28,7 @@ LOGIN_ONLY_API = {"/api/fpga/gain-data"}
 
 #: Path arguments that name things the conftest registry has (a ``path:``
 #: converter may carry a slash, a plain one may not).
-ARGS = {"group": "cx", "node": "cx1", "node_key": "cx/cx1", "action": "start",
+ARGS = {"group": "cx", "node": "cx1", "node_key": "cx/cx1", "action": "start", "mode": "maintenance",
         "name": "bffs", "path:name": "cx/cx1.yaml", "root": "subset", "acq": "acq_x",
         "shard": "e0000", "root_idx": "0", "filename": "choco.css"}
 

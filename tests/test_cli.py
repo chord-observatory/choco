@@ -15,6 +15,7 @@ import pytest
 import responses
 
 from choco import cli
+from choco.state import Mode
 from choco.sync import ChangeType
 
 
@@ -75,12 +76,12 @@ def test_nodes_table_and_raw_json(run):
     code, out, err = run("nodes")
     assert code == 0 and err == ""
     header, *rows = out.splitlines()
-    assert header.split() == ["KEY", "STATUS", "STARTED", "MAINT",
+    assert header.split() == ["KEY", "STATUS", "STARTED", "MODE",
                               "VERSION", "WORKER", "ERROR"]
     keys = [r.split()[0] for r in rows if r.startswith(("cx/", "recv/"))]
     assert keys == ["cx/cx1", "cx/cx2", "recv/recv1"]
     # Fresh registries are in maintenance; the table says so.
-    assert all(r.split()[3] == "yes" for r in rows if r.startswith("cx/"))
+    assert all(r.split()[3] == "maintenance" for r in rows if r.startswith("cx/"))
     assert "total 3" in out
 
     code, out, err = run("nodes", "-j")
@@ -135,6 +136,26 @@ def test_maint_on_off(run, app):
     assert _node(app, "cx/cx1").maintenance is True
 
     code, out, err = run("maint", "sideways", "cx")
+    assert code == 1
+    assert "invalid choice" in err
+
+
+def test_mode(run, app):
+    code, out, err = run("mode", "development", "cx/cx1")
+    assert code == 0, err
+    assert _node(app, "cx/cx1").mode is Mode.DEVELOPMENT
+    # Development to normal is refused, for the whole group.
+    code, out, err = run("mode", "normal", "cx")
+    assert code == 1
+    assert "put in maintenance first" in err
+    assert _node(app, "cx/cx1").mode is Mode.DEVELOPMENT
+    assert _node(app, "cx/cx2").maintenance is True
+    # maint off lifts only the nodes in maintenance.
+    code, out, err = run("maint", "off", "cx")
+    assert code == 0, err
+    assert _node(app, "cx/cx1").mode is Mode.DEVELOPMENT
+    assert _node(app, "cx/cx2").mode is Mode.NORMAL
+    code, out, err = run("mode", "sideways", "cx")
     assert code == 1
     assert "invalid choice" in err
 
@@ -428,7 +449,7 @@ def test_config_put_pause(run, app, configs_dir, tmp_path):
     before the write, as a pull does; vars.yaml re-renders every node."""
     nodes = app.config["registry"].nodes
     for n in nodes.values():
-        n.maintenance = False
+        n.mode = Mode.NORMAL
     src = tmp_path / "vars.yaml"
     src.write_text("dish_coelev_deg: -27.3\n")
     code, out, err = run("config", "put", "vars.yaml", str(src))

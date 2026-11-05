@@ -5,14 +5,14 @@ import json
 from types import SimpleNamespace
 
 from choco.metrics import Gauges, render
-from choco.state import NodeStatus
+from choco.state import Mode, NodeStatus
 
 from tests.helpers import job_dir
 
 
-def _node(status=NodeStatus.STARTED, started=True, maintenance=False, config_problem=None,
+def _node(status=NodeStatus.STARTED, started=True, mode=Mode.NORMAL, config_problem=None,
           error=None, version=None, queue_depth=0):
-    return SimpleNamespace(status=status, started=started, maintenance=maintenance,
+    return SimpleNamespace(status=status, started=started, mode=mode,
                            config_problem=config_problem, error=error, version=version,
                            queue_depth=queue_depth)
 
@@ -87,9 +87,9 @@ class TestRender:
 
     def test_nodes_and_workers(self, tmp_path):
         nodes = [_node(version="a+1", queue_depth=2),
-                 _node(NodeStatus.DOWN, maintenance=True, error="timeout", version="a+1"),
+                 _node(NodeStatus.DOWN, mode=Mode.MAINTENANCE, error="timeout", version="a+1"),
                  _node(NodeStatus.IDLE, started=False, config_problem="render failed", version="b+2"),
-                 _node(NodeStatus.UNKNOWN, queue_depth=1)]
+                 _node(NodeStatus.UNKNOWN, queue_depth=1, mode=Mode.DEVELOPMENT)]
         workers = [{"phase": "idle", "consecutive_failures": 0},
                    {"phase": "down", "consecutive_failures": 3},
                    {"phase": "pushing", "consecutive_failures": 0}]
@@ -101,6 +101,7 @@ class TestRender:
         assert "choco_nodes_total 4" in body
         assert "choco_nodes_started_desired 3" in body
         assert "choco_nodes_maintenance 1" in body
+        assert "choco_nodes_development 1" in body
         assert "choco_nodes_config_error 1" in body
         assert "choco_nodes_error 1" in body
         assert "choco_kotekan_versions 2" in body

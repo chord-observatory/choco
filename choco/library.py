@@ -18,7 +18,7 @@ import yaml
 
 from .datafiles import utc_minute
 from .jobclient import write_text_atomic
-from .state import resolve_config_path
+from .state import Mode, resolve_config_path
 from .upstream import UpstreamError
 
 logger = logging.getLogger(__name__)
@@ -145,9 +145,10 @@ def pull(registry, orchestrator, upstream, dry_run: bool, user: str) -> tuple[di
     can switch the node to, and the next pull removes the old file.
     Every write is on disk before the sync loop hears of any of them, so
     no node re-renders a half-pulled set, and the nodes re-rendered are
-    put in maintenance first (those not already), so a pull never
-    restarts anything: the new set is desired state the sync loop pushes
-    when the operator lifts maintenance.  With *dry_run* the reply is
+    put in maintenance first (those in normal mode: a node in
+    development does not run the library), so a pull never restarts
+    anything: the new set is desired state the sync loop pushes when
+    the operator lifts maintenance.  With *dry_run* the reply is
     the plan and nothing is written or paused.  Audit-logged like a
     library save.
     """
@@ -172,8 +173,7 @@ def pull(registry, orchestrator, upstream, dry_run: bool, user: str) -> tuple[di
     affected, error = check_saves(registry, texts)
     if error:
         return {"error": error, "commit": commit}, 409
-    to_pause = [registry.get_node(key) for key in affected
-                if not registry.get_node(key).maintenance]
+    to_pause = [n for n in map(registry.get_node, affected) if n.mode is Mode.NORMAL]
     changing = bool(texts or remove)
     result = {
         "status": ("planned" if dry_run
@@ -190,13 +190,15 @@ def pull(registry, orchestrator, upstream, dry_run: bool, user: str) -> tuple[di
         "unchanged": len(plan.same),
         "reloaded": affected,
         "paused": [n.key for n in to_pause],
+        "held": {n.key: n.mode.value for n in map(registry.get_node, affected)
+                 if n.mode is not Mode.NORMAL},
     }
     result["summary"] = pull_summary(result)
     if dry_run or not changing:
         return result, 200
     # Paused before the files land: the sync loop then re-renders them
     # onto the new set but makes no REST write until maintenance lifts.
-    orchestrator.set_flag(to_pause, "maintenance", True)
+    orchestrator.set_mode(to_pause, Mode.MAINTENANCE)
     written = []
     for rel in plan.fetch:
         path = registry.configs_dir / rel
@@ -231,6 +233,15 @@ def pull_summary(result: dict) -> str:
     def names(rels):
         return ", ".join(r.removeprefix(into) for r in rels)
 
+    def _held_phrase(result, named: bool) -> str:
+        """Why the re-rendered nodes not paused were not (``held``: node
+        -> the mode it was in).  *named* when paused nodes were listed
+        beside them."""
+        held = result.get("held") or {}
+        if set(held.values()) <= {"maintenance"}:
+            return (", ".join(held) + " " if named else "") + "already in maintenance"
+        return "not paused: " + ", ".join(f"{k} in {m}" for k, m in held.items())
+
     parts = [f"{verb} {names(result[verb])}"
              for verb in ("added", "changed", "removed") if result[verb]]
     if not parts:
@@ -246,13 +257,12 @@ def pull_summary(result: dict) -> str:
                 text += ("; would re-render and pause " if dry
                          else "; re-rendered and paused ") + nodes
             elif paused:
-                already = [k for k in result["reloaded"] if k not in paused]
                 text += (f"; {'would re-render' if dry else 're-rendered'} {nodes}, "
                          f"{'pausing' if dry else 'paused'} {', '.join(paused)} "
-                         f"({', '.join(already)} already in maintenance)")
+                         f"({_held_phrase(result, named=True)})")
             else:
                 text += (f"; {'would re-render' if dry else 're-rendered'} {nodes} "
-                         "(already in maintenance)")
+                         f"({_held_phrase(result, named=False)})")
             if not dry:
                 text += "; lift maintenance to restart them onto it"
     if result["kept"]:

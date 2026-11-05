@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from choco.state import (
-    Registry, Node, NodeStatus,
+    Mode, Registry, Node, NodeStatus,
     strip_updatable_values, find_updatable_blocks,
 )
 
@@ -793,21 +793,87 @@ class TestConfigKey:
             node.render('{% include "x.j2" %}')
 
 
-class TestMaintenanceWrites:
-    """``maintenance=True`` means no REST write to the node: push_updatable,
-    start and kill all return False without a request."""
+class TestModeWrites:
+    """What each mode lets through to kotekan: maintenance no REST write
+    at all; development the updatable pushes only; normal everything.
+    A refused write returns False without a request."""
 
-    WRITES = [
-        lambda n: n.push_updatable("foo/bar", {"v": 1}),
-        lambda n: n.start({"config": "x"}),
-        lambda n: n.kill(),
-    ]
+    WRITES = {
+        "push_updatable": (lambda n: n.push_updatable("foo/bar", {"v": 1}),
+                           {Mode.NORMAL, Mode.DEVELOPMENT}),
+        "start": (lambda n: n.start({"config": "x"}), {Mode.NORMAL}),
+        "kill": (lambda n: n.kill(), {Mode.NORMAL}),
+    }
 
-    @pytest.mark.parametrize("maintenance", [True, False])
-    @pytest.mark.parametrize("write", WRITES, ids=["push_updatable", "start", "kill"])
-    def test_maintenance_blocks_every_write(self, write, maintenance):
+    @pytest.mark.parametrize("mode", list(Mode), ids=[m.value for m in Mode])
+    @pytest.mark.parametrize("write", list(WRITES), ids=list(WRITES))
+    def test_each_mode_allows_its_writes(self, write, mode):
+        call, allowed = self.WRITES[write]
         node = Node(name="t", group="t", host="example", port=12048,
-                    timeout=1, maintenance=maintenance)
+                    timeout=1, mode=mode)
         node._request = MagicMock(return_value=MagicMock())
-        assert write(node) is (not maintenance)
-        assert node._request.call_count == (0 if maintenance else 1)
+        assert call(node) is (mode in allowed)
+        assert node._request.call_count == (1 if mode in allowed else 0)
+
+    def test_the_default_is_normal_and_the_rest_mode_follows_the_declaration(self):
+        node = Node(name="t", group="t", host="example")
+        assert node.mode is Mode.NORMAL and node.rest_mode is Mode.NORMAL
+        assert node.maintenance is False
+        dev = Node(name="t", group="t", host="example", development=True)
+        assert dev.rest_mode is Mode.DEVELOPMENT and dev.mode is Mode.NORMAL
+
+    def test_development_leaves_only_into_maintenance(self):
+        node = Node(name="t", group="t", host="example", mode=Mode.DEVELOPMENT)
+        assert node.set_mode(Mode.NORMAL) is False
+        assert node.mode is Mode.DEVELOPMENT
+        assert node.set_mode(Mode.MAINTENANCE) is True
+        assert node.maintenance is True
+        assert node.set_mode(Mode.NORMAL) is True
+        assert node.set_mode(Mode.DEVELOPMENT) is True
+
+
+class TestDesiredUpdatable:
+    """``Node.desired_updatable``: the stored values the sync pushes,
+    over the block each mode takes them from."""
+
+    RENDERED = {
+        "fringestop_enabled": {"kotekan_update_endpoint": "json", "enabled": False,
+                               "valid_at_time_ns": 0},
+        "updatable_config": {"bad_inputs": {"kotekan_update_endpoint": "json",
+                                            "bad_inputs": [], "start_time": 1.0,
+                                            "update_id": "initial"}},
+    }
+    BFFS = {"bad_inputs": [3, 5], "start_time": 2.0, "update_id": "bffs-2"}
+    LIVE = {"updatable_config/bad_inputs": {"bad_inputs": [], "start_time": 0.0,
+                                            "update_id": "x"},
+            "gnss_gain": {"enabled": False, "valid_at_time_ns": 0}}
+
+    def _node(self, mode):
+        node = Node(name="t", group="t", host="example", mode=mode)
+        node.rendered_config = self.RENDERED
+        node.updatable_config = {"updatable_config/bad_inputs": self.BFFS,
+                                 "fringestop_enabled": {"enabled": True},
+                                 "stale/endpoint": {"x": 1},
+                                 "gnss_gain": {"enabled": True, "extra": 1}}
+        return node
+
+    def test_normal_merges_over_the_rendered_block_for_rendered_endpoints(self):
+        assert self._node(Mode.NORMAL).desired_updatable(self.LIVE) == {
+            "updatable_config/bad_inputs": self.BFFS,
+            "fringestop_enabled": {"enabled": True, "valid_at_time_ns": 0},
+        }
+
+    def test_development_merges_over_the_live_block_for_live_endpoints(self):
+        # fringestop_enabled is not live; gnss_gain's stored value has a
+        # field the running block lacks, which kotekan would refuse.
+        assert self._node(Mode.DEVELOPMENT).desired_updatable(self.LIVE) == {
+            "updatable_config/bad_inputs": self.BFFS,
+        }
+        assert self._node(Mode.DEVELOPMENT).desired_updatable(None) == {}
+
+    def test_nothing_stored_nothing_desired(self):
+        node = Node(name="t", group="t", host="example")
+        node.rendered_config = self.RENDERED
+        assert node.desired_updatable(self.LIVE) == {}
+        node.mode = Mode.DEVELOPMENT
+        assert node.desired_updatable(self.LIVE) == {}

@@ -27,8 +27,9 @@
 <p class="note">What choco means each node to run at every updatable endpoint, and
 whether the node's kotekan runs it: a node's tag is green when it runs the desired
 value, amber when it runs another value or has no such endpoint, and grey when
-there is no current read.  A node in maintenance is read every 30 s.  To change a
-value on one node, open its Node page.</p>
+there is no current read.  A node in maintenance is read every 30 s.  A node in
+development is desired only its stored values, on the endpoints its own config has.
+To change a value on one node, open its Node page.</p>
 <div id="updatable-table"
      hx-ext="morph"
      hx-get="{{ request.script_root }}/partials/updatable"

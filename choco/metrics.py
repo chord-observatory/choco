@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .jobclient import RUN_NAME, STATE_NAME
 from .jobstatus import read_state_json
-from .state import NodeStatus
+from .state import Mode, NodeStatus
 from .sync import WorkerPhase
 
 #: Health states each service can report, for the one-hot
@@ -156,7 +156,10 @@ def _nodes(g: Gauges, nodes: list, workers: list) -> None:
     g.add("choco_nodes_started_desired", "Nodes whose desired state is started.",
           sum(1 for n in nodes if n.started))
     g.add("choco_nodes_maintenance", "Nodes currently in maintenance mode.",
-          sum(1 for n in nodes if n.maintenance))
+          sum(1 for n in nodes if n.mode is Mode.MAINTENANCE))
+    g.add("choco_nodes_development", "Nodes currently in development mode (choco pushes "
+          "only their stored updatable values, never starts or kills them).",
+          sum(1 for n in nodes if n.mode is Mode.DEVELOPMENT))
     g.add("choco_nodes_config_error", "Nodes whose config failed to render or load (never pushed to).",
           sum(1 for n in nodes if n.config_problem))
     g.add("choco_nodes_error", "Nodes whose last sync cycle left an error.",

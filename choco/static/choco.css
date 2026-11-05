@@ -38,6 +38,7 @@
     --warn: #e3b23c;    --warn-ink: #2a2104;
     --info: #3a6ea5;    --info-ink: #fff;
     --maint: #b4621e;   --maint-ink: #fff;
+    --dev: #6b5b95;     --dev-ink: #fff;
     --off: #7a8088;     --off-ink: #fff;
     /* soft: a tint with a dark ink of the same hue, for tags and good cells */
     --ok-soft: #cfe8d9;     --ok-text: #1e5a37;
@@ -45,6 +46,7 @@
     --warn-soft: #f8e9c2;   --warn-text: #7a5a07;
     --info-soft: #d8e6f3;   --info-text: #27507c;
     --maint-soft: #f3dcc8;  --maint-text: #7f4310;
+    --dev-soft: #e3ddf0;    --dev-text: #4a3d72;
     --off-soft: #e3e6ea;    --off-text: #4b5058;
     /* neutral surfaces: the quiet tag, group bars, popovers' inner panels */
     --surface: #f1f2f4;
@@ -62,6 +64,7 @@
     --warn-soft: #3f3414;   --warn-text: #ecc96a;
     --info-soft: #1f3247;   --info-text: #9dc1ea;
     --maint-soft: #42291a;  --maint-text: #eab07a;
+    --dev-soft: #2c2640;    --dev-text: #c4b6e6;
     --off-soft: #2f3236;    --off-text: #b6bbc2;
     --surface: #1a1e28;
     --surface-border: #343a46;
@@ -132,6 +135,7 @@ td code, th code, dd code, .group-bar code { padding: 0; background: none; color
 .tag-warn  { background: var(--warn-soft);  color: var(--warn-text);  border-color: color-mix(in srgb, var(--warn-text) 25%, transparent); }
 .tag-info  { background: var(--info-soft);  color: var(--info-text);  border-color: color-mix(in srgb, var(--info-text) 25%, transparent); }
 .tag-maint { background: var(--maint-soft); color: var(--maint-text); border-color: color-mix(in srgb, var(--maint-text) 25%, transparent); }
+.tag-dev   { background: var(--dev-soft);   color: var(--dev-text);   border-color: color-mix(in srgb, var(--dev-text) 25%, transparent); }
 .tag-off   { background: var(--off-soft);   color: var(--off-text);   border-color: color-mix(in srgb, var(--off-text) 25%, transparent); }
 /* A quiet tag (the menu, for ok / info / off): label and dot only on
    neutral ground.  The dot keeps its tone, so a running job or an
@@ -280,6 +284,33 @@ button.group-btn:focus-visible { outline: 2px solid var(--info); outline-offset:
 .group-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
 .group-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
 button.group-btn.htmx-request { opacity: 0.45; }
+
+/* ---- the mode control (normal / maint / dev) --------------------------
+   Three rectangular buttons in a row, each the tone of the mode it sets on
+   the soft tint like a group button; the current one is filled solid, so
+   the control reads as a status at rest and as a control on hover. */
+.mode-ctl { display: inline-flex; gap: 2px; }
+button.mode-btn {
+    all: unset;
+    box-sizing: border-box;
+    padding: 0.05em 0.45em;
+    border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+    border-radius: 3px;
+    font-size: 0.72em;
+    line-height: 1.5;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+}
+button.mode-btn:hover { filter: brightness(0.94); }
+button.mode-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+button.mode-btn.current { cursor: default; border-color: transparent; }
+.mode-btn.tone-info { color: var(--info-text); background: var(--info-soft); }
+.mode-btn.tone-maint { color: var(--maint-text); background: var(--maint-soft); }
+.mode-btn.tone-dev { color: var(--dev-text); background: var(--dev-soft); }
+.mode-btn.tone-info.current { color: var(--info-ink); background: var(--info); }
+.mode-btn.tone-maint.current { color: var(--maint-ink); background: var(--maint); }
+.mode-btn.tone-dev.current { color: var(--dev-ink); background: var(--dev); }
+.mode-ctl.htmx-request .mode-btn { opacity: 0.45; }
 /* The same for every power control on the PDB page: the form issuing the
    request gets htmx-request, so its button dims until the reply lands. */
 form.htmx-request .chan, form.htmx-request .bulk { opacity: 0.45; }

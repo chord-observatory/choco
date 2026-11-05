@@ -202,11 +202,14 @@ the next startup re-discovers).
 
 ## Maintenance mode
 
-each node has a ``maintenance`` boolean (default ``True`` at registry
-construction, ephemeral, never persisted). Because ``Registry.reload`` is what
-forces ``maintenance=True``, both choco startup *and* every ``/nodes/edit``
-save / file-watcher reload land the entire cluster back in maintenance — the
-registry edit becomes an automatic pause. When ``maintenance=True``, every
+each node has a ``mode`` (``state.Mode``: normal, maintenance or
+development; maintenance at registry construction, ephemeral, never
+persisted — the 2026-11-05 ``Node modes`` section below has the third
+mode).  ``node.maintenance`` is the mode read as a boolean.  Because
+``Registry.reload`` is what puts every node in maintenance, both choco
+startup *and* every ``/nodes/edit`` save / file-watcher reload land the
+entire cluster back in maintenance — the registry edit becomes an
+automatic pause. In maintenance, every
 REST call that mutates the node is blocked: ``Node.push_updatable``,
 ``Node.start``, **and** ``Node.kill`` log and return ``False``, and
 ``Orchestrator._sync_node`` short-circuits before reaching them (including the
@@ -230,9 +233,62 @@ maintenance-all/<on|off>``, JSON API ``set_maintenance``) and templates
 orange/blue colour pair distinguishes it from the green/yellow started toggle,
 and the per-node slider is mirrored relative to the started toggle
 (maintenance = thumb on the *left*, normal = thumb on the *right*) so "thumb-
-right = choco active" reads consistently across both. The ``Node``
-``maintenance`` kwarg defaults to ``False`` so direct test instantiation stays
-in normal mode; ``Registry.reload`` is what forces it ``True`` for production.
+right = choco active" reads consistently across both (the switch became
+the three-button mode control on 2026-11-05, same colours). The ``Node``
+``mode`` kwarg defaults to normal so direct test instantiation stays in
+normal mode; ``Registry.reload`` is what forces maintenance for production.
+
+## Node modes (2026-11-05)
+
+The third mode, **development**, exists because the pathfinder's X-engines
+spent 2026-10/11 running a developer's own kotekan (kvand's
+``gnss-node.service``, started by hand on port 12048), in maintenance so
+that choco would not restart them onto the library.  Maintenance also
+stopped every updatable push, so the bffs flags and the EOP table never
+reached those nodes; the developer worked around it with two crons on the
+gnss VM that read bffs's ``state.json`` over ssh and POSTed the list
+themselves.  Development is that relay inside choco: the worker never
+starts or kills the node and ignores its config file, reads ``/config``
+every poll, and pushes the stored updatable values the running config can
+take.
+
+**One definition of what is pushed.**  ``Node.desired_updatable(live)`` is
+what the worker pushes and what the X-engine panel shows as desired, per
+mode: in normal the stored value merged over the file's block (the merge
+``desired_config`` makes before a ``/start``), for endpoints the file
+renders; in development the stored value merged over the *running* block,
+for endpoints the running config has whose fields the stored value does not
+exceed.  The second condition exists because kotekan's ``configUpdater``
+refuses a POST with a key the block lacks, a key missing, or a changed
+type (400, no FATAL), so such a push would fail every 5 s for the life of
+the run; the panel names the mismatch instead.  Only stored values are ever
+pushed, so a library default a developer's config also has
+(``rfi_first_stage_enabled``, ``dtv_*``) is left as the developer set it.
+
+**Transitions.**  Any mode may enter maintenance (bulk ▼ is the stop
+button and takes development nodes too) or development.  Development to
+normal is refused (``Node.set_mode``, ``Orchestrator.set_mode`` all or
+none): normal restarts the developer's kotekan onto the library within a
+poll, so a node leaves development into maintenance and the operator lifts
+that knowing what it starts.  Lifting (bulk ▲, ``set_maintenance: false``,
+``maint off``) returns each node in maintenance to its *resting* mode and
+leaves the others alone.
+
+**The resting mode is in nodes.yaml** (``development: true``,
+``Node.rest_mode``) because without it a lift cannot know which nodes were
+a developer's: after every choco restart or registry save the operator
+lifts maintenance on the fleet, and that lift would have started the
+library on the developer's node.  Reload still puts every node in
+maintenance, so a fresh choco writes nothing before the operator looks;
+the declaration only decides where the lift lands.  Runtime development on
+an undeclared node (a temporary handover) is allowed and ephemeral.
+
+**Pauses skip development nodes.**  A pull, a config selection and the
+pointing job's write put the nodes a file re-renders in maintenance so the
+sync loop restarts nothing; a development node is never restarted and does
+not run the library, and pausing it would stop the relay development is
+for, so only normal nodes are paused (``held`` in the pull's reply names
+the rest with their mode).
 
 ## One-off configs
 
@@ -271,9 +327,9 @@ post); a manual kill control is the obvious follow-up if that is felt.
 
 `POST /update/<group>` and `POST /update/<group>/<node>` accept JSON to queue
 base-config, updatable-config, or started-state changes; the web UI also
-submits through the queue, and the ``set_started`` / ``set_maintenance``
-actions enqueue a ``POLL`` so the worker acts now, as the dashboard toggles do
-(the CLI bullet has the history)
+submits through the queue, and the ``set_started`` / ``set_maintenance`` /
+``set_mode`` actions enqueue a ``POLL`` so the worker acts now, as the
+dashboard controls do (the CLI bullet has the history)
 
 ## Config-load resilience
 
