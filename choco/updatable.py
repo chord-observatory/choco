@@ -130,8 +130,8 @@ def _cell(node, endpoint: str, desired: dict | None,
             # left it out): say so rather than show it as merely extra.
             return Cell(name, "differs",
                         f"{name} runs {_compact(value)} ({age}). The stored value "
-                        f"{_compact(stored)} has a field the running block does "
-                        f"not, so it is not pushed.")
+                        f"{_compact(stored)} does not fit the running block (a "
+                        f"field it lacks, or of another type), so it is not pushed.")
         why = ("choco does not set it on a node in development"
                if node.mode is Mode.DEVELOPMENT else "its config file does not render")
         return Cell(name, "extra", f"{name} runs {_compact(value)}, which {why} ({age}).")

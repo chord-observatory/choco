@@ -727,24 +727,24 @@ def set_started(action, group=None):
 @bp.route("/nodes/set-mode/<mode>/<path:node_key>", methods=["POST"])
 @login_required
 def set_node_mode(mode, node_key):
-    """Put one node in *mode*.  htmx gets the control back in place; a
-    plain form post a flash and a redirect.  The one step refused,
-    development straight to normal (``Node.set_mode``), is a 409."""
+    """Put one node in *mode*.  htmx gets the control back in place,
+    refused or not: the control offers only the steps the node may take
+    (``Node.open_modes``), so a refused step came from a stale page and
+    the control as it now stands is the answer.  A plain form post gets
+    a flash (the refusal's reason, ``Node.refusal``) and a redirect."""
     _check_csrf()
     node = _registry().get_node(node_key)
     if node is None:
         abort(404)
     if mode not in _MODES:
         abort(400)
-    if _orchestrator().set_mode([node], _MODES[mode]):
-        message = f"{node_key} is in development; put it in maintenance first"
-        if request.headers.get("HX-Request"):
-            return message, 409
-        flash(message, "error")
-        return redirect(request.referrer or url_for("web.dashboard"))
+    refused = _orchestrator().set_mode([node], _MODES[mode])
     if request.headers.get("HX-Request"):
         return render_template("_mode_control.html", node=node, key=node_key)
-    flash(f"{node_key} {mode}", "success")
+    if refused:
+        flash(f"{node_key}: {node.refusal(_MODES[mode])}", "error")
+    else:
+        flash(f"{node_key} {mode}", "success")
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
@@ -758,11 +758,7 @@ def set_maintenance(action, group=None):
     _check_csrf()
     if action not in _MAINTENANCE_ACTIONS:
         abort(400)
-    nodes = _scope_nodes(group)
-    if _MAINTENANCE_ACTIONS[action]:
-        _orchestrator().set_mode(nodes, Mode.MAINTENANCE)
-    else:
-        _orchestrator().lift(nodes)
+    _orchestrator().set_maintenance(_scope_nodes(group), _MAINTENANCE_ACTIONS[action])
     return _dashboard_reply()
 
 
@@ -2920,19 +2916,15 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
         value = data.get("maintenance")
         if not isinstance(value, bool):
             return {"error": "maintenance must be a boolean"}, 400
-        if value:
-            _orchestrator().set_mode(nodes, Mode.MAINTENANCE)
-        else:
-            _orchestrator().lift(nodes)
+        _orchestrator().set_maintenance(nodes, value)
         return {"status": "ok", **scope, "maintenance": value}, 200
     elif action == "set_mode":
         mode = data.get("mode")
-        if mode not in _MODES:
+        if not isinstance(mode, str) or mode not in _MODES:
             return {"error": "mode must be one of " + ", ".join(_MODES)}, 400
         refused = _orchestrator().set_mode(nodes, _MODES[mode])
         if refused:
-            return {"error": "in development; put in maintenance first: "
-                             + ", ".join(n.key for n in refused),
+            return {"error": "; ".join(f"{n.key}: {n.refusal(_MODES[mode])}" for n in refused),
                     "refused": [n.key for n in refused]}, 409
         return {"status": "ok", **scope, "mode": mode}, 200
     elif action == "set_config":

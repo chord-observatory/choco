@@ -224,11 +224,11 @@ the drift check's own read feeds outside maintenance).  The panel is how an
 operator sees, before lifting maintenance, which stored values the node does
 not run yet; the paused kotekan is often someone else's (in 2026-11 kvand's
 gnss-node on port 12048), so the read is spaced out rather than every 5 s.
-The config is ~380 kB on a cx node. Toggles live
-in ``web.py`` (per-node ``/nodes/toggle-maintenance/<key>``, group
+The config is ~380 kB on a cx node. The controls live
+in ``web.py`` (per-node ``/nodes/set-mode/<mode>/<key>``, group
 ``/nodes/set-maintenance-group/<group>/<on|off>``, all ``/nodes/set-
-maintenance-all/<on|off>``, JSON API ``set_maintenance``) and templates
-``_toggle_maintenance.html`` and the ``maint_ctl`` macro in
+maintenance-all/<on|off>``, JSON API ``set_maintenance`` and ``set_mode``)
+and templates ``_mode_control.html`` and the ``maint_ctl`` macro in
 ``_service_macros.html``. The
 orange/blue colour pair distinguishes it from the green/yellow started toggle,
 and the per-node slider is mirrored relative to the started toggle
@@ -258,21 +258,28 @@ mode: in normal the stored value merged over the file's block (the merge
 ``desired_config`` makes before a ``/start``), for endpoints the file
 renders; in development the stored value merged over the *running* block,
 for endpoints the running config has whose fields the stored value does not
-exceed.  The second condition exists because kotekan's ``configUpdater``
-refuses a POST with a key the block lacks, a key missing, or a changed
-type (400, no FATAL), so such a push would fail every 5 s for the life of
-the run; the panel names the mismatch instead.  Only stored values are ever
+exceed, each of the running field's type (``state.fits_block``).  The
+second condition exists because kotekan's ``configUpdater`` refuses a POST
+with a key the block lacks, a key missing, or a changed type — an integer
+for a float included — (400, no FATAL), so such a push would fail every
+5 s for the life of the run; the panel names the mismatch instead.  Only stored values are ever
 pushed, so a library default a developer's config also has
 (``rfi_first_stage_enabled``, ``dtv_*``) is left as the developer set it.
 
 **Transitions.**  Any mode may enter maintenance (bulk ▼ is the stop
-button and takes development nodes too) or development.  Development to
-normal is refused (``Node.set_mode``, ``Orchestrator.set_mode`` all or
-none): normal restarts the developer's kotekan onto the library within a
-poll, so a node leaves development into maintenance and the operator lifts
-that knowing what it starts.  Lifting (bulk ▲, ``set_maintenance: false``,
-``maint off``) returns each node in maintenance to its *resting* mode and
-leaves the others alone.
+button and takes development nodes too) or development.  Normal is
+refused from development, and to a declared development node in any mode
+(``Node.refusal``, the one statement of the rule; ``Node.set_mode`` and
+``Orchestrator.set_mode``, all or none, ask it; the mode control offers
+only ``Node.open_modes``): normal restarts the developer's kotekan onto
+the library within a poll, so a node leaves development into maintenance
+and the operator lifts that knowing what it starts, and a declared node
+returns to production by a nodes.yaml edit.  Lifting (bulk ▲,
+``set_maintenance: false``, ``maint off``; ``Orchestrator.set_maintenance``)
+returns each node in maintenance to its *resting* mode and leaves the
+others alone.  A base config or resync queued for a node in development
+is recorded, like one queued in maintenance, and applied when the node is
+back in normal mode.
 
 **The resting mode is in nodes.yaml** (``development: true``,
 ``Node.rest_mode``) because without it a lift cannot know which nodes were

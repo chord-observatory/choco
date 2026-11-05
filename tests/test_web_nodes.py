@@ -274,14 +274,16 @@ class TestMaintenanceToggles:
         assert node.mode is Mode.DEVELOPMENT
         assert 'class="mode-btn tone-dev current"' in body
         assert "/nodes/set-mode/maintenance/cx/cx1" in body
-        assert "/nodes/set-mode/normal/cx/cx1" in body     # not declared: normal is offered
-        # Development straight to normal is refused; through maintenance it goes.
+        assert "/nodes/set-mode/normal/cx/cx1" not in body   # not offered from development
+        # Development straight to normal is refused (a stale page's click:
+        # htmx gets the control as it stands); through maintenance it goes.
         resp = client.post("/nodes/set-mode/normal/cx/cx1",
                            data={"_csrf_token": token}, headers={"HX-Request": "true"})
-        assert resp.status_code == 409 and node.mode is Mode.DEVELOPMENT
+        assert resp.status_code == 200 and node.mode is Mode.DEVELOPMENT
+        assert 'class="mode-btn tone-dev current"' in resp.get_data(as_text=True)
         resp = client.post("/nodes/set-mode/normal/cx/cx1",
                            data={"_csrf_token": token}, follow_redirects=True)
-        assert "put it in maintenance first" in resp.get_data(as_text=True)
+        assert "cx/cx1: in development; put it in maintenance first" in resp.get_data(as_text=True)
         assert node.mode is Mode.DEVELOPMENT
         client.post("/nodes/set-mode/maintenance/cx/cx1", data={"_csrf_token": token})
         client.post("/nodes/set-mode/normal/cx/cx1", data={"_csrf_token": token})
@@ -403,10 +405,17 @@ class TestMaintenanceToggles:
         resp = client.post("/update/cx", json={"action": "set_mode", "mode": "normal"})
         assert resp.status_code == 409
         assert resp.get_json()["refused"] == ["cx/cx1"]
-        assert "put in maintenance first" in resp.get_json()["error"]
+        assert resp.get_json()["error"] == "cx/cx1: in development; put it in maintenance first"
         assert cx1.mode is Mode.DEVELOPMENT and cx2.maintenance
-        resp = client.post("/update/cx/cx1", json={"action": "set_mode", "mode": "sideways"})
-        assert resp.status_code == 400
+        for bad in ("sideways", ["normal"], {"mode": "normal"}, None):
+            resp = client.post("/update/cx/cx1", json={"action": "set_mode", "mode": bad})
+            assert resp.status_code == 400, bad
+        # A declared development node is refused normal from maintenance too.
+        cx2.development = True
+        resp = client.post("/update/cx/cx2", json={"action": "set_mode", "mode": "normal"})
+        assert resp.status_code == 409 and "nodes.yaml" in resp.get_json()["error"]
+        assert cx2.maintenance
+        cx2.development = False
         # set_maintenance false is the lift: each node to its resting mode.
         cx2.development = True
         client.post("/update/cx", json={"action": "set_maintenance", "maintenance": True})

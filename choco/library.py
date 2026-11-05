@@ -263,7 +263,9 @@ def pull_summary(result: dict) -> str:
             else:
                 text += (f"; {'would re-render' if dry else 're-rendered'} {nodes} "
                          f"({_held_phrase(result, named=False)})")
-            if not dry:
+            # Only a node in maintenance restarts onto the set when it
+            # is lifted; one in development does not run the library.
+            if not dry and (paused or "maintenance" in (result.get("held") or {}).values()):
                 text += "; lift maintenance to restart them onto it"
     if result["kept"]:
         text += "; kept " + ", ".join(

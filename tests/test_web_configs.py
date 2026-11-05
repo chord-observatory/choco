@@ -579,6 +579,7 @@ class TestConfigPull:
         assert done["status"] == "pulled"
         assert done["reloaded"] == ["cx/cx1"] and done["paused"] == []
         assert "re-rendered cx/cx1 (not paused: cx/cx1 in development)" in done["summary"]
+        assert "lift maintenance" not in done["summary"]     # nothing waits for a lift
         assert done["held"] == {"cx/cx1": "development"}
         assert cx1.mode is Mode.DEVELOPMENT
 

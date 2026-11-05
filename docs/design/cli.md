@@ -46,8 +46,9 @@ they are login+CSRF routes whose audit line names a person, and a localhost
 caller has none.  ``choco.sh install`` symlinks the venv script to
 ``/usr/local/bin/choco`` (uninstall removes the link only if it still points
 there); the web process never imports ``cli.py``.  Because the CLI reaches
-``set_started`` / ``set_maintenance`` through ``/update``, those JSON actions
-enqueue a ``POLL`` exactly as the dashboard toggles do — before the CLI
+``set_started`` / ``set_maintenance`` / ``set_mode`` (``choco mode``,
+2026-11-05) through ``/update``, those JSON actions
+enqueue a ``POLL`` exactly as the dashboard controls do — before the CLI
 existed, a scripted stop waited for the node's next scheduled check, up to
 ``max_retry_interval`` for a backed-off node.  ``tests/test_cli.py`` drives
 ``cli.main`` with the transport patched to the Flask test client, so every

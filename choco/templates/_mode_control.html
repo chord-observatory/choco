@@ -1,14 +1,14 @@
-{# The node's mode as a three-way control: one button per mode, the
-   current one filled.  A node nodes.yaml declares development rests in
-   development, so normal is not offered: it would restart the developer's
-   kotekan onto the library.  Posting development -> normal is refused
-   (409) in any case; the operator goes through maintenance. #}
+{# The node's mode as a three-way control: the current mode's button
+   filled, plus a button for each mode the node may enter now
+   (Node.open_modes: normal is not offered from development, nor to a
+   node nodes.yaml declares a developer's, since it would restart that
+   kotekan onto the library; the operator goes through maintenance). #}
 {%- set modes = [('normal', 'info', 'Normal: choco keeps the node on its desired config (start, kill, restart on drift, updatable values)'),
                  ('maintenance', 'maint', 'Maintenance: choco reads the node and never writes to it'),
                  ('development', 'dev', 'Development: the node runs its own config; choco never starts or kills it and pushes only its stored updatable values, to the endpoints that config has')] -%}
 <span class="mode-ctl" hx-target="this" hx-swap="outerHTML"
       title="{{ 'mode: ' ~ node.mode.value ~ ('\n(nodes.yaml declares it a development node: lifting maintenance returns it to development)' if node.development else '') }}">
-    {%- for mode, tone, title in modes if not (mode == 'normal' and node.development) %}
+    {%- for mode, tone, title in modes if mode == node.mode.value or mode in node.open_modes %}
     <button type="button" class="mode-btn tone-{{ tone }}{% if node.mode.value == mode %} current{% endif %}"
             title="{{ title }}"{% if node.mode.value == mode %} aria-pressed="true"{% else %}
             hx-post="{{ request.script_root }}/nodes/set-mode/{{ mode }}/{{ key }}"

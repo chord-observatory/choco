@@ -66,8 +66,8 @@
     <input type="hidden" name="action" value="push_config">
     <span class="action-label">Re-push</span>
     <button type="submit" class="secondary outline btn-inline"
-            title="Kill and start {{ node_key }} on its current desired config (skipped while in maintenance)">Re-push current</button>
-    <small class="muted">kill and start on the current desired config; skipped while in maintenance</small>
+            title="Kill and start {{ node_key }} on its current desired config (skipped outside normal mode)">Re-push current</button>
+    <small class="muted">kill and start on the current desired config; skipped outside normal mode (a queued push waits for the node to return to it)</small>
 </form>
 <form method="post" class="action-row">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">

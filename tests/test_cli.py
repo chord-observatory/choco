@@ -147,7 +147,7 @@ def test_mode(run, app):
     # Development to normal is refused, for the whole group.
     code, out, err = run("mode", "normal", "cx")
     assert code == 1
-    assert "put in maintenance first" in err
+    assert "put it in maintenance first" in err
     assert _node(app, "cx/cx1").mode is Mode.DEVELOPMENT
     assert _node(app, "cx/cx2").maintenance is True
     # maint off lifts only the nodes in maintenance.

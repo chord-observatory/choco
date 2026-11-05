@@ -281,7 +281,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   actions with Pico's filled primary kept for the page's one main action,
   `.notice` for static warnings (`.flash` is transient only).  Controls are
   not status: switches are tinted only when on, group buttons colour their
-  glyph text on the tone's soft tint, never a solid fill.
+  glyph text on the tone's soft tint, never a solid fill.  The one
+  exception is the mode control's current mode, filled solid because the
+  column reads as the node's status at rest (the switch it replaced
+  carried that colour when on).
 - Type is IBM Plex Sans / Plex Mono, vendored in `static/fonts/` (keep
   `static/fonts/*` in pyproject's package-data); no page loads anything from
   an outside host.  600 is the site's bold, never 700.  The base size is

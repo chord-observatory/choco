@@ -7,7 +7,7 @@ import yaml
 
 from choco.state import (
     Mode, Registry, Node, NodeStatus,
-    strip_updatable_values, find_updatable_blocks,
+    strip_updatable_values, find_updatable_blocks, fits_block,
 )
 
 
@@ -824,12 +824,27 @@ class TestModeWrites:
 
     def test_development_leaves_only_into_maintenance(self):
         node = Node(name="t", group="t", host="example", mode=Mode.DEVELOPMENT)
+        assert "put it in maintenance first" in node.refusal(Mode.NORMAL)
         assert node.set_mode(Mode.NORMAL) is False
         assert node.mode is Mode.DEVELOPMENT
+        assert node.open_modes == ["maintenance"]
         assert node.set_mode(Mode.MAINTENANCE) is True
         assert node.maintenance is True
+        assert node.open_modes == ["normal", "development"]
         assert node.set_mode(Mode.NORMAL) is True
+        assert node.open_modes == ["maintenance", "development"]
         assert node.set_mode(Mode.DEVELOPMENT) is True
+
+    def test_a_declared_development_node_is_never_offered_normal(self):
+        """Whatever mode it is in: after a restart it sits in maintenance,
+        and normal from there would start the library on it too."""
+        node = Node(name="t", group="t", host="example", mode=Mode.MAINTENANCE,
+                    development=True)
+        assert "nodes.yaml" in node.refusal(Mode.NORMAL)
+        assert node.set_mode(Mode.NORMAL) is False and node.maintenance
+        assert node.open_modes == ["development"]
+        assert node.set_mode(Mode.DEVELOPMENT) is True
+        assert node.open_modes == ["maintenance"]
 
 
 class TestDesiredUpdatable:
@@ -846,7 +861,8 @@ class TestDesiredUpdatable:
     BFFS = {"bad_inputs": [3, 5], "start_time": 2.0, "update_id": "bffs-2"}
     LIVE = {"updatable_config/bad_inputs": {"bad_inputs": [], "start_time": 0.0,
                                             "update_id": "x"},
-            "gnss_gain": {"enabled": False, "valid_at_time_ns": 0}}
+            "gnss_gain": {"enabled": False, "valid_at_time_ns": 0},
+            "rfi_second_stage_enabled": {"enabled": False, "valid_at_time_ns": 0}}
 
     def _node(self, mode):
         node = Node(name="t", group="t", host="example", mode=mode)
@@ -854,8 +870,20 @@ class TestDesiredUpdatable:
         node.updatable_config = {"updatable_config/bad_inputs": self.BFFS,
                                  "fringestop_enabled": {"enabled": True},
                                  "stale/endpoint": {"x": 1},
-                                 "gnss_gain": {"enabled": True, "extra": 1}}
+                                 "gnss_gain": {"enabled": True, "extra": 1},
+                                 "rfi_second_stage_enabled": {"enabled": "true"}}
         return node
+
+    def test_fits_block_is_kotekans_rule(self):
+        block = {"enabled": False, "valid_at_time_ns": 0, "start_time": 1.5, "ids": []}
+        assert fits_block({"enabled": True}, block)
+        assert fits_block({"valid_at_time_ns": 7, "ids": [1, 2]}, block)
+        assert fits_block({}, block)
+        assert not fits_block({"extra": 1}, block)                 # a field the block lacks
+        assert not fits_block({"enabled": "true"}, block)          # another type
+        assert not fits_block({"enabled": 1}, block)               # a bool is not an integer
+        assert not fits_block({"valid_at_time_ns": 7.0}, block)    # a float is not an integer
+        assert not fits_block({"start_time": 2}, block)            # nor an integer a float
 
     def test_normal_merges_over_the_rendered_block_for_rendered_endpoints(self):
         assert self._node(Mode.NORMAL).desired_updatable(self.LIVE) == {
@@ -865,7 +893,8 @@ class TestDesiredUpdatable:
 
     def test_development_merges_over_the_live_block_for_live_endpoints(self):
         # fringestop_enabled is not live; gnss_gain's stored value has a
-        # field the running block lacks, which kotekan would refuse.
+        # field the running block lacks and rfi_second_stage_enabled's a
+        # field of another type, both of which kotekan would refuse.
         assert self._node(Mode.DEVELOPMENT).desired_updatable(self.LIVE) == {
             "updatable_config/bad_inputs": self.BFFS,
         }

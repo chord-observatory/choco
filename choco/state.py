@@ -154,6 +154,33 @@ def strip_updatable_values(config: dict) -> dict:
     return out
 
 
+def _json_type(value) -> str:
+    """The type kotekan's configUpdater compares an update's field by: it
+    refuses a change of general type, and one between an integer and a
+    float; a bool is its own type."""
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, dict):
+        return "dict"
+    return "null"
+
+
+def fits_block(values: dict, block: dict) -> bool:
+    """Whether kotekan would take *values* as an update of the running
+    *block*: every field one the block has, of the same type (a missing
+    field is supplied by the merge over the block)."""
+    return all(key in block and _json_type(value) == _json_type(block[key])
+               for key, value in values.items())
+
+
 def find_updatable_blocks(config: dict, _prefix: str = "") -> dict[str, dict]:
     """Find all updatable config blocks and return their endpoint paths + values.
 
@@ -325,16 +352,33 @@ class Node:
         where nodes.yaml declares it, else normal."""
         return Mode.DEVELOPMENT if self.development else Mode.NORMAL
 
+    def refusal(self, mode: Mode) -> str | None:
+        """Why the node may not enter *mode* now, or None when it may.
+        Normal is refused from development, and to a node nodes.yaml
+        declares a developer's whatever mode it is in: normal would
+        restart that kotekan onto the library within a poll.  So a node
+        leaves development into maintenance, and the operator lifts that
+        knowing what it starts; a declared node returns to production by
+        a nodes.yaml edit."""
+        if mode is Mode.NORMAL and self.mode is Mode.DEVELOPMENT:
+            return "in development; put it in maintenance first"
+        if mode is Mode.NORMAL and self.development:
+            return "nodes.yaml declares it a development node"
+        return None
+
     def set_mode(self, mode: Mode) -> bool:
-        """Change the mode.  The one step refused (False, nothing changed)
-        is development straight to normal: normal would restart the
-        developer's kotekan onto the library within a poll, so a node
-        leaves development into maintenance and the operator lifts that
-        knowing what it starts."""
-        if self.mode is Mode.DEVELOPMENT and mode is Mode.NORMAL:
+        """Change the mode; False, and nothing changed, for a step
+        ``refusal`` names."""
+        if self.refusal(mode) is not None:
             return False
         self.mode = mode
         return True
+
+    @property
+    def open_modes(self) -> list[str]:
+        """The modes the node may enter now, by their words: the mode
+        control's buttons."""
+        return [m.value for m in Mode if m is not self.mode and self.refusal(m) is None]
 
     @property
     def config_problem(self) -> str | None:
@@ -507,8 +551,8 @@ class Node:
         development the node runs a config choco did not render, so the
         block is the running one (*live*: the updatable blocks of its
         ``/config`` as the worker last read them); an endpoint that
-        config lacks is left out, and so is one whose stored value
-        carries a field the running block does not, since kotekan
+        config lacks is left out, and so is one whose stored value does
+        not fit the running block (``fits_block``), since kotekan
         refuses such an update.
         """
         stored = self.updatable_config or {}
@@ -516,7 +560,7 @@ class Node:
             blocks = live or {}
             return {endpoint: {**blocks[endpoint], **values}
                     for endpoint, values in stored.items()
-                    if endpoint in blocks and set(values) <= set(blocks[endpoint])}
+                    if endpoint in blocks and fits_block(values, blocks[endpoint])}
         blocks = (find_updatable_blocks(self.rendered_config)
                   if self.rendered_config is not None else {})
         return {endpoint: {**blocks[endpoint], **values}

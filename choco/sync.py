@@ -546,17 +546,25 @@ class Orchestrator:
     def set_mode(self, nodes, mode: Mode) -> list[Node]:
         """Put *nodes* in *mode* and wake their workers as ``set_flag``
         does.  All or none: the nodes whose step is refused
-        (``Node.set_mode``, development to normal) are returned and
-        nothing changes."""
+        (``Node.refusal``) are returned and nothing changes."""
         nodes = list(nodes)
-        refused = [n for n in nodes
-                   if n.mode is Mode.DEVELOPMENT and mode is Mode.NORMAL]
+        refused = [n for n in nodes if n.refusal(mode) is not None]
         if refused:
             return refused
         for node in nodes:
             node.set_mode(mode)
             self.submit_node(node.key, ChangeItem(ChangeType.POLL))
         return []
+
+    def set_maintenance(self, nodes, on: bool) -> list[Node]:
+        """The maintenance control: *on* puts every one of *nodes* in
+        maintenance (never refused), off lifts it (``lift``).  Returns
+        the nodes changed."""
+        if on:
+            nodes = list(nodes)
+            self.set_mode(nodes, Mode.MAINTENANCE)
+            return nodes
+        return self.lift(nodes)
 
     def lift(self, nodes) -> list[Node]:
         """Take the *nodes* in maintenance out of it, each to its resting
