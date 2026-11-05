@@ -113,6 +113,22 @@ def check_saves(registry, texts: dict[str, str]
     return list(affected), None
 
 
+def pause_normal(registry, orchestrator, affected: list[str], *, dry_run: bool = False
+                 ) -> tuple[list[str], dict[str, str]]:
+    """Put the *affected* nodes (keys, the ones a write re-renders) that
+    are in normal mode in maintenance, so the write restarts nothing
+    until the operator lifts it; a node in another mode is left alone (one
+    in development does not run the library).  Returns the keys paused
+    (would be, with *dry_run*) and ``held``: the rest, key -> the mode it
+    is in."""
+    nodes = [registry.get_node(key) for key in affected]
+    to_pause = [n for n in nodes if n.mode is Mode.NORMAL]
+    held = {n.key: n.mode.value for n in nodes if n.mode is not Mode.NORMAL}
+    if not dry_run:
+        orchestrator.set_mode(to_pause, Mode.MAINTENANCE)
+    return [n.key for n in to_pause], held
+
+
 def write_file(registry, orchestrator, rel: str, content: str, user: str) -> list[str]:
     """Write library file *rel* atomically and hand the change to the
     sync loop now (the mtime scan would see it within a tick anyway).
@@ -173,8 +189,9 @@ def pull(registry, orchestrator, upstream, dry_run: bool, user: str) -> tuple[di
     affected, error = check_saves(registry, texts)
     if error:
         return {"error": error, "commit": commit}, 409
-    to_pause = [n for n in map(registry.get_node, affected) if n.mode is Mode.NORMAL]
     changing = bool(texts or remove)
+    paused, held = pause_normal(registry, orchestrator, affected,
+                                dry_run=dry_run or not changing)
     result = {
         "status": ("planned" if dry_run
                    else "pulled" if changing else "unchanged"),
@@ -189,16 +206,15 @@ def pull(registry, orchestrator, upstream, dry_run: bool, user: str) -> tuple[di
         "skipped": [{"name": n, "reason": r} for n, r in plan.skipped],
         "unchanged": len(plan.same),
         "reloaded": affected,
-        "paused": [n.key for n in to_pause],
-        "held": {n.key: n.mode.value for n in map(registry.get_node, affected)
-                 if n.mode is not Mode.NORMAL},
+        "paused": paused,
+        "held": held,
     }
     result["summary"] = pull_summary(result)
     if dry_run or not changing:
         return result, 200
-    # Paused before the files land: the sync loop then re-renders them
-    # onto the new set but makes no REST write until maintenance lifts.
-    orchestrator.set_mode(to_pause, Mode.MAINTENANCE)
+    # Paused (pause_normal, before the files land): the sync loop then
+    # re-renders them onto the new set but makes no REST write until
+    # maintenance lifts.
     written = []
     for rel in plan.fetch:
         path = registry.configs_dir / rel
@@ -217,7 +233,7 @@ def pull(registry, orchestrator, upstream, dry_run: bool, user: str) -> tuple[di
         f"{plan.change or 'none'}, removed {remove or 'none'}"
         + (f", kept (in use) {[k['path'] for k in kept]}" if kept else "")
         + f"; re-rendering {affected or 'no nodes'}"
-        + (f", paused {result['paused']}" if to_pause else ""))
+        + (f", paused {paused}" if paused else ""))
     for path in written:
         orchestrator.file_written(path)
     return result, 200
@@ -233,14 +249,10 @@ def pull_summary(result: dict) -> str:
     def names(rels):
         return ", ".join(r.removeprefix(into) for r in rels)
 
-    def _held_phrase(result, named: bool) -> str:
-        """Why the re-rendered nodes not paused were not (``held``: node
-        -> the mode it was in).  *named* when paused nodes were listed
-        beside them."""
-        held = result.get("held") or {}
-        if set(held.values()) <= {"maintenance"}:
-            return (", ".join(held) + " " if named else "") + "already in maintenance"
-        return "not paused: " + ", ".join(f"{k} in {m}" for k, m in held.items())
+    def held_phrase() -> str:
+        """The re-rendered nodes not paused, each with the mode it was in."""
+        return "not paused: " + ", ".join(
+            f"{key} in {mode}" for key, mode in (result.get("held") or {}).items())
 
     parts = [f"{verb} {names(result[verb])}"
              for verb in ("added", "changed", "removed") if result[verb]]
@@ -259,10 +271,10 @@ def pull_summary(result: dict) -> str:
             elif paused:
                 text += (f"; {'would re-render' if dry else 're-rendered'} {nodes}, "
                          f"{'pausing' if dry else 'paused'} {', '.join(paused)} "
-                         f"({_held_phrase(result, named=True)})")
+                         f"({held_phrase()})")
             else:
                 text += (f"; {'would re-render' if dry else 're-rendered'} {nodes} "
-                         f"({_held_phrase(result, named=False)})")
+                         f"({held_phrase()})")
             # Only a node in maintenance restarts onto the set when it
             # is lifted; one in development does not run the library.
             if not dry and (paused or "maintenance" in (result.get("held") or {}).values()):

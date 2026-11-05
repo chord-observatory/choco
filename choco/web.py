@@ -47,7 +47,7 @@ from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import Mode, NodeStatus, find_updatable_blocks, fits_block, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
-from .updatable import endpoint_block, fleet_rows
+from .updatable import endpoint_block, fleet_rows, switch_values
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +87,19 @@ def _orchestrator():
     return current_app.config["orchestrator"]
 
 
-def _dashboard_reply():
-    """Reply to a bulk control: the dashboard table for htmx, else a redirect."""
+def _control_reply(partial: str, context: dict, notice: tuple[str, str] | None = None):
+    """Reply to a dashboard control: *partial* for htmx, with *notice*
+    (category, text) as its out-of-band flash when there is one; else
+    the flash and the dashboard."""
     if request.headers.get("HX-Request"):
-        return render_template("_dashboard_table.html", **_dashboard_context())
+        return render_template(partial, **context, notice=notice)
+    if notice:
+        flash(notice[1], notice[0])
     return redirect(url_for("web.dashboard"))
+
+
+def _dashboard_reply():
+    return _control_reply("_dashboard_table.html", _dashboard_context())
 
 
 def _dashboard_context() -> dict:
@@ -106,7 +114,8 @@ def _dashboard_context() -> dict:
     return {"nodes": nodes, "hosts": hosts}
 
 
-# URL action words of the bulk toggle routes -> flag value.
+# The words a URL or form may carry: the started routes' actions, the
+# modes, and the updatable panel's switch actions.
 _STARTED_ACTIONS = {"start": True, "stop": False}
 _MODES = {mode.value: mode for mode in Mode}
 _SWITCH_ACTIONS = {"on": True, "off": False}
@@ -677,17 +686,18 @@ def config_edit(name):
 
 # --- htmx partial endpoints for live updates ---
 
-def _toggle(node_key: str, flag: str, words: tuple[str, str]):
-    """Flip one node's desired *flag*.  htmx gets the switch back in
-    place; a plain form post a flash (*words* for on / off) and a redirect."""
+def _node_control(node_key: str, partial: str, apply):
+    """One node's control: *apply(node)* changes it and returns the flash
+    (text, category).  htmx gets *partial* back in place; a plain form
+    post the flash and a redirect to where it came from."""
     _check_csrf()
     node = _registry().get_node(node_key)
     if node is None:
         abort(404)
-    _orchestrator().set_flag([node], flag, not getattr(node, flag))
+    text, category = apply(node)
     if request.headers.get("HX-Request"):
-        return render_template(f"_toggle_{flag}.html", node=node, key=node_key)
-    flash(f"{node_key} {words[0] if getattr(node, flag) else words[1]}", "success")
+        return render_template(partial, node=node, key=node_key)
+    flash(text, category)
     return redirect(request.referrer or url_for("web.dashboard"))
 
 
@@ -700,20 +710,32 @@ def _scope_nodes(group: str | None) -> list:
     return nodes
 
 
-def _bulk(flag: str, actions: dict, action: str, group: str | None):
-    """Set *flag* on every node, or on *group*'s, from the URL's action word."""
+def _bulk(words: dict, word: str, group: str | None, apply):
+    """A bulk control: *apply(nodes, value)* with *word*'s value from
+    *words* on every node, or on *group*'s; the dashboard table back."""
     _check_csrf()
-    if action not in actions:
+    if word not in words:
         abort(400)
-    _orchestrator().set_flag(_scope_nodes(group), flag, actions[action])
+    apply(_scope_nodes(group), words[word])
     return _dashboard_reply()
+
+
+def _enter_mode(nodes, mode: Mode):
+    """The mode step for a scope: normal lifts maintenance (each node in
+    it to its resting mode, the others untouched); any other mode is
+    entered outright.  Returns what the orchestrator does."""
+    orchestrator = _orchestrator()
+    return orchestrator.lift(nodes) if mode is Mode.NORMAL else orchestrator.set_mode(nodes, mode)
 
 
 @bp.route("/nodes/toggle-started/<path:node_key>", methods=["POST"])
 @login_required
 def toggle_started(node_key):
     """Toggle the started/idle desired state for a node."""
-    return _toggle(node_key, "started", ("started", "stopped"))
+    def flip(node):
+        _orchestrator().set_flag([node], "started", not node.started)
+        return f"{node_key} {'started' if node.started else 'stopped'}", "success"
+    return _node_control(node_key, "_toggle_started.html", flip)
 
 
 @bp.route("/nodes/set-started-all/<action>", methods=["POST"])
@@ -721,7 +743,8 @@ def toggle_started(node_key):
 @login_required
 def set_started(action, group=None):
     """Set every node, or every node in *group*, to started or stopped."""
-    return _bulk("started", _STARTED_ACTIONS, action, group)
+    return _bulk(_STARTED_ACTIONS, action, group,
+                 lambda nodes, on: _orchestrator().set_flag(nodes, "started", on))
 
 
 @bp.route("/nodes/set-mode/<mode>/<path:node_key>", methods=["POST"])
@@ -732,20 +755,14 @@ def set_node_mode(mode, node_key):
     (``Node.open_modes``), so a refused step came from a stale page and
     the control as it now stands is the answer.  A plain form post gets
     a flash (the refusal's reason, ``Node.refusal``) and a redirect."""
-    _check_csrf()
-    node = _registry().get_node(node_key)
-    if node is None:
-        abort(404)
     if mode not in _MODES:
         abort(400)
-    refused = _orchestrator().set_mode([node], _MODES[mode])
-    if request.headers.get("HX-Request"):
-        return render_template("_mode_control.html", node=node, key=node_key)
-    if refused:
-        flash(f"{node_key}: {node.refusal(_MODES[mode])}", "error")
-    else:
-        flash(f"{node_key} {mode}", "success")
-    return redirect(request.referrer or url_for("web.dashboard"))
+
+    def enter(node):
+        if _orchestrator().set_mode([node], _MODES[mode]):
+            return f"{node_key}: {node.refusal(_MODES[mode])}", "error"
+        return f"{node_key} {mode}", "success"
+    return _node_control(node_key, "_mode_control.html", enter)
 
 
 @bp.route("/nodes/set-mode-all/<mode>", methods=["POST"])
@@ -754,17 +771,8 @@ def set_node_mode(mode, node_key):
 def set_bulk_mode(mode, group=None):
     """The group mode control: put every node, or every node in
     *group*, in maintenance or development, or (``normal``) lift
-    maintenance, each node in it returning to its resting mode and the
-    others left as they are."""
-    _check_csrf()
-    if mode not in _MODES:
-        abort(400)
-    nodes = _scope_nodes(group)
-    if _MODES[mode] is Mode.DEVELOPMENT:
-        _orchestrator().set_mode(nodes, Mode.DEVELOPMENT)
-    else:
-        _orchestrator().set_maintenance(nodes, _MODES[mode] is Mode.MAINTENANCE)
-    return _dashboard_reply()
+    maintenance (``_enter_mode``)."""
+    return _bulk(_MODES, mode, group, _enter_mode)
 
 
 @bp.route("/nodes/updatable/<path:endpoint>", methods=["POST"])
@@ -783,42 +791,45 @@ def set_updatable(endpoint):
     else ``values``, a JSON object.  htmx gets the panel back with the
     outcome as an out-of-band flash; a form post a flash."""
     _check_csrf()
+
+    def reply(category, text):
+        return _control_reply("_updatable_table.html", _updatable_context(), (category, text))
+
     action = request.form.get("action", "")
     values = None
-    if action in _SWITCH_ACTIONS:
-        values = {"enabled": _SWITCH_ACTIONS[action]}
-    elif action == "library":
+    if action in _SWITCH_ACTIONS or action == "library":
         pass
     elif "values" in request.form:
         try:
             values = json.loads(request.form["values"])
         except json.JSONDecodeError as e:
-            return _updatable_reply(f"/{endpoint}: invalid JSON ({e})", "error")
+            return reply("error", f"/{endpoint}: invalid JSON ({e})")
         if not isinstance(values, dict):
-            return _updatable_reply(f"/{endpoint}: the value must be a JSON object", "error")
+            return reply("error", f"/{endpoint}: the value must be a JSON object")
     else:
         abort(400)
     orchestrator = _orchestrator()
+    nodes = list(_registry().nodes.values())
     queued, skipped = [], []
-    for node in _registry().nodes.values():
-        if action == "library":
+    if action == "library":
+        for node in nodes:
             if endpoint in (node.updatable_config or {}):
                 orchestrator.submit_node(node.key, ChangeItem(
                     ChangeType.UPDATABLE_CONFIG, endpoint=endpoint))
                 queued.append(node.key)
-            continue
-        block = endpoint_block(node, endpoint)
-        if block is None:
-            continue
-        value = dict(values)
-        if action in _SWITCH_ACTIONS and "valid_at_time_ns" in block:
-            value["valid_at_time_ns"] = 0
-        if not fits_block(value, block):
-            skipped.append(node.key)
-            continue
-        orchestrator.submit_node(node.key, ChangeItem(
-            ChangeType.UPDATABLE_CONFIG, endpoint=endpoint, values=value))
-        queued.append(node.key)
+    else:
+        for node in nodes:
+            block = endpoint_block(node, endpoint)
+            if block is None:
+                continue
+            value = (switch_values(block, _SWITCH_ACTIONS[action])
+                     if action in _SWITCH_ACTIONS else dict(values))
+            if not fits_block(value, block):
+                skipped.append(node.key)
+                continue
+            orchestrator.submit_node(node.key, ChangeItem(
+                ChangeType.UPDATABLE_CONFIG, endpoint=endpoint, values=value))
+            queued.append(node.key)
     what = ("override dropped" if action == "library"
             else action if action in _SWITCH_ACTIONS else "value")
     logger.warning(f"updatable /{endpoint} {what} by {_audit_user()}: "
@@ -826,17 +837,7 @@ def set_updatable(endpoint):
     text = f"/{endpoint}: {what} queued on " + (", ".join(queued) if queued else "no node")
     if skipped:
         text += f"; skipped {', '.join(skipped)} (the block it runs cannot take the value)"
-    return _updatable_reply(text, "success" if queued else "error")
-
-
-def _updatable_reply(text: str, category: str):
-    """Reply to a panel edit: the panel for htmx, with *text* as an
-    out-of-band flash; else a flash and the dashboard."""
-    if request.headers.get("HX-Request"):
-        return render_template("_updatable_table.html", **_updatable_context(),
-                               notice=(category, text))
-    flash(text, category)
-    return redirect(url_for("web.dashboard"))
+    return reply("success" if queued else "error", text)
 
 
 @bp.route("/nodes/partials/node-status/<path:node_key>")
@@ -2983,18 +2984,16 @@ def _apply_update(nodes: list, data: dict, scope: dict) -> tuple[dict, int]:
             return {"error": "endpoint and values are required"}, 400
         item = ChangeItem(ChangeType.UPDATABLE_CONFIG,
                           endpoint=endpoint, values=values)
-    elif action == "set_started":
-        value = data.get("started")
+    elif action in ("set_started", "set_maintenance"):
+        attr = action.removeprefix("set_")
+        value = data.get(attr)
         if not isinstance(value, bool):
-            return {"error": "started must be a boolean"}, 400
-        _orchestrator().set_flag(nodes, "started", value)
-        return {"status": "ok", **scope, "started": value}, 200
-    elif action == "set_maintenance":
-        value = data.get("maintenance")
-        if not isinstance(value, bool):
-            return {"error": "maintenance must be a boolean"}, 400
-        _orchestrator().set_maintenance(nodes, value)
-        return {"status": "ok", **scope, "maintenance": value}, 200
+            return {"error": f"{attr} must be a boolean"}, 400
+        if attr == "started":
+            _orchestrator().set_flag(nodes, "started", value)
+        else:
+            _enter_mode(nodes, Mode.MAINTENANCE if value else Mode.NORMAL)
+        return {"status": "ok", **scope, attr: value}, 200
     elif action == "set_mode":
         mode = data.get("mode")
         if not isinstance(mode, str) or mode not in _MODES:
@@ -3323,14 +3322,12 @@ def api_config_put(name):
     if error:
         return {"error": error}, 400
     created = not (registry.configs_dir / name).exists()
-    paused = []
+    paused, held = ([], {})
     if pause:
-        to_pause = [n for n in map(registry.get_node, affected) if n.mode is Mode.NORMAL]
-        _orchestrator().set_mode(to_pause, Mode.MAINTENANCE)
-        paused = [n.key for n in to_pause]
+        paused, held = library.pause_normal(registry, _orchestrator(), affected)
     library.write_file(registry, _orchestrator(), name, content, _audit_user())
     return {"status": "saved", "path": name, "created": created,
-            "reloaded": affected, "paused": paused}
+            "reloaded": affected, "paused": paused, "held": held}
 
 
 @bp.route("/api/configs/pull", methods=["POST"])

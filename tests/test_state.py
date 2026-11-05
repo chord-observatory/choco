@@ -825,15 +825,13 @@ class TestModeWrites:
     def test_development_leaves_only_into_maintenance(self):
         node = Node(name="t", group="t", host="example", mode=Mode.DEVELOPMENT)
         assert "put it in maintenance first" in node.refusal(Mode.NORMAL)
-        assert node.set_mode(Mode.NORMAL) is False
-        assert node.mode is Mode.DEVELOPMENT
         assert node.open_modes == ["maintenance"]
-        assert node.set_mode(Mode.MAINTENANCE) is True
+        node.mode = Mode.MAINTENANCE
         assert node.maintenance is True
+        assert node.refusal(Mode.NORMAL) is None and node.refusal(Mode.DEVELOPMENT) is None
         assert node.open_modes == ["normal", "development"]
-        assert node.set_mode(Mode.NORMAL) is True
+        node.mode = Mode.NORMAL
         assert node.open_modes == ["maintenance", "development"]
-        assert node.set_mode(Mode.DEVELOPMENT) is True
 
     def test_a_declared_development_node_is_never_offered_normal(self):
         """Whatever mode it is in: after a restart it sits in maintenance,
@@ -841,9 +839,8 @@ class TestModeWrites:
         node = Node(name="t", group="t", host="example", mode=Mode.MAINTENANCE,
                     development=True)
         assert "nodes.yaml" in node.refusal(Mode.NORMAL)
-        assert node.set_mode(Mode.NORMAL) is False and node.maintenance
         assert node.open_modes == ["development"]
-        assert node.set_mode(Mode.DEVELOPMENT) is True
+        node.mode = Mode.DEVELOPMENT
         assert node.open_modes == ["maintenance"]
 
 
@@ -864,9 +861,10 @@ class TestDesiredUpdatable:
             "gnss_gain": {"enabled": False, "valid_at_time_ns": 0},
             "rfi_second_stage_enabled": {"enabled": False, "valid_at_time_ns": 0}}
 
-    def _node(self, mode):
+    def _node(self, mode, live=None):
         node = Node(name="t", group="t", host="example", mode=mode)
         node.rendered_config = self.RENDERED
+        node.live_updatable = self.LIVE if live is None else live
         node.updatable_config = {"updatable_config/bad_inputs": self.BFFS,
                                  "fringestop_enabled": {"enabled": True},
                                  "stale/endpoint": {"x": 1},
@@ -886,23 +884,30 @@ class TestDesiredUpdatable:
         assert not fits_block({"start_time": 2}, block)            # nor an integer a float
 
     def test_normal_merges_over_the_rendered_block_for_rendered_endpoints(self):
-        assert self._node(Mode.NORMAL).desired_updatable(self.LIVE) == {
+        node = self._node(Mode.NORMAL)
+        assert node.desired_updatable() == {
             "updatable_config/bad_inputs": self.BFFS,
             "fringestop_enabled": {"enabled": True, "valid_at_time_ns": 0},
         }
+        # The file's blocks are found once per render and kept.
+        assert set(node.rendered_blocks) == {"fringestop_enabled", "updatable_config/bad_inputs"}
+        assert node.updatable_base() is node.rendered_blocks
+        node.rendered_config = None
+        assert node.rendered_blocks == {} and node.desired_updatable() == {}
 
     def test_development_merges_over_the_live_block_for_live_endpoints(self):
         # fringestop_enabled is not live; gnss_gain's stored value has a
         # field the running block lacks and rfi_second_stage_enabled's a
         # field of another type, both of which kotekan would refuse.
-        assert self._node(Mode.DEVELOPMENT).desired_updatable(self.LIVE) == {
+        assert self._node(Mode.DEVELOPMENT).desired_updatable() == {
             "updatable_config/bad_inputs": self.BFFS,
         }
-        assert self._node(Mode.DEVELOPMENT).desired_updatable(None) == {}
+        assert self._node(Mode.DEVELOPMENT, live={}).desired_updatable() == {}
 
     def test_nothing_stored_nothing_desired(self):
         node = Node(name="t", group="t", host="example")
         node.rendered_config = self.RENDERED
-        assert node.desired_updatable(self.LIVE) == {}
+        node.live_updatable = self.LIVE
+        assert node.desired_updatable() == {}
         node.mode = Mode.DEVELOPMENT
-        assert node.desired_updatable(self.LIVE) == {}
+        assert node.desired_updatable() == {}

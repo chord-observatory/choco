@@ -13,7 +13,7 @@ import json
 import time
 from dataclasses import dataclass
 
-from .state import Mode, NodeStatus, find_updatable_blocks
+from .state import Mode, NodeStatus, fits_block
 from .sync import LIVE_READ_MAINTENANCE_S
 
 #: A live read older than this is not shown.  The worker reads every poll
@@ -58,6 +58,15 @@ def is_switch(values) -> bool:
             and set(values) <= {"enabled", "valid_at_time_ns"})
 
 
+def switch_values(block: dict, on: bool) -> dict:
+    """The update that sets a switch *block* on or off now: ``enabled``,
+    and ``valid_at_time_ns: 0`` (at once) where the block has it."""
+    values = {"enabled": on}
+    if "valid_at_time_ns" in block:
+        values["valid_at_time_ns"] = 0
+    return values
+
+
 def summarize(values: dict) -> str:
     """One short line for a block: a switch as on/off, any other field as
     ``key: value`` with a long list as its length."""
@@ -77,29 +86,21 @@ def summarize(values: dict) -> str:
     return ", ".join(parts)
 
 
-def desired_blocks(node, live: dict[str, dict] | None = None) -> dict[str, dict]:
-    """The node's desired value of every block its file renders; in
-    development, of every stored endpoint the running config (*live*)
-    can take."""
+def desired_blocks(node) -> dict[str, dict]:
+    """The node's desired value of every block its file renders, the
+    stored value merged over it; in development only the stored values
+    the running config can take (``Node.desired_updatable``)."""
     if node.mode is Mode.DEVELOPMENT:
-        return node.desired_updatable(live)
-    if node.rendered_config is None:
-        return {}
+        return node.desired_updatable()
     stored = node.updatable_config or {}
     return {endpoint: {**values, **stored[endpoint]} if endpoint in stored else values
-            for endpoint, values in find_updatable_blocks(node.rendered_config).items()}
+            for endpoint, values in node.updatable_base().items()}
 
 
 def endpoint_block(node, endpoint: str) -> dict | None:
-    """The block a new value at *endpoint* would merge over on *node*:
-    the file's in normal mode and maintenance, the running config's in
-    development (as the worker last read it); None when the node has no
-    such endpoint."""
-    if node.mode is Mode.DEVELOPMENT:
-        return (node.live_updatable or {}).get(endpoint)
-    if node.rendered_config is None:
-        return None
-    return find_updatable_blocks(node.rendered_config).get(endpoint)
+    """The block a new value at *endpoint* would merge over on *node*
+    (``Node.updatable_base``); None when the node has no such endpoint."""
+    return node.updatable_base().get(endpoint)
 
 
 def _live_blocks(node, now: float) -> dict[str, dict] | None:
@@ -137,9 +138,10 @@ def _cell(node, endpoint: str, desired: dict | None,
         if value is None:
             return None
         stored = (node.updatable_config or {}).get(endpoint)
-        if node.mode is Mode.DEVELOPMENT and stored is not None:
-            # A stored value the running block cannot take (desired_updatable
-            # left it out): say so rather than show it as merely extra.
+        if (node.mode is Mode.DEVELOPMENT and stored is not None
+                and not fits_block(stored, value)):
+            # desired_updatable left the stored value out: say why rather
+            # than show the endpoint as merely extra.
             return Cell(name, "differs",
                         f"{name} runs {_compact(value)} ({age}). The stored value "
                         f"{_compact(stored)} does not fit the running block (a "
@@ -166,7 +168,7 @@ def fleet_rows(nodes, owners: dict[str, str], now: float | None = None) -> list[
     live = {node.key: _live_blocks(node, now) for node in nodes}
     # A development node's desired set follows its last read, current or
     # not, so a stale read shows its endpoints as unread rather than as none.
-    desired = {node.key: desired_blocks(node, node.live_updatable) for node in nodes}
+    desired = {node.key: desired_blocks(node) for node in nodes}
     endpoints = list(dict.fromkeys(
         [e for node in nodes for e in desired[node.key]]
         + [e for node in nodes for e in (live[node.key] or {})]))

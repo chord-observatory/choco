@@ -1,17 +1,19 @@
+{% from "_service_macros.html" import mode_word, mode_tone %}
 {# The node's mode as a three-way control: the current mode's button
    filled, plus a button for each mode the node may enter now
    (Node.open_modes: normal is not offered from development, nor to a
    node nodes.yaml declares a developer's, since it would restart that
    kotekan onto the library; the operator goes through maintenance). #}
-{%- set modes = [('normal', 'info', 'Normal: choco keeps the node on its desired config (start, kill, restart on drift, updatable values)'),
-                 ('maintenance', 'maint', 'Maintenance: choco reads the node and never writes to it'),
-                 ('development', 'dev', 'Development: the node runs its own config; choco never starts or kills it and pushes only its stored updatable values, to the endpoints that config has')] -%}
+{%- set titles = {
+    'normal': 'Normal: choco keeps the node on its desired config (start, kill, restart on drift, updatable values)',
+    'maintenance': 'Maintenance: choco reads the node and never writes to it',
+    'development': 'Development: the node runs its own config; choco never starts or kills it and pushes only its stored updatable values, to the endpoints that config has'} -%}
 <span class="seg-ctl" hx-target="this" hx-swap="outerHTML"
       title="{{ 'mode: ' ~ node.mode.value ~ ('\n(nodes.yaml declares it a development node: lifting maintenance returns it to development)' if node.development else '') }}">
-    {%- for mode, tone, title in modes if mode == node.mode.value or mode in node.open_modes %}
-    <button type="button" class="seg-btn tone-{{ tone }}{% if node.mode.value == mode %} current{% endif %}"
-            title="{{ title }}"{% if node.mode.value == mode %} aria-pressed="true"{% else %}
+    {%- for mode in ('normal', 'maintenance', 'development') if mode == node.mode.value or mode in node.open_modes %}
+    <button type="button" class="seg-btn tone-{{ mode_tone(mode) }}{% if node.mode.value == mode %} current{% endif %}"
+            title="{{ titles[mode] }}"{% if node.mode.value == mode %} aria-pressed="true"{% else %}
             hx-post="{{ request.script_root }}/nodes/set-mode/{{ mode }}/{{ key }}"
-            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'{% endif %}>{{ {'normal': 'normal', 'maintenance': 'maint', 'development': 'dev'}[mode] }}</button>
+            hx-vals='{"_csrf_token": "{{ csrf_token() }}"}'{% endif %}>{{ mode_word(mode) }}</button>
     {%- endfor %}
 </span>

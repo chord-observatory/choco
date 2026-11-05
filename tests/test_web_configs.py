@@ -297,7 +297,8 @@ class TestConfigLibraryApi:
                           json={"content": "log_level: WARN\n"})
         assert resp.status_code == 200
         assert resp.get_json() == {"status": "saved", "path": "chord/common.j2",
-                                   "created": True, "reloaded": [], "paused": []}
+                                   "created": True, "reloaded": [], "paused": [],
+                                   "held": {}}
         assert (library / "chord" / "common.j2").read_text() == "log_level: WARN\n"
 
         resp = client.put("/api/configs/chord/telescope.j2",
@@ -564,7 +565,7 @@ class TestConfigPull:
         done = client.post("/api/configs/pull").get_json()
         assert done["status"] == "pulled"
         assert done["reloaded"] == ["cx/cx1"] and done["paused"] == []
-        assert ("re-rendered cx/cx1 (already in maintenance); lift maintenance "
+        assert ("re-rendered cx/cx1 (not paused: cx/cx1 in maintenance); lift maintenance "
                 "to restart them onto it") in done["summary"]
         assert cx1.maintenance is True
 

@@ -155,7 +155,7 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - Lifting maintenance returns a node to its resting mode
   (`Node.rest_mode`: development when `nodes.yaml` says `development:
   true`, else normal).  Normal is refused from development, and to a
-  declared node in any mode (`Node.refusal`, asked by `Node.set_mode`,
+  declared node in any mode (`Node.refusal`, asked by
   `Orchestrator.set_mode` and the mode control): a node leaves
   development into maintenance.  The pauses (pull, config selection,
   the pointing job) move only normal nodes into maintenance.

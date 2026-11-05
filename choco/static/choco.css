@@ -278,14 +278,7 @@ button.seg-btn.current { cursor: default; border-color: transparent; }
 .seg-ctl.htmx-request .seg-btn { opacity: 0.45; }
 /* The panel's edit form, behind a row's edit button (a popover kept
    across the table's morphs, like the version popover). */
-.edit-popover {
-    width: min(40em, 92vw);
-    padding: 0.75em 1em;
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    background: var(--pico-background-color);
-    color: var(--pico-color);
-}
+.edit-popover { width: min(40em, 92vw); padding: 0.75em 1em; }
 .edit-popover textarea { width: 100%; margin: 0.25em 0; font-family: var(--pico-font-family-monospace); font-size: 0.85em; }
 .edit-popover small { display: block; margin-bottom: 0.5em; }
 .set-cell { white-space: nowrap; }
@@ -293,7 +286,7 @@ button.seg-btn.current { cursor: default; border-color: transparent; }
    request gets htmx-request, so its button dims until the reply lands. */
 form.htmx-request .chan, form.htmx-request .bulk { opacity: 0.45; }
 
-/* ---- switches (started / maintenance) -------------------------------- */
+/* ---- the started switch ---------------------------------------------- */
 label.toggle-switch {
     position: relative;
     display: inline-block;
@@ -325,14 +318,10 @@ label.toggle-switch {
     background: #fff;
     transition: transform 0.2s;
 }
-/* On-states take the tone of what they enable; off is neutral, except
-   maintenance, the one off-state that silently stops pushes. */
+/* On takes the tone of what it enables; off is neutral. */
 .toggle-slider.started { background: var(--ok); }
 .toggle-slider.started::before { transform: translateX(0.875rem); }
 .toggle-slider.idle { background: var(--off); }
-.toggle-slider.normal { background: var(--info); }
-.toggle-slider.normal::before { transform: translateX(0.875rem); }
-.toggle-slider.maintenance { background: var(--maint); }
 /* In-flight dimming is scoped to the control that issued the request: htmx
    also puts htmx-request on a polling container (#dashboard-table every 2 s,
    #pdb-status every 5 s with a round trip to the controller), and an unscoped
@@ -407,31 +396,24 @@ button.version-trigger {
 }
 button.version-trigger:hover { text-decoration-style: solid; }
 button.version-trigger:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
-.version-popover {
-    max-width: 30em;
-    max-height: 70vh;
+/* The popovers' shared chrome (the version, notes and edit popovers);
+   each keeps its own size and type. */
+.version-popover, .notes-popover, .edit-popover {
     overflow: auto;
-    padding: 0.75em 1em;
     border: 1px solid var(--surface-border);
     border-radius: 4px;
     background: var(--pico-background-color);
     color: var(--pico-color);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    font-size: 0.85em;
 }
+.version-popover { max-width: 30em; max-height: 70vh; padding: 0.75em 1em; font-size: 0.85em; }
 .version-popover .popover-section { margin: 0.75em 0 0.25em 0; }
 /* /files: an acquisition's notes (its README.md), behind the row's Info
    button; same chrome as the version popover, wider for tables. */
 .notes-popover {
     width: min(60em, 92vw);
     max-height: 80vh;
-    overflow: auto;
     padding: 0.75em 1.25em;
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    background: var(--pico-background-color);
-    color: var(--pico-color);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     font-family: var(--pico-font-family-sans-serif);
     font-size: 0.9em;
 }

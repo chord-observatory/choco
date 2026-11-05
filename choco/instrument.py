@@ -1167,9 +1167,17 @@ def node_tone(state: dict | None) -> str:
     return {"started": "ok", "down": "bad", "unknown": "off", None: "off"}.get(status, "warn")
 
 
-def _mode_word(state: dict | None) -> str:
-    """The card's suffix for a node not in normal mode."""
-    return {"maintenance": " · maint", "development": " · dev"}.get((state or {}).get("mode"), "")
+#: A node mode's word on its card and the card's tone, for the modes that
+#: show (normal shows nothing): the same words and tones as the templates'
+#: mode_word / mode_tone macros.
+_MODE_CARD = {"maintenance": ("maint", "maint"), "development": ("dev", "dev")}
+
+
+def _mode_card(state: dict | None, tone: str) -> tuple[str, str]:
+    """The suffix for a node's status line and its card's tone: a node
+    not in normal mode says so, and a healthy one takes the mode's tone."""
+    word, mode_tone = _MODE_CARD.get((state or {}).get("mode"), ("", tone))
+    return (f" · {word}" if word else ""), (mode_tone if tone == "ok" else tone)
 
 
 
@@ -1361,10 +1369,9 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
         h = hosts.get(g["name"]) or {"status": None}
         left, right = cx(g["cols"][0]) - colw / 2 + 4, cx(g["cols"][-1]) + colw / 2 - 4
         pline = f"{h['watts']:.0f} W" if h.get("watts") is not None else ""
-        tone = node_tone(h)
-        status = (h.get("status") or "not in nodes.yaml") + _mode_word(h)
-        card(left, ny, right - left, Y["node_h"],
-             "maint" if tone == "ok" and h.get("mode") == "maintenance" else tone,
+        suffix, tone = _mode_card(h, node_tone(h))
+        status = (h.get("status") or "not in nodes.yaml") + suffix
+        card(left, ny, right - left, Y["node_h"], tone,
              [{"dy": 30, "text": g["name"], "cls": "fl-b"},
               {"dy": 44, "text": status, "cls": "fl-sm muted"},
               {"dy": 59, "text": short_build(h.get("branch"), h.get("version")), "cls": "fl-sm mono"},
@@ -1386,9 +1393,10 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
         rx_bps = h.get("rx_bps")
         line = " · ".join([short_build(h.get("branch"), h.get("version"))] +
                           ([f"receiving {rx_bps / 1e9:.2f} Gb/s"] if isinstance(rx_bps, (int, float)) else []))
-        card(x, Y["recv"], _CARD_W, Y["recv_h"], node_tone(d),
+        suffix, tone = _mode_card(d, node_tone(d))
+        card(x, Y["recv"], _CARD_W, Y["recv_h"], tone,
              [{"dy": 20, "text": d["name"], "cls": "fl-b",
-               "sub": (d.get("status") or "?") + _mode_word(d)},
+               "sub": (d.get("status") or "?") + suffix},
               {"dy": 38, "text": line, "cls": "fl-sm muted"}],
              f"{d['name']}: {d.get('status') or '?'}" + (f" · kotekan {h['version']}" if h.get("version") else ""),
              f"{root}/pipeline/{d['group']}/{d['name']}" if d.get("group") else None)

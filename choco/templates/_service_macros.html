@@ -209,6 +209,10 @@
 {{ node.version or "—" }}
 {%- endif -%}
 {%- endmacro %}
+{# A node mode's word and tone, for the mode controls (per node and per
+   group) and anything else that names a mode. #}
+{% macro mode_word(mode) %}{{ {'normal': 'normal', 'maintenance': 'maint', 'development': 'dev'}[mode] }}{% endmacro %}
+{% macro mode_tone(mode) %}{{ {'normal': 'info', 'maintenance': 'maint', 'development': 'dev'}[mode] }}{% endmacro %}
 {# A dashboard bulk control: a caption and one word button per action,
    each posting base-all/<action> or base-group/<group>/<action> for
    every node in scope and morphing the table.  buttons: (action, word,
@@ -241,10 +245,14 @@
    development staying; maint puts them all in maintenance; dev puts them
    all in development. #}
 {% macro mode_ctl(group=none) -%}
+{%- set titles = {
+    'normal': 'Lift maintenance on %s nodes: each returns to normal, or to development where nodes.yaml declares it; nodes in development stay',
+    'maintenance': 'Put %s nodes in maintenance (choco will not write to them)',
+    'development': 'Put %s nodes in development (choco pushes only their stored updatable values, and never starts or kills them)'} -%}
 {{ group_ctl('mode', request.script_root ~ '/nodes/set-mode', group, (
-    ('normal', 'normal', 'info', 'Lift maintenance on %s nodes: each returns to normal, or to development where nodes.yaml declares it; nodes in development stay'),
-    ('maintenance', 'maint', 'maint', 'Put %s nodes in maintenance (choco will not write to them)'),
-    ('development', 'dev', 'dev', 'Put %s nodes in development (choco pushes only their stored updatable values, and never starts or kills them)'))) }}
+    ('normal', mode_word('normal'), mode_tone('normal'), titles['normal']),
+    ('maintenance', mode_word('maintenance'), mode_tone('maintenance'), titles['maintenance']),
+    ('development', mode_word('development'), mode_tone('development'), titles['development']))) }}
 {%- endmacro %}
 {# The live-plot panel for an HDF5 gain archive (the F-engine's digital
    gains, eigencal's solution): a dataset picker, the full-screen and

@@ -342,7 +342,7 @@ class NodeWorker:
             return
 
         actual = node.get_config()
-        live = self._note_live(actual)
+        self._note_live(actual)
 
         # Node idle with no config -> start it.
         if probe == NodeStatus.IDLE and actual is None:
@@ -350,8 +350,7 @@ class NodeWorker:
             return
 
         if actual is None:
-            node.status = NodeStatus.UNKNOWN
-            node.error = "Unable to get remote config; status indeterminate."
+            self._indeterminate()
             return
 
         base_drift = (strip_updatable_values(actual)
@@ -361,7 +360,7 @@ class NodeWorker:
             self._push_config(desired)
         else:
             node.status = NodeStatus.STARTED
-            self._sync_updatable(live)
+            self._sync_updatable()
 
     def _sync_development(self, probe: NodeStatus) -> None:
         """Development: the node runs a config choco did not render.
@@ -378,12 +377,10 @@ class NodeWorker:
         if node.updatable_load_error:
             node.error = node.updatable_load_error
             return
-        live = self._note_live(node.get_config())
-        if live is None:
-            node.status = NodeStatus.UNKNOWN
-            node.error = "Unable to get remote config; status indeterminate."
+        if self._note_live(node.get_config()) is None:
+            self._indeterminate()
             return
-        self._sync_updatable(live)
+        self._sync_updatable()
 
     def _note_live(self, live_config: dict | None) -> dict[str, dict] | None:
         """Keep the updatable blocks of the live config just read (None:
@@ -393,6 +390,11 @@ class NodeWorker:
                                if live_config is not None else None)
         node.live_read_at = time.time()
         return node.live_updatable
+
+    def _indeterminate(self) -> None:
+        """A running kotekan whose /config could not be read this cycle."""
+        self.node.status = NodeStatus.UNKNOWN
+        self.node.error = "Unable to get remote config; status indeterminate."
 
     def _push_config(self, desired: dict) -> None:
         """Kill -> wait for idle -> start with *desired* config; the
@@ -452,12 +454,13 @@ class NodeWorker:
                 node.status = NodeStatus.UNKNOWN
                 node.error = "Failed to push config via /start"
 
-    def _sync_updatable(self, live: dict[str, dict]):
+    def _sync_updatable(self):
         """Push the stored updatable values the node does not run
-        (``Node.desired_updatable``: which endpoints, by the mode), given
-        the updatable blocks of its live config."""
+        (``Node.desired_updatable``: which endpoints, by the mode),
+        against the live blocks ``_note_live`` just kept."""
         node = self.node
-        for endpoint, values in node.desired_updatable(live).items():
+        live = node.live_updatable or {}
+        for endpoint, values in node.desired_updatable().items():
             if live.get(endpoint) != values:
                 logger.info(f"Updatable config drift on {node.key} "
                             f"at /{endpoint}")
@@ -555,27 +558,17 @@ class Orchestrator:
         if refused:
             return refused
         for node in nodes:
-            node.set_mode(mode)
+            node.mode = mode
             self.submit_node(node.key, ChangeItem(ChangeType.POLL))
         return []
 
-    def set_maintenance(self, nodes, on: bool) -> list[Node]:
-        """The maintenance control: *on* puts every one of *nodes* in
-        maintenance (never refused), off lifts it (``lift``).  Returns
-        the nodes changed."""
-        if on:
-            nodes = list(nodes)
-            self.set_mode(nodes, Mode.MAINTENANCE)
-            return nodes
-        return self.lift(nodes)
-
     def lift(self, nodes) -> list[Node]:
         """Take the *nodes* in maintenance out of it, each to its resting
-        mode (``Node.rest_mode``); the others are left as they are.
-        Returns the nodes changed."""
+        mode (``Node.rest_mode``, never refused); the others are left as
+        they are.  Returns the nodes changed."""
         lifted = [n for n in nodes if n.mode is Mode.MAINTENANCE]
         for node in lifted:
-            node.set_mode(node.rest_mode)
+            node.mode = node.rest_mode
             self.submit_node(node.key, ChangeItem(ChangeType.POLL))
         return lifted
 

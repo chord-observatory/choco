@@ -229,14 +229,12 @@ in ``web.py`` (per-node ``/nodes/set-mode/<mode>/<key>``, group
 ``/nodes/set-mode-group/<group>/<mode>``, all ``/nodes/set-mode-all/<mode>``,
 where ``normal`` lifts; JSON API ``set_maintenance`` and ``set_mode``)
 and templates ``_mode_control.html`` and the ``mode_ctl`` macro in
-``_service_macros.html``. The
-orange/blue colour pair distinguishes it from the green/yellow started toggle,
-and the per-node slider is mirrored relative to the started toggle
-(maintenance = thumb on the *left*, normal = thumb on the *right*) so "thumb-
-right = choco active" reads consistently across both (the switch became
-the three-button mode control on 2026-11-05, same colours). The ``Node``
-``mode`` kwarg defaults to normal so direct test instantiation stays in
-normal mode; ``Registry.reload`` is what forces maintenance for production.
+``_service_macros.html``; the look is in [ui.md](ui.md) ("Controls are not
+status").  Until 2026-11-05 this was a two-state switch mirrored against
+the started one (maintenance = thumb left) in an amber/blue pair; the
+three-button control kept the colours.  The ``Node`` ``mode`` kwarg
+defaults to normal so direct test instantiation stays in normal mode;
+``Registry.reload`` is what forces maintenance for production.
 
 ## Node modes (2026-11-05)
 
@@ -269,13 +267,13 @@ pushed, so a library default a developer's config also has
 **Transitions.**  Any mode may enter maintenance (bulk ▼ is the stop
 button and takes development nodes too) or development.  Normal is
 refused from development, and to a declared development node in any mode
-(``Node.refusal``, the one statement of the rule; ``Node.set_mode`` and
-``Orchestrator.set_mode``, all or none, ask it; the mode control offers
-only ``Node.open_modes``): normal restarts the developer's kotekan onto
+(``Node.refusal``, the one statement of the rule; ``Orchestrator.set_mode``,
+all or none, asks it; the mode control offers only ``Node.open_modes``):
+normal restarts the developer's kotekan onto
 the library within a poll, so a node leaves development into maintenance
 and the operator lifts that knowing what it starts, and a declared node
-returns to production by a nodes.yaml edit.  Lifting (bulk ▲,
-``set_maintenance: false``, ``maint off``; ``Orchestrator.set_maintenance``)
+returns to production by a nodes.yaml edit.  Lifting (the group control's
+normal, ``set_maintenance: false``, ``maint off``; ``Orchestrator.lift``)
 returns each node in maintenance to its *resting* mode and leaves the
 others alone.  A base config or resync queued for a node in development
 is recorded, like one queued in maintenance, and applied when the node is
@@ -294,8 +292,13 @@ an undeclared node (a temporary handover) is allowed and ephemeral.
 pointing job's write put the nodes a file re-renders in maintenance so the
 sync loop restarts nothing; a development node is never restarted and does
 not run the library, and pausing it would stop the relay development is
-for, so only normal nodes are paused (``held`` in the pull's reply names
-the rest with their mode).
+for, so only normal nodes are paused (``library.pause_normal``, for the
+pull and ``PUT /api/configs/<name>`` alike; ``held`` in the reply names
+the rest with their mode).  "Which blocks a stored value merges over" is
+stated once, ``Node.updatable_base`` (the file's blocks, found once per
+render as ``Node.rendered_blocks``; in development the running config's
+as last read), and ``desired_updatable``, the panel's ``desired_blocks``
+and ``endpoint_block`` are built from it.
 
 ## Bulk edits from the updatable panel (2026-11-05)
 

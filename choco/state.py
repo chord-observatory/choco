@@ -154,30 +154,14 @@ def strip_updatable_values(config: dict) -> dict:
     return out
 
 
-def _json_type(value) -> str:
-    """The type kotekan's configUpdater compares an update's field by: it
-    refuses a change of general type, and one between an integer and a
-    float; a bool is its own type."""
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, str):
-        return "str"
-    if isinstance(value, list):
-        return "list"
-    if isinstance(value, dict):
-        return "dict"
-    return "null"
-
-
 def fits_block(values: dict, block: dict) -> bool:
     """Whether kotekan would take *values* as an update of the running
     *block*: every field one the block has, of the same type (a missing
-    field is supplied by the merge over the block)."""
-    return all(key in block and _json_type(value) == _json_type(block[key])
+    field is supplied by the merge over the block).  On JSON- and
+    YAML-decoded values ``type(a) is type(b)`` is configUpdater's rule:
+    it refuses a change of general type, an integer for a float, and a
+    bool for an integer."""
+    return all(key in block and type(value) is type(block[key])
                for key, value in values.items())
 
 
@@ -294,7 +278,10 @@ class Node:
         self.configs_dir = configs_dir
         self.template_vars: dict = template_vars or {}
         self.base_content: str | None = None
-        self.rendered_config: dict | None = None
+        self._rendered_config: dict | None = None
+        # The updatable blocks of rendered_config, found once per render
+        # (the config is ~380 kB on a cx node; see the setter below).
+        self.rendered_blocks: dict[str, dict] = {}
         self._file_suffix: str = ".yaml"
         self.updatable_config: dict[str, dict] | None = None
         # nodes.yaml's ``config:``, validated here so a bad value shows
@@ -365,14 +352,6 @@ class Node:
         if mode is Mode.NORMAL and self.development:
             return "nodes.yaml declares it a development node"
         return None
-
-    def set_mode(self, mode: Mode) -> bool:
-        """Change the mode; False, and nothing changed, for a step
-        ``refusal`` names."""
-        if self.refusal(mode) is not None:
-            return False
-        self.mode = mode
-        return True
 
     @property
     def open_modes(self) -> list[str]:
@@ -520,6 +499,16 @@ class Node:
         return found
 
     @property
+    def rendered_config(self) -> dict | None:
+        """The base config rendered and parsed, with no overrides."""
+        return self._rendered_config
+
+    @rendered_config.setter
+    def rendered_config(self, config: dict | None) -> None:
+        self._rendered_config = config
+        self.rendered_blocks = find_updatable_blocks(config) if config is not None else {}
+
+    @property
     def desired_config(self) -> dict | None:
         """Rendered config with updatable overrides applied.
 
@@ -530,41 +519,38 @@ class Node:
         if self.rendered_config is None:
             return None
         desired = copy.deepcopy(self.rendered_config)
-        if self.updatable_config:
-            blocks = find_updatable_blocks(desired)
-            for endpoint, values in self.updatable_config.items():
-                if endpoint in blocks:
-                    target = desired
-                    for part in endpoint.split("/"):
-                        target = target[part]
-                    target.update(values)
+        for endpoint, values in (self.updatable_config or {}).items():
+            if endpoint in self.rendered_blocks:
+                target = desired
+                for part in endpoint.split("/"):
+                    target = target[part]
+                target.update(values)
         return desired
 
-    def desired_updatable(self, live: dict[str, dict] | None = None
-                          ) -> dict[str, dict]:
-        """What choco means the node to run at every endpoint it holds a
-        stored value for: the stored value merged over the endpoint's
-        block, as ``desired_config`` merges it before a ``/start``.
-
-        In normal mode the block is the file's, so an endpoint the file
-        does not render is left out (its stored value is stale).  In
-        development the node runs a config choco did not render, so the
-        block is the running one (*live*: the updatable blocks of its
-        ``/config`` as the worker last read them); an endpoint that
-        config lacks is left out, and so is one whose stored value does
-        not fit the running block (``fits_block``), since kotekan
-        refuses such an update.
-        """
-        stored = self.updatable_config or {}
+    def updatable_base(self) -> dict[str, dict]:
+        """The blocks a stored value merges over, by the mode: the file's
+        in normal mode and maintenance; in development, where the node
+        runs a config choco did not render, the running config's as the
+        worker last read them (``live_updatable``; none before a read)."""
         if self.mode is Mode.DEVELOPMENT:
-            blocks = live or {}
-            return {endpoint: {**blocks[endpoint], **values}
-                    for endpoint, values in stored.items()
-                    if endpoint in blocks and fits_block(values, blocks[endpoint])}
-        blocks = (find_updatable_blocks(self.rendered_config)
-                  if self.rendered_config is not None else {})
-        return {endpoint: {**blocks[endpoint], **values}
-                for endpoint, values in stored.items() if endpoint in blocks}
+            return self.live_updatable or {}
+        return self.rendered_blocks
+
+    def desired_updatable(self) -> dict[str, dict]:
+        """What choco means the node to run at every endpoint it holds a
+        stored value for: the stored value merged over its block in
+        ``updatable_base``, as ``desired_config`` merges it before a
+        ``/start``.  An endpoint the base lacks is left out (a stale
+        stored value, or an endpoint the developer's config does not
+        have); in development so is a stored value that does not fit
+        the running block (``fits_block``), since kotekan refuses such
+        an update.
+        """
+        base = self.updatable_base()
+        development = self.mode is Mode.DEVELOPMENT
+        return {endpoint: {**base[endpoint], **values}
+                for endpoint, values in (self.updatable_config or {}).items()
+                if endpoint in base and (not development or fits_block(values, base[endpoint]))}
 
     @property
     def load_error(self) -> str | None:

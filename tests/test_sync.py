@@ -827,15 +827,14 @@ class TestSetMode:
         assert orchestrator.set_mode([cx1, cx2], Mode.NORMAL) == [cx2]
         assert cx1.maintenance and cx2.maintenance
 
-    def test_set_maintenance_is_on_or_lift(self, orchestrator):
+    def test_maintenance_is_never_refused(self, orchestrator):
         reg = orchestrator.registry
         cx1, cx2 = reg.get_node("cx/cx1"), reg.get_node("cx/cx2")
         cx1.development, cx2.mode = True, Mode.DEVELOPMENT
-        assert orchestrator.set_maintenance([cx1, cx2], True) == [cx1, cx2]
+        assert orchestrator.set_mode([cx1, cx2], Mode.MAINTENANCE) == []
         assert cx1.maintenance and cx2.maintenance
-        assert orchestrator.set_maintenance([cx1, cx2], False) == [cx1, cx2]
+        assert orchestrator.lift([cx1, cx2]) == [cx1, cx2]
         assert cx1.mode is Mode.DEVELOPMENT and cx2.mode is Mode.NORMAL
-        assert orchestrator.set_maintenance([cx1, cx2], False) == []
 
     def test_lift_returns_each_node_to_its_resting_mode(self, orchestrator):
         reg = orchestrator.registry

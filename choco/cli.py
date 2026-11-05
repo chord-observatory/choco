@@ -255,7 +255,7 @@ def cmd_get(c: Client, a) -> int:
 
 
 def _set_flag(c: Client, targets: list[str], action: str, key: str,
-              value: bool) -> int:
+              value: bool | str) -> int:
     paths = [target_path(t) for t in targets]  # validate all before sending any
     return _emit_each([c.post("/update" + p, {"action": action, key: value})
                        for p in paths])
@@ -275,9 +275,7 @@ def cmd_maint(c: Client, a) -> int:
 
 
 def cmd_mode(c: Client, a) -> int:
-    paths = [target_path(t) for t in a.targets]
-    return _emit_each([c.post("/update" + p, {"action": "set_mode", "mode": a.mode})
-                       for p in paths])
+    return _set_flag(c, a.targets, "set_mode", "mode", a.mode)
 
 
 def cmd_push(c: Client, a) -> int:
