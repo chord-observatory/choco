@@ -76,9 +76,12 @@ each stream masked (a stream out of step missed or lagged a flag
 update); and the file's gains update, fringestop state and kotekan
 builds.  For a file that has just landed, the line also names the node
 behind each stream: with a `choco:` block in the config, each started
-node's kotekan `/metrics` is read once per run, and stream =
-`freq_id` mod 16.  The web joins the lines to the files by index, so a
-file without one is a gap.
+node's kotekan `/metrics` is read once per run, its
+`kotekan_N2accumulate_frac_valid_fpga_ticks` gauges name the channels
+it accumulates, and stream = channel mod 16 (the `skipped_frames`
+gauges are not read: their `freq_id` is the index within the frame).
+Two nodes accumulating one stream are both named, `a/b`.  The web
+joins the lines to the files by index, so a file without one is a gap.
 
 **The array's coherence** (`co_array.png`) is each cell's median over
 the elements' `co_eNNNN.png`, appended with them.  An acquisition

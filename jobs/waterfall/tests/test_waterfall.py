@@ -799,10 +799,15 @@ class TestOverview:
 
 
 class TestStreamNodes:
-    METRICS = ('kotekan_N2accumulate_frac_flagged_fpga_ticks_pl{stage_name="/n2_accumulate/accum_0",'
+    # two channels of stream 9; skipped_frames carries the index within the frame, not a channel
+    METRICS = ('kotekan_N2accumulate_frac_valid_fpga_ticks{stage_name="/n2_accumulate/accum_0",'
                'freq_id="1537"} 0 1\n'
-               'kotekan_N2accumulate_frac_flagged_fpga_ticks_pl{stage_name="/n2_accumulate/accum_1",'
+               'kotekan_N2accumulate_frac_valid_fpga_ticks{stage_name="/n2_accumulate/accum_1",'
                'freq_id="1545"} 0 1\n'
+               'kotekan_N2accumulate_frac_valid_fpga_ticks{stage_name="/n2_accumulate/accum_1",'
+               'freq_id="1561"} 0 1\n'
+               'kotekan_N2accumulate_skipped_frames{stage_name="/n2_accumulate/accum_0",freq_id="3",'
+               'reason="rfi"} 0 1\n'
                'kotekan_other{freq_id="1540"} 0 1\n')
 
     def test_without_a_choco_block_no_names(self):
@@ -823,6 +828,20 @@ class TestStreamNodes:
         monkeypatch.setattr(W.urllib.request, "urlopen", urlopen)
         out = W.stream_nodes({"choco": {"url": "https://localhost:5000", "group": "cx"}})
         assert out == {"1": "cx52", "9": "cx52"} and asked == ["http://cx52:12048/metrics"]
+
+    def test_two_nodes_on_one_stream_are_both_named(self, monkeypatch):
+        import io
+        nodes = {"groups": {"cx": [
+            {"name": "cx52", "host": "cx52", "started": True, "status": "started"},
+            {"name": "cx42", "host": "cx42", "started": True, "status": "started"}]}}
+        monkeypatch.setattr(W, "get_json", lambda url, path: nodes)
+        by_host = {"cx52": self.METRICS,
+                   "cx42": 'kotekan_N2accumulate_frac_valid_fpga_ticks{stage_name="/n2_accumulate/accum_0",'
+                           'freq_id="1553"} 0 1\n'}
+        monkeypatch.setattr(W.urllib.request, "urlopen",
+                            lambda url, timeout: io.BytesIO(by_host[url.split("/")[2].split(":")[0]].encode()))
+        out = W.stream_nodes({"choco": {"url": "https://localhost:5000", "group": "cx"}})
+        assert out == {"1": "cx42/cx52", "9": "cx52"}
 
     def test_an_unreachable_choco_names_nothing(self, monkeypatch):
         def boom(url, path):

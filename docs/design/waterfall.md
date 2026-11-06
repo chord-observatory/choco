@@ -360,7 +360,17 @@ nodes' own ``/metrics`` when a file has just landed (the files carry no
 host: the sender configs are identical), and counts the bins in which a
 stream masked a different number of feeds than most: on the same files
 streams 1, 3, 9 and 11 (two nodes) were out of step for the B01X
-episode above.
+episode above.  Only the ``frac_valid_fpga_ticks`` gauges are read for
+the names: kotekan labels ``skipped_frames`` with the channel's index
+within the frame (0–383) under the same ``freq_id`` name, and until
+2026-11-06 the job matched every N2Accumulate gauge and chained a name
+per match, so every stream named every node (``cx19/cx27/cx27/…``).
+The web decodes those records (``_stream_nodes``): the name repeated
+most, none on a tie (the first node asked was named once) or when a
+name claims more than a node's two streams (one node answering named
+them all).  A node's two streams are not ``s`` and ``s+8`` throughout:
+read live on 2026-11-06, cx19 4/14, cx27 0/8, cx42 5/12, cx43 6/15,
+cx44 2/10, cx47 3/11, cx51 7/13, cx52 1/9.
 
 **The visibility triangle (2026-10-26).**  The reference strips ("A01X ×
 the array": one element's cross products as thumbnails) repeated what the

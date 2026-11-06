@@ -179,16 +179,19 @@ LIVE_S = 1800
 _J2000_UNIX_S = 946_728_000
 
 #: An N2Accumulate gauge in a node's ``/metrics``, labelled with the
-#: frequency it accumulates.
-_FREQ_ID_RE = re.compile(r'^kotekan_N2accumulate_\w+\{[^}]*freq_id="(\d+)"', re.M)
+#: channel it accumulates.  This family only: ``skipped_frames`` labels
+#: its ``freq_id`` with the channel's index within the frame (0..383).
+_FREQ_ID_RE = re.compile(r'^kotekan_N2accumulate_frac_valid_fpga_ticks\{[^}]*freq_id="(\d+)"', re.M)
 
 
 def stream_nodes(cfg: dict) -> dict:
     """``{stream: node}`` for the X-engine nodes now running: each
     started node of the choco group is asked for its ``/metrics``
-    (read-only), whose N2Accumulate gauges name their ``freq_id``, and
-    stream = freq_id mod ``N_STREAMS``.  Empty without a ``choco`` block
-    or when nothing answers; never a reason to degrade the run."""
+    (read-only), whose N2Accumulate gauges name the channels it
+    accumulates, and stream = channel mod ``N_STREAMS``; two nodes
+    accumulating one stream are both named, ``a/b``.  Empty without a
+    ``choco`` block or when nothing answers; never a reason to degrade
+    the run."""
     ch = cfg.get("choco") or {}
     if not ch.get("url") or not ch.get("group"):
         return {}
@@ -197,7 +200,7 @@ def stream_nodes(cfg: dict) -> dict:
     except (OSError, ValueError, AttributeError) as exc:
         log.warning("choco's node list unavailable (%s); streams stay unnamed", exc)
         return {}
-    out: dict = {}
+    claims: dict = {}
     for n in groups.get(ch["group"]) or []:
         if not n.get("started") or n.get("status") in ("down", "idle"):
             continue
@@ -209,12 +212,8 @@ def stream_nodes(cfg: dict) -> dict:
             log.warning("%s: %s", url, exc)
             continue
         for fid in set(_FREQ_ID_RE.findall(text)):
-            s = str(int(fid) % R.N_STREAMS)
-            if out.get(s, n["name"]) != n["name"]:
-                out[s] = f"{out[s]}/{n['name']}"
-            else:
-                out[s] = str(n["name"])
-    return out
+            claims.setdefault(str(int(fid) % R.N_STREAMS), set()).add(str(n["name"]))
+    return {s: "/".join(sorted(names)) for s, names in claims.items()}
 
 
 def _live(diag: dict, now: float) -> bool:

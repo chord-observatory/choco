@@ -1135,6 +1135,16 @@ class TestSheet:
         assert r1["out_of_step"] == 0          # two streams: no majority to stray from
         assert [e["what"] for e in st["events"]] == ["gains g2"] and st["named"]
 
+    def test_a_record_of_the_old_job_names_the_repeated_node(self):
+        from choco.waterfalls import _stream_nodes
+        chain = "cx19/" + "cx27/" * 24 + "cx42/" * 24 + "cx52/" * 23 + "cx52"      # the first node's stream: a tie
+        rec = {"0": chain.replace("cx27/" * 24, "cx27/" * 408), "4": chain,         # cx27's own channels
+               "5": "cx42/cx52", "6": "", "7": 3}
+        assert _stream_nodes(rec) == {"0": "cx27", "4": None, "5": "cx42/cx52", "6": None, "7": None}
+        # one node answering named every stream
+        assert _stream_nodes({str(s): "cx19" for s in range(16)}) == {str(s): None for s in range(16)}
+        assert _stream_nodes({"1": "cx52", "9": "cx52"}) == {"1": "cx52", "9": "cx52"}
+
     def test_out_of_step_needs_a_majority(self):
         from choco.waterfalls import _stream_table, site_tz
         rec = _diag_line(1, stream_masked=[[1] * 4, [1] * 4, [1, 0, 1, 1]])

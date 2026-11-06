@@ -21,6 +21,7 @@ journalctl allowlist and the buffer-name check already apply.
 from __future__ import annotations
 
 import ast
+import collections
 import json
 import logging
 import math
@@ -1315,6 +1316,29 @@ def dish_summary(index: dict, ov: dict, last: dict | None, scale: list | None) -
     return {"auto": auto}
 
 
+def _stream_nodes(nodes: dict) -> dict:
+    """``{stream: node}`` from a diag record, None where the record is
+    not trusted.  The job's records before 2026-11-06 chained a name per
+    channel gauge it matched, the frame-local channel indices of every
+    node's ``skipped_frames`` gauges included: each stream named every
+    node, its own once per channel (the first node asked only once), and
+    with one node answering, every stream named it.  So in a chain with
+    repeats the node is the name repeated most, none on a tie, and a name
+    on more than the two streams a node carries names none."""
+    out = {}
+    for s, name in nodes.items():
+        counts = collections.Counter(name.split("/")) if isinstance(name, str) and name else {}
+        if not counts:
+            out[s] = None
+        elif max(counts.values()) == 1:
+            out[s] = name
+        else:
+            top = counts.most_common(2)
+            out[s] = top[0][0] if len(top) == 1 or top[0][1] > top[1][1] else None
+    claimed = collections.Counter(v for v in out.values() if v)
+    return {s: v if v and claimed[v] <= 2 else None for s, v in out.items()}
+
+
 def _stream_table(diag: list[dict], node_versions: dict, zone) -> dict:
     """The X-engine streams over the acquisition: per stream its node
     (as recorded for a file that had just landed), that node's kotekan
@@ -1326,7 +1350,7 @@ def _stream_table(diag: list[dict], node_versions: dict, zone) -> dict:
         return _j2000_dt(ns, zone).strftime("%m-%d %H:%M:%S") if ns and ns > 0 else None
 
     n_streams = max([int(r.get("n_streams") or 0) for r in diag] or [0])
-    nodes = next((r["nodes"] for r in reversed(diag) if isinstance(r.get("nodes"), dict)), {})
+    nodes = _stream_nodes(next((r["nodes"] for r in reversed(diag) if isinstance(r.get("nodes"), dict)), {}))
     rows = [{"s": s, "node": nodes.get(str(s)), "lost_last": None, "lost_acq": None,
              "out_of_step": 0, "last_out": None} for s in range(n_streams)]
     lost_sum, lost_n = [0.0] * n_streams, [0] * n_streams
@@ -1366,7 +1390,7 @@ def _stream_table(diag: list[dict], node_versions: dict, zone) -> dict:
         r["build"] = node_versions.get(r["node"]) if r["node"] else None
         r["lost_acq"] = lost_sum[r["s"]] / lost_n[r["s"]] if lost_n[r["s"]] else None
     first = diag[0] if diag else {}
-    return {"rows": rows, "events": events, "named": bool(nodes),
+    return {"rows": rows, "events": events, "named": any(r["node"] for r in rows),
             "builds": first.get("versions") or [], "gains": first.get("gains"),
             "fringestop": bool(first.get("fringestop"))}
 
