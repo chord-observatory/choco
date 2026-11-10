@@ -97,6 +97,31 @@
             }
             themeImages();
             document.body.addEventListener("htmx:afterSwap", themeImages);
+            // A read-only user: every control that would write is disabled
+            // (which also takes it out of the tab order), and the text it
+            // holds is read-only.  Run on load and after every htmx swap,
+            // since a morph puts the server's controls back.
+            // .write-control marks a control that writes from a script, or
+            // opens a form that does.
+            var WRITES = '[hx-post], [hx-put], [hx-patch], [hx-delete], form[method="post"], .write-control';
+            var TEXT = 'textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="reset"])';
+            function inertWrites() {
+                var surfaces = document.querySelectorAll(WRITES);
+                for (var i = 0; i < surfaces.length; i++) {
+                    var els = [surfaces[i]].concat(Array.prototype.slice.call(
+                        surfaces[i].querySelectorAll("button, input, select, textarea")));
+                    for (var j = 0; j < els.length; j++) {
+                        var el = els[j];
+                        if (!el.matches("button, input, select, textarea") || el.type === "hidden") continue;
+                        if (el.matches(TEXT)) el.readOnly = true;
+                        else el.disabled = true;
+                    }
+                }
+            }
+            if (document.body.classList.contains("read-only")) {
+                inertWrites();
+                document.body.addEventListener("htmx:afterSwap", inertWrites);
+            }
             var menu = document.getElementById("menu-toggle");
             if (menu) {
                 menu.addEventListener("click", function () {

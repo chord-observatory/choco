@@ -2,6 +2,7 @@
 {% block title %}Config library — CHOCO{% endblock %}
 
 {% block content %}
+{% set verb = 'View' if current_user.read_only else 'Edit' %}
 <div class="page-head">
     <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Config library</h2>
     {% if upstream %}
@@ -45,7 +46,7 @@ first</strong>, so nothing restarts until you lift it.{% endif %}</p>
             <td class="stack-full" data-label="included by">{% if f.included_by %}{{ f.included_by | join(", ") }}{% else %}<span class="muted">—</span>{% endif %}</td>
             <td class="stack-end" style="white-space: nowrap;">
                 <a href="{{ request.script_root }}/configs/edit/{{ f.path }}" role="button" class="secondary outline btn-sm"
-                   title="Edit {{ f.path }}{% if f.is_vars %} (template variables, read by every node){% elif f.used_by or f.included_by %}; saving re-renders {{ (f.used_by + f.included_by) | join(', ') }}{% else %}; no node uses it yet{% endif %}">Edit</a>
+                   title="{{ verb }} {{ f.path }}{% if f.is_vars %} (template variables, read by every node){% elif f.used_by or f.included_by %}; saving re-renders {{ (f.used_by + f.included_by) | join(', ') }}{% else %}; no node uses it yet{% endif %}">{{ verb }}</a>
             </td>
         </tr>
         {% else %}

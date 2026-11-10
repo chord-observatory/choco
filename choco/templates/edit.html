@@ -33,8 +33,8 @@
     <dd>
         <code>{{ node.config_filename }}</code>
         <a href="{{ request.script_root }}/configs/edit/{{ node.config_filename }}" role="button" class="secondary outline btn-sm"
-           title="Edit {{ node.config_filename }} in the config library{% if shared_with %} (also rendered by {{ shared_with | join(', ') }}){% endif %}"
-           style="margin-left: 0.5em;">Edit config</a>
+           title="{{ 'View' if current_user.read_only else 'Edit' }} {{ node.config_filename }} in the config library{% if shared_with %} (also rendered by {{ shared_with | join(', ') }}){% endif %}"
+           style="margin-left: 0.5em;">{{ 'View' if current_user.read_only else 'Edit' }} config</a>
         {% if shared_with %}<small class="muted" style="margin-left: 0.5em;">shared with {{ shared_with | join(", ") }}</small>{% endif %}
     </dd>
 </dl>

@@ -8,10 +8,11 @@
     <div class="page-actions">
         {{ mode_ctl() }}
         {{ start_ctl() }}
+        {% set verb = 'View' if current_user.read_only else 'Edit' %}
         <a href="{{ request.script_root }}/nodes/edit" role="button" class="secondary outline btn-sm"
-           title="Edit nodes.yaml: groups, hosts, ports and which config file each node renders">Edit nodes</a>
+           title="{{ verb }} nodes.yaml: groups, hosts, ports and which config file each node renders">{{ verb }} nodes</a>
         <a href="{{ request.script_root }}/configs" role="button" class="secondary outline btn-sm"
-           title="The config library: every config file, which nodes render or include it, and its editor">Edit configs</a>
+           title="The config library: every config file, which nodes render or include it, and its text">{{ verb }} configs</a>
     </div>
 </div>
 

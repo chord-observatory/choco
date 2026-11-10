@@ -1,12 +1,13 @@
 {# Pieces shared by the PDB page's two grids (bulkhead and dish).  Import
    `with context`: the forms need csrf_token(), a context processor. #}
 
-{# One channel: a toggle button when control is on, else a plain span.
+{# One channel: a toggle button when control is on, else a plain span
+   (also for a read-only user: the cell is the channel's state).
    `text` is what the cell says, `state_title` the tooltip body; an
    unmapped channel (no label) keeps the italic "unmapped" styling. #}
 {% macro chan(bus, board, chip, ci, on, label, text, state_title, control) -%}
 {%- set unmapped = '' if label else ' unmapped' -%}
-{% if control %}
+{% if control and not current_user.read_only %}
 <form id="pdb-c-{{ bus }}-{{ board }}-{{ chip }}-{{ ci }}"
       method="post" action="{{ request.script_root }}/service/pdb/set"
       hx-post="{{ request.script_root }}/service/pdb/set"

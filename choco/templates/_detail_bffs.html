@@ -43,7 +43,7 @@
 </dl>
 {% if detail.element_rows %}
 {% set manual = detail.manual or {} %}
-{% set clickable = manual.enabled and not manual.error and not manual.mismatch %}
+{% set clickable = manual.enabled and not manual.error and not manual.mismatch and not current_user.read_only %}
 <h3>Elements</h3>
 <figure class="scroll-x">
 <table class="feed-grid{% if clickable %} feed-grid-clickable{% endif %}">

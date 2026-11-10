@@ -256,8 +256,10 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   proxied user in none of those `Remote-Groups` is `read_only`, recomputed
   every request.  `auth._refuse_read_only_writes` refuses every
   POST/PUT/PATCH/DELETE for them in one place; never gate a write route by
-  route.  The UI keeps write controls visible but inert under `.read-only`
-  (`choco.css`): anything that writes from a script carries `.write-control`.
+  route.  The UI keeps write controls visible but inert under `.read-only`:
+  `base.html` disables every control in a write form, an `hx-post` or a
+  `.write-control` and makes its text read-only.  Anything that writes from
+  a script, or opens a form that does, carries `.write-control`.
   Trusted hosts and loopback callers are never read-only.
 - choco has no login of its own: `/login` (GET only) points to
   `proxy_auth.public_url` and, for emergencies, an ssh tunnel to loopback.

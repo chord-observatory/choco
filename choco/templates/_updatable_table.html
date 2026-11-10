@@ -50,7 +50,7 @@
                             hx-post="{{ url }}" hx-vals='{"_csrf_token": "{{ csrf_token() }}", "action": "off"}'
                             hx-confirm="Switch /{{ row.endpoint }} off, on every node that has it?">off</button>
                     {%- endif %}
-                    <button type="button" class="seg-btn tone-info" popovertarget="{{ pop_id }}"
+                    <button type="button" class="seg-btn tone-info write-control" popovertarget="{{ pop_id }}"
                             title="Queue a value of your own on every node that has /{{ row.endpoint }}">edit</button>
                     {%- if row.overrides %}
                     <button type="button" class="seg-btn tone-maint" title="Drop the stored override on every node that has one; a node then keeps its value until it restarts or another is set"

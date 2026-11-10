@@ -185,8 +185,18 @@ recomputed from the header on every request, so a group change applies as
 soon as Authelia refreshes the user (five minutes at most), and the refusal is
 one ``before_request`` for every POST/PUT/PATCH/DELETE rather than a check
 per route -- a new write route is covered without anyone remembering to.
-The pages keep the controls visible but inert (``.read-only`` in
-``choco.css``, plus ``.write-control`` for the one write a script sends) so a
-reader sees what exists.  Roles exist only behind the proxy, which is
+The pages keep the controls visible but inert so a reader sees what exists.
+Until 2026-11 a ``.read-only`` rule in ``choco.css`` dimmed them and turned
+off pointer events.  That left three faults: the registry's fields and its
+drag-to-reorder stayed live (only Save was marked), the config editor dimmed
+the text a reader came for and stopped it scrolling, and the keyboard
+reached everything.  Now a script in ``base.html``, run on load and after
+every htmx swap, sets ``disabled`` on each button, select and checkbox in a
+write form, an ``hx-post`` or a ``.write-control`` (a control that writes
+from a script, or opens a form that does), which also takes it out of the
+tab order, and ``readOnly`` on its text, which stays at full strength.  A
+control that is also the state it shows (a PDB channel, a bffs element)
+renders as the plain cell for a reader, and the registry does not load its
+editor script.  Roles exist only behind the proxy, which is
 why choco's own login went (above).  Trusted hosts and loopback callers keep
 full access, as before.

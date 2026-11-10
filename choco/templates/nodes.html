@@ -62,6 +62,7 @@
         padding: 0 0.3em;
         width: auto;
     }
+    .read-only .group-header, .read-only .node { cursor: default; }
     .sortable-ghost { opacity: 0.3; }
     .sortable-drag { opacity: 0.9; }
     .editor-actions {
@@ -92,7 +93,7 @@ reorder within a group or move it between groups. The config field names
 the library file a node renders (see <a href="{{ request.script_root }}/configs">Configs</a>);
 leave it blank for the node's own <code>group/name</code> file.</p>
 
-<div id="groups-container">
+<div id="groups-container" class="write-control">
     {% for group_name, nodes in groups.items() %}
     <div class="group">
         <div class="group-header">
@@ -117,9 +118,9 @@ leave it blank for the node's own <code>group/name</code> file.</p>
 </div>
 
 <div class="editor-actions">
-    <button type="button" id="add-group-btn" class="secondary outline">Add group</button>
+    <button type="button" id="add-group-btn" class="secondary outline write-control">Add group</button>
     <button type="button" id="save-btn" class="write-control">Save &amp; Reload</button>
-    <a href="{{ request.script_root }}/nodes" role="button" class="secondary outline">Cancel</a>
+    <a href="{{ request.script_root }}/nodes" role="button" class="secondary outline">{{ 'Back' if current_user.read_only else 'Cancel' }}</a>
     <span id="save-status"></span>
 </div>
 
@@ -150,6 +151,7 @@ leave it blank for the node's own <code>group/name</code> file.</p>
 {% endblock %}
 
 {% block scripts %}
+{% if not current_user.read_only %}
 <script src="{{ url_for('static', filename='Sortable.min.js') }}"></script>
 <script>
 (function () {
@@ -261,4 +263,5 @@ leave it blank for the node's own <code>group/name</code> file.</p>
     });
 })();
 </script>
+{% endif %}
 {% endblock %}

@@ -20,6 +20,7 @@ import yaml
 from choco.app import _DEFAULT_CONFIG, create_app, load_config
 from choco.auth import ProxyMiddleware, parse_proxy_auth, parse_trusted_hosts
 from tests.test_route_auth import ROUTES
+from tests.test_web_fpga_pdb import _pdb
 
 PROXY = "10.220.1.13"
 SECRET = "s3cret-" * 6
@@ -321,6 +322,27 @@ class TestReadOnly:
                                  headers={**via["headers"], "X-CSRF-Token": token},
                                  environ_base=via["environ_base"])
         assert resp.status_code == 403
+
+    def test_a_reader_gets_the_registry_without_its_editor(self, roles_client):
+        reader = roles_client.get("/nodes/edit", **_via("rita", groups="chord-users")).get_data(as_text=True)
+        assert 'id="groups-container" class="write-control"' in reader
+        assert "Sortable" not in reader and ">Back</a>" in reader
+        writer = roles_client.get("/nodes/edit", **_via("cara", groups="choco-users")).get_data(as_text=True)
+        assert "Sortable" in writer and ">Cancel</a>" in writer
+
+    def test_a_reader_views_the_library(self, roles_client):
+        reader = roles_client.get("/configs", **_via("rita", groups="chord-users")).get_data(as_text=True)
+        assert ">View</a>" in reader and ">Edit</a>" not in reader
+        writer = roles_client.get("/configs", **_via("cara", groups="choco-users")).get_data(as_text=True)
+        assert ">Edit</a>" in writer
+
+    def test_a_reader_sees_pdb_channels_as_state(self, roles_client):
+        _pdb(roles_client.application, [(0, "A", "10000000")])
+        reader = roles_client.get("/power/analog", **_via("rita", groups="chord-users")).get_data(as_text=True)
+        assert '<span class="chan' in reader and '/service/pdb/set"' not in reader
+        assert "/service/pdb/set-group" in reader       # bulk controls stay, inert
+        writer = roles_client.get("/power/analog", **_via("cara", groups="choco-users")).get_data(as_text=True)
+        assert '/service/pdb/set"' in writer
 
     def test_a_choco_user_may_write(self, roles_client):
         via = _via("cara", groups="chord-users,choco-users")
