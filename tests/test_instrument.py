@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from choco import instrument
+from pathlib import Path
 from types import SimpleNamespace
 
 from choco.instrument import (InstrumentMonitor, PduSnmp, SwitchEapi, Wiring, WiringFile, WiringRow, board_facts,
@@ -423,6 +424,19 @@ class TestFlow:
         assert sum("reads the files" in l["title"] for l in f["links"]) == 2
         assert next(l for l in f["lanes"] if l["key"] == "processing")["word"] == "1/2 ok"
         assert f["texts"][0]["text"] == "Control" and f["width"] == 1240
+
+    def test_a_node_outside_normal_still_sends_to_the_receiver(self):
+        boards, _ = board_layout(TELESCOPE)
+        rows, _ = parse_wiring(WIRING)
+        nodes = {"cx1": {"status": "started", "group": "cx", "mode": "maintenance"},
+                 "recv1": {"status": "started", "group": "recv", "mode": "development"}}
+        v = overview(boards, Wiring(rows, []), {}, {("cx1", 0): {"up": 1, "pps": 4e5}}, {}, nodes)
+        f = flow_diagram(v, {"files": {"tone": "ok"}})
+        assert next(c for c in f["cards"] if c["lines"][0]["text"] == "cx1")["tone"] == "maint"
+        assert next(l for l in f["links"] if l["title"] == "cx1 → recv1")["tone"] == "ok"
+        # every link tone the diagram draws has a stroke on the page
+        css = (Path(__file__).parent.parent / "choco/templates/instrument.html").read_text()
+        assert all(f"svg.fl .ln-{l['tone']}" in css for l in f["links"])
 
 
 class TestJobs:

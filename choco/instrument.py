@@ -1380,7 +1380,9 @@ def flow_diagram(view: dict, stages: dict, root: str = "") -> dict:
              f"{g['name']}: {status}" + (f" · kotekan {h['version']}" if h.get("version") else "")
              + (f" ({h['commit'][:10]})" if h.get("commit") else ""),
              f"{root}/pipeline/{h['group']}/{g['name']}" if h.get("group") else None)
-        node_bottoms.append(((left + right) / 2, tone, g["name"]))
+        # the link is the data the node sends, which no mode stops: its
+        # health, not the card's mode tone
+        node_bottoms.append(((left + right) / 2, node_tone(h), g["name"]))
 
     # receiver(s) and files
     downstream = view.get("downstream") or []
