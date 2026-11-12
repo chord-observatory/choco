@@ -103,7 +103,13 @@ on a node agrees with what choco pushes.  Rendering is still from *text*
 (``Environment.from_string`` over a ``FileSystemLoader``), so the library
 editor, one-offs and the ``/update`` body keep working unchanged; autoescape
 is off and undefined variables render empty, as the bare ``jinja2.Template``
-this replaced did.  After every load the include closure is recorded on the
+this replaced did.  The environment is Jinja2's
+``ImmutableSandboxedEnvironment`` (2026-11-12): config text comes from the
+library editor, a GitHub pull and loopback API callers, and an unsandboxed
+template is Python (``cycler.__init__.__globals__`` reaches ``os``) in the
+daemon's process.  The sandbox refuses underscore attributes and mutating
+methods, which no library file uses; the eight cx nodes and recv1 rendered
+identically under both environments when it went in.  After every load the include closure is recorded on the
 node (``Node.dependencies``, static analysis via ``jinja2.meta``, nested
 includes followed, a missing include recorded where the loader would look so
 its creation reloads), and ``Orchestrator.on_file_changed`` re-renders exactly

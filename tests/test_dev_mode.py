@@ -7,6 +7,7 @@ network-reachable address.
 """
 
 import copy
+import shutil
 
 import pytest
 import yaml
@@ -177,3 +178,13 @@ class TestDevModeGuardrails:
     def test_ssl_defaults_on(self, tmp_path):
         path = self._write(tmp_path, {})
         assert load_config(path)["server"]["ssl"] is True
+
+    @pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
+    def test_self_signed_cert_in_state_directory(self, tmp_path, monkeypatch):
+        """Under systemd the cert goes to the unit's StateDirectory, the
+        one place the unprivileged service can write, key 0600."""
+        monkeypatch.setenv("STATE_DIRECTORY", str(tmp_path))
+        assert _make_ssl_context({}) is not None
+        assert (tmp_path / "cert.pem").is_file()
+        assert (tmp_path / "key.pem").stat().st_mode & 0o777 == 0o600
+        assert _make_ssl_context({}) is not None    # reuses the pair

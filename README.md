@@ -43,7 +43,7 @@ The install script also:
 - Installs Python dependencies **pinned and hash-locked by `requirements.lock`** — pip runs with `--require-hashes`, and each pin lists the sha256 of every artifact PyPI serves for that version, so a deploy gets exactly the reviewed versions and refuses a substituted or tampered file even at the same version number (choco itself goes on top with `--no-deps`); regenerate the lock with `./choco.sh lock` after changing `pyproject.toml`, review the diff, and commit it. `./choco.sh audit` checks every pin (including pip itself, which is in the lock) against the latest PyPI releases and the OSV vulnerability database without changing anything — it exits non-zero if a pinned version has a known advisory, so it can run from cron or CI
 - Symlinks the `choco` command-line client (the venv's `choco` console script; see JSON API below) to `/usr/local/bin/choco`; the daemon's entry point is `choco-server`
 - Sets up iptables rules to redirect ports 443 -> 5000 and 80 -> 8080 (persisted via `iptables-persistent`)
-- Installs and enables a systemd service that starts on boot and restarts on failure
+- Installs and enables a systemd service that starts on boot and restarts on failure. The service runs as the `choco` account, not as root, with the systemd sandbox on (`jobs/choco.service`). The install stops if that account does not exist. It gives `choco` the `/etc/choco/configs/` tree, which choco writes, and makes `/etc/choco/config.yaml` mode 640, group `choco`. The self-signed certificate is in `/var/lib/choco/server/`
 - Installs every job's units from `jobs/*/choco-*.{service,timer}` (EOP, bffs, eigencal, waterfall, skymap, mapmaker, acqnotes), enabling the services and starting the timers; every unit runs its script through `jobs/run-job.sh`
 - Seeds `/etc/choco/config.yaml` (from the repo's local `config.yaml` or the template) and `/etc/choco/configs/` from the repo's `configs/` directory on first install, and each job's config (`<job>.yaml`, from `jobs/<job>/<job>.example.yaml`; the first `eop.yaml` takes its values from the `eop:` block of an older `config.yaml`); on subsequent installs, prompts whether to overwrite kotekan configs (use `--overwrite-configs` or `--keep-configs` to skip the prompt) and **never overwrites** the deployed `config.yaml`, edited job configs, or `configs/pdb_map.csv` — a diverged repo copy is staged as `config.yaml.new` / `pdb_map.csv.new` instead
 
@@ -192,8 +192,10 @@ To run manually (e.g. for debugging):
 
 ```bash
 sudo systemctl stop choco
-/opt/choco/.venv/bin/choco-server /etc/choco/config.yaml
+sudo -u choco STATE_DIRECTORY=/var/lib/choco/server /opt/choco/.venv/bin/choco-server /etc/choco/config.yaml
 ```
+
+Run it as `choco`, as the service does. A run as root can leave root-owned directories in `/etc/choco/configs/` that the service cannot write. The next `choco.sh install` gives them back to `choco`.
 
 ## Web UI
 

@@ -12,6 +12,7 @@ from pathlib import Path
 import jinja2
 import jinja2.loaders
 from jinja2 import meta as _jinja_meta
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 import requests
 import yaml
 
@@ -464,6 +465,11 @@ class Node:
         the bare ``jinja2.Template`` this replaced did (and as kotekan's
         loader does for ``.j2`` names).  With *overlay*, unsaved text
         for those absolute paths is served ahead of the files on disk.
+
+        Sandboxed and immutable: a config is text from the library, a
+        GitHub pull or an API caller, so it must not reach Python
+        internals (``__class__``, ``__globals__``) or mutate the vars.
+        A template that tries raises ``SecurityError``, a load error.
         """
         dirs = self._search_dirs()
         loader = None
@@ -472,7 +478,7 @@ class Node:
             if overlay:
                 loader = jinja2.ChoiceLoader(
                     [_OverlayLoader(dirs, overlay), loader])
-        return jinja2.Environment(loader=loader, autoescape=False)
+        return ImmutableSandboxedEnvironment(loader=loader, autoescape=False)
 
     def referenced_files(self, base_content: str) -> set[Path]:
         """Every file *base_content* includes, directly or through

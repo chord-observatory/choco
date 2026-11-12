@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+import jinja2
 import pytest
 import yaml
 
@@ -281,6 +282,22 @@ class TestNodeConfig:
         node = registry.get_node("cx/cx1")
         with pytest.raises(ValueError):
             node.render("not_a_mapping")
+
+    @pytest.mark.parametrize("text", [
+        "x: {{ ''.__class__.__mro__ }}\n",
+        "x: {{ cycler.__init__.__globals__ }}\n",
+        "{% set l = [1] %}{% set _ = l.append(2) %}x: {{ l }}\n",
+    ])
+    def test_render_is_sandboxed(self, configs_dir, text):
+        """Config text is not trusted code: no Python internals, no
+        mutation, as a load error like any other bad template."""
+        node = Registry(configs_dir).get_node("cx/cx1")
+        with pytest.raises(jinja2.exceptions.SecurityError):
+            node.render(text)
+        (configs_dir / "cx" / "cx1.yaml").write_text(text)
+        node = Registry(configs_dir).get_node("cx/cx1")
+        assert node.rendered_config is None
+        assert node.load_error is not None
 
 
 class TestNodeUpdatable:

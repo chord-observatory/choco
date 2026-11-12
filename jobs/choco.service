@@ -9,6 +9,35 @@ WorkingDirectory=/opt/choco
 ExecStart=/opt/choco/.venv/bin/choco-server /etc/choco/config.yaml
 Restart=on-failure
 RestartSec=5
+# Unprivileged, like the jobs: choco renders text from the config library
+# and GitHub, and parses N² and gain files.  Its ports (5000, 8080) need no
+# privilege; install sets up the 443/80 redirects.  It writes the config
+# library (configs_dir), the bffs manual override file under /var/lib/choco
+# and its self-signed certificate, in its StateDirectory ($STATE_DIRECTORY).
+User=choco
+Group=choco
+# journalctl -u for the job pages.
+SupplementaryGroups=systemd-journal
+StateDirectory=choco/server
+ReadWritePaths=/etc/choco/configs -/var/lib/choco
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
