@@ -460,3 +460,29 @@ The palettes and thumbnails are also refreshed after each file, not once
 at the end of a run: a backfill run of 40 files (about 4 min each at 128
 elements) otherwise showed no autocorrelation thumbnails for over two
 hours.
+
+**Masked feeds are not partners (2026-11-14).**  Every array coherence
+image of ``acq_20261113_222845`` had lines at multiples of 12.5 MHz
+(the 3200 MHz sample rate over 256).  They are the F-engine's own, on
+every input at about the same level at the ADCs, and far below a live
+feed's noise.  An unpowered input's digital gain is ~20 times a live
+feed's (430 in power), so there the lines stand at 5 % of the noise:
+time-coherent coherence on the 25 MHz multiples was 0.053 between two
+unpowered inputs (0.0017 off them), 0.0033 between an unpowered and a
+live one (0.0002), and 0.0023 between two live ones (0.0019).  A feed's
+coherence was its mean over all 127 partners, the unpowered ones
+included, so the lines stood in every feed's image and in the array's.
+New acquisitions (``partners: "unmasked"`` in the index) leave the feeds
+kotekan masked out of every feed's partners, per stream and bin, from
+the one chunk of ``flags`` the mask record reads
+(``reduce._feed_masks``).  A masked feed keeps its own image, its
+coherence with the unmasked feeds, because the page must still show a
+stale flag; the matrix and the coarse cube keep every pair.  The array's
+median still runs over every feed: its cell image is built from the
+feeds' images, and a median does not move for a few masked feeds.  On
+file 2125679 the lines at multiples of 50 MHz above 1.15 times their
+chunk went from 15 of 26 to 10, the median from 1.19 to 1.06, at no
+measurable cost (the masked feeds' products are subtracted from the
+sums the pass already has).  What is left is on the live feeds too:
+multiples of 400 MHz (the sample rate over 8) and the band's low edge,
+where the analog gain is low.

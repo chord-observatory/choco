@@ -690,14 +690,32 @@ def _quantize(mag: np.ndarray, ok: np.ndarray, lo_l, span) -> np.ndarray:
     return q
 
 
+def _feed_masks(f, n_el: int, n_time: int) -> np.ndarray | None:
+    """``(N_STREAMS, n_el, n_time)`` bool, where each stream masked each
+    feed: ``flags == 0`` on the file's first channels (channel i is
+    stream i mod :data:`N_STREAMS`).  None for a file without the dataset."""
+    fl = f.get("flags")
+    if fl is None or fl.shape[1:] != (n_el, n_time) or fl.shape[0] < N_STREAMS:
+        return None
+    return fl[0:N_STREAMS] == 0
+
+
 def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = None,
               sel: Selection | None = None, axes: Axes | None = None,
               overview: OverviewSpec | None = None,
-              gains: np.ndarray | None = None) -> tuple[np.ndarray, FileOverview | None]:
+              gains: np.ndarray | None = None,
+              unmasked: bool = False) -> tuple[np.ndarray, FileOverview | None]:
     """One pass over the file: the selected products' pixels and, with an
     ``overview``, the three cubes of :class:`OverviewSpec`.  ``gains``
     (:func:`gain_weights`) divides the gains out of the pixels and the
     coarse means; a channel whose gain is unknown is missing there.
+    ``unmasked`` keeps the feeds kotekan masked (:func:`_feed_masks`, per
+    stream and bin) out of every feed's partners in ``coherence``: an
+    unpowered input's digital gain is ~20 times a live feed's, so the
+    F-engine's own lines (multiples of 12.5 MHz on the 2026-11-13 files)
+    correlate between such inputs and stood in every feed's mean.  A
+    masked feed keeps its own coherence, with its unmasked partners, and
+    the matrix keeps every pair.
 
     With an overview the pass reads one chunk at a time with every
     product in it (the overview needs them all); without, the selected
@@ -744,6 +762,18 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
     with h5py.File(path, "r") as f:
         d = f["vis"]
         valid = _validity(f, axes.n_freq, n_time)
+        partners = {}
+        if overview is not None and unmasked:
+            masked = _feed_masks(f, n_el, n_time)
+            if masked is not None:
+                if valid is not None:
+                    masked &= valid[:N_STREAMS, None, :]           # no frame, no mask
+                # each masked feed's cross products and the feed at their other end
+                cross = axes.input_a != axes.input_b
+                for e in np.flatnonzero(masked.any(axis=(0, 2))):
+                    p = np.flatnonzero(cross & ((axes.input_a == e) | (axes.input_b == e)))
+                    partners[int(e)] = (p, np.where(axes.input_a[p] == e, axes.input_b[p],
+                                                    axes.input_a[p]))
         if valid is not None:
             valid = valid[sel.freq_idx]
         if overview is None:
@@ -800,6 +830,13 @@ def fold_file(path, lo: np.ndarray, hi: np.ndarray, out: np.ndarray | None = Non
             flat_ok = norm_ok.transpose(1, 0, 2).reshape(n_pf, -1).astype(np.float32)
             esum = (inc @ flat).reshape(n_el, nc, n_time)          # per channel and bin
             ecnt = (inc @ flat_ok).reshape(n_el, nc, n_time)
+            if partners:
+                # a masked feed is no partner: its products leave the other feed's mean
+                m = masked[sel.freq_idx[i:i + nc] % N_STREAMS]      # (nc, n_el, nt)
+                for e, (p, other) in partners.items():
+                    w = m[:, e, None, :]
+                    esum[other] -= (norm[:, p, :] * w).transpose(1, 0, 2)
+                    ecnt[other] -= (norm_ok[:, p, :] & w).transpose(1, 0, 2)
             for k, c0, c1 in cols:
                 for j, (t0, t1) in enumerate(parts):
                     s_ = esum[:, c0:c1, t0:t1].sum(axis=(1, 2))
@@ -934,9 +971,8 @@ def read_diag(path, axes: Axes) -> dict:
                           ("rfi_on", "frac_rfi_first_stage_enabled")):
             if name in f and f[name].shape == (axes.n_freq, n_time):
                 rec[key] = _per_stream(np.nan_to_num(f[name][()].astype(np.float32)), live, ns)
-        fl = f.get("flags")
-        if fl is not None and fl.shape[1:] == (len(labels), n_time) and fl.shape[0] >= ns:
-            rows = fl[0:ns] == 0                                   # (ns, n_el, n_time)
+        rows = _feed_masks(f, len(labels), n_time)                 # (ns, n_el, n_time)
+        if rows is not None:
             row_live = live[0:ns]                                  # (ns, n_time)
             counts = (rows & row_live[:, None, :]).sum(axis=0)     # (n_el, n_time)
             rec["flag_live"] = [int(x) for x in row_live.sum(axis=0)]

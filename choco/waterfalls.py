@@ -1018,6 +1018,7 @@ def coherence_view_context(store, root: str, acq: str, name: str, index: dict,
         "value_ticks": _UNIT_TICKS, "value_title": "coherence",
         "gradient": palette_gradient(head["palette"] if head else None),
         "n_files": len(index.get("files") or []),
+        "partners_unmasked": index.get("partners") == "unmasked",
     }
 
 
@@ -1483,6 +1484,7 @@ def sheet_context(store, root: str, acq: str, node_versions: dict | None = None,
         } if array_rows else None,
         "grid": grid, "last_when": when,
         "gains_divided": index.get("gains") == "divided",
+        "partners_unmasked": index.get("partners") == "unmasked",
         "ratio_labels": _RATIO_LABELS,
         "gradient": palette_gradient(store.palette(root, acq), direction="to right"),
         "streams": _stream_table(store.diag(root, acq) or [], node_versions or {}, zone),

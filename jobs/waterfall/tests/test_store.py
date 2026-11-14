@@ -348,6 +348,7 @@ def test_overview_cubes_grow_one_row_per_file(tmp_path):
     st.start(axes, lo, hi, sel, spec)
     idx = json.loads((o / "index.json").read_text())
     assert idx["overview"]["chunks"] == 4 and idx["overview"]["n_el"] == 4
+    assert idx["partners"] == "unmasked" and st.partners_unmasked
     assert idx["overview"]["prod_order"] == "triangle" and idx["coarse_bytes"] == 0
     assert (o / "palette.bin").stat().st_size == 768 and np.load(o / "coarse_freq.npy").shape == (4,)
     assert st.has_overview

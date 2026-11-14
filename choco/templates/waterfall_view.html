@@ -95,6 +95,9 @@
     The array's coherence at full resolution: per channel and bin, the median over all elements of
     their mean coherence with their partners.
     {%- endif %}
+    {%- if partners_unmasked %}
+    A masked feed is not a partner.
+    {%- endif %}
     Frequency across{% if freq_axis.unit == 'MHz' %} in MHz{% else %} in channel index{% endif %},
     time down{% if time_axis.unit == 'scanline' %} in scanline number{% else %} in local time ({{ time_axis.unit }}){% endif %};
     black is missing data.

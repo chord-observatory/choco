@@ -379,7 +379,7 @@ def process_acquisition(root: dict, acq: str, cfg: dict, budget: int,
             buf = np.empty((sel.n_prod, axes.n_time, sel.n_freq), np.uint8)
         try:
             _, overview = R.fold_file(path, lo, hi, out=buf, sel=sel, axes=axes, overview=spec,
-                                      gains=gains)
+                                      gains=gains, unmasked=store.partners_unmasked)
             try:
                 diag = R.read_diag(path, axes)
             except (KeyError, ValueError, TypeError) as exc:

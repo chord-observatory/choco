@@ -167,7 +167,7 @@ table.tri a:focus-visible { outline: 2px solid var(--pico-primary, #1c5a5c);
     <div class="ar-key">
         {%- if sheet.gradient %}<span>0.001</span><span class="bar" style="background: {{ sheet.gradient }}"></span><span>1</span>{% endif %}
         <span>· per {{ A.cell }}, the median over all feeds of their coherence with the
-        array · frequency across{% if A.freq_axis.unit == 'MHz' %} (MHz){% endif %}, time down
+        array{% if sheet.partners_unmasked %} (a masked feed is not a partner){% endif %} · frequency across{% if A.freq_axis.unit == 'MHz' %} (MHz){% endif %}, time down
         ({{ A.time_axis.unit }}) · black: no data{% if A.full %} · click for every channel and bin{% endif %}</span>
     </div>
 </div>

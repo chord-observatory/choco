@@ -58,7 +58,8 @@ from it (`reduce.OverviewSpec`) on a grid of cells, a chunk cut into
 per chunk and file): per product the mean |V| over each cell
 (`coarse.dat`; any product renders on request as a waterfall at cell
 resolution), per element the mean over its partners of
-|V_ab| / √(V_aa V_bb) per cell (`co_eNNNN.png`), and per band the same
+|V_ab| / √(V_aa V_bb) per cell (`co_eNNNN.png`; a feed kotekan masked is
+not a partner, in acquisitions started from 2026-11-14), and per band the same
 coherence as an element × element matrix, one frame per file (`matrix.dat`; the matrix page steps through them and a
 click on a cell opens that product).  Coherence is an amplitude mean,
 not a coherent sum — the sky rotates through the fringes of a long

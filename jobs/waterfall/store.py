@@ -149,6 +149,11 @@ class AcquisitionStore:
         return self.index.get("gains") == "divided"
 
     @property
+    def partners_unmasked(self) -> bool:
+        """Whether the coherence leaves masked feeds out of the partners (``start``)."""
+        return self.index.get("partners") == "unmasked"
+
+    @property
     def committed(self) -> bool:
         """Whether any file has been folded in.  Until one has, the index
         records a shape and a scale and no pixel depends on them, so an
@@ -307,6 +312,9 @@ class AcquisitionStore:
             self.index["freq_idx"] = [int(i) for i in sel.freq_idx]
         if overview is not None:
             self.index["overview"] = overview.to_index()
+            # a masked feed is no partner in the coherence (reduce.fold_file);
+            # an index without the key is from before 2026-11-14 and keeps them
+            self.index["partners"] = "unmasked"
             self.index["coarse_bytes"] = 0
             self.index["matrix_bytes"] = 0
             self.index["coarse_times_bytes"] = 0

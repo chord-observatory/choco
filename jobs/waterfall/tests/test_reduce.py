@@ -577,6 +577,61 @@ def _with_masks(path, n_freq=64, n_elem=4, n_time=6):
             dtype=h5py.string_dtype())
 
 
+def test_fold_file_leaves_masked_feeds_out_of_the_partners(tmp_path):
+    path = tmp_path / "v.h5"
+    make_file(path)
+    _with_masks(path)              # element 1 from bin 2; element 3 on stream 5; stream 7 dark in bin 0
+    ax = R.read_axes(path)
+    sel, _ = R.select(ax, {"autos": True})
+    spec = R.overview_spec(ax, sel, 2, array_full=True)
+    lo, hi = R.scale_from_sample(R.sample_magnitudes(path, sel))
+    _, plain = R.fold_file(path, lo, hi, sel=sel, axes=ax, overview=spec)
+    _, ov = R.fold_file(path, lo, hi, sel=sel, axes=ax, overview=spec, unmasked=True)
+    with h5py.File(path) as f:
+        mag = np.abs(f["vis"][()])
+        live = (mag > 0) & (f["frames_added"][()][:, None, :] > 0)
+        masked = f["flags"][()] == 0                              # (n_freq, n_el, n_time)
+    auto = {0: 0, 1: 4, 2: 7, 3: 9}
+    pairs = {(a, b): p for p, (a, b) in enumerate(zip(ax.input_a, ax.input_b))}
+
+    def mean(e, exclude):
+        """Element e's mean coherence over chunk 0, masked partners left out or not."""
+        vals = []
+        for b in range(4):
+            if b == e:
+                continue
+            p = pairs[min(e, b), max(e, b)]
+            n = mag[0:16, p, :] / np.sqrt(mag[0:16, auto[e], :] * mag[0:16, auto[b], :])
+            keep = live[0:16, p, :]
+            if exclude:
+                keep = keep & ~masked[0:16, b, :]
+            vals.append(n[keep])
+        return np.concatenate(vals).mean()
+
+    for e in range(4):
+        assert plain.coherence[e, 0, 0] == pytest.approx(mean(e, False), rel=1e-4)
+        # a masked feed keeps its own coherence, with its unmasked partners
+        assert ov.coherence[e, 0, 0] == pytest.approx(mean(e, True), rel=1e-4)
+    assert ov.coherence[0, 0, 0] != pytest.approx(plain.coherence[0, 0, 0], rel=1e-6)
+    # the coarse means and the matrix keep every pair
+    np.testing.assert_array_equal(ov.coarse, plain.coarse)
+    np.testing.assert_array_equal(ov.matrix, plain.matrix)
+    # the array at channel 5, bin 3: element 0 has one partner left there (2)
+    p02 = pairs[0, 2]
+    e0 = mag[5, p02, 3] / np.sqrt(mag[5, auto[0], 3] * mag[5, auto[2], 3])
+    each = sorted([e0] + [np.mean([mag[5, pairs[min(e, b), max(e, b)], 3]
+                                   / np.sqrt(mag[5, auto[e], 3] * mag[5, auto[b], 3])
+                                   for b in range(4) if b != e and not masked[5, b, 3]])
+                          for e in (1, 2, 3)])
+    assert ov.array[3, 5] == R.quantize_unit(np.array([each[1]]))[0]
+    # a file without the mask dataset folds as before
+    bare = tmp_path / "bare.h5"
+    make_file(bare)
+    _, a = R.fold_file(bare, lo, hi, sel=sel, axes=ax, overview=spec)
+    _, b = R.fold_file(bare, lo, hi, sel=sel, axes=ax, overview=spec, unmasked=True)
+    np.testing.assert_array_equal(a.coherence, b.coherence)
+
+
 def test_read_diag_counts_masks_per_stream(tmp_path):
     path = tmp_path / "v.h5"
     make_file(path)

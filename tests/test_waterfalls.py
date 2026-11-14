@@ -1193,3 +1193,11 @@ class TestSheet:
             assert '<div class="wfv" style="--maskw: ' in view and '<div class="wfv-imgbox">' in view
             view = client.get(f"/waterfall/subset/{SH_ACQ}/view/co_e0005.png").data.decode()
             assert "B01Y masked" in view
+            # an acquisition whose coherence leaves the masked feeds out says so
+            assert "masked feed is not a partner" not in view + body
+            path = sh_images / "subset" / SH_ACQ / "index.json"
+            path.write_text(json.dumps({**json.loads(path.read_text()), "partners": "unmasked"}))
+            assert "A masked feed is not a partner." in client.get(
+                f"/waterfall/subset/{SH_ACQ}/view/co_e0005.png").data.decode()
+            assert "(a masked feed is not a partner)" in client.get(
+                f"/files/subset/{SH_ACQ}/triangle").data.decode()
