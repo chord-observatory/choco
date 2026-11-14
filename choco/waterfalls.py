@@ -224,9 +224,14 @@ def read_cube_rows(path: str, offset: int, row_bytes: int, stride: int,
     """``n_rows`` slices of ``row_bytes`` from a cube, one per ``stride``
     bytes from ``offset``.  Blocking; runs in a thread.  Stops at the
     file's committed end rather than pad: on a live acquisition the file
-    can be one uncommitted append ahead, never behind."""
+    can be one uncommitted append ahead, never behind.
+
+    The buffer is one row.  The default is the file's block size, 1 MB
+    on the NFS mount, and a product's rows are megabytes apart: every
+    928-byte row of a coarse waterfall then cost a megabyte of link, and
+    a long acquisition's image ran past the read timeout."""
     out = []
-    with open(path, "rb") as f:
+    with open(path, "rb", buffering=max(int(row_bytes), 4096)) as f:
         size = os.fstat(f.fileno()).st_size
         for r in range(min(int(n_rows), CUBE_ROWS_MAX)):
             at = offset + r * stride
