@@ -9,14 +9,17 @@
 .wfv-head code { font-size: 0.9em; }
 .wfv-note { margin: 0 0 0.8em; }
 
-.wfv { --railw: 5.4em; --cbarw: 6.6em; }
+.wfv { --railw: 5.4em; --cbarw: 6.6em; --maskw: 0em; }
 
 /* The frequency ruler is sticky: the image is one pixel row per time
    sample and can be tens of thousands of pixels tall, so the axis has to
-   travel with the reader rather than sit at one end of the scroll. */
+   travel with the reader rather than sit at one end of the scroll.  Its
+   margins are the image's: the rail on the left, the mask columns and
+   the colorbar on the right. */
 .wfv-freq-wrap { position: sticky; top: 0; z-index: 10;
                  background: var(--pico-background-color, #fff);
-                 margin-left: var(--railw); margin-right: var(--cbarw);
+                 margin-left: var(--railw);
+                 margin-right: calc(var(--maskw) + var(--cbarw));
                  padding-top: 0.2em; }
 .wfv-freq { position: relative; height: 1.9em; font-size: 0.78em;
             color: var(--pico-muted-color, #666);
@@ -33,7 +36,7 @@
    rail's width is set where font-size is still 1em so it equals the
    frequency ruler's margin and the two axes share one left edge. */
 .wfv-imgbox { flex: 1 1 auto; min-width: 0; position: relative;
-              margin-left: var(--railw); }
+              margin-left: var(--railw); margin-right: var(--maskw); }
 .wfv-imgbox img { width: 100%; height: auto; min-height: 20em; display: block;
                   image-rendering: pixelated; }
 .wfv-rail { position: absolute; top: 0; bottom: 0; right: 100%;
@@ -105,7 +108,7 @@
 {%- elif mask_cols is defined %}
 <p class="wfv-mkey">No mask record for this acquisition: it was rendered before the job recorded masks.</p>
 {%- endif %}
-<div class="wfv">
+<div class="wfv"{% if mask_cols %} style="--maskw: {{ mask_cols | length * 0.9 + 0.6 }}em"{% endif %}>
     <div class="wfv-freq-wrap">
         <div class="wfv-freq">
             {%- for t in freq_axis.ticks %}
@@ -114,7 +117,7 @@
         </div>
     </div>
     <div class="wfv-body">
-        <div class="wfv-imgbox"{% if mask_cols %} style="margin-right: {{ mask_cols | length * 0.9 + 0.6 }}em"{% endif %}>
+        <div class="wfv-imgbox">
             <div class="wfv-rail">
                 {%- for t in time_axis.ticks %}
                 <span class="t" style="top: {{ '%.3f' % (t.frac * 100) }}%">{{ t.label }}</span>

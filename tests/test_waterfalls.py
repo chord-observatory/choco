@@ -1189,5 +1189,7 @@ class TestSheet:
             assert client.get(f"/waterfall/subset/{SH_ACQ}/array/index.json").status_code == 404
             view = client.get(f"/waterfall/subset/{SH_ACQ}/view/co_array.png").data.decode()
             assert "median over all elements" in view and 'class="wfv-masks"' in view
+            # the ruler and the image share the mask columns' margin
+            assert '<div class="wfv" style="--maskw: ' in view and '<div class="wfv-imgbox">' in view
             view = client.get(f"/waterfall/subset/{SH_ACQ}/view/co_e0005.png").data.decode()
             assert "B01Y masked" in view
