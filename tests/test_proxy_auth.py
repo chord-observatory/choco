@@ -230,8 +230,8 @@ def test_the_landing_page_is_prefixed(client, jobs):
     assert f'<meta name="choco-root" content="{PREFIX}">' in page
     assert f'href="{PREFIX}/nodes"' in page
     assert f'hx-get="{PREFIX}/partials/' in page
-    # the observatory is the proxy's own page: linked as it stands
-    assert 'href="https://ctc.chord-observatory.ca/observatory/"' in page
+    # Stellarium is another site's page: linked as it stands
+    assert 'href="https://chord-observatory.github.io/chord-stellarium/"' in page
     assert f"{PREFIX}/https://" not in page
 
 

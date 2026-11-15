@@ -403,7 +403,7 @@ swapped in on a dark theme.  The skymap job's strip plot was retired in
 and the script went with it.
 
 **Links to other sites.**  A menu item whose href is an ``https://`` URL
-(the Observatory, the site proxy's page) is linked as it stands, never
+(Stellarium, on GitHub Pages) is linked as it stands, never
 under choco's prefix, and is never the current item.
 
 **Scale and density (2026-10 review).**  Pico grows the base font with

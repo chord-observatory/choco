@@ -33,7 +33,7 @@ class TestActiveItem:
             for _label, href, _badge, _also in items:
                 if not href.startswith("https://"):        # another site's page is never one of ours
                     assert menu_active(href) == (group, href)
-        assert menu_active("/observatory/") == (None, None)
+        assert menu_active("/chord-stellarium/") == (None, None)
 
 
 class TestMenu:
@@ -50,13 +50,13 @@ class TestMenu:
         assert 'class="group"' not in body
         assert 'id="menu-items"' in body and 'hx-get="/partials/menu"' in body
 
-    def test_observatory_links_to_the_site_page_as_it_stands(self, client, jobs):
-        # The observatory is the site proxy's page, not choco's: its link is
+    def test_stellarium_links_to_its_page_as_it_stands(self, client, jobs):
+        # Stellarium is another site's page, not choco's: its link is
         # absolute and never takes choco's prefix, in the first paint and
         # in the partial that fills the badges.
         login(client)
-        link = ('<a href="https://ctc.chord-observatory.ca/observatory/" class="tag quiet plain">'
-                "<strong>Observatory</strong></a>")
+        link = ('<a href="https://chord-observatory.github.io/chord-stellarium/" class="tag quiet plain">'
+                "<strong>Stellarium</strong></a>")
         assert link in client.get("/files").data.decode()
         assert link in client.get("/partials/menu").data.decode()
         # behind the proxy's prefix too: test_proxy_auth's landing page

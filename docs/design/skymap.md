@@ -2,10 +2,10 @@
 
 **Retired 2026-11.**  The job, its routes (``/skymap.png``,
 ``/skymap-night.png``, ``/partials/skymap``) and its fold into the MAP page
-are gone: the observatory page (``chord-observatory/chord-stellarium``,
-served by GitHub Pages; ``https://ctc.chord-observatory.ca/observatory/``
-redirects there and is the menu's link) draws the current sky in the
-browser instead.  ``choco.sh install`` removes what an earlier install
+are gone: the Stellarium page (``chord-observatory/chord-stellarium``,
+served by GitHub Pages and linked from the menu; the site proxy's
+``/observatory/`` redirects there) draws the current sky in the browser
+instead.  ``choco.sh install`` removes what an earlier install
 left of the job (``RETIRED_JOBS``), and ``load_config`` refuses a
 ``skymap:`` block.  The 408 MHz map it fetched now sits beside the
 mapmaker, its one remaining user.  What follows is the job as it was.

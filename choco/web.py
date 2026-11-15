@@ -1688,11 +1688,11 @@ def _service_registry() -> dict[str, dict]:
     return registry
 
 
-#: The observatory: the public sky view (chord-observatory/chord-stellarium,
-#: served by GitHub Pages), which replaced choco's skymap job in 2026-11.
-#: The site proxy's address redirects there and stays the stable link; an
-#: absolute URL, so the link works over an ssh tunnel too.
-OBSERVATORY_URL = "https://ctc.chord-observatory.ca/observatory/"
+#: Stellarium: the public sky view (chord-observatory/chord-stellarium, on
+#: GitHub Pages), which replaced choco's skymap job in 2026-11.  Linked at
+#: its own address (the site proxy's /observatory/ only redirects there),
+#: so the link works over an ssh tunnel too.
+STELLARIUM_URL = "https://chord-observatory.github.io/chord-stellarium/"
 
 
 #: The menu: groups of pages, each item ``(label, href, badge, also)``.
@@ -1726,7 +1726,7 @@ MENU = (
     ("Data", (
         ("Acquisitions", "/files", "data", ("/waterfall/",)),
         ("Sky maps", "/service/mapmaker", "mapmaker", ()),
-        ("Observatory", OBSERVATORY_URL, None, ()),
+        ("Stellarium", STELLARIUM_URL, None, ()),
     )),
     ("Config", (
         ("Config library", "/configs", None, ()),
