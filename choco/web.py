@@ -37,7 +37,7 @@ from .waterfalls import (coarse_image as wf_coarse_image, coarse_view_context as
                          open_stream, overview_of, parse_elements, rendered_index,
                          strips as wf_strips, triangle as wf_triangle,
                          view_context as wf_view_context)
-from .jobdetail import (JOB_DETAILS, MAPMAKER_IMAGES, file_mtime, float_or_none, fmt_utc,
+from .jobdetail import (JOB_DETAILS, MAPMAKER_IMAGES, float_or_none, fmt_utc,
                         job_manual_path, same_path)
 from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json,
                         timer_status)
@@ -279,12 +279,6 @@ def _state_root() -> Path:
     return Path(current_app.config.get("state_dir") or STATE_ROOT)
 
 
-def _skymap_file(night: bool = False) -> Path:
-    """The rendered sky-map PNG (or its night-palette twin), where the
-    skymap job writes it: ``<state_dir>/skymap/skymap[-night].png``."""
-    return _state_root() / "skymap" / ("skymap-night.png" if night else "skymap.png")
-
-
 def _send_png(path: Path | None):
     """A job's PNG as it stands, revalidated on every request."""
     if path is None or not path.is_file():
@@ -300,30 +294,6 @@ def _component(key: str):
     return obj if obj is not None and obj.configured else None
 
 
-@bp.route("/skymap.png")
-def skymap_png():
-    """The current-sky strip image, rendered by jobs/skymap.
-
-    Deliberately unauthenticated (like /metrics, and for the same
-    cross-host reason: wall displays and external dashboards can't do
-    login sessions).  It is an aggregate sky rendering whose only
-    cluster fact is the pointing declination.  ``conditional`` +
-    ``max_age=0`` make the browser revalidate each time and get a 304
-    until the 5-minute job rewrites the file.
-    """
-    return _send_png(_skymap_file())
-
-
-@bp.route("/skymap-night.png")
-def skymap_night_png():
-    """The same render in the job's night palette, for wall displays in
-    a dim control room.  Unauthenticated for the same reason as
-    /skymap.png and carrying the same single cluster fact; 404 until
-    the job has rendered it (``night: true`` in skymap.yaml).
-    """
-    return _send_png(_skymap_file(night=True))
-
-
 @bp.route("/service/mapmaker/<name>.png")
 @login_required
 def mapmaker_png(name):
@@ -334,21 +304,6 @@ def mapmaker_png(name):
     if fname is None:
         abort(404)
     return _send_png(_state_root() / "mapmaker" / fname)
-
-
-@bp.route("/partials/skymap")
-@login_required
-def partial_skymap():
-    """The landing page's sky-map card, htmx-refreshed every 5 min.
-
-    The image URL carries the file's mtime, so a refresh swaps in a new
-    render exactly when one has landed and is a no-op otherwise.  The
-    card links the night-palette image when one has been rendered.
-    """
-    return render_template("_skymap.html",
-                           mtime=file_mtime(_skymap_file()),
-                           night_mtime=file_mtime(_skymap_file(night=True)),
-                           now_ts=time.time())
 
 
 @bp.route("/nodes")
@@ -1610,9 +1565,8 @@ def waterfall_view(root, acq, name):
 #: settings.  ``mtime_label`` says what the state file's mtime means on
 #: the page; only a job that rewrites its state file on every successful
 #: run gets a ``stale_after_s``.  ``page`` is where a folded job is
-#: shown (see ``_service_registry``) and ``card`` a partial that page
-#: loads above the job's status block; ``description`` heads the page,
-#: or the folded job's section.  ``pushes`` is the kotekan updatable
+#: shown (see ``_service_registry``); ``description`` heads the job's
+#: page.  ``pushes`` is the kotekan updatable
 #: endpoint the job sets, as its own config names it (``endpoint`` in
 #: eop.yaml, ``choco.endpoint`` in bffs.yaml and eigencal.yaml); the
 #: X-engine page credits the job with that row.
@@ -1660,18 +1614,6 @@ _JOBS: dict[str, dict] = {
         "label": "Waterfalls", "unit": "choco-waterfall.service",
         "state": STATE_NAME, "mtime_label": "last run", "page": "/files",
     },
-    # skymap keeps no state file: the image is the record and its title
-    # carries the render time, so the badge is systemd only.  The strip
-    # plot ends the MAP page, so the job is folded into MAP the way the
-    # waterfall is into DATA.
-    "skymap": {
-        "label": "Sky strip", "unit": "choco-skymap.service", "mtime_label": "last render",
-        "page": "/service/mapmaker", "card": "/partials/skymap",
-        "description": Markup(
-            "Current-sky strip plot — renders the beam's drift-scan strip with the Sun, "
-            "Moon and pointing every 5 minutes, in a day and a night palette; "
-            '<a href="{root}/">also on the landing page</a>.'),
-    },
     # pointing rewrites its state file (the latest table) only when the
     # table changes, so the mtime is "last change"; what it publishes is
     # vars.yaml in the config library.  run.json says what the last fetch
@@ -1717,7 +1659,7 @@ def _service_registry() -> dict[str, dict]:
     ``page`` says where a job's status is shown.  None: its own
     /service/<name> page and a badge in the menu.  A path: the job is
     folded into that page's badge
-    (the waterfall into DATA, the skymap into MAP) and /service/<name>
+    (the waterfall and the notes into DATA) and /service/<name>
     redirects there; it keeps its entry for the journal viewer, the
     status partial, /api/status and /metrics, which report it on its own.
     """
@@ -1741,10 +1683,15 @@ def _service_registry() -> dict[str, dict]:
             "run_file": files.get("run"),
             "manual_file": files.get("manual") if cfg.get("control", True) else None,
             "page": job.get("page"),
-            "card": job.get("card"),
             "description": job.get("description"),
         }
     return registry
+
+
+#: The observatory: the public sky view on the site proxy (chord-sysops
+#: proxy_nginx's web root), which replaced choco's skymap job in 2026-11.
+#: An absolute URL, so the link works over an ssh tunnel too.
+OBSERVATORY_URL = "https://ctc.chord-observatory.ca/observatory/"
 
 
 #: The menu: groups of pages, each item ``(label, href, badge, also)``.
@@ -1754,7 +1701,8 @@ def _service_registry() -> dict[str, dict]:
 #: ``also`` (a path, or a prefix ending in /); the longest match wins, so
 #: a node page is X-engine and the registry editor Node registry.  The front
 #: page is the CHOCO mark's, not an item's.  ``_menu.html`` renders it;
-#: ``menu_group`` is the active group, for a page's crumb.
+#: ``menu_group`` is the active group, for a page's crumb.  An https://
+#: href is another site's page, linked as it stands and never current.
 MENU = (
     ("Instrument", (
         ("X-engine", "/nodes", "nodes", ("/nodes/edit/", "/pipeline/", "/plot/")),
@@ -1776,7 +1724,8 @@ MENU = (
     )),
     ("Data", (
         ("Acquisitions", "/files", "data", ("/waterfall/",)),
-        ("Sky maps", "/service/mapmaker", "mapmaker", ("/service/skymap",)),
+        ("Sky maps", "/service/mapmaker", "mapmaker", ()),
+        ("Observatory", OBSERVATORY_URL, None, ()),
     )),
     ("Config", (
         ("Config library", "/configs", None, ()),
@@ -1814,18 +1763,6 @@ def _menu_context() -> dict:
     group, href = menu_active(request.path)
     return {"menu": MENU, "menu_group": group, "menu_active": href, "menu_label": _MENU_LABELS.get(href)}
 
-
-def _folded(registry: dict) -> dict[str, list[str]]:
-    """The jobs shown on another job's page, by host slug: every entry
-    whose ``page`` is ``/service/<host>`` (the skymap on the MAP page).
-    Its state rides in the host's badge and landing row, the way the
-    waterfall's rides in DATA, and its status block ends the host's page."""
-    folded: dict[str, list[str]] = {}
-    for name, svc in registry.items():
-        host = (svc.get("page") or "").removeprefix("/service/")
-        if svc.get("page") and host in registry:
-            folded.setdefault(host, []).append(name)
-    return folded
 
 def _services_health(registry: dict | None = None) -> dict:
     """Health snapshots for the hardware monitors and the oneshot jobs.
@@ -1938,9 +1875,9 @@ def _nodes_health() -> dict:
 def partial_menu():
     """The menu's items with their badges (htmx, on load and every 30 s):
     NODES, the monitors (FPGA, POWER, SWITCH, DATA, TRANSITS) and the
-    jobs; DATA covers the mounts and the jobs that read them, MAP carries
-    the skymap (``_folded``).  The page the viewer is on comes from
-    HX-Current-URL, so its item stays marked through the swap."""
+    jobs; DATA covers the mounts and the jobs that read them.  The page
+    the viewer is on comes from HX-Current-URL, so its item stays marked
+    through the swap."""
     registry = _service_registry()
     services = _services_health(registry)
     current = urlsplit(request.headers.get("HX-Current-URL", "")).path
@@ -1959,8 +1896,6 @@ def partial_menu():
         rack=_rack_badge(),
         services=services,
         svc=registry,
-        folds={host: [[n, services[n]] for n in names]
-               for host, names in _folded(registry).items()},
         now_ts=time.time(),
     )
 
@@ -2044,16 +1979,12 @@ def service_page(name):
     if svc is None:
         abort(404)
     if svc.get("page"):
-        # Folded into another page's badge (the waterfall into DATA, the
-        # skymap into MAP): old links land there, ``?lines=`` and all.
+        # Folded into another page's badge (the waterfall and the notes
+        # into DATA): old links land there, ``?lines=`` and all.
         query = request.query_string.decode()
         return redirect(svc["page"] + ("?" + query if query else ""))
-    # The jobs folded into this page end it, each with its own status
-    # block and journal (service.html).
-    folded = {other: _service_page_context(other, registry[other])
-              for other in _folded(registry).get(name, [])}
     return render_template(
-        "service.html", name=name, nlines=_journal_lines_arg(), folded=folded,
+        "service.html", name=name, nlines=_journal_lines_arg(),
         **_service_page_context(name, svc))
 
 
@@ -2617,20 +2548,17 @@ def _instrument_jobs(root: str) -> dict:
     def detail(name):
         return _service_detail(name, registry[name]) if name in registry else None
 
-    def job(name, line="", fold=()):
+    def job(name, line=""):
         if name not in registry:
             return None
-        parts = [(name, health[name])] + [(f, health[f]) for f in fold if f in health]
-        tones = [job_tone(h["health"], h.get("running")) for _, h in parts]
-        tone = worst_tone(tones)
-        word = next(job_word(h["health"], h.get("running")) for (_, h), t in zip(parts, tones) if t == tone)
-        why = [f"{registry[n]['label']} result: {h['result']}" + (f" (exit {h['exit_status']})" if h.get("exit_status") else "")
-               for n, h in parts if h.get("result") and h["result"] != "success"]
-        why += [r for _, h in parts for r in h.get("reasons") or []]
-        return {"name": registry[name]["label"], "sub": word, "line": line, "tone": tone,
+        h, label = health[name], registry[name]["label"]
+        word = job_word(h["health"], h.get("running"))
+        why = ([f"{label} result: {h['result']}" + (f" (exit {h['exit_status']})" if h.get("exit_status") else "")]
+               if h.get("result") and h["result"] != "success" else [])
+        why += h.get("reasons") or []
+        return {"name": label, "sub": word, "line": line, "tone": job_tone(h["health"], h.get("running")),
                 "href": root + (registry[name].get("page") or f"/service/{name}"),
-                "title": " · ".join(f"{registry[n]['label']}: {job_word(h['health'], h.get('running'))}"
-                                    for n, h in parts) + "".join(f"\n{w}" for w in why)}
+                "title": f"{label}: {word}" + "".join(f"\n{w}" for w in why)}
 
     c = detail("choco") or {}
     control = [{"name": "choco", "sub": "up", "tone": "ok", "href": root + "/service/choco",
@@ -2651,7 +2579,7 @@ def _instrument_jobs(root: str) -> dict:
             else "acquisition notes"),
         job("eigencal", f"last transit {g['transit_time'][:16]}" if g.get("transit_time") else "gains"),
         job("mapmaker", "sky map" + (f" · Dec {m['pointing_dec_deg']:g}" if m.get("pointing_dec_deg") is not None
-                                    else ""), fold=("skymap",)),
+                                    else "")),
     ]
     jobs = [j for j in jobs if j]
     t = _transfer_status()

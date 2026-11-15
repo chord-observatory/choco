@@ -10,4 +10,4 @@ coco
 build/
 configs/.updatable/
 # fetched by choco.sh install (fetch_sky_map), not committed
-jobs/skymap/haslam408_ds_Remazeilles2014.fits
+jobs/mapmaker/haslam408_ds_Remazeilles2014.fits

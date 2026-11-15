@@ -305,9 +305,10 @@ Cyg X and per-antenna gains from eigencal are the known next steps.
 
 `context.png`, drawn by the deconvolution step after `clean.png`, puts the
 strip in its sky; since 2026-10 it and `daily.png` are the only images the
-MAP page shows (`sky.png` and `clean.png` stay on disk and at their routes),
-and the skymap job's strip plot and status end the page (`web._folded`).  The backdrop is the 408 MHz all-sky map (the skymap's
-backdrop, read through `choco.healpix`) on an RA × Dec grid at 0.25°.  RA
+MAP page shows (`sky.png` and `clean.png` stay on disk and at their routes;
+the skymap job's strip plot ended the page until that job was retired in
+2026-11).  The backdrop is the 408 MHz all-sky map (read through
+`choco.healpix`) on an RA × Dec grid at 0.25°.  RA
 runs 360 → 0 like the strips, and Dec covers −40° to +90°, everything that
 rises at DRAO.  It uses inferno on log T_b and is not faded.  The deconvolved
 colour composite is pasted into its band with the band's edges outlined.  A
@@ -321,8 +322,10 @@ They differ by precession, about 0.36° in 2026, which is under two of the
 backdrop's pixels.  The ICRS → Galactic rotation is the Hipparcos matrix,
 with no astropy in the loop.
 
-`background_map` names the file and defaults to the skymap job's copy
-(`jobs/skymap/`, which `choco.sh install` fetches); `""` turns the image off.
+`background_map` names the file and defaults to the copy beside the job
+(`jobs/mapmaker/`, which `choco.sh install` fetches; it sat in
+`jobs/skymap/` until that job was retired in 2026-11); `""` turns the
+image off.
 A missing map costs only this image: the run reports it degraded (exit 2)
 and retries every tick, since the self-gate wants every configured image.
 A map in another layout is a config error (exit 1).  The fold-in never

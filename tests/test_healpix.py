@@ -91,8 +91,8 @@ def test_log_stretch_spans_the_sky_and_handles_a_flat_map():
     assert np.isnan(healpix.log_stretch(m, np.array([-1.0]))[0])
 
 
-def test_default_path_is_under_the_skymap_job(tmp_path):
-    assert healpix.default_sky_map(tmp_path) == str(tmp_path / "skymap" / healpix.SKY_MAP_FILE)
+def test_default_path_is_under_the_mapmaker_job(tmp_path):
+    assert healpix.default_sky_map(tmp_path) == str(tmp_path / "mapmaker" / healpix.SKY_MAP_FILE)
 
 
 @pytest.mark.parametrize("ra, dec, l, b", [

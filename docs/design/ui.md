@@ -207,9 +207,7 @@ each badge links to a ``/service/<name>`` detail page, all keyed off the
 ``eigencal`` / ``mapmaker``, plus the monitor pages ``fpga`` / ``pdb``) — page
 slugs are looked up there, never passed to journalctl raw.  An entry with a
 ``page`` is shown on that page instead (the waterfall on ``/files``, below
-the scan, and since 2026-10 the skymap at the foot of the MAP page, its
-card above its status block — ``web._folded`` lists such jobs by host and
-``service.html`` renders each as a section — : its status block, then the state file and journal from
+the scan: its status block, then the state file and journal from
 ``_service_tail.html``, the partial ``service.html`` ends with too) and
 ``/service/<name>`` redirects there, ``?lines=`` and all.  A job page
 (``service.html``) shows common unit facts (``job_status`` detail plus the
@@ -398,13 +396,15 @@ picker, the files page's root headers) puts the rule on the row instead
 via ``.section-head``, and the dashboard's tinted ``.group-bar`` keeps its
 own treatment because it carries the group controls.
 
-**Night sky map in the dark.**  The sky-map card's ``<img>`` (on the
-landing page and the MAP page) carries
-``data-day-src`` and, once a night render exists, ``data-night-src``;
-``base.html``'s theme script swaps ``src`` to match the theme on load, on
-toggle and after every htmx swap (the card is replaced every five
-minutes).  Done client-side because the theme lives in ``localStorage``
-and the server never knows it.
+**Night sky map in the dark (2026-10 to 2026-11).**  The skymap job's card
+on the MAP page carried a night render that ``base.html``'s theme script
+swapped in on a dark theme.  The skymap job's strip plot was retired in
+2026-11 (the site's observatory page, linked from the menu, replaced it),
+and the script went with it.
+
+**Links to other sites.**  A menu item whose href is an ``https://`` URL
+(the Observatory, the site proxy's page) is linked as it stands, never
+under choco's prefix, and is never the current item.
 
 **Scale and density (2026-10 review).**  Pico grows the base font with
 the viewport — 16 px on a phone, 20 px at 1280 and 21 px on a wide monitor
@@ -590,7 +590,7 @@ dashboard, the ``Choco*`` alerts) can show a backlog, a bad-feed count or
 the age of the newest file over time; the header strip only shows now.
 Names follow the Prometheus conventions (``*_timestamp_seconds`` for unix
 times, durations in seconds) and a value a file does not have is left out
-rather than reported as zero, so an absent series means "not known".  The only other unauthenticated routes are ``/skymap.png`` and its
-night-palette twin ``/skymap-night.png`` (see the sky-map bullet), open for the
-same cross-host reason; everything else requires login.  ``choco_start_time_seconds`` exists specifically because a choco
+rather than reported as zero, so an absent series means "not known".  Until
+2026-11 ``/skymap.png`` and ``/skymap-night.png`` were open too, for the same
+cross-host reason; they went with the skymap job.  Everything else requires login.  ``choco_start_time_seconds`` exists specifically because a choco
 restart re-engages cluster-wide maintenance (alertable via ``changes()``).

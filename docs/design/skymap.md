@@ -1,5 +1,15 @@
 # Sky-map strip plot
 
+**Retired 2026-11.**  The job, its routes (``/skymap.png``,
+``/skymap-night.png``, ``/partials/skymap``) and its fold into the MAP page
+are gone: the observatory page on the site proxy
+(``https://ctc.chord-observatory.ca/observatory/``, chord-sysops
+``proxy_nginx`` web root, linked from the menu) draws the current sky in
+the browser instead.  ``choco.sh install`` removes what an earlier install
+left of the job (``RETIRED_JOBS``), and ``load_config`` refuses a
+``skymap:`` block.  The 408 MHz map it fetched now sits beside the
+mapmaker, its one remaining user.  What follows is the job as it was.
+
 Design rationale moved out of CLAUDE.md (2026-09).  Historical: the
 measurements and dates are from when each part was built.
 

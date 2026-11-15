@@ -185,14 +185,6 @@ waterfall:
   ttl: 30                                     # seconds to cache the per-acquisition summary sweep
   timezone: America/Vancouver                 # IANA zone for the viewer's time axis (default shown)
 
-# Current-sky strip plot rendered by the skymap job (jobs/skymap, every
-# 5 min; configured in /etc/choco/skymap.yaml).  choco reads the PNGs back
-# from <state_dir>/skymap/ and serves them unauthenticated at /skymap.png
-# (shown on the landing page) and /skymap-night.png (the job's dark
-# palette, for wall displays); each 404s until rendered.
-skymap:
-  service_unit: choco-skymap.service          # systemd unit to query for the SKYMAP badge
-
 # Drift-scan sky maps (frequency as colour) built by the mapmaker job (jobs/mapmaker,
 # every 2 min; configured in /etc/choco/mapmaker.yaml).  choco reads its
 # state.json and PNGs back from <state_dir>/mapmaker/ for the MAP badge and

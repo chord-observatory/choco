@@ -38,8 +38,9 @@ class TestRetiredKeys:
         ("bffs:\n  manual_file: /x/manual.yaml\n", "state_dir"),
         ("eigencal:\n  state_file: /x/state.json\n", "state_dir"),
         ("waterfall:\n  state_file: /x/state.json\n", "state_dir"),
-        ("skymap:\n  image_file: /x/skymap.png\n", "skymap/skymap.png"),
-        ("skymap:\n  night_image_file: /x/n.png\n", "skymap/skymap-night.png"),
+        # 2026-11: the skymap job is retired, block and all
+        ("skymap:\n  service_unit: choco-skymap.service\n", "/observatory/"),
+        ("skymap:\n  image_file: /x/skymap.png\n", "skymap job is retired"),
         ("mapmaker:\n  state_file: /x/s.json\n", "state_dir"),
         ("mapmaker:\n  image_file: /x/m.png\n", "mapmaker/sky.png"),
     ])

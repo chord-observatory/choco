@@ -17,7 +17,7 @@ from choco.app import create_app
 from tests.helpers import csrf, login
 
 #: Reachable without a login, from anywhere.
-PUBLIC = {"web.metrics", "web.skymap_png", "web.skymap_night_png", "web.login", "static"}
+PUBLIC = {"web.metrics", "web.login", "static"}
 
 #: The routes ``localhost_or_login_required`` opens to loopback callers.
 LOOPBACK_PREFIXES = ("/update/", "/oneshot/", "/api/")

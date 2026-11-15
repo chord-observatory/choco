@@ -57,7 +57,8 @@ import render
 log = logging.getLogger("mapmaker")
 
 # astropy is only used for the Sun and the calibrators' CIRS positions;
-# never block a two-minute tick on the IERS servers (see jobs/skymap).
+# never block a two-minute tick on the IERS servers: the bundled tables are
+# enough at this precision.
 import astropy.utils.iers  # noqa: E402
 astropy.utils.iers.conf.auto_download = False
 astropy.utils.iers.conf.auto_max_age = None
@@ -98,7 +99,7 @@ DEFAULTS = {
               "stretch": {"mode": "arcsinh", "floor_sigma": 3.0, "soft": 0.001, "max": 1.0}},
     "row_repeat": 4,
     # the context image's backdrop, a HEALPix FITS ("" = no context image);
-    # choco.sh install fetches the skymap job's copy, which this shares
+    # choco.sh install fetches it beside this file
     "background_map": default_sky_map(Path(__file__).resolve().parent.parent),
     "backfill_from": None,
     "max_files_per_run": 10,

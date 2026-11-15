@@ -139,10 +139,10 @@ class TestRender:
                         {"kind": "", "n_flagged": 9}, "junk"]})
         _write(tmp_path, "waterfall", "state.json", {
             "backlog": 34, "files_rendered": 1, "errors": ["x"], "run_seconds": 12.5, "degraded": []})
-        body = _render(tmp_path, services, jobs=["bffs", "waterfall", "skymap"])
+        body = _render(tmp_path, services, jobs=["bffs", "waterfall", "nofiles"])
         assert 'choco_job_running{job="bffs"} 1' in body
         assert 'choco_job_running{job="waterfall"} 0' in body
-        assert 'choco_job_running{job="skymap"}' not in body
+        assert 'choco_job_running{job="nofiles"}' not in body
         assert 'choco_job_state_timestamp_seconds{job="bffs"} 100.5' in body
         assert 'choco_job_state_timestamp_seconds{job="waterfall"}' not in body
         assert 'choco_job_run_timestamp_seconds{job="bffs"} 1000.0' in body
@@ -218,7 +218,7 @@ class TestRender:
         scrape must not parse; its run.json has the numbers."""
         seen = []
         monkeypatch.setattr("choco.metrics.read_state_json", lambda p: seen.append(p) or None)
-        _render(tmp_path, jobs=["bffs", "skymap"])
+        _render(tmp_path, jobs=["bffs", "nofiles"])
         assert seen == [tmp_path / "bffs" / "run.json"]
 
     def test_process(self, tmp_path):

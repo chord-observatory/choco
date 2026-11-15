@@ -36,8 +36,7 @@ MONITOR_STATES = {
 }
 
 #: The files read per job, by name, for the job's own numbers.  bffs's
-#: ``state.json`` is the whole flag history (megabytes) and the skymap
-#: keeps no state: neither is read.
+#: ``state.json`` is the whole flag history (megabytes): it is not read.
 _JOB_FILES = {
     "eop": (STATE_NAME,),
     "bffs": (RUN_NAME,),

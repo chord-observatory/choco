@@ -15,7 +15,7 @@ SITE_HEIGHT_M = 545.0
 
 #: Bright sources, J2000 (ICRS) right ascension and declination in degrees
 #: (SIMBAD).  The calibrators the mapmaker can self-calibrate on, eigencal's
-#: default source, and what skymap labels.
+#: default source.
 SOURCES = {
     "Cyg A": (299.86815, 40.73392),     # 3C 405, radio galaxy
     "Cas A": (350.86642, 58.81178),     # supernova remnant

@@ -86,7 +86,6 @@ jobs/               # One dir per job: systemd units, code, tests; run-job.sh ru
 ├── bffs/           # Bad-feed flagging (30 s timer); sources/ = one module per signal
 ├── eigencal/       # Point-source gain calibration (10 min timer, self-gating)
 ├── waterfall/      # Append-only visibility waterfall PNGs (2 min timer)
-├── skymap/         # Current-sky Mollweide plot, day + night PNGs (5 min timer)
 ├── mapmaker/       # Drift-scan sky maps, frequency as hue, sky + last day (2 min timer); CLEAN of the sky map (15 min timer)
 ├── pointing/       # Dish pointing from the site's angle table into vars.yaml (10 min timer); pauses the nodes it re-renders
 └── acqnotes/       # Per-acquisition README + acq_info.yaml written into subset/ (hourly); timeline.yaml is curated history
@@ -227,9 +226,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   `pdb_map.csv`) and is checked against the live rates, never trusted silently.
 
 **Auth and exposure** ([auth.md](docs/design/auth.md), [ui.md](docs/design/ui.md))
-- Every route requires login except `/metrics`, `/skymap.png` and
-  `/skymap-night.png`, which are cross-host and must stay aggregate-only: no
-  node names, hosts or configs.  `tests/test_route_auth.py` sweeps the URL
+- Every route requires login except `/metrics`, which is cross-host and
+  must stay aggregate-only: no node names, hosts or configs.  `tests/test_route_auth.py` sweeps the URL
   map for this, the loopback bypass and CSRF; a new exception goes in its
   lists, deliberately.
 - `/update/*`, `/oneshot/*` and `/api/*` (including the config library's
@@ -346,9 +344,12 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 - A new badge costs one entry in `web._JOBS` plus, optionally, a summariser
   in `jobdetail.JOB_DETAILS` with its `_detail_<name>.html`.  A job shown on another page
   sets the entry's `page` instead (the waterfall and acqnotes on `/files`,
-  folded into the DATA tag; the skymap on `/service/mapmaker`, folded into
-  MAP): no badge or landing row of its own and `/service/<name>`
-  redirects, but `/api/status` and `/metrics` still report it by name.
+  folded into the DATA tag): no badge or landing row of its own and
+  `/service/<name>` redirects, but `/api/status` and `/metrics` still
+  report it by name.
+- A job taken out of the repo goes into `RETIRED_JOBS` in `choco.sh`:
+  install copies jobs without deleting, so its units would go on running
+  from the old copy, unseen.  Its config block goes into `_RETIRED_KEYS`.
 - Jobs reach choco through `choco.jobclient` and derive feed labels through
   `choco.dishlabels`; both are stdlib-only so the jobs' venv is the only
   requirement.  Do not copy either into a job.  The run plumbing is
@@ -449,8 +450,8 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
 `sync.num_workers`, a `psu:` block, `eop.fpga_master_*`, the eop job's own
 settings (now `/etc/choco/eop.yaml`), `waterfall.images_dir` (choco reads
 the tree from the job's `state.json`), the `ldap:` block and every
-per-job state path (`*.state_file`, `bffs.run_file`/`manual_file`,
-`skymap.image_file`/`night_image_file`), naming the replacement.  Do not add
+per-job state path (`*.state_file`, `bffs.run_file`/`manual_file`) and
+the retired skymap job's `skymap:` block, naming the replacement.  Do not add
 a silent fallback for a renamed key; extend `_RETIRED_KEYS` instead.
 `choco.sh install` loads the config under the new code before restarting
 anything, so a retired key stops the install, not the service.
@@ -474,7 +475,7 @@ names) rather than coin new ones.  This file holds the rules for agents;
 - [pipeline.md](docs/design/pipeline.md) — pipeline page, frame peeks, `bufferplot.js`
 - [datafiles.md](docs/design/datafiles.md) — `/files` and the DATA badge
 - [waterfall.md](docs/design/waterfall.md) — the append-only PNG renderer and its read side
-- [skymap.md](docs/design/skymap.md) — the sky-map job
+- [skymap.md](docs/design/skymap.md) — the sky-map job, retired 2026-11 (kept for its history)
 - [mapmaker.md](docs/design/mapmaker.md) — the drift-scan map job: incremental scatter-add, Cyg A self-calibration, the two-row Dec grating lobes
 - [jobs.md](docs/design/jobs.md) — the jobs pattern and the EOP merge policy
 - [dependencies.md](docs/design/dependencies.md) — the 2026-09 dependency audit

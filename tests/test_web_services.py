@@ -82,25 +82,6 @@ class TestServicePage:
         assert f"<title>{title} — CHOCO</title>" in body
         assert f'<span class="crumb-sep">/</span>{title}' in body
 
-    def test_skymap_rides_on_the_map_page(self, client):
-        """The skymap job is folded into MAP: its old page redirects there,
-        and the MAP page ends with its card, status block and journal."""
-        login(client)
-        resp = client.get("/service/skymap?lines=500")
-        assert resp.status_code == 302
-        assert resp.headers["Location"].endswith("/service/mapmaker?lines=500")
-        stub = dict(_JOB_STUB, unit="choco-skymap.service")
-        with patch("choco.web.job_status", return_value=stub), \
-             patch("choco.web.timer_status", return_value=None):
-            body = client.get("/service/mapmaker?lines=500").data.decode()
-        assert "<h3>Sky strip</h3>" in body and "choco-skymap.service" in body
-        assert 'hx-get="/partials/skymap"' in body               # the strip plot itself
-        assert "/partials/service-status/skymap" in body
-        assert "/partials/service-logs/skymap?lines=500" in body
-        assert 'id="skymap-journal"' in body and 'id="journal"' in body
-        assert 'href="/service/mapmaker?lines=100#skymap"' in body
-        assert "/service/skymap" not in body
-
     def test_waterfall_page_is_the_files_page(self, client):
         # The renderer is folded into DATA: its old page redirects to
         # /files, keeping the journal picker's ``?lines=``.
@@ -154,7 +135,7 @@ class TestServicePage:
         assert "/service/waterfall" not in body
 
     @pytest.mark.parametrize("name", ["choco", "eop", "bffs", "eigencal",
-                                  "waterfall", "skymap", "mapmaker", "acqnotes"])
+                                  "waterfall", "mapmaker", "acqnotes"])
     def test_status_partial_renders(self, client, name, jobs):
         login(client)
         resp = client.get(f"/partials/service-status/{name}")

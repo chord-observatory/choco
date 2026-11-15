@@ -1,7 +1,7 @@
 """kotekan's ``dish_inputs`` table and the per-element label layout.
 
 Shared by the web process (the PDB map cross-check) and by every job that
-names feeds (bffs, eigencal, waterfall, skymap), so it is **stdlib only**.
+names feeds (bffs, eigencal, waterfall), so it is **stdlib only**.
 The label layout is the one fact all of them must agree on: kotekan's
 2026-08 configs name each *dish* once (``A1``) and lay the element axis
 out as [P][D] — ``element = dish_idx + pol * num_dishes`` — so per-element

@@ -1,11 +1,11 @@
 """HEALPix all-sky maps for the jobs: read a FITS map, look pixels up.
 
-The skymap's backdrop and the mapmaker's context image both draw the
-408 MHz all-sky map (Haslam et al. 1982, destriped by Remazeilles et al.
-2015), a 12.6 MB HEALPix FITS that ``choco.sh install`` fetches into
-``jobs/skymap/`` (:data:`SKY_MAP_FILE`).  Jobs only: numpy, plus
-astropy's FITS reader on demand; the web process never imports this.
-No healpy -- the RING lookup below is all either job needs.
+The mapmaker's context image draws the 408 MHz all-sky map (Haslam et
+al. 1982, destriped by Remazeilles et al. 2015), a 12.6 MB HEALPix FITS
+that ``choco.sh install`` fetches into ``jobs/mapmaker/``
+(:data:`SKY_MAP_FILE`).  Jobs only: numpy, plus astropy's FITS reader on
+demand; the web process never imports this.  No healpy -- the RING
+lookup below is all the job needs.
 """
 
 from __future__ import annotations
@@ -14,14 +14,14 @@ from pathlib import Path
 
 import numpy as np
 
-#: The map's file name; choco.sh install puts it in ``jobs/skymap/``.
+#: The map's file name; choco.sh install puts it in ``jobs/mapmaker/``.
 SKY_MAP_FILE = "haslam408_ds_Remazeilles2014.fits"
 
 
 def default_sky_map(jobs_dir) -> str:
     """The map's path under a jobs tree (the repo's ``jobs/`` or the
-    installed ``/opt/choco/jobs``): ``<jobs_dir>/skymap/<SKY_MAP_FILE>``."""
-    return str(Path(jobs_dir) / "skymap" / SKY_MAP_FILE)
+    installed ``/opt/choco/jobs``): ``<jobs_dir>/mapmaker/<SKY_MAP_FILE>``."""
+    return str(Path(jobs_dir) / "mapmaker" / SKY_MAP_FILE)
 
 
 HEALPIX_BAD = -1.6375e30     # HEALPix's UNSEEN sentinel

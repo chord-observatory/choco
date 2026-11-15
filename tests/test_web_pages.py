@@ -11,7 +11,7 @@ import yaml
 
 from choco.state import NodeStatus
 
-from tests.helpers import JOB_STUB as _JOB_STUB, job_dir, login
+from tests.helpers import JOB_STUB as _JOB_STUB, login
 
 
 # --- Front page (/) ---
@@ -22,12 +22,10 @@ class TestFrontPage:
         body = client.get("/").data.decode()
         assert 'class="fl"' in body and "instrument.prometheus_url" in body
         # the control column and the processing lane: one card per badge
-        # that is not hardware; the skymap rides in MAP, the waterfall is WF
+        # that is not hardware
         for label in ("choco", "Earth orientation", "Bad feeds", "Eigencal", "Sky maps", "Waterfalls",
                       "Acquisition notes"):
             assert f">{label}<" in body
-        assert ">Sky strip<" not in body
-        assert 'id="skymap"' not in body          # the sky map is on the MAP page
 
     def test_dashboard_not_at_root(self, client):
         login(client)
@@ -162,111 +160,25 @@ class TestPresence:
         assert 'id="presence" hx-get="/partials/presence"' in body
 
 
-# --- Sky map: /skymap.png (unauthenticated) + landing card ---
+# --- The retired skymap job: its routes are gone ---
 
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-
-
-class TestSkymap:
-    def _configure(self, app, tmp_path, write=True, night=False):
-        # The images live where the job writes them, <state_dir>/skymap/;
-        # nothing in config.yaml names them.
-        path = job_dir(app, "skymap") / "skymap.png"
-        if write:
-            path.write_bytes(PNG_MAGIC + b"fake image data")
-        if night and write:
-            (path.parent / "skymap-night.png").write_bytes(PNG_MAGIC + b"fake night data")
-        return path
-
-    def test_not_rendered_yet_404(self, client):
-        # No login on purpose: the route must answer (with 404 here)
-        # without a session.
-        assert client.get("/skymap.png").status_code == 404
-
-    def test_serves_image_without_login(self, client, app, tmp_path):
-        path = self._configure(app, tmp_path)
-        resp = client.get("/skymap.png")
-        assert resp.status_code == 200
-        assert resp.mimetype == "image/png"
-        assert resp.data == path.read_bytes()
-
-    def test_missing_file_404(self, client, app, tmp_path):
-        self._configure(app, tmp_path, write=False)
-        assert client.get("/skymap.png").status_code == 404
-
-    def test_conditional_get_304(self, client, app, tmp_path):
-        self._configure(app, tmp_path)
-        first = client.get("/skymap.png")
-        etag = first.headers.get("ETag")
-        assert etag
-        resp = client.get("/skymap.png", headers={"If-None-Match": etag})
-        assert resp.status_code == 304
-
-    def test_night_image_served_without_login(self, client, app, tmp_path):
-        path = self._configure(app, tmp_path, night=True)
-        resp = client.get("/skymap-night.png")
-        assert resp.status_code == 200
-        assert resp.mimetype == "image/png"
-        assert resp.data == (path.parent / "skymap-night.png").read_bytes()
-        assert resp.data != path.read_bytes()
-
-    def test_night_image_404_until_configured_and_rendered(
-            self, client, app, tmp_path):
-        # Day only configured: the night route is simply absent ...
-        self._configure(app, tmp_path)
-        assert client.get("/skymap-night.png").status_code == 404
-        # ... and configured but not yet rendered is the same 404.
-        self._configure(app, tmp_path, write=False, night=True)
-        assert client.get("/skymap-night.png").status_code == 404
-
-    def test_partial_names_the_night_render_for_dark_mode(self, client, app, tmp_path):
-        # base.html swaps the card's src to data-night-src when the theme is
-        # dark; the attribute is there only once a night render exists.
-        self._configure(app, tmp_path, night=True)
+class TestSkymapRetired:
+    @pytest.mark.parametrize("path", ["/skymap.png", "/skymap-night.png", "/partials/skymap",
+                                      "/service/skymap", "/partials/service-status/skymap"])
+    def test_routes_are_gone(self, client, path):
+        # The observatory page on the site proxy replaced the strip plot
+        # (2026-11); nothing of the job is served, logged in or not.
         login(client)
-        body = client.get("/partials/skymap").data.decode()
-        assert 'data-day-src="/skymap.png?v=' in body
-        assert 'data-night-src="/skymap-night.png?v=' in body
-        self._configure(app, tmp_path, night=False)
-        (job_dir(app, "skymap") / "skymap-night.png").unlink()
-        body = client.get("/partials/skymap").data.decode()
-        assert "data-night-src" not in body
+        assert client.get(path).status_code == 404
 
-    def test_partial_carries_mtime_busted_url(self, client, app, tmp_path):
-        path = self._configure(app, tmp_path)
-        login(client)
-        body = client.get("/partials/skymap").data.decode()
-        assert f'/skymap.png?v={int(path.stat().st_mtime)}' in body
 
-    def test_partial_links_night_image_only_when_rendered(
-            self, client, app, tmp_path):
-        login(client)
-        self._configure(app, tmp_path)
-        assert "skymap-night" not in client.get("/partials/skymap").data.decode()
-        path = self._configure(app, tmp_path, night=True)
-        night_mtime = int((path.parent / "skymap-night.png").stat().st_mtime)
-        body = client.get("/partials/skymap").data.decode()
-        assert f'/skymap-night.png?v={night_mtime}' in body
-
-    def test_partial_without_render_yet(self, client, app, tmp_path):
-        self._configure(app, tmp_path, write=False)
-        login(client)
-        body = client.get("/partials/skymap").data.decode()
-        assert "No sky map rendered yet" in body
-
-    def test_card_always_present(self, client, app, tmp_path):
-        # the job is part of the install, so the card is unconditional:
-        # it says "not rendered yet" until the first PNG lands
-        login(client)
-        body = client.get("/partials/skymap").data.decode()
-        assert "No sky map rendered yet" in body
-
-    def test_load_config_carries_skymap_block(self, configs_dir, tmp_path):
+class TestConfigPath:
+    def test_load_config_carries_a_job_block_and_the_state_root(self, configs_dir, tmp_path):
         """The production path: config.yaml -> load_config -> create_app.
 
         load_config copies each known section explicitly, so a section
         it forgot would stay invisible until the page is loaded for real.
-        The state root the skymap PNGs are read from travels the same way.
+        The state root the jobs' PNGs are read from travels the same way.
         """
         from choco.app import create_app, load_config
         cfg = tmp_path / "config.yaml"
@@ -274,17 +186,19 @@ class TestSkymap:
             "configs_dir": str(configs_dir),
             "server": {"secret_key": "k" * 32},  # a placeholder key is refused at load
             "state_dir": str(tmp_path / "state"),
-            "skymap": {"service_unit": "choco-skymap.service"},
+            "mapmaker": {"service_unit": "choco-mapmaker.service"},
         }))
         loaded = load_config(cfg)
-        assert loaded["skymap"]["service_unit"] == "choco-skymap.service"
+        assert loaded["mapmaker"]["service_unit"] == "choco-mapmaker.service"
         assert loaded["state_dir"] == str(tmp_path / "state")
         app = create_app(config=loaded)
         assert app.config["state_dir"] == tmp_path / "state"
-        assert app.config["skymap_cfg"]["service_unit"] == "choco-skymap.service"
-        (tmp_path / "state" / "skymap").mkdir(parents=True)
-        (tmp_path / "state" / "skymap" / "skymap.png").write_bytes(PNG_MAGIC + b"x")
-        assert app.test_client().get("/skymap.png").status_code == 200
+        assert app.config["mapmaker_cfg"]["service_unit"] == "choco-mapmaker.service"
+        (tmp_path / "state" / "mapmaker").mkdir(parents=True)
+        (tmp_path / "state" / "mapmaker" / "sky.png").write_bytes(b"\x89PNG\r\n\x1a\nx")
+        client = app.test_client()
+        login(client)
+        assert client.get("/service/mapmaker/sky.png").status_code == 200
 
 
 class TestServicesPartial:
@@ -441,28 +355,18 @@ class TestServicesPartial:
         assert (m.group(1), m.group(2)) == ("bad", "notes failed")
         assert "notes (choco-acqnotes.service): failed" in m.group(3)
 
-    def test_map_badge_carries_the_skymap_job(self, client, app):
-        # The skymap rides in MAP the same way: a failed render turns the
-        # tag red with its own word, the tooltip names both jobs, and the
-        # skymap has no badge of its own.
+    def test_map_badge_is_the_mapmaker_alone(self, client, app):
+        # The skymap job that rode in MAP is retired: the tag is the
+        # mapmaker's own state, and nothing in the menu names the skymap.
         login(client)
-
-        def status(unit, **kw):
-            health = "failed" if unit == "choco-skymap.service" else "ok"
-            return dict(_JOB_STUB, health=health, unit=unit)
-        with patch("choco.web.job_status", side_effect=status):
+        with patch("choco.web.job_status", side_effect=lambda unit, **kw: dict(_JOB_STUB, health="failed", unit=unit)):
             body = client.get("/partials/menu").data.decode()
         m = re.search(r'<a href="/service/mapmaker" class="tag tag-([a-z]+)[^"]*" aria-label="Sky maps: ([^"]*)"'
                       r'[^>]*title="([^"]*)"', body)
         assert m, body
-        assert (m.group(1), m.group(2)) == ("bad", "skymap failed")
+        assert (m.group(1), m.group(2)) == ("bad", "failed")
         assert "Sky maps job (choco-mapmaker.service)" in m.group(3)
-        assert "skymap (choco-skymap.service): failed" in m.group(3)
-        assert ">SKYMAP<" not in body and "/service/skymap" not in body
-        # the host's own state, unprefixed, when it is the worse of the two
-        with patch("choco.web.job_status", return_value=dict(_JOB_STUB, health="degraded")):
-            body = client.get("/partials/menu").data.decode()
-        assert 'aria-label="Sky maps: degraded"' in body
+        assert "skymap" not in body
         assert ">NOTES<" not in body and "/service/acqnotes" not in body
 
     def test_nodes_badge_tinted_but_wordless_when_not_ok(self, client, app, jobs):

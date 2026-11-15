@@ -83,20 +83,6 @@
     <script>
         (function () {
             var root = document.documentElement;
-            // Images with a night render (the sky map) follow the theme:
-            // data-night-src in the dark, data-day-src otherwise.  Run on
-            // load, on toggle, and after every htmx swap, since the sky
-            // map card is replaced every five minutes.
-            function themeImages() {
-                var dark = root.dataset.theme === "dark";
-                var imgs = document.querySelectorAll("img[data-night-src]");
-                for (var i = 0; i < imgs.length; i++) {
-                    var want = dark ? imgs[i].dataset.nightSrc : imgs[i].dataset.daySrc;
-                    if (want && imgs[i].getAttribute("src") !== want) imgs[i].setAttribute("src", want);
-                }
-            }
-            themeImages();
-            document.body.addEventListener("htmx:afterSwap", themeImages);
             // A read-only user: every control that would write is disabled
             // (which also takes it out of the tab order), and the text it
             // holds is read-only.  Run on load and after every htmx swap,
@@ -135,7 +121,6 @@
                 var next = root.dataset.theme === "dark" ? "light" : "dark";
                 root.dataset.theme = next;
                 try { localStorage.setItem("chocoTheme", next); } catch (e) {}
-                themeImages();
             });
         })();
     </script>

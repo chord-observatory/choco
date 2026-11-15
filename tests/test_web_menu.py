@@ -21,7 +21,6 @@ class TestActiveItem:
         ("/service/power", "Power", "/power/analog"),
         ("/power/rack", "Power", "/power/rack"),
         ("/transits", "Positioning", "/transits"),
-        ("/service/skymap", "Data", "/service/mapmaker"),
         ("/waterfall/subset/acq_x/view/a.png", "Data", "/files"),
         ("/configs/edit/cx/cx1.yaml", "Config", "/configs"),
         ("/login", None, None),
@@ -32,7 +31,9 @@ class TestActiveItem:
     def test_every_item_is_current_for_its_own_href(self):
         for group, items in MENU:
             for _label, href, _badge, _also in items:
-                assert menu_active(href) == (group, href)
+                if not href.startswith("https://"):        # another site's page is never one of ours
+                    assert menu_active(href) == (group, href)
+        assert menu_active("/observatory/") == (None, None)
 
 
 class TestMenu:
@@ -48,6 +49,17 @@ class TestMenu:
         # the registry editor styles its own .group; the menu's classes are its own
         assert 'class="group"' not in body
         assert 'id="menu-items"' in body and 'hx-get="/partials/menu"' in body
+
+    def test_observatory_links_to_the_site_page_as_it_stands(self, client, jobs):
+        # The observatory is the site proxy's page, not choco's: its link is
+        # absolute and never takes choco's prefix, in the first paint and
+        # in the partial that fills the badges.
+        login(client)
+        link = ('<a href="https://ctc.chord-observatory.ca/observatory/" class="tag quiet plain">'
+                "<strong>Observatory</strong></a>")
+        assert link in client.get("/files").data.decode()
+        assert link in client.get("/partials/menu").data.decode()
+        # behind the proxy's prefix too: test_proxy_auth's landing page
 
     def test_the_foot_has_who_is_here_logout_and_the_theme(self, client):
         login(client)

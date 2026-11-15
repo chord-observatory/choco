@@ -25,19 +25,14 @@
    ~ job_tip_tail(j) }}
 {%- endif -%}
 {%- endmacro %}
-{# A job's badge.  With parts, the [name, snapshot] pairs of the jobs
-   folded into its page (the skymap in MAP), the tag shows the worst of
-   them, a part's state prefixed with its name, and the tooltip lists
-   each. #}
-{% macro job_tag(label, name, job, mtime_label, parts, href, extra) -%}
-{% set ns = namespace(tip=label ~ ' job (' ~ job.unit ~ ')'
-                          ~ '\nhealth: ' ~ job.health
-                          ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
-                          ~ job_tip_tail(job)) %}
-{% for word, j in parts %}{% set ns.tip = ns.tip ~ job_tip(word, word, j) %}{% endfor %}
-{% set jobs = [['', job]] + parts %}
-{{ tag(data_tone(none, jobs), data_word(none, jobs),
-       label=label, href=href, title=ns.tip ~ '\n\nclick for details', quiet=true, extra=extra) }}
+{# A job's badge. #}
+{% macro job_tag(label, name, job, mtime_label, href, extra) -%}
+{% set tip = label ~ ' job (' ~ job.unit ~ ')'
+             ~ '\nhealth: ' ~ job.health
+             ~ ('\n' ~ mtime_label ~ ': ' ~ since(job.state_mtime, now) if job.state_mtime else '')
+             ~ job_tip_tail(job) %}
+{{ tag(job_tone(job.health, job.running), job_label(job.health, job.running),
+       label=label, href=href, title=tip ~ '\n\nclick for details', quiet=true, extra=extra) }}
 {%- endmacro %}
 {# A hardware monitor's badge: where it is, its health, one line of its
    own (lines), when it was last seen and its error. #}
@@ -57,7 +52,7 @@
 {# One item: the badge its ``badge`` names, when that is configured and
    health was passed, else the plain link. #}
 {% macro item(label, href, badge) -%}
-{% set url = request.script_root ~ href %}
+{% set url = href if href.startswith('https://') else request.script_root ~ href %}
 {% set extra = 'active' if href == menu_active else '' %}
 {% if not services or not badge %}{{ plain(label, url, extra) }}
 {% elif badge == 'nodes' and nodes %}
@@ -115,7 +110,7 @@
                ~ ('\nnew passes in the forecast: ' ~ gnss.n_new if gnss.n_new else ''),
                url, extra) }}
 {% elif badge in services and badge in svc and svc[badge].kind == 'job' %}
-{{ job_tag(label, badge, services[badge], svc[badge].mtime_label, folds.get(badge, []), url, extra) }}
+{{ job_tag(label, badge, services[badge], svc[badge].mtime_label, url, extra) }}
 {% else %}{{ plain(label, url, extra) }}
 {% endif %}
 {%- endmacro %}

@@ -140,10 +140,10 @@ clean:
 
 # The deconvolution also draws context.png: the deconvolved strip pasted
 # into the 408 MHz all-sky map (log scale, RA x Dec).  The default is the
-# skymap job's copy of the map, which choco.sh install fetches
-# (/opt/choco/jobs/skymap/haslam408_ds_Remazeilles2014.fits); "" draws no
+# copy that choco.sh install fetches beside the job
+# (/opt/choco/jobs/mapmaker/haslam408_ds_Remazeilles2014.fits); "" draws no
 # context image.  A missing file costs only that image (degraded).
-#background_map: /opt/choco/jobs/skymap/haslam408_ds_Remazeilles2014.fits
+#background_map: /opt/choco/jobs/mapmaker/haslam408_ds_Remazeilles2014.fits
 
 # Where to start when there is no state yet: an acquisition name
 # (acq_YYYYMMDD_...) to backfill from, or null for the newest acquisition.

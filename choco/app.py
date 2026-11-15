@@ -63,7 +63,6 @@ _DEFAULT_CONFIG = {
     "bffs": {},
     "eigencal": {},
     "waterfall": {},
-    "skymap": {},
     "mapmaker": {},
     "acqnotes": {},
     "vis_files": {},
@@ -115,8 +114,10 @@ _RETIRED_KEYS = (
     (("waterfall", "images_dir"), "remove it: choco reads the tree's location from the "
                                   "waterfall job's state.json (waterfalls_dir in "
                                   "/etc/choco/waterfall.yaml)"),
-    (("skymap", "image_file"), _STATE_FIX + "; the job writes skymap/skymap.png"),
-    (("skymap", "night_image_file"), _STATE_FIX + "; the job writes skymap/skymap-night.png"),
+    # 2026-11: the skymap job (the current-sky strip plot) is retired; the
+    # observatory page on the site proxy took its place.
+    (("skymap",), "remove the block: the skymap job is retired; the site proxy's "
+                  "/observatory/ page replaced it"),
     (("mapmaker", "state_file"), _STATE_FIX),
     (("mapmaker", "image_file"), _STATE_FIX + "; the job writes mapmaker/sky.png and daily.png"),
     (("mapmaker", "maps_dir"), _STATE_FIX),

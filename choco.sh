@@ -9,16 +9,38 @@ CONFIG_DIR=/etc/choco
 # --- Helpers ---
 
 # The destriped 408 MHz all-sky map (Haslam et al. 1982; Remazeilles et
-# al. 2015), a 12.6 MB HEALPix FITS from NASA LAMBDA: the skymap's backdrop
-# and the mapmaker's context image (both read jobs/skymap/'s copy, through
+# al. 2015), a 12.6 MB HEALPix FITS from NASA LAMBDA: the mapmaker's
+# context image (it reads jobs/mapmaker/'s copy, through
 # choco/healpix.py).  Fetched at install rather than committed; the hash
-# pins the exact file the jobs were checked against.
+# pins the exact file the job was checked against.
 SKY_MAP_URL=https://lambda.gsfc.nasa.gov/data/foregrounds/haslam_2014/haslam408_ds_Remazeilles2014.fits
 SKY_MAP_SHA256=7e59071e2dad44c011703abc35ddcf16c4c50dac784c3d9d09829b84b7d8f2d1
 
+# Jobs taken out of the repo.  Install copies jobs without deleting, so
+# what an earlier install left of one (its units, code, state and config)
+# would go on running, unseen by choco; retire_jobs removes it.
+#   skymap: the current-sky strip plot, retired 2026-11 for the
+#           observatory page on the site proxy.
+RETIRED_JOBS=(skymap)
+
+retire_jobs() {
+    local job unit
+    for job in "${RETIRED_JOBS[@]}"; do
+        for unit in "choco-$job.timer" "choco-$job.service"; do
+            if [ -f "/etc/systemd/system/$unit" ]; then
+                systemctl disable --now "$unit" 2>/dev/null || true
+                rm -f "/etc/systemd/system/$unit"
+                echo "Removed the retired job's $unit"
+            fi
+        done
+        rm -rf "${INSTALL_DIR:?}/jobs/$job" "/var/lib/choco/$job"
+        rm -f "$CONFIG_DIR/$job.yaml"
+    done
+}
+
 # fetch_sky_map DIR: put the map in DIR unless a verified copy is there.
-# A failed download warns and leaves the job rendering without a
-# backdrop (it reports degraded) -- never fails the install.
+# A failed download warns and leaves the mapmaker without its context
+# image (it reports degraded) -- never fails the install.
 fetch_sky_map() {
     local dir="$1" name="${SKY_MAP_URL##*/}"
     local dest="$dir/$name" tmp
@@ -30,11 +52,11 @@ fetch_sky_map() {
             && echo "$SKY_MAP_SHA256  $tmp" | sha256sum -c --status; then
         chmod 644 "$tmp"
         mv -f "$tmp" "$dest"
-        echo "Fetched the skymap backdrop ($name)"
+        echo "Fetched the 408 MHz map ($name)"
     else
         rm -f "$tmp"
         echo "Warning: could not fetch a verified $name from $SKY_MAP_URL;"
-        echo "  the skymap renders without its backdrop until it is in $dir."
+        echo "  the mapmaker draws no context image until it is in $dir."
     fi
 }
 
@@ -217,7 +239,14 @@ PYEOF
     rsync -a --exclude='__pycache__' --exclude='.pytest_cache' \
         "$SCRIPT_DIR/jobs/" "$INSTALL_DIR/jobs/"
     find "$INSTALL_DIR/jobs" -name '*.sh' -exec chmod +x {} +
-    fetch_sky_map "$INSTALL_DIR/jobs/skymap"
+    # The map lived in jobs/skymap/ until that job was retired: keep that
+    # copy rather than download it again (fetch_sky_map checks its hash).
+    local map="${SKY_MAP_URL##*/}"
+    if [ -f "$INSTALL_DIR/jobs/skymap/$map" ] && [ ! -f "$INSTALL_DIR/jobs/mapmaker/$map" ]; then
+        mv "$INSTALL_DIR/jobs/skymap/$map" "$INSTALL_DIR/jobs/mapmaker/$map"
+    fi
+    retire_jobs
+    fetch_sky_map "$INSTALL_DIR/jobs/mapmaker"
 
     # Config
     mkdir -p "$CONFIG_DIR/configs"
