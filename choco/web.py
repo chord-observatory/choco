@@ -1688,9 +1688,10 @@ def _service_registry() -> dict[str, dict]:
     return registry
 
 
-#: The observatory: the public sky view on the site proxy (chord-sysops
-#: proxy_nginx's web root), which replaced choco's skymap job in 2026-11.
-#: An absolute URL, so the link works over an ssh tunnel too.
+#: The observatory: the public sky view (chord-observatory/chord-stellarium,
+#: served by GitHub Pages), which replaced choco's skymap job in 2026-11.
+#: The site proxy's address redirects there and stays the stable link; an
+#: absolute URL, so the link works over an ssh tunnel too.
 OBSERVATORY_URL = "https://ctc.chord-observatory.ca/observatory/"
 
 
