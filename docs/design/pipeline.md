@@ -43,7 +43,13 @@ the way in — kotekan builds before the charset fix label the reply
 ``requests`` believes — and asks for ``urls=0``, since kotekan's
 ``/buffer_frame?name=…`` links are relative to the *node* (they resolve
 against choco and 404) and would fight the inline view's own click-to-plot
-handler.  The SVG is inlined so buffer nodes can be clicked, which means
+handler.  It also asks for ``cluster=0`` (2026-11-17): kotekan boxes the
+stages of each config section, and on the X-engines a section is one copy of
+a stage per NUMA half that never exchange data, so twelve boxes pulled the
+halves together and crossed their edges.  Without them the cx52 graph lays
+out as one row per half in all three presets; the GPU boxes, which the
+grouping was for, are not section boxes and stay.  The section name is no
+longer drawn; a node shows its leaf name and stage type.  The SVG is inlined so buffer nodes can be clicked, which means
 kotekan-supplied markup lands in the authenticated UI:
 ``pipeline_svg.sanitize_pipeline_svg`` rebuilds the graphviz output through a
 whitelist RECONSTRUCTION (a new tree; only known-inert elements/attributes are

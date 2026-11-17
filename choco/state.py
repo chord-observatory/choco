@@ -865,12 +865,19 @@ class Node:
         wrapping the node's shape, which would fight the inline view's own
         click-to-plot handler.  Older kotekan ignores the argument.
 
+        ``cluster=0`` drops the box kotekan draws round each config section.
+        On the X-engines a section holds one copy of a stage per NUMA half,
+        and the two never exchange data, so the boxes pull the halves
+        together and tangle their edges; without them the graph lays out as
+        one row per half.  The GPU boxes are not section boxes and stay.
+
         The reply is decoded as UTF-8 whatever the node says: layout lines
         hold ``×`` and ``·``, and kotekan builds before the charset fix
         label the body ``text/vnd.graphviz`` with no charset — which HTTP
         defines as ISO-8859-1, and ``requests`` believes it.
         """
-        resp = self._request("GET", "/pipeline_dot", params={"urls": 0})
+        resp = self._request("GET", "/pipeline_dot",
+                             params={"urls": 0, "cluster": 0})
         if resp is None:
             return None
         resp.encoding = "utf-8"

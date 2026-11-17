@@ -257,6 +257,14 @@ class TestGetPipelineDot:
         assert "urls=0" in responses.calls[0].request.url
 
     @responses.activate
+    def test_asks_for_no_section_boxes(self, node):
+        # A config section holds one copy of a stage per NUMA half; boxing
+        # them tangles the two halves' edges.
+        responses.get(f"{BASE}/pipeline_dot", body=self.DOT)
+        node.get_pipeline_dot()
+        assert "cluster=0" in responses.calls[0].request.url
+
+    @responses.activate
     def test_decoded_as_utf8_without_a_charset(self, node):
         # kotekan before the charset fix labels the body `text/vnd.graphviz`
         # with no charset -- which HTTP defines as ISO-8859-1, and requests
