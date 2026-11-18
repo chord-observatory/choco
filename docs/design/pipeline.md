@@ -386,7 +386,18 @@ means flagged; ``axis_values`` gives the ``DM`` axis round DM ticks at the
 nearest trial (the grid is not evenly spaced: 0.12 below DM 100, then a
 power law).  The DM list is ``web.trial_dms``, a mirror of the stage's loop,
 and is used only when it is exactly as long as the axis, so a drift shows
-as an axis numbered by trial, never as wrong DMs.  **N2 frames get block-
+as an axis numbered by trial, never as wrong DMs.  Amber alone left no
+reference for what a real or a faint event looks like (user, 2026-11-18),
+and measured on a recorded transit the answer is "small": an 8 sigma pulse
+is one cell above the threshold out of 5089 in its row, a 45 sigma Crab
+pulse 32, while noise keeps about 170 cells above 5 sigma and two above 6
+on a 60 s image.  So three things were added: each group of flagged cells
+gets a **ring** (``flagMarks``; none past 60 groups, when the screen is
+full of them anyway); the cells within one sigma below the threshold
+(``flag_near``) take a **pale tone** of their own, a level noise reaches
+about twice a minute, which is what faint looks like; and a **colour bar**
+in a right margin reserved for it labels the threshold, the pale band and
+the level 98 % of the cells are below.  **N2 frames get block-
 aware plotting**: ``n2LayoutFromDesc`` mirrors kotekan's
 ``N2FrameDesc::get_frame_layout`` (ten sequential blocks, no padding: vis
 c64×num_prod, weight f32×num_prod, flags f32×n, eval f32×num_ev, evec

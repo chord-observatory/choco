@@ -296,11 +296,56 @@
     // below the threshold, lighter as the value nears it, and the mask
     // ramp's amber from the threshold up — what glows is what was
     // flagged.  A percentile stretch cannot say that: it paints a 4 sigma
-    // noise peak and a 7 sigma candidate the same top colour.
-    function flagColor(t) {
-        if (t >= 1) return [255, 150, 90];
-        var x = Math.max(0, t);
-        return [28 + x * (150 - 28), 42 + x * (164 - 42), 56 + x * (180 - 56)];
+    // noise peak and a 7 sigma candidate the same top colour.  `nearT`
+    // is where on the ramp the band just below the threshold starts (1
+    // for none): those cells take one pale tone of their own.  Noise
+    // puts a few of them on screen at a time, which is what a faint
+    // event looks like; the slate below is where noise lives.
+    var FLAG_RGB = [255, 150, 90], NEAR_RGB = [232, 208, 124];
+
+    function flagRamp(nearT) {
+        return function (t) {
+            if (t >= 1) return FLAG_RGB;
+            if (t >= nearT) return NEAR_RGB;
+            var x = Math.max(0, t) / nearT;
+            return [28 + x * (150 - 28), 42 + x * (164 - 42), 56 + x * (180 - 56)];
+        };
+    }
+
+    // Where to ring the cells at or above `level`: one centre (CSS
+    // pixels in rect `r`) per group of flagged cells within `gap` of
+    // each other, since a single flagged cell is one device pixel wide
+    // and easy to miss.  null when there would be more than `cap` rings:
+    // then the screen is full of them and rings would only hide it.
+    function flagMarks(grid, h, w, level, r, gap, cap) {
+        var marks = [];
+        for (var i = 0; i < h; i++) {
+            for (var j = 0; j < w; j++) {
+                if (!(grid[i * w + j] >= level)) continue;
+                var x = r.l + (j + 0.5) / w * r.w, y = r.t + (i + 0.5) / h * r.h;
+                var covered = false;
+                for (var k = marks.length - 1; k >= 0 && !covered; k--)
+                    covered = Math.abs(marks[k].x - x) < gap &&
+                              Math.abs(marks[k].y - y) < gap;
+                if (covered) continue;
+                if (marks.length === cap) return null;
+                marks.push({ x: x, y: y });
+            }
+        }
+        return marks;
+    }
+
+    // The values a flagged ramp's colour bar labels, most important
+    // first: the threshold, the start of the pale band, the level 98 %
+    // of the cells are below (where the noise is), then round values.
+    function colorBarLabels(lo, top, hi, near, typical) {
+        var out = [{ v: hi, text: fmtVal(hi) }];
+        if (near > lo && near < hi) out.push({ v: near, text: fmtVal(near) });
+        if (typical > lo && typical < hi) out.push({ v: typical, text: "98%" });
+        niceTicks(lo, top, 4, false).forEach(function (v) {
+            if (v >= lo && v <= top) out.push({ v: v, text: fmtVal(v) });
+        });
+        return out;
     }
 
     // Robust color range: 2nd..98th percentile of the finite cells.
@@ -558,7 +603,7 @@
     // A canvas whose CSS size the layout decides (the panel gives it a
     // height, the full-screen page lets it fill).  Returns the drawing
     // context plus the rect the data occupies.
-    function beginPlot(canvas) {
+    function beginPlot(canvas, padRight) {
         refreshTheme();
         var dpr = window.devicePixelRatio || 1;
         var W = Math.max(240, Math.round(canvas.clientWidth || 800));
@@ -574,7 +619,7 @@
         return {
             ctx: ctx, dpr: dpr, W: W, H: H,
             rect: { l: PAD.l, t: PAD.t,
-                    w: Math.max(20, W - PAD.l - PAD.r),
+                    w: Math.max(20, W - PAD.l - PAD.r - (padRight || 0)),
                     h: Math.max(20, H - PAD.t - PAD.b) },
         };
     }
@@ -757,11 +802,16 @@
         var range = opts.range || robustRange(grid);
         var lo = range[0], hi = range[1];
         var flagged = typeof opts.flagAt === "number" && !opts.range;
+        var near = NaN, typical = hi;
         if (flagged) {
             hi = opts.flagAt;
-            if (!(lo < hi)) lo = hi - 1;
+            if (typeof opts.nearAt === "number" && opts.nearAt < hi) near = opts.nearAt;
+            // The ramp needs room below the pale band (or the threshold).
+            var floor = near < hi ? near - (hi - near) : hi - 1;
+            if (!(lo < floor)) lo = floor;
         }
-        var color = opts.color || (flagged ? flagColor : viridis);
+        var color = opts.color ||
+            (flagged ? flagRamp(near < hi ? (near - lo) / (hi - lo) : 1) : viridis);
         var off = document.createElement("canvas");
         off.width = w;
         off.height = h;
@@ -787,10 +837,62 @@
         if (logC)
             return "color " + fmtVal(Math.pow(10, lo)) + " … " +
                    fmtVal(Math.pow(10, hi)) + " (log)";
-        if (flagged)
+        if (flagged) {
+            var marks = flagMarks(grid, h, w, hi, r, 12, 60);
+            ctx.strokeStyle = "rgb(" + FLAG_RGB.join(",") + ")";
+            ctx.lineWidth = 1.5;
+            for (var m = 0; marks && m < marks.length; m++) {
+                ctx.beginPath();
+                ctx.arc(marks[m].x, marks[m].y, 8, 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+            ctx.lineWidth = 1;
+            drawColorBar(f, color, lo, hi, near, typical);
             return "color " + fmtVal(lo) + " … " + fmtVal(hi) +
-                   ", amber: flagged (from " + fmtVal(hi) + ")";
+                   (near < hi ? ", pale: from " + fmtVal(near) : "") +
+                   ", amber: flagged (from " + fmtVal(hi) + ")" +
+                   (marks ? ", " + marks.length + " ringed" : ", too many to ring") +
+                   ", 98% of cells below " + fmtVal(typical);
+        }
         return "color " + fmtVal(lo) + " … " + fmtVal(hi);
+    }
+
+    // The scale of a flagged ramp, in the margin right of the data rect
+    // (renderHeatmap reserves COLOR_BAR_W for it): from the bottom of
+    // the ramp to one band above the threshold, labelled where the
+    // colours change and where the noise is.
+    var COLOR_BAR_W = 58;
+
+    function drawColorBar(f, color, lo, hi, near, typical) {
+        var ctx = f.ctx, r = f.rect;
+        var x = r.l + r.w + 10, wBar = 10, hBar = Math.min(r.h, 240);
+        var top = hi + (near < hi ? hi - near : 0.15 * (hi - lo));
+        var yOf = function (v) { return r.t + (top - v) / (top - lo) * hBar; };
+        for (var py = 0; py < hBar; py++) {
+            var v = top - (py + 0.5) / hBar * (top - lo);
+            var c = color((v - lo) / (hi - lo));
+            ctx.fillStyle = "rgb(" + Math.round(c[0]) + "," + Math.round(c[1]) + "," +
+                            Math.round(c[2]) + ")";
+            ctx.fillRect(x, r.t + py, wBar, 1);
+        }
+        ctx.strokeStyle = THEME.ink;
+        ctx.globalAlpha = 0.5;
+        ctx.strokeRect(x + 0.5, r.t + 0.5, wBar, hBar);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = THEME.ink;
+        ctx.textAlign = "left";
+        var drawn = [];
+        colorBarLabels(lo, top, hi, near, typical).forEach(function (label) {
+            var y = yOf(label.v);
+            for (var k = 0; k < drawn.length; k++)
+                if (Math.abs(drawn[k] - y) < 12) return;
+            drawn.push(y);
+            ctx.beginPath();
+            ctx.moveTo(x + wBar, Math.round(y) + 0.5);
+            ctx.lineTo(x + wBar + 3, Math.round(y) + 0.5);
+            ctx.stroke();
+            ctx.fillText(label.text, x + wBar + 5, Math.min(Math.max(y + 4, r.t + 9), r.t + hBar));
+        });
     }
 
     // Collapse a grid to at most maxH × maxW cells with `how`.  Without
@@ -847,7 +949,8 @@
         var r = reduceToGrid(values, dims, yDims, xDims, how, opts);
         var win = resolveWindow(r.w, r.h);
         var s = windowGrid(r.grid, r.h, r.w, win);
-        var f = beginPlot(canvas);
+        var f = beginPlot(canvas, typeof opts.flagAt === "number" && !opts.range
+                                      ? COLOR_BAR_W : 0);
         // Collapse to *device* pixels, not CSS pixels: on a 2× display
         // that is twice the cells across the same rect.
         var g = collapseGrid(s.grid, s.h, s.w,
@@ -1820,6 +1923,7 @@
             else if (typeof plot.flagAt === "number") {
                 // The threshold pins the ramp; a log scale would move it.
                 opts.flagAt = plot.flagAt;
+                opts.nearAt = plot.nearAt;
                 opts.log = false;
             }
             opts.valueAt = { x: axisValueAt(plot.axisX), y: axisValueAt(plot.axisY) };
@@ -2382,6 +2486,7 @@
                 // cell, and the value each index of an axis stands for.
                 plot.flagAt = typeof desc.flag_threshold === "number"
                     ? desc.flag_threshold : null;
+                plot.nearAt = typeof desc.flag_near === "number" ? desc.flag_near : null;
                 plot.axisValues = desc.axis_values && typeof desc.axis_values === "object"
                     ? desc.axis_values : null;
                 if (typeof frame.frame_size === "number")

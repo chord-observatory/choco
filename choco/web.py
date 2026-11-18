@@ -1035,8 +1035,10 @@ def _fill_search_image_hints(node, frame: dict, buffer_name: str) -> None:
     The image is S/N per (pass, trial DM); the descriptor says neither
     where the search flags a candidate nor which DM a trial is.  Both
     follow from the stage's block in the node's desired config, so they
-    are added here: ``flag_threshold`` (the plotter colours from it up)
-    and ``axis_values`` for the ``DM`` axis.  The DM list is used only
+    are added here: ``flag_threshold`` (the plotter colours from it up),
+    ``flag_near`` one sigma below it (the plotter's pale band: noise
+    reaches it about twice a minute, so it shows what a faint event
+    looks like) and ``axis_values`` for the ``DM`` axis.  The DM list is used only
     when it is exactly as long as the axis: a drift between this mirror
     and the stage then shows as an axis numbered by trial, not as wrong
     DMs.
@@ -1050,6 +1052,7 @@ def _fill_search_image_hints(node, frame: dict, buffer_name: str) -> None:
     threshold = _search_number(stage, "threshold", 8.0)
     if threshold is not None:
         desc["flag_threshold"] = threshold
+        desc["flag_near"] = threshold - 1.0
     dms = trial_dms(stage)
     extents, dimnames = desc.get("extents"), desc.get("dimnames")
     if (dms is not None and isinstance(extents, list) and isinstance(dimnames, list)

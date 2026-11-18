@@ -316,7 +316,7 @@ class TestNodeBufferDataApi:
     def test_search_image_gets_its_threshold_and_dms(self, client):
         out = self._desc_reply(client, dict(self.SNR_DESC),
                                {"incoherent_beam_search": dict(self.SEARCH)})
-        assert out["flag_threshold"] == 7
+        assert out["flag_threshold"] == 7 and out["flag_near"] == 6
         dms = out["axis_values"]["DM"]
         assert len(dms) == 5089 and dms[0] == 3
         assert abs(dms[808] - 100) < 0.1 and 1499 < dms[-1] <= 1500
@@ -346,6 +346,7 @@ class TestNodeBufferDataApi:
                        {"s": dict(self.SEARCH, kotekan_stage="hdf5FileWrite")}, None):
             out = self._desc_reply(client, dict(self.SNR_DESC), config)
             assert "flag_threshold" not in out and "axis_values" not in out
+            assert "flag_near" not in out
 
     def test_data_returned_as_raw_bytes(self, client):
         with patch.object(Node, "get_buffer_frame",
