@@ -290,6 +290,19 @@
         return [255 + x * (28 - 255), 150 + x * (42 - 150), 90 + x * (56 - 90)];
     }
 
+    // Ramp for a quantity its producer flags at a threshold (a search's
+    // S/N image).  The range is pinned with the threshold at its top, so
+    // a cell's colour does not depend on what else is on screen: slate
+    // below the threshold, lighter as the value nears it, and the mask
+    // ramp's amber from the threshold up — what glows is what was
+    // flagged.  A percentile stretch cannot say that: it paints a 4 sigma
+    // noise peak and a 7 sigma candidate the same top colour.
+    function flagColor(t) {
+        if (t >= 1) return [255, 150, 90];
+        var x = Math.max(0, t);
+        return [28 + x * (150 - 28), 42 + x * (164 - 42), 56 + x * (180 - 56)];
+    }
+
     // Robust color range: 2nd..98th percentile of the finite cells.
     function robustRange(arr) {
         var vals = [];
@@ -679,6 +692,30 @@
             .map(function (v) { return { v: v, text: String(v) }; });
     }
 
+    // Ticks for an axis whose entries stand for values (a search's trial
+    // DMs, which are not evenly spaced): round values, each drawn at the
+    // entry nearest to it, so the axis reads in the quantity while the
+    // cells stay one per entry.  `at` maps a position on the axis to its
+    // value and is monotonic.
+    function valueAxisTicks(at, i0, i1, pixels) {
+        var a = at(i0), b = at(i1 - 1);
+        if (!isFinite(a) || !isFinite(b) || a === b)
+            return indexTicks(i0, i1, pixels);
+        var out = [], last = -1;
+        niceTicks(Math.min(a, b), Math.max(a, b),
+                  Math.max(2, Math.round(pixels / 90)), false).forEach(function (v) {
+            var l = i0, h = i1 - 1;
+            while (h - l > 1) {
+                var m = (l + h) >> 1;
+                if ((at(m) <= v) === (a < b)) l = m; else h = m;
+            }
+            var k = Math.abs(at(l) - v) <= Math.abs(at(h) - v) ? l : h;
+            if (k !== last) out.push({ v: k, text: fmtVal(v) });
+            last = k;
+        });
+        return out;
+    }
+
     function valueTicks(lo, hi, pixels, logY) {
         var target = Math.max(2, Math.round(pixels / 44));
         if (logY)
@@ -719,7 +756,12 @@
         }
         var range = opts.range || robustRange(grid);
         var lo = range[0], hi = range[1];
-        var color = opts.color || viridis;
+        var flagged = typeof opts.flagAt === "number" && !opts.range;
+        if (flagged) {
+            hi = opts.flagAt;
+            if (!(lo < hi)) lo = hi - 1;
+        }
+        var color = opts.color || (flagged ? flagColor : viridis);
         var off = document.createElement("canvas");
         off.width = w;
         off.height = h;
@@ -745,6 +787,9 @@
         if (logC)
             return "color " + fmtVal(Math.pow(10, lo)) + " … " +
                    fmtVal(Math.pow(10, hi)) + " (log)";
+        if (flagged)
+            return "color " + fmtVal(lo) + " … " + fmtVal(hi) +
+                   ", amber: flagged (from " + fmtVal(hi) + ")";
         return "color " + fmtVal(lo) + " … " + fmtVal(hi);
     }
 
@@ -816,8 +861,11 @@
         var yAt = function (v) {
             return f.rect.t + ((v + 0.5 - win.y0) / (win.y1 - win.y0)) * f.rect.h;
         };
-        drawFrame(f, indexTicks(win.x0, win.x1, f.rect.w),
-                  indexTicks(win.y0, win.y1, f.rect.h),
+        var at = opts.valueAt || {};
+        drawFrame(f, at.x ? valueAxisTicks(at.x, win.x0, win.x1, f.rect.w)
+                          : indexTicks(win.x0, win.x1, f.rect.w),
+                  at.y ? valueAxisTicks(at.y, win.y0, win.y1, f.rect.h)
+                       : indexTicks(win.y0, win.y1, f.rect.h),
                   xAt, yAt, opts.names, false);
         setMapping(f, win, false, { w: r.w, h: r.h });
         if (g.h !== s.h || g.w !== s.w)
@@ -1091,6 +1139,18 @@
     function origIndex(d, k) {
         var picked = plot.picks && plot.picks[d];
         return picked ? picked[k] : k;
+    }
+
+    // The value each position on an axis stands for, when the axis is one
+    // dimension and the descriptor names its values (`axis_values`, by
+    // dimension name, one per index); null otherwise, and the axis is
+    // then numbered by index.
+    function axisValueAt(list) {
+        if (!plot.axisValues || !list || list.length !== 1) return null;
+        var d = list[0];
+        var values = plot.axisValues[dimName(d)];
+        if (!Array.isArray(values) || values.length !== plot.dims[d]) return null;
+        return function (k) { return values[origIndex(d, k)]; };
     }
 
     // Dimensions of extent 1 carry no information: they are excluded
@@ -1757,6 +1817,12 @@
                          names: { x: axisLabel(plot.axisX),
                                   y: axisLabel(plot.axisY) } };
             if (plot.dec.mask) { opts.range = [0, 1]; opts.color = maskColor; }
+            else if (typeof plot.flagAt === "number") {
+                // The threshold pins the ramp; a log scale would move it.
+                opts.flagAt = plot.flagAt;
+                opts.log = false;
+            }
+            opts.valueAt = { x: axisValueAt(plot.axisX), y: axisValueAt(plot.axisY) };
             note = renderHeatmap(plot.canvas, view.values, view.dims,
                                  view.y, view.x,
                                  plot.controls.combine.value, opts);
@@ -2311,6 +2377,13 @@
                 plot.dec = decoderFor(desc.value_type);
                 plot.extents = Array.isArray(desc.extents) ? desc.extents : null;
                 plot.descDimNames = Array.isArray(desc.dimnames) ? desc.dimnames : null;
+                // What choco adds for a search's S/N image (web.py,
+                // _fill_search_image_hints): where its producer flags a
+                // cell, and the value each index of an axis stands for.
+                plot.flagAt = typeof desc.flag_threshold === "number"
+                    ? desc.flag_threshold : null;
+                plot.axisValues = desc.axis_values && typeof desc.axis_values === "object"
+                    ? desc.axis_values : null;
                 if (typeof frame.frame_size === "number")
                     plot.frameSize = frame.frame_size;
                 plot.n2 = desc.frame_desc_type === "N2"

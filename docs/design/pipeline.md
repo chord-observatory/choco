@@ -372,7 +372,21 @@ and under mean (1.0000 vs 0.9997 — the same colour), while min turns its whole
 cell amber.  The status line carries ``N% set (1 = good)``, and a grid with
 one tiny axis against a long one (8 bits × 384 channels) stretches to fill the
 data rect rather than rendering as a two-pixel hairline — every heatmap does
-now, since the axis ticks say what the geometry is.  **N2 frames get block-
+now, since the axis ticks say what the geometry is.  **A search's S/N image
+says where the search flags** (2026-11-18): recv1's ``IncoherentBeamSearch``
+serves S/N per (pass, trial DM) in a ``peek_hold`` buffer.  Under the
+percentile stretch a 4 sigma noise peak and a 7 sigma candidate took the same
+top colour, and a log scale does not help a quantity that spans 2 to 10.  The
+descriptor carries neither the threshold nor the DMs, so the ``len=0`` reply
+adds both from the stage's block in the node's desired config
+(``_fill_search_image_hints``, the same place the implicit ``input_list`` is
+filled in): ``flag_threshold`` pins the top of the ramp there, slate below
+and the mask ramp's amber from the threshold up (``flagColor``), so amber
+means flagged; ``axis_values`` gives the ``DM`` axis round DM ticks at the
+nearest trial (the grid is not evenly spaced: 0.12 below DM 100, then a
+power law).  The DM list is ``web.trial_dms``, a mirror of the stage's loop,
+and is used only when it is exactly as long as the axis, so a drift shows
+as an axis numbered by trial, never as wrong DMs.  **N2 frames get block-
 aware plotting**: ``n2LayoutFromDesc`` mirrors kotekan's
 ``N2FrameDesc::get_frame_layout`` (ten sequential blocks, no padding: vis
 c64×num_prod, weight f32×num_prod, flags f32×n, eval f32×num_ev, evec

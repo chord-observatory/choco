@@ -306,6 +306,47 @@ class TestNodeBufferDataApi:
                 "extents": [6]}
         assert "input_list" not in self._desc_reply(client, desc, config)
 
+    # recv.j2's search on the site: 0.12 from DM 3 to 100, then a power
+    # law to 0.56 at 1500.  kotekan logs 5089 trial DMs for it.
+    SEARCH = {"kotekan_stage": "IncoherentBeamSearch", "snr_buf": "n2_subset_buffer",
+              "dm_min": 3, "dm_knee": 100, "threshold": 7}
+    SNR_DESC = {"frame_desc_type": "ndarray", "value_type": "float32",
+                "extents": [178, 5089], "dimnames": ["Tpass", "DM"]}
+
+    def test_search_image_gets_its_threshold_and_dms(self, client):
+        out = self._desc_reply(client, dict(self.SNR_DESC),
+                               {"incoherent_beam_search": dict(self.SEARCH)})
+        assert out["flag_threshold"] == 7
+        dms = out["axis_values"]["DM"]
+        assert len(dms) == 5089 and dms[0] == 3
+        assert abs(dms[808] - 100) < 0.1 and 1499 < dms[-1] <= 1500
+        assert dms == sorted(dms)
+        # The stage's defaults: threshold 8, DM 100-1500 with dm_knee = dm_min.
+        stage = {"kotekan_stage": "IncoherentBeamSearch", "snr_buf": "n2_subset_buffer"}
+        out = self._desc_reply(client, dict(self.SNR_DESC, extents=[178, 4281]),
+                               {"a": {"b": stage}})
+        assert out["flag_threshold"] == 8
+        assert out["axis_values"]["DM"][0] == 100 and len(out["axis_values"]["DM"]) == 4281
+
+    def test_search_image_dms_need_the_count_to_agree(self, client):
+        # A grid that does not reproduce the axis means the mirror has
+        # drifted: better trial numbers than wrong DMs.
+        config = {"incoherent_beam_search": dict(self.SEARCH)}
+        out = self._desc_reply(client, dict(self.SNR_DESC, extents=[178, 5000]), config)
+        assert out["flag_threshold"] == 7 and "axis_values" not in out
+        # A block the stage would refuse, or one that would never end.
+        for bad in ({"dm_knee": 2000}, {"dm_step_min": 0}, {"dm_min": "3"},
+                    {"dm_step_min": 1e-9, "dm_step_max": 1e-9}):
+            config = {"incoherent_beam_search": dict(self.SEARCH, **bad)}
+            assert "axis_values" not in self._desc_reply(client, dict(self.SNR_DESC), config)
+
+    def test_other_buffers_get_no_search_hints(self, client):
+        # Another buffer's name, another stage, or no config at all.
+        for config in ({"s": dict(self.SEARCH, snr_buf="other_buffer")},
+                       {"s": dict(self.SEARCH, kotekan_stage="hdf5FileWrite")}, None):
+            out = self._desc_reply(client, dict(self.SNR_DESC), config)
+            assert "flag_threshold" not in out and "axis_values" not in out
+
     def test_data_returned_as_raw_bytes(self, client):
         with patch.object(Node, "get_buffer_frame",
                           return_value=self.frame()):

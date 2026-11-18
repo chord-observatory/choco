@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import re
 import secrets
 import time
@@ -924,6 +925,7 @@ def api_node_buffer_data(node_key):
         return {"error": frame["error"]}, 404
     if length == 0:
         _fill_implicit_input_list(node, frame)
+        _fill_search_image_hints(node, frame, buffer_name)
         return frame
 
     encoded = frame.get("data")
@@ -973,6 +975,87 @@ def _fill_implicit_input_list(node, frame: dict) -> None:
         return
     if inputs is not None and len(inputs) == num_elements:
         desc["input_list"] = inputs
+
+
+def _search_stage(config, buffer_name: str) -> dict | None:
+    """The ``IncoherentBeamSearch`` block of *config* whose ``snr_buf`` is
+    *buffer_name*, or None."""
+    if not isinstance(config, dict):
+        return None
+    if (config.get("kotekan_stage") == "IncoherentBeamSearch"
+            and config.get("snr_buf") == buffer_name):
+        return config
+    for value in config.values():
+        found = _search_stage(value, buffer_name)
+        if found is not None:
+            return found
+    return None
+
+
+def _search_number(stage: dict, key: str, default: float) -> float | None:
+    """A positive number from the stage block, *default* when the key is
+    absent, None when it holds anything else."""
+    value = stage.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        return None
+    return float(value)
+
+
+def trial_dms(stage: dict, limit: int = 100000) -> list[float] | None:
+    """The trial DMs an ``IncoherentBeamSearch`` block asks for.
+
+    Mirrors the stage's grid (kotekan ``lib/stages/IncoherentBeamSearch.cpp``):
+    from ``dm_min`` the step is ``dm_step_min`` up to ``dm_knee`` and grows
+    from there as a power law that reaches ``dm_step_max`` at ``dm_max``.
+    The defaults are the stage's.  None for a block the stage would
+    refuse, or one that asks for more than *limit* trials.
+    """
+    dm_min = _search_number(stage, "dm_min", 100.0)
+    dm_max = _search_number(stage, "dm_max", 1500.0)
+    step_min = _search_number(stage, "dm_step_min", 0.12)
+    step_max = _search_number(stage, "dm_step_max", 0.56)
+    if None in (dm_min, dm_max, step_min, step_max):
+        return None
+    dm_knee = _search_number(stage, "dm_knee", dm_min)
+    if dm_knee is None or not dm_min <= dm_knee < dm_max or step_max < step_min:
+        return None
+    growth = math.log(step_max / step_min) / math.log(dm_max / dm_knee)
+    dms, dm = [], dm_min
+    while dm <= dm_max:
+        if len(dms) == limit:
+            return None
+        dms.append(dm)
+        dm += step_min * max(dm / dm_knee, 1.0) ** growth
+    return dms
+
+
+def _fill_search_image_hints(node, frame: dict, buffer_name: str) -> None:
+    """Tell the plotter what an ``IncoherentBeamSearch`` S/N image means.
+
+    The image is S/N per (pass, trial DM); the descriptor says neither
+    where the search flags a candidate nor which DM a trial is.  Both
+    follow from the stage's block in the node's desired config, so they
+    are added here: ``flag_threshold`` (the plotter colours from it up)
+    and ``axis_values`` for the ``DM`` axis.  The DM list is used only
+    when it is exactly as long as the axis: a drift between this mirror
+    and the stage then shows as an axis numbered by trial, not as wrong
+    DMs.
+    """
+    desc = frame.get("frame_desc")
+    if not isinstance(desc, dict):
+        return
+    stage = _search_stage(node.desired_config, buffer_name)
+    if stage is None:
+        return
+    threshold = _search_number(stage, "threshold", 8.0)
+    if threshold is not None:
+        desc["flag_threshold"] = threshold
+    dms = trial_dms(stage)
+    extents, dimnames = desc.get("extents"), desc.get("dimnames")
+    if (dms is not None and isinstance(extents, list) and isinstance(dimnames, list)
+            and len(extents) == len(dimnames) and "DM" in dimnames
+            and extents[dimnames.index("DM")] == len(dms)):
+        desc["axis_values"] = {"DM": [round(dm, 3) for dm in dms]}
 
 
 _GAIN_DATASET_RE = re.compile(r"[A-Za-z0-9_./\-]+")
