@@ -174,7 +174,7 @@ nothing.
 |---|---|---|
 | `manual` | a watched override file (`bad_inputs:` list of labels), edited by hand or by clicking choco's BFFS element grid | feeds an operator marked bad |
 | `dish-type` | the kotekan config's `dish_inputs` `type` per dish, via choco | every element of a `Missing` dish — a slot with no dish behind it is bad by construction (`bad_types`; RFI antennas are not flagged) |
-| `power-outlier` | kotekan N² output (`hdf5N2write`) → per-feed band-averaged power | main-array feeds whose power is an outlier across the other main-array feeds (`RFIDish` elements are neither compared nor flagged) |
+| `power-outlier` | kotekan N² output (`hdf5N2write`) → per-feed band-averaged power | working main-array feeds whose power is an outlier across the other working feeds (`RFIDish` elements, and the feeds `manual`, `power` or `dish-type` already flag, are neither compared nor flagged) |
 | `spectral-shape` | kotekan N² output → the slope of each feed's autocorrelation spectrum against its polarization's median | feeds whose spectrum tilts (C02X) or changes shape between files (B05Y); a flag holds for `clear_after` files |
 | `power` | the power controller's live `/channel_states` (power_db) joined to choco's master PDB table | feeds whose amplifier is unpowered, and feeds the table has no channel for at all (not installed: flagged *absent*) |
 | `fpga` *(provisional)* | the F-engine `raw_acq` metrics (pychfpga) | feeds with FFT overflow, no frames, or out-of-range ADC RMS |
@@ -249,7 +249,26 @@ elements whose dish type is in `exclude_types` (default `RFIDish`) enter
 neither the median nor the spread and are never flagged — the RFI-monitor
 antennas are real receivers pointed at the horizon, and their power says
 nothing about them as feeds of the array (16 of the subset file's 48
-elements; left in, a hot one would be flagged and a dead one too).  Two guards keep a thin data stream from
+elements; left in, a hot one would be flagged and a dead one too).
+
+The feeds another source already flags as not working are left out the
+same way (`exclude_flagged_by`, default `manual`, `power` and `dish-type`):
+they enter neither the median nor the spread, and this source does not
+judge them.  The reason is the digital gains.  They lift a dead feed to
+within about 2 dB of the rest, so an unpowered dish is a small deviation,
+not a large one.  Left in, a dozen unpowered dishes sat 3 to 4 sigma low and
+widened the spread; while the dishes were being powered up on 2026-11-18,
+with half of them off, the median moved to the wrong group and 83 working
+feeds were flagged.  With them out, the working feeds on the pathfinder
+stayed within 3.2 sigma (0.34 dB of spread) and the two real oddities sat
+beyond 5, which is why `nsigma` is 4.  Sources run in config order and each
+is told what the earlier ones flagged, so those three must be listed before
+`power-outlier`; listing one after it is a config error.  As a backstop the
+source abstains (degraded) when it would flag more than `max_flag_frac`
+(default 0.25) of the feeds it judged: with no clear majority there is
+nothing to be an outlier from.
+
+Two guards keep a thin data stream from
 reading as dead feeds.  The reader ends the window at the newest row holding
 any frame, skipping the empty tail a stopped acquisition leaves.  Then, before
 any feed is judged, the source measures **band coverage** — the fraction of

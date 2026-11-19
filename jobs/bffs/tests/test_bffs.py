@@ -77,7 +77,8 @@ def test_flag_end_to_end(tmp_path):
         kotekan_file=str(n2), sync_delay=5.0,
         sources=[
             {"kind": "manual", "path": str(manualf)},
-            {"kind": "power-outlier", "nsigma": 5.0},
+            # one of the three feeds it judges: no abstaining in so small an array
+            {"kind": "power-outlier", "nsigma": 5.0, "max_flag_frac": 1.0},
         ],
     )
     payload, _, _ = bffs.run(cfg, now=1_700_000_000.0)
@@ -775,14 +776,78 @@ def test_flagged_by_names_every_flagging_source(tmp_path):
     write_normalized(n2, ["f0", "f1"], [400.0], auto)
     manualf = tmp_path / "manual.yaml"
     write_manual(manualf, ["f1X"])
+    # power-outlier judges every feed here (exclude_flagged_by empty), so
+    # both sources flag f1X; by default it would leave manual's feeds out.
     cfg = bffs.Config(
         kotekan_file=str(n2),
-        sources=[{"kind": "power-outlier"},
+        sources=[{"kind": "power-outlier", "exclude_flagged_by": [], "max_flag_frac": 1.0},
                  {"kind": "manual", "path": str(manualf)}],
     )
     labels, good, flagged_by, degraded = bffs.combine_sources(cfg)
     assert list(good) == [True, False]
     assert flagged_by == {"f1X": ["power-outlier", "manual"]}
+
+
+def _outlier_array(tmp_path, n=12):
+    """A file of *n* feeds at power 10 with small scatter: f1 unpowered
+    (2 dB low, as the digital gains leave a dead feed), f2 hot."""
+    n2 = tmp_path / "n2.h5"
+    auto = np.ones((2, 4, n), "f4") * (10.0 + 0.1 * np.arange(n, dtype="f4"))
+    auto[..., 1] = 6.3
+    auto[..., 2] = 40.0
+    write_normalized(n2, [f"f{i}" for i in range(n)], np.linspace(400, 800, 4), auto)
+    return n2
+
+
+def test_power_outlier_leaves_out_what_earlier_sources_flag(tmp_path):
+    """The feed an operator marked bad is manual's alone: power-outlier
+    neither flags it nor counts it in its median, and still finds the
+    hot feed."""
+    n2 = _outlier_array(tmp_path)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1X"])
+    run = {}
+    cfg = bffs.Config(kotekan_file=str(n2), sources=[
+        {"kind": "manual", "path": str(manualf)}, {"kind": "power-outlier"}])
+    labels, good, flagged_by, degraded = bffs.combine_sources(cfg, run)
+    assert flagged_by == {"f1X": ["manual"], "f2X": ["power-outlier"]}
+    assert degraded == []
+    detail = run["sources"][1]["detail"]
+    assert detail["excluded_by"] == {"manual": 1} and detail["n_excluded_flagged"] == 1
+    assert run["sources"][1]["n_measured"] == 11
+
+
+def test_power_outlier_after_the_sources_it_excludes(tmp_path):
+    """Listing manual after power-outlier would silently judge the feeds
+    it was told to leave out: a config error, not a quiet difference."""
+    n2 = _outlier_array(tmp_path)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1X"])
+    cfg = bffs.Config(kotekan_file=str(n2), sources=[
+        {"kind": "power-outlier"}, {"kind": "manual", "path": str(manualf)}])
+    with pytest.raises(ValueError, match="must come after"):
+        bffs.combine_sources(cfg)
+
+
+def test_sources_get_what_ran_before_and_what_comes_after(tmp_path, monkeypatch):
+    import sources
+    seen = {}
+
+    class Probe:
+        @staticmethod
+        def mask(src, labels, path):
+            seen.update(src)
+            return np.ones(len(labels), dtype=bool)
+
+    real = sources.get
+    monkeypatch.setattr(sources, "get", lambda kind: Probe if kind == "probe" else real(kind))
+    n2 = _outlier_array(tmp_path)
+    manualf = tmp_path / "manual.yaml"
+    write_manual(manualf, ["f1X", "f3X"])
+    bffs.combine_sources(bffs.Config(kotekan_file=str(n2), sources=[
+        {"kind": "manual", "path": str(manualf)}, {"kind": "probe"}, {"kind": "dish-type"}]))
+    assert seen["flagged_before"] == {"manual": ["f1X", "f3X"]}
+    assert seen["kinds_after"] == ["dish-type"]
 
 
 def test_state_records_flagged_by_and_payload_is_unchanged(tmp_path):
@@ -830,7 +895,8 @@ def test_run_report_collects_one_entry_per_source(tmp_path, monkeypatch):
     write_manual(manualf, ["f2X"])
     _bare_source(monkeypatch, [True, True, True])
     cfg = bffs.Config(kotekan_file=str(n2), sources=[
-        {"kind": "power-outlier", "nsigma": 5.0},
+        {"kind": "power-outlier", "nsigma": 5.0, "exclude_flagged_by": [],
+         "max_flag_frac": 1.0},
         {"kind": "manual", "path": str(manualf)},
         {"kind": "bare"},
     ])

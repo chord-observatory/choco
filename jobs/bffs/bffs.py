@@ -372,6 +372,13 @@ def combine_sources(config: Config, run: dict | None = None,
     or read each element's kotekan dish type (``{label: type}``, None
     without a config), as dish-type and power-outlier do.  *run* also
     gets ``n_by_type``, the axis's element count per dish type.
+
+    Sources run in config order, and each also gets what the ones before
+    it flagged (``flagged_before``, ``{kind: [label, ...]}``) and the
+    kinds still to come (``kinds_after``): power-outlier leaves the
+    feeds that ``power``, ``manual`` and ``dish-type`` already flag out
+    of its statistics, and refuses a config that lists one of them
+    after it.
     """
     run = {} if run is None else run
     degraded: list[str] = []
@@ -397,7 +404,8 @@ def combine_sources(config: Config, run: dict | None = None,
     good = np.ones(len(labels), dtype=bool)
     flagged_by: dict[str, list[str]] = {}
     skipped: list[str] = []
-    for src in config.sources:
+    flagged_before: dict[str, list[str]] = {}   # kind -> labels, the sources run so far
+    for index, src in enumerate(config.sources):
         kind = src["kind"]
         source = sources.get(kind)
         if source is None:
@@ -412,7 +420,10 @@ def combine_sources(config: Config, run: dict | None = None,
                 "n_measured": 0, "n_flagged": 0, "detail": {}})
             continue
         src = {"choco_url": config.url, "choco_group": config.group,
-               "state_dir": config.state_dir, "dish_types": axis.types, **src}
+               "state_dir": config.state_dir, "dish_types": axis.types,
+               "flagged_before": {k: list(v) for k, v in flagged_before.items()},
+               "kinds_after": [s["kind"] for s in config.sources[index + 1:]],
+               **src}
         result = source.mask(src, labels, path)
         mask, rep = result if isinstance(result, tuple) else (result, None)
         mask = np.asarray(mask, dtype=bool)
@@ -428,6 +439,7 @@ def combine_sources(config: Config, run: dict | None = None,
         for i in np.nonzero(~mask)[0]:
             label = str(labels[i])
             flagged_by.setdefault(label, []).append(kind)
+            flagged_before.setdefault(kind, []).append(label)
             if feed_reasons.get(label):
                 flag_reasons.setdefault(label, {})[kind] = str(feed_reasons[label])
         good &= mask

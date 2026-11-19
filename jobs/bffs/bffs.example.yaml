@@ -68,11 +68,38 @@ sources:
     # flagged here.
     # bad_types: [Missing]
 
+  # - kind: power                # feeds whose amplifier is unpowered (power_db)
+  #   url: http://10.222.0.30:5000
+  #   # The channel->input map comes from choco's master PDB table
+  #   # (GET /api/pdb/map, i.e. <configs_dir>/pdb_map.csv) so this job and
+  #   # choco's PDB page agree on the wiring; choco's cross-check of that
+  #   # table against kotekan's dish_inputs is logged on every run. Set
+  #   # `map:` to override with a local CSV.  With neither (choco down) the
+  #   # source abstains: every feed unjudged, the run degraded.
+  #   # map: /etc/choco/power_map.csv
+
+  # power-outlier comes after manual, dish-type and power: it leaves the
+  # feeds they flag out of its statistics, and refuses to run before them.
   - kind: power-outlier          # band-averaged power, outlier across feeds
     chunk: 16                     # most recent N filled time rows to average
-    nsigma: 5.0
+    # Robust sigmas from the median of the working feeds.  With the
+    # unpowered feeds left out (below) the working ones stayed within
+    # 3.2 sigma on the pathfinder (2026-11-19, 0.34 dB of spread), and
+    # the feeds that stood out sat beyond 5.
+    nsigma: 4.0
     freq_lo: 400.0
     freq_hi: 800.0
+    # Feeds these sources flagged earlier in the run are neither compared
+    # nor flagged here.  The digital gains lift a dead feed to within
+    # 2 dB of the rest, so unpowered dishes left in sit a few sigma low,
+    # widen the spread and, when they are half the array, take the median
+    # with them.  [] judges every feed.
+    # exclude_flagged_by: [manual, power, dish-type]
+    # If more than this fraction of the judged feeds would be flagged,
+    # none is: there is no majority to be an outlier from (the array
+    # half powered and the power source unreachable).  The run is
+    # degraded and says so.
+    max_flag_frac: 0.25
     # Chunk-aligned 16-channel frequency blocks read per file, spread over
     # the band (0 reads every channel).  The file's vis is chunked over
     # every product, so each block costs one 42 MB chunk (128 elements)
@@ -107,28 +134,22 @@ sources:
     blocks: 48
     freq_lo: 320.0
     freq_hi: 1450.0
-    chunk: 40                     # time rows: a whole 400 s file
+    chunk: 40                     # time rows: a whole file
     nsigma: 8.0                   # tilt: robust sigmas from the median ...
     min_slope: 0.05               # ... and at least this many dex/octave
     max_change: 0.04              # unstable: slope moved this much ...
     change_lag: 3                 # ... since this many files earlier
-    clear_after: 6                # a flag holds until this many files pass
+    # A flag holds until this many files pass.  A file is 14 min since
+    # the 21 s bins (kotekan chord 116fc8984, 2026-11-19), so 1 lets a
+    # recovered feed back at the next file; it was 6 with 6.7 min files.
+    clear_after: 1
     min_blocks: 12                # fewer blocks with data: abstain
     min_feeds: 8                  # fewer fitted feeds in a polarization: abstain there
     # exclude_types: [RFIDish, Missing]
 
-  # External-service sources (provisional until the hardware is live).
-  # - kind: power                # feeds whose amplifier is unpowered (power_db)
-  #   url: http://10.222.0.30:5000
-  #   # The channel->input map comes from choco's master PDB table
-  #   # (GET /api/pdb/map, i.e. <configs_dir>/pdb_map.csv) so this job and
-  #   # choco's PDB page agree on the wiring; choco's cross-check of that
-  #   # table against kotekan's dish_inputs is logged on every run. Set
-  #   # `map:` to override with a local CSV.  With neither (choco down) the
-  #   # source abstains: every feed unjudged, the run degraded.
-  #   # map: /etc/choco/power_map.csv
-  #
-  # - kind: fpga                 # F-engine health: overflow / no frames / ADC RMS
+  # External-service sources (provisional until the hardware is live;
+  # power is above, before power-outlier).
+  # - kind: fpga                # F-engine health: overflow / no frames / ADC RMS
   #   url: http://fpga-node:5000
   #   map: sources/fpga_map.csv
   #

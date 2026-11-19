@@ -200,11 +200,14 @@ def test_mask_excludes_rfi_dishes_by_type(tmp_path):
     assert rep["detail"]["exclude_types"] == ["RFIDish"] and rep["detail"]["types_known"]
     # exclude_types is configurable; with none excluded the hot antenna
     # and the dead one are both flagged
+    # (two of four flagged: max_flag_frac is lifted so the source does not abstain)
     good, rep = power_outlier.mask({"kind": "power-outlier", "dish_types": types,
-                                    "exclude_types": ["Nothing"]}, labels, path)
+                                    "exclude_types": ["Nothing"], "max_flag_frac": 1.0},
+                                   labels, path)
     assert list(good) == [True, False, True, False] and rep["detail"]["n_excluded"] == 0
     # no types at all: every element judged, as before
-    good, rep = power_outlier.mask({"kind": "power-outlier"}, labels, path)
+    good, rep = power_outlier.mask({"kind": "power-outlier", "max_flag_frac": 1.0},
+                                   labels, path)
     assert list(good) == [True, False, True, False]
     assert rep["detail"]["n_excluded"] == 0 and not rep["detail"]["types_known"]
 
@@ -223,6 +226,87 @@ def _outlier_file(tmp_path, nfreq=8):
     power[..., 3] = 500.0                           # B1Y hot
     write_chord_n2(path, ["A1", "B1"], np.linspace(400, 800, nfreq), power, num_elements=4)
     return path
+
+
+def _array_file(tmp_path, n=16, low=(), hot=()):
+    """*n* dishes, one polarization each judged: power 10 with a few per
+    cent of scatter, the *low* ones 2 dB down (how the digital gains
+    leave a dead feed) and the *hot* ones at 4x."""
+    power = np.ones((2, 8, 2 * n), "f4") * (10.0 + 0.2 * np.arange(2 * n, dtype="f4") / n)
+    for i in low:
+        power[..., i] = 6.3
+    for i in hot:
+        power[..., i] = 40.0
+    path = tmp_path / "array.h5"
+    names = [f"D{i:02d}" for i in range(n)]
+    write_chord_n2(path, names, np.linspace(400, 800, 8), power, num_elements=2 * n)
+    return path, np.array([f"{d}{p}" for p in "XY" for d in names])
+
+
+def test_mask_leaves_out_feeds_other_sources_flag(tmp_path):
+    """Four unpowered feeds sit 2 dB low.  In the statistics they widen
+    the spread until a hot feed 4 sigma out passes; left out (the power
+    source flagged them), the spread is the working feeds' and the hot
+    one is found.  The unpowered ones are the power source's to flag."""
+    low = [0, 1, 2, 3]
+    path, labels = _array_file(tmp_path, n=8, low=low)
+    # a feed 12 % above the rest: far outside the working feeds' scatter
+    import h5py
+    with h5py.File(path, "r+") as f:
+        k = [i for i, (a, b) in enumerate(f["index_map/prod"][:]) if a == b == 9][0]
+        f["vis"][:, k, :] = 11.4
+    src = {"kind": "power-outlier", "nsigma": 4.0}
+    good, rep = power_outlier.mask(src, labels, path)
+    assert good[9]                                    # hidden by the wide spread
+    assert rep["detail"]["n_excluded_flagged"] == 0
+    flagged = {"power": [str(labels[i]) for i in low], "manual": [], "rfi": [str(labels[9])]}
+    good, rep = power_outlier.mask({**src, "flagged_before": flagged}, labels, path)
+    assert not good[9] and good[low].all() and good.sum() == len(labels) - 1
+    assert rep["status"] == "ok" and rep["n_measured"] == 12
+    assert rep["detail"]["excluded_by"] == {"power": 4}
+    assert rep["detail"]["n_excluded_flagged"] == 4
+    # only the kinds asked for count: rfi flagged feed 9 and it is still judged
+    good, rep = power_outlier.mask({**src, "flagged_before": flagged,
+                                    "exclude_flagged_by": ["rfi"]}, labels, path)
+    assert good[9] and rep["detail"]["excluded_by"] == {"rfi": 1}
+
+
+def test_mask_abstains_when_too_many_feeds_would_be_flagged(tmp_path):
+    """Five of sixteen feeds hot: an outlier test has no majority to
+    speak for, so nothing is flagged and the run says why."""
+    hot = [0, 1, 2, 3, 4]
+    path, labels = _array_file(tmp_path, n=8, hot=hot)
+    good, rep = power_outlier.mask({"kind": "power-outlier", "nsigma": 4.0}, labels, path)
+    assert good.all()
+    assert rep["status"] == "degraded" and rep["n_measured"] == 0
+    assert "5 of 16 feeds would be flagged" in rep["reason"]
+    # the limit is configurable
+    good, rep = power_outlier.mask({"kind": "power-outlier", "nsigma": 4.0,
+                                    "max_flag_frac": 0.5}, labels, path)
+    assert rep["status"] == "ok" and not good[hot].any() and good.sum() == 11
+
+
+def test_mask_refuses_an_excluded_source_that_runs_later():
+    src = {"kind": "power-outlier", "kinds_after": ["rfi", "power"]}
+    with pytest.raises(ValueError, match="power.*must come after"):
+        power_outlier.mask(src, np.array(["A1X"]), "unused.h5")
+    # not excluding it lifts the requirement (the file is then looked for)
+    good, rep = power_outlier.mask({**src, "exclude_flagged_by": []},
+                                   np.array(["A1X"]), "/nonexistent/unused.h5")
+    assert good.all()
+
+
+def test_mask_cache_follows_the_excluded_feeds(tmp_path, monkeypatch):
+    path, labels = _array_file(tmp_path, n=8, low=[0])
+    src = {"kind": "power-outlier", "state_dir": str(tmp_path)}
+    power_outlier.mask(src, labels, path)
+
+    def boom(*a, **k):
+        raise RuntimeError("the file was read again")
+    monkeypatch.setattr(power_outlier, "read_autocorr", boom)
+    power_outlier.mask(src, labels, path)                 # same exclusions: cached
+    with pytest.raises(RuntimeError):
+        power_outlier.mask({**src, "flagged_before": {"power": ["D00X"]}}, labels, path)
 
 
 def test_mask_caches_the_verdict_per_file(tmp_path, monkeypatch):

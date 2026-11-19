@@ -25,6 +25,21 @@ X-engine node that is down, the empty tail of a stopped acquisition — is
 excluded from the average, and when fewer than ``min_coverage`` of the
 band's cells hold data the source abstains (every feed left good,
 ``degraded`` reported) instead of reading the gap as 128 dead feeds.
+
+Feeds that another source already knows are not working feeds —
+unpowered (``power``), marked by an operator (``manual``), not connected
+(``dish-type``) — are left out of the median and the spread as well, and
+are not judged here (``exclude_flagged_by``).  The digital gains lift a
+dead feed to within about 2 dB of the rest, so a dozen unpowered dishes
+sit a few sigma low, widen the spread and, when they are half the array,
+take the median with them (2026-11-18: 83 working feeds flagged while
+the dishes were being powered up).  With them out, the statistics
+describe the working feeds, and stay meaningful as dishes come and go.
+Those sources must come before this one in the config.
+
+As a backstop the source also abstains when it would flag more than
+``max_flag_frac`` of the feeds it judged: an outlier test has nothing to
+say when there is no clear majority to be an outlier from.
 """
 
 from __future__ import annotations
@@ -62,6 +77,12 @@ DEFAULT_EXCLUDE_TYPES = (DISH_RFI,)
 #: cluster down, while a stopped acquisition's tail (one channel in
 #: thousands) or a receiver fed by a lone node abstains.
 DEFAULT_MIN_COVERAGE = 0.25
+#: Feeds these sources flagged earlier in the run are neither compared
+#: nor flagged: they are known not to be working feeds.
+DEFAULT_EXCLUDE_FLAGGED_BY = ("manual", "power", "dish-type")
+#: Largest fraction of the judged feeds this source will flag; above it
+#: there is no majority to judge against and it abstains.
+DEFAULT_MAX_FLAG_FRAC = 0.25
 
 
 def band_mask(frame: Frame, freq_lo: float | None = None,
@@ -177,7 +198,8 @@ def power_outlier_mask(
 
 
 def _cache_key(src: dict, kotekan_file: str, chunk: int, blocks: int,
-               params: dict, min_coverage: float, exclude: set, types) -> dict | None:
+               params: dict, min_coverage: float, exclude: set, types,
+               flagged: dict, max_flag_frac: float) -> dict | None:
     """What the verdict depends on: the file (path, mtime, size) and
     every parameter that shapes the judgement.  None when the file
     cannot be stat'ed (the reader then reports it missing)."""
@@ -187,7 +209,8 @@ def _cache_key(src: dict, kotekan_file: str, chunk: int, blocks: int,
         return None
     return {"file": str(kotekan_file), "mtime_ns": int(st.st_mtime_ns), "size": int(st.st_size),
             "chunk": chunk, "blocks": blocks, "params": params, "min_coverage": min_coverage,
-            "exclude_types": sorted(exclude), "dish_types": dict(types) if types else None}
+            "exclude_types": sorted(exclude), "dish_types": dict(types) if types else None,
+            "flagged": dict(sorted(flagged.items())), "max_flag_frac": max_flag_frac}
 
 
 def _cache_path(src: dict) -> Path | None:
@@ -221,12 +244,15 @@ def _write_cache(path: Path | None, key: dict | None, verdict, rep: dict) -> Non
 
 
 def _judge(src: dict, kotekan_file: str, chunk: int, blocks: int, params: dict,
-           min_coverage: float, exclude: set, types):
+           min_coverage: float, exclude: set, types, flagged: dict,
+           max_flag_frac: float):
     """Read the file and judge its own axis.
 
     Returns ``(verdict, report)``: ``verdict`` maps each file label to
     good/bad, or is None when the source abstained (the report says why).
     Neither depends on the flag axis, so both can be cached per file.
+    *flagged* maps the labels other sources already flag to the source
+    kind; those elements are left out like the excluded dish types.
     """
     name = os.path.basename(str(kotekan_file))
     frame = read_autocorr(kotekan_file, chunk=chunk, blocks=blocks,
@@ -261,20 +287,43 @@ def _judge(src: dict, kotekan_file: str, chunk: int, blocks: int, params: dict,
             n_measured=0, **detail)
     # The file's own axis; its elements are judged in place and projected
     # onto the flag axis by label by the caller.
-    file_axis = uniquify_labels(frame.labels)
-    eligible = None
+    file_axis = [str(lbl) for lbl in uniquify_labels(frame.labels)]
+    eligible = np.ones(len(file_axis), dtype=bool)
     if types:
         eligible = np.array([types.get(lbl) not in exclude for lbl in file_axis],
                             dtype=bool)
     detail["exclude_types"] = sorted(exclude)
-    detail["n_excluded"] = int((~eligible).sum()) if eligible is not None else 0
+    detail["n_excluded"] = int((~eligible).sum())
     detail["types_known"] = bool(types)
+    # Feeds another source already flags: counted by the source that
+    # flagged them, and out of the comparison like the excluded types.
+    excluded_by: dict[str, int] = {}
+    for i, lbl in enumerate(file_axis):
+        if eligible[i] and lbl in flagged:
+            eligible[i] = False
+            excluded_by[flagged[lbl]] = excluded_by.get(flagged[lbl], 0) + 1
+    detail["excluded_by"] = excluded_by
+    detail["n_excluded_flagged"] = sum(excluded_by.values())
     stats: dict = {}
     file_good = power_outlier_mask(frame, stats=stats, eligible=eligible, **params)
     if stats.get("median") is not None:
         detail["median_power"] = float(f"{stats['median']:.4g}")
         detail["spread"] = float(f"{stats['spread']:.4g}")
     detail["n_file_elements"] = int(frame.nfeed)
+    detail["max_flag_frac"] = max_flag_frac
+    judged = eligible if frame.measured is None else eligible & frame.measured
+    n_judged, n_bad = int(judged.sum()), int((judged & ~file_good).sum())
+    if n_bad > max_flag_frac * n_judged:
+        log.warning(
+            "power-outlier: %d of %d feeds in %s would be flagged (limit %.0f%%); "
+            "no feeds judged — no majority to be an outlier from",
+            n_bad, n_judged, name, 100 * max_flag_frac)
+        return None, report(
+            "degraded",
+            f"{n_bad} of {n_judged} feeds would be flagged, more than "
+            f"{max_flag_frac:.0%}: no clear majority to judge against, so "
+            f"none is flagged",
+            n_measured=0, **detail)
     verdict = {str(lbl): bool(g) for lbl, g in zip(file_axis, file_good)}
     return verdict, report("ok", n_measured=stats.get("n_live"), **detail)
 
@@ -293,7 +342,13 @@ def mask(src: dict, labels: np.ndarray, kotekan_file: str):
     Elements whose dish type (``src["dish_types"]``, from the core) is in
     ``exclude_types`` (default ``RFIDish``) are left out of the comparison
     and never flagged, ``n_excluded`` of them; without types every
-    element is judged.
+    element is judged.  So are the feeds that the sources named in
+    ``exclude_flagged_by`` (default ``manual``, ``power``,
+    ``dish-type``) flagged earlier in this run (``src["flagged_before"]``,
+    from the core), ``n_excluded_flagged`` of them; listing one of those
+    sources after this one is a config error.  And when more than
+    ``max_flag_frac`` (default 0.25) of the judged feeds would be
+    flagged, the source abstains.
 
     The file is read in ``blocks`` chunk-aligned frequency blocks spread
     over the band (:func:`kotekan_io.channel_blocks`; 0 reads every
@@ -310,15 +365,29 @@ def mask(src: dict, labels: np.ndarray, kotekan_file: str):
     min_coverage = float(src.get("min_coverage", DEFAULT_MIN_COVERAGE))
     types = src.get("dish_types")
     exclude = {str(t) for t in (src.get("exclude_types") or DEFAULT_EXCLUDE_TYPES)}
+    max_flag_frac = float(src.get("max_flag_frac", DEFAULT_MAX_FLAG_FRAC))
+    kinds = src.get("exclude_flagged_by", DEFAULT_EXCLUDE_FLAGGED_BY) or ()
+    late = [k for k in kinds if k in (src.get("kinds_after") or ())]
+    if late:
+        raise ValueError(
+            f"power-outlier leaves out the feeds that {', '.join(late)} "
+            f"flag(s), so it must come after them in `sources`")
+    # label -> the first source that flagged it, of the kinds asked for
+    flagged: dict[str, str] = {}
+    for k in kinds:
+        for lbl in (src.get("flagged_before") or {}).get(k, ()):
+            flagged.setdefault(str(lbl), str(k))
 
-    key = _cache_key(src, kotekan_file, chunk, blocks, params, min_coverage, exclude, types)
+    key = _cache_key(src, kotekan_file, chunk, blocks, params, min_coverage, exclude, types,
+                     flagged, max_flag_frac)
     cache = _cache_path(src)
     hit = _read_cache(cache, key)
     if hit is not None:
         verdict, rep = hit
         log.debug("power-outlier: verdict for %s from %s", kotekan_file, cache)
     else:
-        verdict, rep = _judge(src, kotekan_file, chunk, blocks, params, min_coverage, exclude, types)
+        verdict, rep = _judge(src, kotekan_file, chunk, blocks, params, min_coverage, exclude,
+                              types, flagged, max_flag_frac)
         _write_cache(cache, key, verdict, rep)
     rep = {**rep, "detail": dict(rep.get("detail") or {})}
     rep["detail"]["cached"] = hit is not None
