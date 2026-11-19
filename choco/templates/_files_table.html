@@ -70,8 +70,7 @@
     <tbody>
     {% for d in rows %}
         <tr>
-            <td class="name stack-lead">{{ d.name }}{% if not d.get('on_site', true) %}
-                <br><small class="muted">on Fir only</small>{% endif %}{% if d.error %}
+            <td class="name stack-lead">{{ d.name }}{% if d.error %}
                 <br><small class="err">{{ d.error }}</small>{% endif %}</td>
             <td class="notes stack-end">
             {%- if kind == 'dump' and d.get('on_site', true) %}

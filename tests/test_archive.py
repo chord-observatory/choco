@@ -255,13 +255,13 @@ class TestFilesTable:
         assert re.search(rf"{ACQ_A}.*?<small class=\"t-ok\"[^>]*>all 1<", body, re.S)
         assert re.search(rf"{ACQ_B}.*?<small class=\"t-warn\"[^>]*>1 of 2<", body, re.S)
         # The acquisition only the archive has: a row with its count and span there.
-        m = re.search(rf"{ACQ_GONE}\s*<br><small class=\"muted\">on Fir only</small>.*?</tr>", body, re.S)
+        m = re.search(rf"{ACQ_GONE}</td>.*?</tr>", body, re.S)
         assert m and 'data-label="files">2<' in m.group(0)
         assert "1970-01-01 00:50 &rarr; 01-01 00:58" in m.group(0)       # mtimes 3000..3500
         assert "on Fir only</small></td>" in m.group(0)                   # the Transfer cell
         # The empty acquisition has nothing to hold; the other root no column.
         assert re.search(rf"{ACQ_C}.*?data-label=\"transfer\"><small class=\"muted\">&mdash;<", body, re.S)
-        assert body.count("on Fir only") == 2                              # name cell + Archive cell, once
+        assert body.count("on Fir only") == 1                              # the Transfer cell alone
 
     def test_none_held(self, configs_dir, roots, verify_socket):
         verify_socket["reply"] = listing((ACQ_B, "vis_0.h5", 1, 1))        # another size
@@ -317,7 +317,7 @@ class TestBasebandTable:
         assert "Fir holds 1 of 1 in full; 1 only there" in tail
         assert ">Dump</th>" in tail and ">Info</th>" in tail and ">Waterfalls</th>" not in tail
         assert re.search(rf"{MERGED}.*?<small class=\"t-ok\"[^>]*>all 1<", tail, re.S)
-        assert re.search(rf"{MERGED_GONE}\s*<br><small class=\"muted\">on Fir only</small>", tail)
+        assert re.search(rf"{MERGED_GONE}</td>(?:(?!</tr>).)*on Fir only</small></td>", tail, re.S)
         assert f'hx-get="/files/baseband/{MERGED}"' in tail
         assert f'hx-get="/files/baseband/{MERGED_GONE}"' not in tail
 
