@@ -1035,7 +1035,9 @@ def _fill_search_image_hints(node, frame: dict, buffer_name: str) -> None:
     The image is S/N per (pass, trial DM); the descriptor says neither
     where the search flags a candidate nor which DM a trial is.  Both
     follow from the stage's block in the node's desired config, so they
-    are added here: ``flag_threshold`` (the plotter colours from it up),
+    are added here: ``flag_threshold`` (the plotter colours from it up;
+    the S/N from which a candidate counts, not the lower one from which
+    the stage lists it),
     ``flag_near`` one sigma below it (the plotter's pale band: noise
     reaches it about twice a minute, so it shows what a faint event
     looks like) and ``axis_values`` for the ``DM`` axis.  The DM list is used only
@@ -1049,10 +1051,13 @@ def _fill_search_image_hints(node, frame: dict, buffer_name: str) -> None:
     stage = _search_stage(node.desired_config, buffer_name)
     if stage is None:
         return
-    threshold = _search_number(stage, "threshold", 8.0)
-    if threshold is not None:
-        desc["flag_threshold"] = threshold
-        desc["flag_near"] = threshold - 1.0
+    # The stage lists candidates from ``threshold`` and gives one below
+    # ``trigger_min_snr`` the flag "low_snr": what counts is above both.
+    listed = _search_number(stage, "threshold", 8.0)
+    counted = _search_number(stage, "trigger_min_snr", 7.5)
+    if listed is not None and counted is not None:
+        desc["flag_threshold"] = max(listed, counted)
+        desc["flag_near"] = desc["flag_threshold"] - 1.0
     dms = trial_dms(stage)
     extents, dimnames = desc.get("extents"), desc.get("dimnames")
     if (dms is not None and isinstance(extents, list) and isinstance(dimnames, list)

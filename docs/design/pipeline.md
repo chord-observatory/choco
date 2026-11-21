@@ -380,7 +380,11 @@ top colour, and a log scale does not help a quantity that spans 2 to 10.  The
 descriptor carries neither the threshold nor the DMs, so the ``len=0`` reply
 adds both from the stage's block in the node's desired config
 (``_fill_search_image_hints``, the same place the implicit ``input_list`` is
-filled in): ``flag_threshold`` pins the top of the ramp there, slate below
+filled in; the level is the higher of the stage's ``threshold``, from which
+it lists a candidate, and ``trigger_min_snr``, below which the candidate
+gets the flag ``low_snr``: since 2026-11-21 the site lists from 6 sigma,
+where noise alone gives two cells a minute, and counts from 6.5):
+``flag_threshold`` pins the top of the ramp there, slate below
 and the mask ramp's amber from the threshold up (``flagColor``), so amber
 means flagged; ``axis_values`` gives the ``DM`` axis round DM ticks at the
 nearest trial (the grid is not evenly spaced: 0.12 below DM 100, then a

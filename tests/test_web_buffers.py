@@ -316,7 +316,15 @@ class TestNodeBufferDataApi:
     def test_search_image_gets_its_threshold_and_dms(self, client):
         out = self._desc_reply(client, dict(self.SNR_DESC),
                                {"incoherent_beam_search": dict(self.SEARCH)})
-        assert out["flag_threshold"] == 7 and out["flag_near"] == 6
+        # Listed from 7, but counted from the stage's default trigger_min_snr.
+        assert out["flag_threshold"] == 7.5 and out["flag_near"] == 6.5
+        # The site lists from 6 and counts from 6.5; a count level below
+        # the list level cannot apply.
+        for levels, flagged in (({"threshold": 6, "trigger_min_snr": 6.5}, 6.5),
+                                ({"threshold": 9, "trigger_min_snr": 7}, 9)):
+            config = {"incoherent_beam_search": dict(self.SEARCH, **levels)}
+            out = self._desc_reply(client, dict(self.SNR_DESC), config)
+            assert out["flag_threshold"] == flagged and out["flag_near"] == flagged - 1
         dms = out["axis_values"]["DM"]
         assert len(dms) == 5089 and dms[0] == 3
         assert abs(dms[808] - 100) < 0.1 and 1499 < dms[-1] <= 1500
@@ -333,7 +341,7 @@ class TestNodeBufferDataApi:
         # drifted: better trial numbers than wrong DMs.
         config = {"incoherent_beam_search": dict(self.SEARCH)}
         out = self._desc_reply(client, dict(self.SNR_DESC, extents=[178, 5000]), config)
-        assert out["flag_threshold"] == 7 and "axis_values" not in out
+        assert out["flag_threshold"] == 7.5 and "axis_values" not in out
         # A block the stage would refuse, or one that would never end.
         for bad in ({"dm_knee": 2000}, {"dm_step_min": 0}, {"dm_min": "3"},
                     {"dm_step_min": 1e-9, "dm_step_max": 1e-9}):
