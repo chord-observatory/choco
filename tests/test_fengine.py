@@ -113,6 +113,85 @@ class TestSupplyControl:
         assert monitor.psu_action("explode")[0] is False
 
 
+def _session(state, operation=None, error=None, **more):
+    return {"id": "20261123T212018Z", "state": state, "operation": operation, "error": error,
+            "problems": [], "reports": {}, "plots": [], "history": [], **more}
+
+
+class TestGainRun:
+    @pytest.fixture(autouse=True)
+    def fast(self, monkeypatch):
+        monkeypatch.setattr(FengineMonitor, "GAIN_POLL_S", 0)
+
+    def _serve(self, replies):
+        """GET /gains/session answers with *replies* in turn (the last one repeats)."""
+        for r in replies[:-1]:
+            responses.get(f"{BASE}/gains/session", **r)
+        responses.get(f"{BASE}/gains/session", **replies[-1])
+
+    @responses.activate
+    def test_chain_opens_then_sends_each_step_when_the_last_finished(self, monitor):
+        none = {"status": 404, "json": {"detail": "No gain session"}}
+        self._serve([none,
+                     {"json": _session("opening", "open")}, {"json": _session("open")},
+                     {"json": _session("open", "capture")}, {"json": _session("captured")},
+                     {"json": _session("computed")}, {"json": _session("applied")}])
+        opened = responses.post(f"{BASE}/gains/session", json={}, status=202)
+        steps = {s: responses.post(f"{BASE}/gains/session/{s}", json={}, status=202)
+                 for s in ("capture", "compute", "apply")}
+        assert monitor.gain_chain() == (True, "applied; ready for review")
+        assert opened.calls[0].request.body == b'{"stop_fpga_master": true}'
+        assert [steps[s].call_count for s in ("capture", "compute", "apply")] == [1, 1, 1]
+        assert monitor.gain_run["active"] is False and monitor.gain_run["ok"] is True
+
+    @responses.activate
+    def test_a_failed_step_stops_the_chain_with_its_error(self, monitor):
+        self._serve([{"json": _session("open")},
+                     {"json": _session("open", error="capture failed: RuntimeError('UCAP OVERRUN')")}])
+        responses.post(f"{BASE}/gains/session/capture", json={}, status=202)
+        compute = responses.post(f"{BASE}/gains/session/compute", json={}, status=202)
+        ok, message = monitor.gain_chain()
+        assert ok is False and "UCAP OVERRUN" in message and compute.call_count == 0
+
+    @responses.activate
+    def test_a_continued_run_tries_the_failed_step_again(self, monitor):
+        # The error is from before this chain: it is not this chain's failure.
+        self._serve([{"json": _session("open", error="capture failed: x")},
+                     {"json": _session("open", error="capture failed: x")},
+                     {"json": _session("applied")}])
+        capture = responses.post(f"{BASE}/gains/session/capture", json={}, status=202)
+        assert monitor.gain_chain()[0] is True and capture.call_count == 1
+
+    @responses.activate
+    def test_a_refused_open_is_the_services_reason(self, monitor):
+        self._serve([{"status": 404, "json": {}}])
+        responses.post(f"{BASE}/gains/session", status=409,
+                       json={"detail": "The PSU is off; turn it on first"})
+        assert monitor.gain_chain() == (False, "The PSU is off; turn it on first")
+
+    @responses.activate
+    def test_approve_restarts_fpga_master_and_reject_does_not(self, monitor):
+        approve = responses.post(f"{BASE}/gains/session/approve", json={}, status=202)
+        reject = responses.post(f"{BASE}/gains/session/reject", json={})
+        assert monitor.gain_decide("approve")[0] is True
+        assert approve.calls[0].request.body == b'{"override": false, "restart_fpga_master": true}'
+        assert monitor.gain_decide("approve-anyway")[0] is True
+        assert b'"override": true' in approve.calls[1].request.body
+        assert monitor.gain_decide("reject")[0] is True and reject.calls[0].request.body == b"{}"
+        monitor.gain_run = {"active": True}
+        assert monitor.gain_decide("approve")[0] is False      # not while the chain runs
+        assert monitor.gain_decide("reject")[0] is True        # a reject cancels it
+
+    def test_steps_follow_state_operation_and_error(self):
+        from choco.fengine import gain_steps
+        def words(s):
+            return [x["status"] for x in gain_steps(s)]
+        assert words(_session("opening", "open")) == ["running", "pending", "pending", "pending"]
+        assert words(_session("captured", "compute")) == ["done", "done", "running", "pending"]
+        assert words(_session("open", error="capture failed: x")) == ["done", "failed", "pending", "pending"]
+        assert words(_session("applied")) == ["done"] * 4
+
+
 class TestPoll:
     @responses.activate
     def test_extras_are_read_and_their_failures_are_not_the_health(self, monitor):
@@ -293,6 +372,66 @@ class TestPage:
         assert resp.status_code == 403
         act.assert_not_called()
         assert "/service/fpga/psu/" not in self._status(client, fpga, fengine)
+
+    def test_gain_run_buttons_follow_the_session(self, client, app):
+        stopped = {**MASTER, "state": "stopped", "pid": None}
+        fpga, fengine = self._configure(app, master=stopped)
+        login(client)
+        body = self._status(client, fpga, fengine)
+        assert "Start gain run" in body and "disabled" not in self._button(body, "gains/run")
+        assert "gains/approve" not in body
+        fengine.session = _session("captured", "compute")
+        fengine.gain_run = {"active": True, "ok": None, "message": "compute", "started": 1.0}
+        body = self._status(client, fpga, fengine)
+        assert "disabled" in self._button(body, "gains/run") and "compute …" in body
+        assert "Cancel run" in body
+        fengine.gain_run["active"] = False
+        fengine.session = _session("applied", plots=["target.png"], history=[1, 2],
+                                   reports={"fft": {"label": "FFT", "problems": []}})
+        body = self._status(client, fpga, fengine)
+        assert "disabled" not in self._button(body, "gains/approve") and "gains/reject" in body
+        assert "gains/run" not in body and "approve-anyway" not in body
+        assert "/service/fpga/gains/plot/target.png?v=20261123T212018Z-2" in body
+        fengine.session = _session("applied", problems=["fft: dropped packets"],
+                                   reports={"fft": {"label": "FFT", "problems": ["dropped packets"]}})
+        body = self._status(client, fpga, fengine)
+        assert "disabled" in self._button(body, "gains/approve") and "gains/approve-anyway" in body
+
+    def test_gain_run_route_spawns_the_chain_once(self, client, app):
+        fpga, fengine = self._configure(app, master={**MASTER, "state": "stopped", "pid": None})
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "poll_once"), patch("choco.web.gevent.spawn") as spawn:
+            first = client.post("/service/fpga/gains/run", data={"_csrf_token": token})
+            second = client.post("/service/fpga/gains/run", data={"_csrf_token": token})
+        assert first.status_code == 302 and second.status_code == 302
+        assert spawn.call_count == 1 and fengine.gain_run["active"] is True
+        assert "refused" in fpga.actions[0]["message"]
+
+    def test_gain_run_needs_the_supply_on(self, client, app):
+        fpga, fengine = self._configure(app, psu={**PSU, "output_on": False})
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "poll_once"), patch("choco.web.gevent.spawn") as spawn:
+            client.post("/service/fpga/gains/run", data={"_csrf_token": token})
+        spawn.assert_not_called()
+
+    def test_gain_decision_and_plot_routes(self, client, app):
+        fpga, fengine = self._configure(app)
+        fengine.session = _session("applied", plots=["target.png"])
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "gain_decide", return_value=(True, "rejected")) as decide:
+            resp = client.post("/service/fpga/gains/reject", data={"_csrf_token": token})
+            assert client.post("/service/fpga/gains/explode", data={"_csrf_token": token}).status_code == 404
+        decide.assert_called_once_with("reject")
+        assert resp.status_code == 302 and fpga.actions[0]["action"] == "gain reject"
+        with patch("choco.fengine.fetch") as fetch:
+            fetch.return_value.content = b"PNG"
+            png = client.get("/service/fpga/gains/plot/target.png")
+            other = client.get("/service/fpga/gains/plot/secret.png")
+        assert png.data == b"PNG" and png.mimetype == "image/png" and other.status_code == 404
+        assert fetch.call_count == 1
 
     def test_boards_join_the_service_and_fpga_master(self, client, app):
         fpga, fengine = self._configure(app)

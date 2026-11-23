@@ -134,6 +134,7 @@
     {% endif %}
 </section>
 </div>
+{% include "_fengine_gain_run.html" %}
 <p class="note">Through the F-engine service at <code>http://{{ fengine.host }}:{{ fengine.port }}</code>, last seen
     {{ since(fengine.last_seen, now_ts) }}{% if fengine.error %}: <code>{{ fengine.error }}</code>{% endif %}.
     A start assigns a <strong>new frame0</strong>: kotekan's timing and the EOP table are anchored to it.</p>

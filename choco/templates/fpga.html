@@ -9,6 +9,12 @@
 .fpga-controls button { width: auto; margin: 0; }
 .fpga-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(24em, 1fr)); gap: 0 2.5em; }
 .fpga-panels h3 { margin-top: 1.25rem; }
+.gain-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em; margin: 0.5em 0 0.75em; }
+.gain-steps .sep { color: var(--pico-muted-color); }
+.gain-plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(20em, 1fr)); gap: 1em; margin: 1em 0; }
+.gain-plots figure { margin: 0; }
+.gain-plots img { width: 100%; border: 1px solid var(--surface-border); }
+.gain-plots figcaption { font-size: 0.8em; color: var(--pico-muted-color); }
 table.ports { width: auto; }
 table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.8em; white-space: nowrap; }
 table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
@@ -24,16 +30,20 @@ table.ports td.num { text-align: right; font-family: var(--pico-font-family-mono
 <p class="note">The F-engine: the crate's supply, the CRS boards and fpga_master, which runs them and stamps
 frame0, the timing origin kotekan and the EOP table are anchored to.</p>
 
+{# Morphed, not replaced: the gain run's plots and a button under the
+   pointer stay the same elements from one poll to the next. #}
 <div id="fpga-status"
+     hx-ext="morph"
      hx-get="{{ request.script_root }}/partials/service-fpga"
      hx-trigger="every 5s"
-     hx-swap="innerHTML">
+     hx-swap="morph:innerHTML">
 {% include "_service_fpga_status.html" %}
 </div>
 
 {# Filled in after the page paints: see web.partial_fpga_gains.  The
    plot module loads here, before the card arrives, so the card's own
    init script can count on window.chocoPlot existing. #}
+<script src="{{ url_for('static', filename='idiomorph-ext.min.js') }}"></script>
 <script src="{{ url_for('static', filename='bufferplot.js') }}"></script>
 <div id="fpga-gains" hx-get="{{ request.script_root }}/partials/fpga-gains" hx-trigger="load"
      hx-swap="innerHTML">

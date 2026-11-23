@@ -1,0 +1,81 @@
+{# The digital gain run on the F-engine page: choco chains the service's
+   gain session through open, capture, compute and apply
+   (FengineMonitor.gain_chain), then the plots and reports are reviewed
+   here and the session is approved or rejected.  Inside the status block's
+   poll, so the steps follow the run. #}
+{% set s = gain.session %}
+{% set tones = {'done': 'ok', 'running': 'info', 'failed': 'bad', 'pending': 'off'} %}
+<h3 id="gain-run">Digital gain run</h3>
+<p class="note">Measures new digital gains: the service stops fpga_master, programs the boards itself, captures
+    FFT data, computes the gains and applies them.  You then review the result and approve it (the gains are
+    archived and fpga_master starts again) or reject it (fpga_master stays stopped).  <strong>The F-engine is
+    down for the whole run</strong>, and the start after it assigns a new frame0.</p>
+{% if s %}
+<div class="gain-steps">
+    {% for step in gain.steps %}
+    {{ tag(tones[step.status], step.name ~ (' …' if step.status == 'running' else '')) }}<span class="sep">→</span>
+    {% endfor %}
+    {% if s.state == 'archived' %}{{ tag('ok', 'approved') }}
+    {% elif s.state == 'rejected' %}{{ tag('off', 'rejected') }}
+    {% elif s.state == 'failed' %}{{ tag('bad', 'failed') }}
+    {% elif s.operation == 'approve' %}{{ tag('info', 'approve …') }}
+    {% elif gain.can_decide %}{{ tag('warn', 'review') }}
+    {% else %}{{ tag('off', 'review') }}{% endif %}
+</div>
+<dl class="service-facts">
+    <dt>Session</dt>
+    <dd><code>{{ s.id }}</code>, <code>{{ s.state }}</code>{% if s.operation %}, running <code>{{ s.operation }}</code>{% endif %}</dd>
+    {% if gain.run.get('active') %}
+    <dt>Run</dt>
+    <dd>in progress since {{ since(gain.run.started, now_ts) }}</dd>
+    {% elif gain.run and gain.run.ok is false %}
+    <dt>Run</dt>
+    <dd>{{ tag('bad', 'stopped') }} {{ gain.run.message }}</dd>
+    {% endif %}
+    {% if s.error %}
+    <dt>Error</dt>
+    <dd><code>{{ s.error }}</code></dd>
+    {% endif %}
+    {% for name, report in (s.reports or {}).items() %}
+    <dt>{{ report.label or name }} capture</dt>
+    <dd>{% if report.problems %}{{ tag('bad', 'problems') }} {{ report.problems | join('; ') }}{% else %}{{ tag('ok', 'clean') }}{% endif %}</dd>
+    {% endfor %}
+    {% if s.overridden_problems %}
+    <dt>Approved despite</dt>
+    <dd>{{ s.overridden_problems | join('; ') }}</dd>
+    {% endif %}
+    {% if s.archive %}
+    <dt>Archive</dt>
+    <dd><code>{{ s.archive.filename }}</code></dd>
+    {% endif %}
+</dl>
+{% endif %}
+{% if control %}
+<div class="fpga-controls">
+    {% if gain.can_decide %}
+    {{ button('gains/approve', 'Approve', 'Approve these gains?\n\nThey are written to a new gain archive and fpga_master starts again.',
+              disabled=gain.problems, why='A capture had problems', main=true) }}
+    {% if gain.problems %}
+    {{ button('gains/approve-anyway', 'Approve anyway', 'Approve these gains although the captures had problems?\n\n' ~ (gain.problems | join('\n')) ~ '\n\nThey are written to a new gain archive and fpga_master starts again.') }}
+    {% endif %}
+    {{ button('gains/reject', 'Reject', 'Reject these gains?\n\nThe session is discarded and fpga_master stays stopped; the boards keep the applied gains until it starts again.') }}
+    {% else %}
+    {{ button('gains/run', 'Continue gain run' if gain.live else 'Start gain run',
+              ('Continue the gain run from where it stopped?' if gain.live else 'Start a digital gain run?\n\nfpga_master is stopped and the F-engine sends no data until you approve the result or start it again.'),
+              disabled=(gain.busy or (start_blocked and not gain.live)),
+              why='A gain run is in progress' if gain.busy else (start_blocked or '')) }}
+    {% if gain.live %}
+    {{ button('gains/reject', 'Cancel run' if gain.busy else 'Abandon', 'Abandon this gain session?\n\nThe step in progress is cancelled and fpga_master stays stopped.') }}
+    {% endif %}
+    {% endif %}
+</div>
+{% endif %}
+{% if s and gain.live and s.plots %}
+<div class="gain-plots">
+    {% for name in s.plots %}
+    {% set src = request.script_root ~ '/service/fpga/gains/plot/' ~ name ~ '?v=' ~ s.id ~ '-' ~ gain.version %}
+    <figure><a href="{{ src }}" target="_blank"><img src="{{ src }}" alt="{{ name }}" loading="lazy"></a>
+        <figcaption>{{ name | replace('.png', '') | replace('_', ' ') }}</figcaption></figure>
+    {% endfor %}
+</div>
+{% endif %}

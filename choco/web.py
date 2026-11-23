@@ -44,6 +44,7 @@ from .jobstatus import (EOP_STALE_AFTER_S, job_logs, job_status, read_state_json
                         timer_status)
 from .manualflags import toggle_manual_flag
 from .metrics import render as render_metrics
+from .fengine import gain_session_live, gain_steps
 from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import Mode, NodeStatus, find_updatable_blocks, fits_block, validate_nodes_payload
@@ -2172,9 +2173,30 @@ def _fpga_context(monitor) -> dict:
     return {"fpga": fpga, "frame0_fmt": fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
             "fengine": fengine, "start_blocked": _fpga_start_blocked(fengine),
             "board_rows": _fpga_board_rows(fpga, fengine),
+            "gain": _gain_run_context(fengine),
             "control": bool(fpga_cfg.get("control", True)),
             "psu_control": bool(fengine_cfg.get("control", True)),
             "actions": monitor.actions, "now_ts": time.time()}
+
+
+def _gain_run_context(fengine: dict | None) -> dict | None:
+    """What the gain run's section draws: the session's steps, whether
+    choco's chain is running, and which of the buttons apply now."""
+    if fengine is None:
+        return None
+    session = fengine.get("session")
+    run = fengine.get("gain_run") or {}
+    live = gain_session_live(session)
+    chain = bool(run.get("active"))
+    busy = chain or bool(live and session.get("operation"))
+    applied = live and session.get("state") == "applied"
+    problems = (session or {}).get("problems") or []
+    # The plots change with each step: the history's length names a version.
+    version = len((session or {}).get("history") or [])
+    return {"session": session, "live": live, "busy": busy, "run": run,
+            "steps": gain_steps(session) if session else [],
+            "can_run": not busy and not applied, "can_decide": applied and not busy,
+            "problems": problems, "version": version}
 
 
 def _fpga_board_rows(fpga: dict, fengine: dict | None) -> list[dict]:
@@ -3002,6 +3024,68 @@ def fpga_psu_control(action):
         monitor.record_action(name, user, ok, message)
         flash(f"Crate supply {action}: {message}", "success" if ok else "error")
     return redirect(url_for("web.fpga_page"))
+
+
+@bp.route("/service/fpga/gains/<action>", methods=["POST"])
+@login_required
+def fpga_gain_control(action):
+    """The digital gain run on the /fpga page.  ``run`` takes a session
+    to ``applied`` (the service stops fpga_master and programs the boards
+    itself), in a greenlet the page's poll follows; ``approve``,
+    ``approve-anyway`` and ``reject`` end it."""
+    if action not in ("run", "approve", "approve-anyway", "reject"):
+        abort(404)
+    _check_csrf()
+    fengine = current_app.config.get("fengine_monitor")
+    monitor = current_app.config.get("fpga_monitor")
+    fpga_cfg = current_app.config.get("fpga_cfg") or {}
+    if (fengine is None or monitor is None or not fengine.configured
+            or not fpga_cfg.get("control", True)):
+        abort(403)
+    user = _audit_user()
+    name = f"gain {action}"
+    logger.warning(f"digital gain {action} requested by {user}")
+    if action == "run":
+        fengine.poll_once()
+        state = fengine.to_dict()
+        blocked = _fpga_start_blocked(state)
+        if not blocked and not _gain_run_context(state)["can_run"]:
+            blocked = "a gain session is busy or waits for its review"
+        if blocked:
+            monitor.record_action(name, user, False, f"refused: {blocked}")
+            flash(f"Gain run refused: {blocked}.", "error")
+            return redirect(url_for("web.fpga_page"))
+        monitor.record_action(name, user, None, "requested — in progress")
+        # Marked before the greenlet runs, so a second click is refused.
+        fengine.gain_run = {"active": True, "ok": None, "message": "starting", "started": time.time()}
+
+        def _run_and_record():
+            ok, message = fengine.gain_chain()
+            (logger.info if ok else logger.error)(f"digital gain run: {message}")
+            monitor.record_action(name, user, ok, message)
+
+        gevent.spawn(_run_and_record)
+        flash("Gain run started — the steps below follow it.", "success")
+    else:
+        ok, message = fengine.gain_decide(action)
+        (logger.info if ok else logger.error)(f"digital gain {action}: {message}")
+        monitor.record_action(name, user, ok, message)
+        flash(f"Gain {action}: {message}", "success" if ok else "error")
+    return redirect(url_for("web.fpga_page"))
+
+
+@bp.route("/service/fpga/gains/plot/<name>")
+@login_required
+def fpga_gain_session_plot(name):
+    """One plot of the gain session under review, proxied from the
+    F-engine service.  The page's link carries a version, so the browser
+    may keep it."""
+    fengine = current_app.config.get("fengine_monitor")
+    png = fengine.gain_plot(name) if fengine is not None else None
+    if png is None:
+        abort(404)
+    return Response(png, mimetype="image/png",
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 def _pdb_control_monitor():

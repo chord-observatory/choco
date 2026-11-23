@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 
+import gevent
 import requests
 
 from .fpga import _failure
@@ -95,6 +96,42 @@ def parse_archives(data) -> dict | None:
             "newest_at": newest.get("modified")}
 
 
+#: A gain session's states in the order a run passes them, and the step
+#: that takes each to the next (``GainSessionManager``).
+GAIN_STEPS = ("open", "capture", "compute", "apply")
+_GAIN_NEXT = {"open": "capture", "captured": "compute", "computed": "apply"}
+_GAIN_DONE = {"opening": 0, "open": 1, "captured": 2, "computed": 3, "applied": 4, "archived": 4}
+#: The states of a session that is over.
+GAIN_ENDED = ("archived", "rejected", "failed")
+
+
+def gain_session_live(session: dict | None) -> bool:
+    """Whether the service holds a gain session that is not over."""
+    return bool(session) and session.get("state") not in GAIN_ENDED
+
+
+def gain_steps(session: dict | None) -> list[dict]:
+    """The four steps of a gain run as ``{name, status}`` with status
+    done, running, failed or pending, from the session's state, the
+    operation it is running and its error (``"<step> failed: ..."``)."""
+    session = session or {}
+    done = _GAIN_DONE.get(session.get("state"), 0)
+    running = session.get("operation")
+    error = session.get("error") or ""
+    steps = []
+    for i, name in enumerate(GAIN_STEPS):
+        if running == name:
+            status = "running"
+        elif error.startswith(f"{name} failed"):
+            status = "failed"
+        elif i < done:
+            status = "done"
+        else:
+            status = "pending"
+        steps.append({"name": name, "status": status})
+    return steps
+
+
 class FengineMonitor(HttpMonitor):
     """Background poller for the F-engine service.
 
@@ -111,6 +148,12 @@ class FengineMonitor(HttpMonitor):
     # A power cycle answers after the off and boot delays (25 s as configured).
     PSU_ACTION_TIMEOUT_S = 180
     MAX_EVENTS = 15
+    # A gain run: the open answers after fpga_master's shutdown; a step
+    # (programming the boards, a capture) is given this long to finish.
+    GAIN_POST_TIMEOUT_S = 30
+    GAIN_OPEN_TIMEOUT_S = 300
+    GAIN_STEP_TIMEOUT_S = 900
+    GAIN_POLL_S = 2
     ARCHIVES_EVERY_S = 60
 
     def __init__(self, host: str | None, port: int | None, timeout: float = 5.0):
@@ -127,6 +170,9 @@ class FengineMonitor(HttpMonitor):
         self.session: dict | None = None        # the open gain session, if any
         self.archives: dict | None = None
         self._archives_at = 0.0
+        # choco's own chain through a gain session's steps, while it runs
+        # and its outcome after: {"active", "ok", "message", "started"}.
+        self.gain_run: dict | None = None
 
     def _get(self, path: str, **kwargs) -> requests.Response:
         return fetch("GET", f"{self.base_url}{path}", timeout=self.timeout, retries=1, **kwargs)
@@ -188,11 +234,8 @@ class FengineMonitor(HttpMonitor):
             self.conflicts = [c for c in conflicts if isinstance(c, dict)]
         except (OSError, ValueError, TypeError):
             self.conflicts = None
-        # No session is a 404.
         try:
-            resp = self._get("/gains/session", accept_statuses=(404,))
-            data = resp.json()
-            self.session = data if resp.status_code == 200 and isinstance(data, dict) else None
+            self._read_session()
         except (OSError, ValueError):
             self.session = None
         # The archive list is a glob on the data disk and changes with a
@@ -203,6 +246,107 @@ class FengineMonitor(HttpMonitor):
                 self._archives_at = self.last_polled
             except (OSError, ValueError):
                 self.archives = None
+
+    def _read_session(self) -> dict | None:
+        """The service's gain session now (no session is a 404)."""
+        resp = self._get("/gains/session", accept_statuses=(404,))
+        data = resp.json()
+        self.session = data if resp.status_code == 200 and isinstance(data, dict) else None
+        return self.session
+
+    def _gain_post(self, step: str, body: dict, timeout: float | None = None) -> None:
+        path = "/gains/session" if step == "open" else f"/gains/session/{step}"
+        fetch("POST", f"{self.base_url}{path}", json=body, timeout=timeout or self.GAIN_POST_TIMEOUT_S)
+
+    def gain_chain(self) -> tuple[bool, str]:
+        """Take a gain session to ``applied``: open one if none is live
+        (the service stops fpga_master first), then capture, compute and
+        apply with the service's defaults, each sent when the one before
+        has finished.  A live session is continued from where it stands,
+        so a failed step can be tried again.  Blocks for minutes; run it
+        in a greenlet.  The outcome is also left in ``gain_run``."""
+        self.gain_run = {"active": True, "ok": None, "message": "starting", "started": time.time()}
+        ok, message = self._gain_chain()
+        self.gain_run.update(active=False, ok=ok, message=message)
+        try:
+            self.poll_once()
+        except Exception:               # the outcome stands whatever the poll does
+            pass
+        return ok, message
+
+    def _gain_chain(self) -> tuple[bool, str]:
+        if not self.configured:
+            return False, "the F-engine service is not configured"
+        try:
+            session = self._read_session()
+            sent = None                 # the step this chain sent last
+            if not gain_session_live(session):
+                self.gain_run["message"] = "open"
+                # The answer waits for fpga_master's shutdown.
+                self._gain_post("open", {"stop_fpga_master": True}, timeout=self.GAIN_OPEN_TIMEOUT_S)
+                sent = "open"
+            deadline = time.time() + self.GAIN_STEP_TIMEOUT_S
+            while True:
+                session = self._read_session()
+                if session is None:
+                    return False, "the gain session is gone"
+                state = session.get("state")
+                if session.get("operation"):
+                    if time.time() > deadline:
+                        return False, f"{session['operation']} did not finish in {self.GAIN_STEP_TIMEOUT_S} s"
+                    gevent.sleep(self.GAIN_POLL_S)
+                    continue
+                # An error is the last operation's; one from before this
+                # chain is what a continued run tries again.
+                if sent and session.get("error"):
+                    return False, str(session["error"])[:300]
+                if state == "applied":
+                    return True, "applied; ready for review"
+                step = _GAIN_NEXT.get(state)
+                if step is None:
+                    return False, f"the gain session is {state}"
+                self.gain_run["message"] = step
+                self._gain_post(step, {})
+                sent = step
+                deadline = time.time() + self.GAIN_STEP_TIMEOUT_S
+        except (OSError, ValueError) as e:
+            return False, _failure(e) if isinstance(e, OSError) else f"{type(e).__name__}: {e}"
+
+    def gain_decide(self, action: str) -> tuple[bool, str]:
+        """End the session: ``approve`` (write the archive and start
+        fpga_master again; the service refuses if a capture had problems),
+        ``approve-anyway`` (the same with ``override``) or ``reject``
+        (discard; fpga_master stays stopped).  Returns ``(ok, message)``."""
+        if not self.configured:
+            return False, "the F-engine service is not configured"
+        if action != "reject" and self.gain_run and self.gain_run.get("active"):
+            return False, "the gain run is still in progress"
+        try:
+            # A reject also cancels the step in progress; the chain then
+            # finds the session rejected and ends.
+            if action == "reject":
+                self._gain_post("reject", {})
+                message = "rejected; fpga_master stays stopped"
+            elif action in ("approve", "approve-anyway"):
+                self._gain_post("approve", {"override": action == "approve-anyway",
+                                            "restart_fpga_master": True})
+                message = "approved; the archive is written and fpga_master starts"
+            else:
+                return False, f"no such gain action: {action}"
+        except OSError as e:
+            return False, _failure(e)
+        self.poll_once()
+        return True, message
+
+    def gain_plot(self, name: str) -> bytes | None:
+        """One of the live session's plots (a PNG), or None."""
+        if not self.configured or name not in ((self.session or {}).get("plots") or []):
+            return None
+        try:
+            return fetch("GET", f"{self.base_url}/gains/session/plots/{name}",
+                         timeout=self.timeout).content
+        except OSError:
+            return None
 
     def psu_action(self, action: str) -> tuple[bool, str]:
         """Switch the supply through the service: ``on``, ``off``,
@@ -236,6 +380,7 @@ class FengineMonitor(HttpMonitor):
             "events": self.events,
             "conflicts": self.conflicts,
             "session": self.session,
+            "gain_run": self.gain_run,
             "archives": self.archives,
             "configured": self.configured,
             "host": self.host,

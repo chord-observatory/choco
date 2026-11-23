@@ -190,7 +190,28 @@ the service's ``/boards`` (address, bootloader, beacon age: a booted board
 is heard whether or not fpga_master runs), and the service's gain session,
 gain archives (read once a minute), other users of the crate and newest
 events follow.  Each of these reads may fail without changing the
-service's health.  The gain session's steps are not driven from choco.
+service's health.
+
+**The gain run.**  The service's gain session is five steps (open, capture,
+compute, apply, approve), each a POST that answers at once while the work
+runs in the service.  choco chains the first four
+(``FengineMonitor.gain_chain``, in a greenlet): it opens with
+``stop_fpga_master`` and sends each next step when the session shows the
+last one finished, with the service's default targets.  The chain is
+choco's and is lost if choco restarts, so it reads where to go from the
+session's state alone: Continue takes a live session on from where it
+stands, which is also how a failed step is tried again (an error from
+before the chain is not the chain's failure).  At ``applied`` the page
+shows the session's reports and plots (proxied, versioned by the session's
+history so the browser keeps them) and the decision is a person's:
+Approve writes the archive and starts fpga_master
+(``restart_fpga_master``), and is refused, by the page and by the service,
+when a capture had problems, where Approve anyway sends ``override`` after
+a second confirmation; Reject discards the session, cancels a step in
+progress, and leaves fpga_master stopped, so that going back to the old
+gains is a visible act (user, 2026-11-23).  The run needs the supply on,
+like Start, and ``fpga_master.control``.  The status block is morphed
+(idiomorph), not replaced, so the plots are not reloaded by its poll.
 
 ## Master PDB channel map
 
