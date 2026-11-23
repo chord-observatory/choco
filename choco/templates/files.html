@@ -12,6 +12,7 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
 .root-header small { color: var(--pico-muted-color); }
 .root-header .btn-sm { margin: 0 0 0 auto; }
 .lines-picker { margin-left: auto; font-size: 0.85em; }
+details.fir-only summary { font-size: 0.85em; color: var(--pico-muted-color); }
 {% endblock %}
 
 {% block content %}
@@ -48,8 +49,9 @@ table.files td, table.files th { padding: 0.3em 0.6em; }
     cluster the acquisitions are sent to, holds: its listing, polled through
     the transfer host every few minutes and shown as it stands, says how many
     of the directory's files it holds at the same size and mtime; delete a
-    local copy only when it holds all of them.  A directory only Fir has is
-    listed too, with its count and span there.  The merged baseband dumps
+    local copy only when it holds all of them.  What only Fir has (a
+    directory deleted here, or one whose data files were) is folded under
+    the table, with its count and span there.  The merged baseband dumps
     end the table; <strong>Info</strong> reads a dump's part file and merge log.
 </p>
 <div id="files-table"

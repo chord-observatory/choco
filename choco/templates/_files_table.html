@@ -25,8 +25,6 @@
 {%- set a = d.archive -%}
 {%- if not known -%}
 <small class="muted" title="no listing from Fir yet">?</small>
-{%- elif not d.on_site -%}
-<small class="t-ok" title="Fir holds it; {{ 'only its notes are' if d.notes else 'nothing of it is' }} on site">on Fir only</small>
 {%- elif d.files == 0 -%}
 <small class="muted">&mdash;</small>
 {%- elif a.held == d.files -%}
@@ -53,7 +51,7 @@
 
 {# The table of one root.  kind: 'acq' (acquisitions: notes popover,
    waterfalls column) or 'dump' (merged baseband dumps: info popover). #}
-{% macro rows_table(rows, kind, root_idx, root_path, rname, archived) %}
+{% macro rows_table(rows, kind, root_idx, root_path, rname, archived, part='') %}
 <table class="files stack">
     <thead>
         <tr>
@@ -74,7 +72,7 @@
                 <br><small class="err">{{ d.error }}</small>{% endif %}</td>
             <td class="notes stack-end">
             {%- if kind == 'dump' and d.get('on_site', true) %}
-                {% set pop_id = "dump-" ~ loop.index %}
+                {% set pop_id = "dump-" ~ part ~ loop.index %}
                 <button type="button" class="secondary outline btn-sm" popovertarget="{{ pop_id }}"
                         title="What the dump's part files and merge log say: start, length, band, elements, sources"
                         aria-label="Info on {{ d.name }}">Info</button>
@@ -88,7 +86,7 @@
             {%- elif d.notes %}
                 {# The notes load on first open (the popover's toggle event):
                    the table itself never reads a README. #}
-                {% set pop_id = "notes-" ~ loop.index ~ "-" ~ root_idx %}
+                {% set pop_id = "notes-" ~ part ~ loop.index ~ "-" ~ root_idx %}
                 <button type="button" class="secondary outline btn-sm" popovertarget="{{ pop_id }}"
                         title="What is known about this acquisition: times, software, labels, pointing, RFI, flags"
                         aria-label="Notes on {{ d.name }}">Info</button>
@@ -127,6 +125,24 @@
 </table>
 {% endmacro %}
 
+{# One root's rows: what is on site as the table, what only Fir holds
+   (its data deleted here, or the whole directory) folded under it, so
+   the list stays as long as what is here. #}
+{% macro root_tables(rows, kind, root_idx, root_path, rname, archived) %}
+{% set here = rows | rejectattr('on_site', 'false') | list %}
+{% set there = rows | selectattr('on_site', 'false') | list %}
+{% if here %}
+{{ rows_table(here, kind, root_idx, root_path, rname, archived) }}
+{% endif %}
+{% if there %}
+<details class="fir-only">
+    <summary title="Fir holds these; of each, at most its notes are on site">{{ there | length }} on Fir only · {{ there | sum(attribute='bytes') | filesize }}</summary>
+    {# No Transfer column: the heading says it of every row. #}
+    {{ rows_table(there, kind, root_idx, root_path, rname, false, part='fir-') }}
+</details>
+{% endif %}
+{% endmacro %}
+
 {% for v in views %}
 {% set root = v.root %}
 {% set root_idx = v.idx %}
@@ -161,7 +177,7 @@
 {% elif not v.rows %}
 <p class="note">No subdirectories.</p>
 {% else %}
-{{ rows_table(v.rows, 'acq', root_idx, root_path, rname, v.archived) }}
+{{ root_tables(v.rows, 'acq', root_idx, root_path, rname, v.archived) }}
 {% endif %}
 {% endfor %}
 
@@ -184,7 +200,7 @@
 {% elif not baseband.rows %}
 <p class="note">No merged dumps.</p>
 {% else %}
-{{ rows_table(baseband.rows, 'dump', none, root_path, none, baseband.archived) }}
+{{ root_tables(baseband.rows, 'dump', none, root_path, none, baseband.archived) }}
 {% endif %}
 {% endif %}
 {% endif %}

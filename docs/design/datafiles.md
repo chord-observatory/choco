@@ -136,7 +136,12 @@ here with no ``.h5`` left whose files Fir has is *archive only* too
 (2026-11-23): the clean-up on site deletes an acquisition's data files and
 keeps its ``README.md`` and ``acq_info.yaml``, so the row takes Fir's
 count, size and span and keeps the scan's notes button, where it used to
-read 0 files with no span and sort last.  The root header
+read 0 files with no span and sort last.  The *archive only* rows are
+folded under the root's table in a closed ``<details>`` (the user,
+2026-11-23: the clean-up makes them most of the list), a second table
+without the Transfer column, since its heading says it of every row; the
+page loads the partial once, so an opened fold stays open until a
+Rescan.  The root header
 carries the summary (held in full, in part, not at all, only there), the
 note line the listing's age.  Before the first listing arrives the cells
 say ``?`` rather than *none*.  Only the root the archive mirrors gets the
