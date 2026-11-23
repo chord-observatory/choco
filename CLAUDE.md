@@ -57,6 +57,7 @@ choco/
 ├── updatable.py    # the X-engine page's updatable panel: desired vs live per endpoint and node (no Flask)
 ├── upstream.py     # GitHub mirror of kotekan's config/chord into the library (plan by blob sha, fetch, verify)
 ├── fpga.py         # FpgaMonitor (fpga_master poll + controls), GainArchive, FileArchive (h5read subprocess)
+├── fengine.py      # FengineMonitor: the F-engine service's poll (crate supply, fpga_master's supervisor), read only
 ├── powerdb.py      # PdbMonitor: power_db poll and the one read-modify-write-verify behind every power control
 ├── gnss.py         # TransitMonitor: the GNSS transit forecast (kvand's gnss-fengine service), its summary and timeline
 ├── pipeline_svg.py # dot layout presets, render_dot_svg, the SVG whitelist sanitizer

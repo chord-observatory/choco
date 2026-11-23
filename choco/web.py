@@ -2146,6 +2146,9 @@ def partial_service_fpga():
     if monitor is None:
         abort(404)
     monitor.poll_if_stale(5)
+    fengine = current_app.config.get("fengine_monitor")
+    if fengine is not None:
+        fengine.poll_if_stale(5)
     return render_template("_service_fpga_status.html", **_fpga_context(monitor))
 
 
@@ -2164,7 +2167,9 @@ def partial_fpga_boards():
 def _fpga_context(monitor) -> dict:
     """What the FPGA page and its status poll render from the monitor."""
     fpga = monitor.to_dict()
+    fengine = current_app.config.get("fengine_monitor")
     return {"fpga": fpga, "frame0_fmt": fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
+            "fengine": fengine.to_dict() if fengine is not None and fengine.configured else None,
             "actions": monitor.actions, "now_ts": time.time()}
 
 

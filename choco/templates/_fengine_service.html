@@ -1,0 +1,48 @@
+{# The F-engine service's view of the crate: the supply's readings and
+   fpga_master's supervisor (fengine.FengineMonitor), inside the FPGA
+   page's status block and refreshed by its poll. #}
+{% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
+{% set psu = fengine.psu %}
+{% set master = fengine.master %}
+<h3>Crate supply and supervisor</h3>
+<dl class="service-facts">
+    <dt>F-engine service</dt>
+    <dd>{{ tag(monitor_tone(fengine.health), monitor_label(fengine.health)) }}
+        <code>http://{{ fengine.host }}:{{ fengine.port }}</code>, last seen {{ since(fengine.last_seen, now_ts) }}</dd>
+    {% if fengine.error %}
+    <dt>Error</dt>
+    <dd><code>{{ fengine.error }}</code></dd>
+    {% endif %}
+    {% if psu %}
+    <dt>Supply</dt>
+    <dd>{{ tag('bad' if psu.faults else 'ok' if psu.output_on else 'warn',
+               'fault' if psu.faults else 'on' if psu.output_on else 'output off') }}
+        {% if psu.vout is defined and psu.iout is defined %}{{ '%.2f' | format(psu.vout) }} V · {{ '%.1f' | format(psu.iout) }} A · {{ '%.0f' | format(psu.watts) }} W{% endif %}
+        {% if psu.vin is defined %} · input {{ '%.0f' | format(psu.vin) }} V{% endif %}</dd>
+    {% if psu.faults %}
+    <dt>Faults</dt>
+    <dd><code>{{ psu.faults | join(', ') }}</code></dd>
+    {% endif %}
+    {% if psu.temp_inlet is defined or psu.temp_outlet is defined %}
+    <dt>Supply temperatures</dt>
+    <dd>{% if psu.temp_inlet is defined %}inlet {{ '%.0f' | format(psu.temp_inlet) }} °C{% endif %}
+        {% if psu.temp_oring is defined %} · ORing {{ '%.0f' | format(psu.temp_oring) }} °C{% endif %}
+        {% if psu.temp_outlet is defined %} · outlet {{ '%.0f' | format(psu.temp_outlet) }} °C{% endif %}
+        {% if psu.fan_rpm is defined %} · fan {{ '%.0f' | format(psu.fan_rpm) }} rpm{% endif %}</dd>
+    {% endif %}
+    {% endif %}
+    {% if master %}
+    <dt>Supervisor</dt>
+    <dd>fpga_master <code>{{ master.state }}</code>{% if master.pid %} (pid {{ master.pid }}){% endif %}
+        · watchdog {{ master.watchdog }}
+        · {{ master.restart_count or 0 }} restarts, {{ master.power_cycle_count or 0 }} power cycles</dd>
+    {% if master.error %}
+    <dt>Supervisor error</dt>
+    <dd><code>{{ master.error }}</code></dd>
+    {% endif %}
+    {% if master.config %}
+    <dt>Launch config</dt>
+    <dd><code>{{ master.config }}</code>{% if master.started_at %}, started {{ master.started_at }}{% endif %}</dd>
+    {% endif %}
+    {% endif %}
+</dl>

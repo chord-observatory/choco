@@ -33,6 +33,7 @@
     <dd><code>{{ fpga.boards_error }}</code></dd>
     {% endif %}
 </dl>
+{% if fengine %}{% include "_fengine_service.html" %}{% endif %}
 {% if actions %}
 <h3>Recent actions</h3>
 <figure class="scroll-x">

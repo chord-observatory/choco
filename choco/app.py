@@ -19,6 +19,7 @@ from .datafiles import DataFileScan
 from .jobclient import EIGENCAL_ARCHIVE_GLOB, STATE_NAME, STATE_ROOT
 from .waterfalls import WaterfallStore, site_tz
 from .pdbmap import DEFAULT_MAP_FILENAME, PdbMapFile
+from .fengine import FengineMonitor
 from .fpga import FileArchive, FpgaMonitor, GainArchive, newest_file
 from .instrument import DEFAULT_WIRING_FILENAME, InstrumentMonitor, PduSnmp, SwitchEapi, WiringFile
 from .powerdb import PdbMonitor
@@ -56,6 +57,7 @@ _DEFAULT_CONFIG = {
     # pull mirrors into <configs_dir>/<into>/ (choco/upstream.py).
     "upstream": dict(_UPSTREAM_DEFAULTS),
     "fpga_master": {},
+    "fengine_service": {},
     "pdb": {},
     "instrument": {},
     "gnss": {},
@@ -284,6 +286,14 @@ def create_app(
         fpga_monitor.base_url,
         ttl_s=float(fpga_cfg.get("gain_ttl") or GainArchive.DEFAULT_TTL_S),
     )
+    # The F-engine service on crs-control: the crate supply and
+    # fpga_master's supervisor, read only.
+    fengine_cfg = config.get("fengine_service") or {}
+    fengine_monitor = FengineMonitor(
+        host=fengine_cfg.get("host") or None,
+        port=fengine_cfg.get("port") or None,
+        timeout=float(fengine_cfg.get("timeout") or 5.0),
+    )
     pdb_cfg = config.get("pdb") or {}
     pdb_monitor = PdbMonitor(
         host=pdb_cfg.get("host") or None,
@@ -361,6 +371,7 @@ def create_app(
     app.config["orchestrator"] = orchestrator
     app.config["fpga_monitor"] = fpga_monitor
     app.config["fpga_cfg"] = fpga_cfg
+    app.config["fengine_monitor"] = fengine_monitor
     app.config["gain_archive"] = gain_archive
     # eigencal's newest archived solution, read from the job's state
     # directory on demand; the path is looked up at each refresh so a
@@ -399,6 +410,8 @@ def create_app(
     gevent.spawn(orchestrator.run)
     if fpga_monitor.configured:
         gevent.spawn(fpga_monitor.run)
+    if fengine_monitor.configured:
+        gevent.spawn(fengine_monitor.run)
     if pdb_monitor.configured:
         gevent.spawn(pdb_monitor.run)
     if transit_monitor.configured:

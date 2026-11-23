@@ -149,6 +149,23 @@ offending chips named, never silently retried.  The write side never depends
 on the read decode, so a framing regression would surface as a loud verify
 failure, not a wrong channel.
 
+## The F-engine service
+
+f-engine-tools' ``f-engine-service`` (crs-control, port 8080) holds the
+crate's supply (a t0 PSU, through ``psucontrol``) and supervises fpga_master.
+``fengine.FengineMonitor`` reads two of its endpoints, ``/fpga-master`` (the
+supervisor's state, restart and power-cycle counts) and ``/psu/metrics`` (the
+supply's own JSON; a 502 with the reason when the supply does not answer),
+and the FPGA page's status block shows them.  The block is optional
+(``fengine_service.host/port``).  The aim is that choco reaches the F-engine
+only through this service, so the supply and fpga_master's port can be closed
+to the rest of the network.  As of 2026-11-23 (f-engine-tools 4f5e17b) the
+service carries fpga_master's ``/status`` but not ``/get-frame0-time``,
+``/get-hw-map``, ``/get-monitoring-data`` nor ``/get-current-gain-file``, so
+``FpgaMonitor`` and ``GainArchive`` still ask fpga_master itself; they move
+when the service passes those through.  No control goes through the service
+yet.
+
 ## Master PDB channel map
 
 the dish-input ↔ power-channel wiring lives in **one CSV**
