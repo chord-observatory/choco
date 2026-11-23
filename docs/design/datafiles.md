@@ -131,7 +131,12 @@ files Fir has at the same size and whole-second mtime (rsync's quick
 check, so *all N* means a transfer would send nothing; the scan now keeps
 each file's size and mtime in ``h5`` for this), and for a directory only
 Fir has a row shaped like the scan's with Fir's count, size and span,
-marked *archive only* — sorted newest first together.  The root header
+marked *archive only* — sorted newest first together.  A directory still
+here with no ``.h5`` left whose files Fir has is *archive only* too
+(2026-11-23): the clean-up on site deletes an acquisition's data files and
+keeps its ``README.md`` and ``acq_info.yaml``, so the row takes Fir's
+count, size and span and keeps the scan's notes button, where it used to
+read 0 files with no span and sort last.  The root header
 carries the summary (held in full, in part, not at all, only there), the
 note line the listing's age.  Before the first listing arrives the cells
 say ``?`` rather than *none*.  Only the root the archive mirrors gets the

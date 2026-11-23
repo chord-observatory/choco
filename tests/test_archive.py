@@ -101,6 +101,15 @@ class TestCompareAndJoin:
         assert rows[0]["archive"]["held"] == 0 and rows[0]["notes"] is False
         # The scan's own rows are not touched.
         assert "archive" not in root["dirs"][0]
+        # A directory emptied on site, its notes kept: Fir's numbers, the scan's row.
+        root["dirs"][1].update(files=0, bytes=0, oldest=None, newest=None, h5={})
+        rows, summary = join_root(root, dirs, ACQ_NAME_RE)
+        assert [r["name"] for r in rows] == [ACQ_B, ACQ_GONE, ACQ_A, ACQ_C]
+        assert summary == {"full": 0, "part": 0, "none": 1, "archive_only": 2}
+        kept = rows[2]
+        assert kept["on_site"] is False and kept["notes"] is True and kept["path"] == "/r/a"
+        assert (kept["files"], kept["bytes"], kept["oldest"], kept["newest"]) == (2, 2, 1000, 2000)
+        assert rows[3]["on_site"] is True and rows[3]["files"] == 0   # empty on both sides
         # The merged dump belongs to the baseband table.
         rows, summary = join_root({"dirs": []}, dirs, MERGED_NAME_RE)
         assert [r["name"] for r in rows] == [MERGED] and summary["archive_only"] == 1
@@ -262,6 +271,27 @@ class TestFilesTable:
         # The empty acquisition has nothing to hold; the other root no column.
         assert re.search(rf"{ACQ_C}.*?data-label=\"transfer\"><small class=\"muted\">&mdash;<", body, re.S)
         assert body.count("on Fir only") == 1                              # the Transfer cell alone
+
+    def test_emptied_on_site_with_its_notes_kept(self, configs_dir, roots, verify_socket):
+        """The clean-up deletes an acquisition's data files and keeps its
+        README: the row reads Fir's numbers and its notes still open."""
+        (roots[1] / ACQ_A / "vis_0.h5").unlink()
+        (roots[1] / ACQ_A / "README.md").write_text("# notes\n")
+        verify_socket["reply"] = SUBSET_LISTING
+        app = _app(configs_dir, roots, _archive(verify_socket, roots))
+        _polled(app)
+        client = app.test_client()
+        login(client)
+        body = client.get("/partials/files").get_data(as_text=True)
+        assert "Fir holds 0 of 1 in full, 1 in part; 2 only there" in body
+        # The second root's row (the first root has a directory of the same name).
+        row = re.findall(rf'<td class="name stack-lead">{ACQ_A}</td>.*?</tr>', body, re.S)[-1]
+        assert 'data-label="files">1<' in row
+        assert "1970-01-01 00:16 &rarr;" in row                           # Fir's mtime, 1000
+        assert f"/files/notes/1/{ACQ_A}" in row
+        assert "only its notes are on site" in row
+        assert "on Fir only</small></td>" in row
+        assert client.get(f"/files/notes/1/{ACQ_A}").status_code == 200
 
     def test_none_held(self, configs_dir, roots, verify_socket):
         verify_socket["reply"] = listing((ACQ_B, "vis_0.h5", 1, 1))        # another size

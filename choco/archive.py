@@ -194,8 +194,11 @@ def join_root(root: dict, dirs: dict, name_re: re.Pattern) -> tuple[list[dict], 
     ``on_site`` False and the archive's count, size and span in its
     place) plus ``archive`` (``compare_dir``); and the summary's counts
     of what the archive holds in ``full``, in ``part``, ``none`` of, and
-    ``archive_only``.  *name_re* picks the listing's names that belong
-    to this root.
+    ``archive_only``.  A directory here with no data file left whose
+    files the archive has (cleaned up on site, its notes kept) is
+    archive-only too: the scan's row, so its notes still open, with the
+    archive's count, size and span.  *name_re* picks the listing's names
+    that belong to this root.
     """
     rows = []
     summary = {"full": 0, "part": 0, "none": 0, "archive_only": 0}
@@ -203,6 +206,12 @@ def join_root(root: dict, dirs: dict, name_re: re.Pattern) -> tuple[list[dict], 
     for d in root.get("dirs") or []:
         seen.add(d["name"])
         a = compare_dir(dirs.get(d["name"]), d.get("h5"))
+        if not d["files"] and a["files"]:
+            rows.append({**d, "files": a["files"], "bytes": a["bytes"],
+                         "oldest": a["oldest"], "newest": a["newest"],
+                         "on_site": False, "archive": a})
+            summary["archive_only"] += 1
+            continue
         rows.append({**d, "on_site": True, "archive": a})
         if not d["files"]:
             continue

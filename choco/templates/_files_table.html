@@ -26,7 +26,7 @@
 {%- if not known -%}
 <small class="muted" title="no listing from Fir yet">?</small>
 {%- elif not d.on_site -%}
-<small class="t-ok" title="Fir holds it; nothing of it is on site">on Fir only</small>
+<small class="t-ok" title="Fir holds it; {{ 'only its notes are' if d.notes else 'nothing of it is' }} on site">on Fir only</small>
 {%- elif d.files == 0 -%}
 <small class="muted">&mdash;</small>
 {%- elif a.held == d.files -%}
