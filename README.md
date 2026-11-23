@@ -92,7 +92,7 @@ The install script seeds `/etc/choco/config.yaml` from [`config.yaml.template`](
 | `kotekan` | REST timeout for node calls |
 | `sync` | `poll_interval`, `restart_timeout`, `max_concurrent_pushes`, `max_retry_interval` |
 | `fpga_master`, `pdb` | the two hardware monitors: host, port, timeout, `control`; `pdb.map_file`, `pdb.kotekan_group` |
-| `fengine_service` | the F-engine service on crs-control (host, port, timeout). choco reads the crate supply and the state of fpga_master's supervisor from it and shows them on `/fpga`. Optional |
+| `fengine_service` | the F-engine service on crs-control (host, port, timeout). choco reads the crate supply and the state of fpga_master's supervisor from it and shows them on `/fpga`. When it is set, choco also reads and controls fpga_master through the service, and does not use `fpga_master.host` and `port`. Optional |
 | `gnss` | the transit forecast's source (host, port, timeout) and `min_quiet_s`, the shortest quiet window offered for a gain measurement |
 | `state_dir` | where the jobs keep state (`/var/lib/choco`, systemd's `StateDirectory`); choco reads each job's files there by name |
 | `eop`, `bffs`, `eigencal`, `waterfall` | optional: each job's `service_unit` for its badge; `bffs.control` (clickable element grid); `waterfall.ttl` and `timezone`.  Every default is the shipped value, so the blocks can be left out |

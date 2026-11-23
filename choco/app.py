@@ -273,11 +273,17 @@ def create_app(
     # Hardware service monitors: separate concern from kotekan polling,
     # used by the service-status strip in the page header.  Instantiated
     # unconditionally so the UI is uniform; unconfigured ones don't poll.
+    # With an F-engine service configured, fpga_master is read and
+    # controlled through it, and its own port is not used.
     fpga_cfg = config.get("fpga_master") or {}
+    fengine_cfg = config.get("fengine_service") or {}
+    via_service = bool(fengine_cfg.get("host") and fengine_cfg.get("port"))
+    fpga_at = fengine_cfg if via_service else fpga_cfg
     fpga_monitor = FpgaMonitor(
-        host=fpga_cfg.get("host") or None,
-        port=fpga_cfg.get("port") or None,
-        timeout=float(fpga_cfg.get("timeout") or 5.0),
+        host=fpga_at.get("host") or None,
+        port=fpga_at.get("port") or None,
+        timeout=float(fpga_at.get("timeout") or 5.0),
+        via_service=via_service,
     )
     # The digital-gain archive is fetched on demand (and cached), not
     # polled: it changes when someone recalibrates, and nothing in the
@@ -287,8 +293,7 @@ def create_app(
         ttl_s=float(fpga_cfg.get("gain_ttl") or GainArchive.DEFAULT_TTL_S),
     )
     # The F-engine service on crs-control: the crate supply and
-    # fpga_master's supervisor, read only.
-    fengine_cfg = config.get("fengine_service") or {}
+    # fpga_master's supervisor.
     fengine_monitor = FengineMonitor(
         host=fengine_cfg.get("host") or None,
         port=fengine_cfg.get("port") or None,

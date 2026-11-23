@@ -159,12 +159,21 @@ supply's own JSON; a 502 with the reason when the supply does not answer),
 and the FPGA page's status block shows them.  The block is optional
 (``fengine_service.host/port``).  The aim is that choco reaches the F-engine
 only through this service, so the supply and fpga_master's port can be closed
-to the rest of the network.  As of 2026-11-23 (f-engine-tools 4f5e17b) the
-service carries fpga_master's ``/status`` but not ``/get-frame0-time``,
-``/get-hw-map``, ``/get-monitoring-data`` nor ``/get-current-gain-file``, so
-``FpgaMonitor`` and ``GainArchive`` still ask fpga_master itself; they move
-when the service passes those through.  No control goes through the service
-yet.
+to the rest of the network.
+
+The service forwards fpga_master's GETs under their own names
+(``/get-frame0-time``, ``/get-hw-map``, ``/get-monitoring-data``,
+``/get-current-gain-file``), except ``/status`` and ``/config``, which are
+``/fpga_master_status`` and ``/fpga_master_config``; it answers 503 with a
+``detail`` when fpga_master does not (f-engine-tools 206786d).  So when the
+block is set, ``FpgaMonitor`` and ``GainArchive`` take the service's address
+(``via_service``) and ``fpga_master.host/port`` are unused.  Start and Stop
+then mean the service's ``POST /fpga-master/start`` and ``/stop``: the
+service launches the fpga_master process with its default config and ends
+the process after fpga_master's own ``/stop``.  That is more than the old
+buttons did (fpga_master stayed up, stopped), and it is what the service's
+watchdog expects: a process it did not stop is one it restarts.  The supply's
+controls (``/psu/on``, ``off``, ``power-cycle``) are not wired.
 
 ## Master PDB channel map
 

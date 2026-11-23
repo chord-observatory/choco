@@ -46,6 +46,29 @@ def _wtl_result(resp: requests.Response) -> tuple[bool, str]:
     return True, str(data)[:300]
 
 
+def _service_result(resp: requests.Response) -> tuple[bool, str]:
+    """Interpret the F-engine service's answer to a start or stop: its
+    supervisor facts, where ``error`` is a key that is null when all is
+    well."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return True, resp.text[:300]
+    if not isinstance(data, dict):
+        return True, str(data)[:300]
+    if data.get("error"):
+        return False, str(data["error"])[:300]
+    return True, f"fpga_master {data.get('state') or 'answered'}"
+
+
+def _failure(e: OSError) -> str:
+    """A failed request with the reason the server gave: the service
+    answers 409 or 503 with ``{"detail": ...}``."""
+    message = f"{type(e).__name__}: {e}"
+    body = getattr(getattr(e, "response", None), "text", "") or ""
+    return f"{message} — {body[:300]}" if body else message
+
+
 #: A Prometheus text sample: name, labels, value and (fpga_master's) timestamp in ms.
 _SAMPLE_RE = re.compile(r'^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{([^}]*)\})?\s+(\S+)(?:\s+(\d+))?\s*$')
 _LABEL_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\]|\\.)*)"')
@@ -148,8 +171,14 @@ class FpgaMonitor(HttpMonitor):
     STOP_TIMEOUT_S = 300
     MAX_ACTIONS = 10
 
-    def __init__(self, host: str | None, port: int | None, timeout: float = 5.0):
+    def __init__(self, host: str | None, port: int | None, timeout: float = 5.0,
+                 via_service: bool = False):
         super().__init__(host, port, timeout)
+        # Through the F-engine service: it forwards fpga_master's GETs
+        # under their own names (but /status as /fpga_master_status), and
+        # its start and stop launch and end the fpga_master process.
+        self.via_service = via_service
+        self.status_path = "/fpga_master_status" if via_service else "/status"
         self.state: str | None = None      # fpga_master's own state string
         self.start_result = None           # last /start outcome, if reported
         self.frame0_ns: int | None = None
@@ -177,7 +206,7 @@ class FpgaMonitor(HttpMonitor):
 
         # /status: reachability + the daemon's own run state
         try:
-            resp = self._get("/status")
+            resp = self._get(self.status_path)
             try:
                 data = resp.json()
             except ValueError:
@@ -189,13 +218,9 @@ class FpgaMonitor(HttpMonitor):
         except OSError as e:
             self.health = "down"
             self.state = None
-            err = f"{type(e).__name__}: {e}"
             # A failed background /start makes /status itself error; the
             # response body then carries the start exception.
-            body = getattr(getattr(e, "response", None), "text", "") or ""
-            if body:
-                err += f" — {body[:300]}"
-            self.error = err
+            self.error = _failure(e)
             self.crate, self.hw_map, self.boards = None, {}, {}
             return
 
@@ -249,14 +274,19 @@ class FpgaMonitor(HttpMonitor):
         against double-starts ("already started"), and initializes in
         the background — completion or failure shows up in ``/status``
         via the poller.  Returns ``(ok, message)``.
+
+        Through the service it is ``POST /fpga-master/start``, which
+        launches the fpga_master process with the service's default
+        config and answers at once.
         """
         if not self.configured:
             return False, "fpga_master is not configured"
+        path = "/fpga-master/start" if self.via_service else "/start"
         try:
-            resp = fetch("POST", f"{self.base_url}/start", json={}, timeout=self.timeout)
+            resp = fetch("POST", f"{self.base_url}{path}", json={}, timeout=self.timeout)
         except OSError as e:
-            return False, f"{type(e).__name__}: {e}"
-        ok, message = _wtl_result(resp)
+            return False, _failure(e)
+        ok, message = (_service_result if self.via_service else _wtl_result)(resp)
         self.poll_once()
         return ok, message
 
@@ -268,16 +298,23 @@ class FpgaMonitor(HttpMonitor):
         ``STOP_TIMEOUT_S`` — run from a greenlet.  The outcome is
         logged and the state re-polled either way, so the page reflects
         reality on its next refresh.
+
+        Through the service it is ``POST /fpga-master/stop``: fpga_master's
+        ``/stop``, then the end of its process.
         """
         if not self.configured:
             return False, "fpga_master is not configured"
         try:
-            resp = fetch("GET", f"{self.base_url}/stop", timeout=self.STOP_TIMEOUT_S)
+            if self.via_service:
+                resp = fetch("POST", f"{self.base_url}/fpga-master/stop", json={},
+                             timeout=self.STOP_TIMEOUT_S)
+            else:
+                resp = fetch("GET", f"{self.base_url}/stop", timeout=self.STOP_TIMEOUT_S)
         except OSError as e:
             logger.error(f"fpga_master stop failed: {e}")
             self.poll_once()
-            return False, f"{type(e).__name__}: {e}"
-        ok, message = _wtl_result(resp)
+            return False, _failure(e)
+        ok, message = (_service_result if self.via_service else _wtl_result)(resp)
         if ok:
             logger.info(f"fpga_master stop completed: {message}")
         else:

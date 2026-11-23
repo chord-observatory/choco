@@ -96,7 +96,10 @@ fpga_master:
 
 # The F-engine service (f-engine-tools' f-engine-service, on crs-control):
 # the crate supply's readings and fpga_master's supervisor, shown on /fpga.
-# Read only.  Leave it out and choco does not ask.
+# With it set, choco reaches fpga_master only through the service: it reads
+# the endpoints the service forwards, Start and Stop launch and end the
+# fpga_master process, and fpga_master.host/port are not used
+# (fpga_master.control and gain_ttl still apply).
 # fengine_service:
 #   host: crs-control.site.chord-observatory.ca
 #   port: 8080

@@ -247,6 +247,37 @@ class TestFpgaMonitorControls:
         assert "no config" in message
 
     @responses.activate
+    def test_through_the_service(self):
+        # The F-engine service forwards the GETs (/status renamed) and
+        # owns the process: start and stop are its own POSTs.
+        m = FpgaMonitor(host=HOST, port=8080, timeout=1, via_service=True)
+        base = f"http://{HOST}:8080"
+        status = responses.get(f"{base}/fpga_master_status", json={"state": "on"})
+        responses.get(f"{base}/get-hw-map", json=None)
+        responses.get(f"{base}/get-monitoring-data", body="")
+        responses.get(f"{base}/get-frame0-time", json={"frame0_nano": 5})
+        info = {"state": "starting", "error": None, "pid": 7}
+        start = responses.post(f"{base}/fpga-master/start", json=info, status=202)
+        stop = responses.post(f"{base}/fpga-master/stop", json={**info, "state": "stopped"})
+        assert m.start_master() == (True, "fpga_master starting")
+        assert m.stop_master() == (True, "fpga_master stopped")
+        assert start.call_count == 1 and stop.call_count == 1 and status.call_count == 2
+        assert m.health == "ok" and m.frame0_ns == 5
+
+    @responses.activate
+    def test_through_the_service_refusal_gives_the_reason(self):
+        m = FpgaMonitor(host=HOST, port=8080, timeout=1, via_service=True)
+        base = f"http://{HOST}:8080"
+        responses.post(f"{base}/fpga-master/start", status=409,
+                       json={"detail": "Other processes are using the F-Engine"})
+        responses.get(f"{base}/fpga_master_status", status=503,
+                      json={"detail": "No response from fpga_master (fpga_master is stopped)"})
+        ok, message = m.start_master()
+        assert ok is False and "Other processes" in message
+        m.poll_once()
+        assert m.health == "down" and "fpga_master is stopped" in m.error
+
+    @responses.activate
     def test_stop_master_uses_get_and_repolls(self, monitor):
         # GET, not POST: wtl.rest serves argument-less endpoints for GET
         # only (POST /stop is a 405 — the original silent-stop bug).

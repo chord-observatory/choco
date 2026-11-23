@@ -107,6 +107,20 @@ class TestPoll:
         assert monitor.health == "down"
 
 
+class TestWiring:
+    def test_fpga_master_goes_through_a_configured_service(self, configs_dir):
+        from choco.app import _DEFAULT_CONFIG, create_app
+        fpga_master = {"host": "fpga.example", "port": 54321}
+        direct = create_app(configs_dir=configs_dir, config={**_DEFAULT_CONFIG, "fpga_master": fpga_master})
+        fpga = direct.config["fpga_monitor"]
+        assert (fpga.port, fpga.via_service) == (54321, False)
+        via = create_app(configs_dir=configs_dir, config={
+            **_DEFAULT_CONFIG, "fpga_master": fpga_master, "fengine_service": {"host": HOST, "port": PORT}})
+        fpga = via.config["fpga_monitor"]
+        assert (fpga.host, fpga.port, fpga.via_service) == (HOST, PORT, True)
+        assert via.config["gain_archive"].base_url == BASE
+
+
 class TestPage:
     def _configure(self, app):
         fpga = app.config["fpga_monitor"]
