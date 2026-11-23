@@ -104,6 +104,7 @@ fpga_master:
 #   host: crs-control.site.chord-observatory.ca
 #   port: 8080
 #   timeout: 5                      # HTTP request timeout (seconds)
+#   control: true                   # show the crate supply's controls on /fpga
 
 # Power distribution boards (power_db) — Infineon high-side switches on a
 # Raspberry Pi, REST on port 5000.  Feeds the POWER badge and /service/power.

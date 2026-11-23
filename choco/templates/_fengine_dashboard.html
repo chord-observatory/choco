@@ -1,0 +1,139 @@
+{# The F-engine page's dashboard when choco reaches the crate through the
+   F-engine service (fengine.FengineMonitor): one summary row, then the
+   crate supply and fpga_master side by side, each with its readings and
+   its controls.  Inside the status block, so its 5 s poll redraws it and
+   the buttons follow the state. #}
+{% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
+{% set psu = fengine.psu %}
+{% set master = fengine.master %}
+{% set disc = fengine.boards %}
+{% set running = master and master.state not in ('stopped', 'failed') %}
+{% macro supply_tag() -%}
+{%- if not psu -%}{{ tag('bad', 'not answering') }}
+{%- elif psu.faults -%}{{ tag('bad', 'fault') }}
+{%- elif psu.output_on -%}{{ tag('ok', 'on') }}
+{%- else -%}{{ tag('warn', 'output off') }}
+{%- endif -%}
+{%- endmacro %}
+{% macro master_tag() -%}
+{%- if not master -%}{{ tag('bad', 'unknown') }}
+{%- elif master.state == 'running' -%}{{ tag(monitor_tone(fpga.health), fpga.state or monitor_label(fpga.health)) }}
+{%- elif master.state == 'stopped' -%}{{ tag('off', 'stopped') }}
+{%- elif master.state == 'failed' -%}{{ tag('bad', 'failed') }}
+{%- else -%}{{ tag('warn', master.state) }}
+{%- endif -%}
+{%- endmacro %}
+{% macro button(action, label, question, disabled=false, why='', main=false) -%}
+<form method="post" action="{{ request.script_root }}/service/fpga/{{ action }}"
+      onsubmit="return confirm({{ question | tojson | forceescape }})">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn-sm{% if not main %} secondary outline{% endif %}"{% if disabled %} disabled title="{{ why }}"{% endif %}>{{ label }}</button>
+</form>
+{%- endmacro %}
+
+<table class="ports fpga-summary">
+    <thead><tr><th>Crate supply</th><th>Output</th><th>fpga_master</th><th>frame0</th><th>Boards on the network</th><th>Gain archives</th><th>Service</th></tr></thead>
+    <tbody><tr>
+        <td>{{ supply_tag() }}</td>
+        <td class="num">{% if psu and psu.watts is defined %}{{ '%.2f' | format(psu.vout) }} V · {{ '%.1f' | format(psu.iout) }} A · {{ '%.0f' | format(psu.watts) }} W{% else %}—{% endif %}</td>
+        <td>{{ master_tag() }}</td>
+        <td>{% if fpga.frame0_ns and fpga.health == 'ok' %}{{ frame0_fmt }}{% else %}—{% endif %}</td>
+        <td>{% if disc %}{{ disc.n_booted }} of {{ disc.n_boards }} booted{% if disc.n_stale %} · {{ tag('warn', disc.n_stale ~ ' silent') }}{% endif %}{% else %}—{% endif %}</td>
+        <td>{% if fengine.archives and fengine.archives.count %}{{ fengine.archives.count }}, newest {{ since(fengine.archives.newest_at, now_ts) }}{% else %}—{% endif %}</td>
+        <td>{{ tag(monitor_tone(fengine.health), monitor_label(fengine.health)) }}{% if fengine.conflicts %} {{ tag('warn', fengine.conflicts | length ~ ' other users') }}{% endif %}{% if fengine.session %} {{ tag('info', 'gain session') }}{% endif %}</td>
+    </tr></tbody>
+</table>
+
+<div class="fpga-panels">
+<section>
+    <h3>Crate supply</h3>
+    <dl class="service-facts">
+        <dt>Output</dt>
+        <dd>{{ supply_tag() }}{% if psu and psu.watts is defined %}
+            {{ '%.2f' | format(psu.vout) }} V · {{ '%.1f' | format(psu.iout) }} A · {{ '%.0f' | format(psu.watts) }} W{% endif %}</dd>
+        {% if fengine.psu_error %}
+        <dt>Error</dt>
+        <dd><code>{{ fengine.psu_error }}</code></dd>
+        {% endif %}
+        {% if psu %}
+        {% if psu.vin is defined %}
+        <dt>Input</dt>
+        <dd>{{ '%.0f' | format(psu.vin) }} V</dd>
+        {% endif %}
+        {% if psu.temp_inlet is defined or psu.temp_outlet is defined %}
+        <dt>Temperatures</dt>
+        <dd>{% if psu.temp_inlet is defined %}inlet {{ '%.0f' | format(psu.temp_inlet) }} °C{% endif %}
+            {% if psu.temp_oring is defined %} · ORing {{ '%.0f' | format(psu.temp_oring) }} °C{% endif %}
+            {% if psu.temp_outlet is defined %} · outlet {{ '%.0f' | format(psu.temp_outlet) }} °C{% endif %}</dd>
+        {% endif %}
+        {% if psu.fan_rpm is defined %}
+        <dt>Fan</dt>
+        <dd>{{ '%.0f' | format(psu.fan_rpm) }} rpm</dd>
+        {% endif %}
+        <dt>Faults</dt>
+        <dd>{% if psu.faults %}<code>{{ psu.faults | join(', ') }}</code>{% else %}none{% endif %}</dd>
+        {% endif %}
+    </dl>
+    {% if psu_control %}
+    {% set busy = 'Stop fpga_master first' if running else '' %}
+    <div class="fpga-controls">
+        {{ button('psu/on', 'On', 'Turn the crate supply on?\n\nThe boards boot; fpga_master is not started.',
+                  disabled=(psu and psu.output_on), why='The output is on') }}
+        {{ button('psu/off', 'Off', 'Turn the crate supply off?\n\nEvery F-engine board loses power.',
+                  disabled=(running or (psu and not psu.output_on)), why=busy or 'The output is off') }}
+        {{ button('psu/power-cycle', 'Power cycle', 'Power-cycle the crate?\n\nEvery F-engine board loses power and boots again.',
+                  disabled=running, why=busy) }}
+        {{ button('psu/clear-faults', 'Clear faults', 'Clear the supply\'s faults?',
+                  disabled=(psu and not psu.faults), why='No faults') }}
+    </div>
+    {% if running %}<p class="note">Off and power cycle wait for fpga_master to be stopped.</p>{% endif %}
+    {% endif %}
+</section>
+<section>
+    <h3>fpga_master</h3>
+    <dl class="service-facts">
+        <dt>Process</dt>
+        <dd>{% if master %}<code>{{ master.state }}</code>{% if master.pid %} (pid {{ master.pid }}){% endif %}{% if master.started_at %}, started {{ master.started_at[:19] | replace('T', ' ') }} UTC{% endif %}{% else %}—{% endif %}</dd>
+        <dt>F-engine</dt>
+        <dd>{{ master_tag() }}{% if fpga.start_result %} <code>{{ fpga.start_result }}</code>{% endif %}</dd>
+        {% if fpga.frame0_ns and fpga.health == 'ok' %}
+        <dt>frame0</dt>
+        <dd>{{ frame0_fmt }} (<code>{{ fpga.frame0_ns }}</code> ns)</dd>
+        {% endif %}
+        {% if master %}
+        <dt>Watchdog</dt>
+        <dd>{{ master.watchdog }} · {{ master.restart_count or 0 }} restarts, {{ master.power_cycle_count or 0 }} power cycles</dd>
+        {% if master.config %}
+        <dt>Config</dt>
+        <dd><code>{{ master.config }}</code></dd>
+        {% endif %}
+        {% if master.error %}
+        <dt>Supervisor error</dt>
+        <dd><code>{{ master.error }}</code></dd>
+        {% endif %}
+        {% endif %}
+        {% if running and fpga.error %}
+        <dt>Error</dt>
+        <dd><code>{{ fpga.error }}</code></dd>
+        {% endif %}
+        {% if fpga.crate %}
+        <dt>Crate</dt>
+        <dd><code>{{ fpga.crate }}</code>, {{ fpga.hw_map.values() | select | list | length }} boards in the hardware map</dd>
+        {% endif %}
+        <dt>Last seen up</dt>
+        <dd>{{ since(fpga.last_seen, now_ts) }}</dd>
+    </dl>
+    {% if control %}
+    <div class="fpga-controls">
+        {{ button('start', 'Start', 'Start fpga_master?\n\nThe service launches it with its default config. It assigns a new frame0, so kotekan and the EOP table must resynchronize.',
+                  disabled=(running or start_blocked), why=('fpga_master is ' ~ master.state) if running else (start_blocked or ''), main=true) }}
+        {{ button('stop', 'Stop', 'Stop fpga_master?\n\nThe F-engine shuts down and the process ends (this can take a while). The next start assigns a new frame0.',
+                  disabled=(master and master.state == 'stopped'), why='fpga_master is stopped') }}
+    </div>
+    {% if start_blocked and not running %}<p class="note">Start is off: {{ start_blocked }}.</p>{% endif %}
+    {% endif %}
+</section>
+</div>
+<p class="note">Through the F-engine service at <code>http://{{ fengine.host }}:{{ fengine.port }}</code>, last seen
+    {{ since(fengine.last_seen, now_ts) }}{% if fengine.error %}: <code>{{ fengine.error }}</code>{% endif %}.
+    A start assigns a <strong>new frame0</strong>: kotekan's timing and the EOP table are anchored to it.</p>

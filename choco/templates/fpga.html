@@ -4,8 +4,14 @@
 {% block title %}F-engine — CHOCO{% endblock %}
 
 {% block styles %}
+.fpga-controls { display: flex; flex-wrap: wrap; gap: 0.5em; margin: 0.75em 0 0.5em; }
 .fpga-controls form { margin: 0; }
 .fpga-controls button { width: auto; margin: 0; }
+.fpga-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(24em, 1fr)); gap: 0 2.5em; }
+.fpga-panels h3 { margin-top: 1.25rem; }
+table.ports { width: auto; }
+table.ports td, table.ports th { font-size: 0.8em; padding: 0.3em 0.8em; white-space: nowrap; }
+table.ports td.num { text-align: right; font-family: var(--pico-font-family-monospace); }
 {% endblock %}
 
 {% block content %}
@@ -15,8 +21,8 @@
         {{ tag(monitor_tone(fpga.health), monitor_label(fpga.health)) }}
     </h2>
 </div>
-<p class="note">The fpga_master daemon — runs the F-engine (ICEBoards) and stamps frame0, the timing origin
-kotekan and the EOP table are anchored to.</p>
+<p class="note">The F-engine: the crate's supply, the CRS boards and fpga_master, which runs them and stamps
+frame0, the timing origin kotekan and the EOP table are anchored to.</p>
 
 <div id="fpga-status"
      hx-get="{{ request.script_root }}/partials/service-fpga"
@@ -34,13 +40,13 @@ kotekan and the EOP table are anchored to.</p>
     <p class="note"><em>Loading digital gains…</em></p>
 </div>
 
-{% if control and fpga.configured %}
+{% if control and fpga.configured and not fengine %}
 <section>
     <h3>Controls</h3>
     <div class="notice notice-warn">&#9888; A restart assigns a <strong>new frame0</strong> — kotekan's
     timing and the EOP table are anchored to it, so downstream consumers must resynchronize
     after the F-engine comes back up.</div>
-    <div class="fpga-controls" style="display: flex; gap: 1em;">
+    <div class="fpga-controls">
         <form method="post" action="{{ request.script_root }}/service/fpga/start"
               onsubmit="return confirm('Start the FPGA master?\n\nIt initializes in the background with the config it was launched with; the state above follows the progress.')">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">

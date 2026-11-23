@@ -66,6 +66,12 @@ def _failure(e: OSError) -> str:
     answers 409 or 503 with ``{"detail": ...}``."""
     message = f"{type(e).__name__}: {e}"
     body = getattr(getattr(e, "response", None), "text", "") or ""
+    try:
+        detail = json.loads(body).get("detail")
+    except (ValueError, AttributeError):
+        detail = None
+    if isinstance(detail, str) and detail:
+        return detail[:300]
     return f"{message} — {body[:300]}" if body else message
 
 

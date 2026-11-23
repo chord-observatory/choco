@@ -2108,9 +2108,7 @@ def fpga_page():
     monitor = current_app.config.get("fpga_monitor")
     if monitor is None:
         abort(404)
-    fpga_cfg = current_app.config.get("fpga_cfg") or {}
-    return render_template("fpga.html", control=bool(fpga_cfg.get("control", True)),
-                           **_fpga_context(monitor))
+    return render_template("fpga.html", **_fpga_context(monitor))
 
 
 @bp.route("/power/analog")
@@ -2168,9 +2166,43 @@ def _fpga_context(monitor) -> dict:
     """What the FPGA page and its status poll render from the monitor."""
     fpga = monitor.to_dict()
     fengine = current_app.config.get("fengine_monitor")
+    fengine = fengine.to_dict() if fengine is not None and fengine.configured else None
+    fpga_cfg = current_app.config.get("fpga_cfg") or {}
+    fengine_cfg = current_app.config.get("fengine_cfg") or {}
     return {"fpga": fpga, "frame0_fmt": fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
-            "fengine": fengine.to_dict() if fengine is not None and fengine.configured else None,
+            "fengine": fengine, "start_blocked": _fpga_start_blocked(fengine),
+            "board_rows": _fpga_board_rows(fpga, fengine),
+            "control": bool(fpga_cfg.get("control", True)),
+            "psu_control": bool(fengine_cfg.get("control", True)),
             "actions": monitor.actions, "now_ts": time.time()}
+
+
+def _fpga_board_rows(fpga: dict, fengine: dict | None) -> list[dict]:
+    """The board table's rows by crate slot: what fpga_master reports for
+    a slot (its index is the crate slot less one) beside what the F-engine
+    service hears of the board on the network.  Either may be absent: the
+    service hears a booted board whether or not fpga_master runs."""
+    heard = ((fengine or {}).get("boards") or {}).get("by_slot") or {}
+    hw_map = {int(slot) + 1: serials for slot, serials in (fpga.get("hw_map") or {}).items()}
+    facts = {int(slot) + 1: b for slot, b in (fpga.get("boards") or {}).items()}
+    return [{"slot": slot, "serials": hw_map.get(slot) or [], "in_map": slot in hw_map,
+             "b": facts.get(slot) or {}, "heard": heard.get(slot)}
+            for slot in sorted(set(hw_map) | set(heard))]
+
+
+def _fpga_start_blocked(fengine: dict | None) -> str | None:
+    """Why fpga_master may not be started now, or None.  Through the
+    F-engine service a start needs the crate supply's output on: without
+    it fpga_master finds no boards, and the service's watchdog would then
+    restart it and power-cycle the crate."""
+    if fengine is None:
+        return None
+    psu = fengine.get("psu")
+    if psu is None:
+        return "the crate supply's state is not known"
+    if not psu["output_on"]:
+        return "the crate supply's output is off"
+    return None
 
 
 def _pdb_layout(present: set[int]) -> list[dict]:
@@ -2906,6 +2938,15 @@ def fpga_control(action):
     user = _audit_user()
     logger.warning(f"fpga_master {action} requested by {user}")
     if action == "start":
+        fengine = current_app.config.get("fengine_monitor")
+        blocked = None
+        if fengine is not None and fengine.configured:
+            fengine.poll_once()
+            blocked = _fpga_start_blocked(fengine.to_dict())
+        if blocked:
+            monitor.record_action("start", user, False, f"refused: {blocked}")
+            flash(f"FPGA start refused: {blocked}.", "error")
+            return redirect(url_for("web.fpga_page"))
         ok, message = monitor.start_master()
         monitor.record_action("start", user, ok, message)
         # fpga_master acknowledges a start before checking its state; a
@@ -2923,6 +2964,43 @@ def fpga_control(action):
         gevent.spawn(_stop_and_record)
         flash("FPGA stop requested — the state below follows the shutdown.",
               "success")
+    return redirect(url_for("web.fpga_page"))
+
+
+@bp.route("/service/fpga/psu/<action>", methods=["POST"])
+@login_required
+def fpga_psu_control(action):
+    """Switch the crate supply through the F-engine service, from the
+    /fpga page.  The service refuses off and power-cycle while
+    fpga_master runs; its reason is shown.  A power cycle answers after
+    the boards' boot delay, so it runs in a greenlet."""
+    _check_csrf()
+    fengine = current_app.config.get("fengine_monitor")
+    fengine_cfg = current_app.config.get("fengine_cfg") or {}
+    monitor = current_app.config.get("fpga_monitor")
+    if (fengine is None or monitor is None or not fengine.configured
+            or not fengine_cfg.get("control", True)):
+        abort(403)
+    if action not in fengine.PSU_ACTIONS:
+        abort(404)
+    user = _audit_user()
+    name = f"supply {action}"
+    logger.warning(f"crate supply {action} requested by {user}")
+    if action == "power-cycle":
+        monitor.record_action(name, user, None, "requested — in progress")
+
+        def _cycle_and_record():
+            ok, message = fengine.psu_action(action)
+            (logger.info if ok else logger.error)(f"crate supply {action}: {message}")
+            monitor.record_action(name, user, ok, message)
+
+        gevent.spawn(_cycle_and_record)
+        flash("Crate supply power cycle requested — the state below follows it.", "success")
+    else:
+        ok, message = fengine.psu_action(action)
+        (logger.info if ok else logger.error)(f"crate supply {action}: {message}")
+        monitor.record_action(name, user, ok, message)
+        flash(f"Crate supply {action}: {message}", "success" if ok else "error")
     return redirect(url_for("web.fpga_page"))
 
 

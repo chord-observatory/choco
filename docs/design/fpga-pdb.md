@@ -172,8 +172,25 @@ then mean the service's ``POST /fpga-master/start`` and ``/stop``: the
 service launches the fpga_master process with its default config and ends
 the process after fpga_master's own ``/stop``.  That is more than the old
 buttons did (fpga_master stayed up, stopped), and it is what the service's
-watchdog expects: a process it did not stop is one it restarts.  The supply's
-controls (``/psu/on``, ``off``, ``power-cycle``) are not wired.
+watchdog expects: a process it did not stop is one it restarts.
+
+With the service, ``/fpga`` is a dashboard (``_fengine_dashboard.html``, in
+the status block's 5 s poll so the buttons follow the state): one summary
+row, then the crate supply and fpga_master side by side, each with its
+readings and its own controls.  The two are separate on purpose, and
+ordered: Start is off unless the supply's output is on (the page disables
+it and ``fpga_control`` refuses it after a fresh poll), because a start with
+no boards fails and the watchdog answers a failure with restarts and then a
+power cycle.  Stop is never gated by the supply.  The supply's Off and Power
+cycle are disabled while fpga_master runs; the service refuses them too
+(409) and choco never sends ``force``.  ``fengine_service.control: false``
+removes the supply's buttons; ``fpga_master.control`` still governs Start
+and Stop.  Below, the board table joins fpga_master's per-slot facts with
+the service's ``/boards`` (address, bootloader, beacon age: a booted board
+is heard whether or not fpga_master runs), and the service's gain session,
+gain archives (read once a minute), other users of the crate and newest
+events follow.  Each of these reads may fail without changing the
+service's health.  The gain session's steps are not driven from choco.
 
 ## Master PDB channel map
 

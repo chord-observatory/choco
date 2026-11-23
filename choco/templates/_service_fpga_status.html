@@ -1,4 +1,5 @@
 {% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
+{% if fengine %}{% include "_fengine_dashboard.html" %}{% else %}
 <dl class="service-facts">
     <dt>Endpoint</dt>
     <dd>{% if fpga.configured %}<code>http://{{ fpga.host }}:{{ fpga.port }}</code>{% else %}<em>not configured (fpga_master.host / port)</em>{% endif %}</dd>
@@ -33,7 +34,7 @@
     <dd><code>{{ fpga.boards_error }}</code></dd>
     {% endif %}
 </dl>
-{% if fengine %}{% include "_fengine_service.html" %}{% endif %}
+{% endif %}
 {% if actions %}
 <h3>Recent actions</h3>
 <figure class="scroll-x">

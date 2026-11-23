@@ -1,23 +1,35 @@
 {# The FPGA page's board table (5 s htmx poll on #fpga-boards): what
-   fpga_master reports per slot, from the monitor's last read. #}
-{% from "_service_macros.html" import since %}
-{% if fpga.hw_map %}
+   fpga_master reports per slot, from the monitor's last read, beside what
+   the F-engine service hears of each board on the network; then the
+   service's own state (gain session, other users of the crate, events). #}
+{% from "_service_macros.html" import since, tag %}
+{% set disc = fengine.boards if fengine else none %}
+{% if board_rows %}
 <h3>Boards</h3>
-<p class="note">What fpga_master reports for each board (its slot index is kotekan's source ID, the crate slot
-    less one): the newest sample's age, the FPGA core and the hottest rail sensor, the QSFP module, the PLL's
-    active input and the overflow counts since the start.</p>
+<p class="note">Each board by crate slot (kotekan's source ID is the slot less one).  From fpga_master: the newest
+    sample's age, the FPGA core and the hottest rail sensor, the QSFP module, the PLL's active input and the
+    overflow counts since the start.{% if disc %}  From the F-engine service: the board's address and bootloader, and
+    the age of its last beacon, which it sends whether or not fpga_master runs.{% endif %}</p>
 <figure class="scroll-x">
 <table class="table-sm">
     <thead>
-        <tr><th>Crate slot</th><th>Source ID</th><th>Board</th><th>Sampled</th><th>Core</th><th>Rails</th><th>QSFP</th><th>Clock</th><th>Overflows</th></tr>
+        <tr><th>Crate slot</th><th>Source ID</th><th>Board</th>
+            {% if disc %}<th>Network</th><th>Address</th><th>Bootloader</th>{% endif %}
+            <th>Sampled</th><th>Core</th><th>Rails</th><th>QSFP</th><th>Clock</th><th>Overflows</th></tr>
     </thead>
     <tbody>
-        {% for slot, serials in fpga.hw_map.items() %}
-        {% set b = fpga.boards.get(slot) or {} %}
+        {% for row in board_rows %}
+        {% set b = row.b %}
+        {% set h = row.heard %}
         <tr>
-            <td class="num">{{ slot | int + 1 }}</td>
-            <td class="num">{{ slot }}</td>
-            <td class="mono">{{ serials | join(', ') or '—' }}</td>
+            <td class="num">{{ row.slot }}</td>
+            <td class="num">{{ row.slot - 1 }}</td>
+            <td class="mono">{{ row.serials | join(', ') or (h.serial if h and h.serial else '—') }}</td>
+            {% if disc %}
+            <td>{% if not h %}{{ tag('bad', 'not heard') }}{% elif h.stale %}{{ tag('warn', 'silent') }}{% elif h.booted %}{{ tag('ok', 'booted') }}{% else %}{{ tag('warn', 'booting') }}{% endif %}{% if h and h.age_s is not none %} <span class="note">{{ '%.0f' | format(h.age_s) }}s</span>{% endif %}</td>
+            <td class="mono">{{ h.ip if h and h.ip else '—' }}</td>
+            <td class="mono" style="white-space: nowrap;">{{ h.bootloader if h and h.bootloader else '—' }}</td>
+            {% endif %}
             <td style="white-space: nowrap;">{{ since(b.sample_ts, now_ts) if b.get('sample_ts') else '—' }}</td>
             <td class="num">{{ '%.0f °C' % b.core_temp if b.get('core_temp') is not none else '—' }}</td>
             <td class="num">{{ '%.0f °C' % b.board_temp if b.get('board_temp') is not none else '—' }}</td>
@@ -29,4 +41,38 @@
     </tbody>
 </table>
 </figure>
+{% endif %}
+{% if fengine %}
+<h3>F-engine service</h3>
+<dl class="service-facts">
+    <dt>Gain session</dt>
+    <dd>{% if fengine.session %}<code>{{ fengine.session.id }}</code> {{ tag('info', fengine.session.state or 'open') }}{% if fengine.session.operation %} {{ fengine.session.operation }}{% endif %}{% if fengine.session.problems %} · {{ fengine.session.problems | join('; ') }}{% endif %}{% else %}none open{% endif %}</dd>
+    <dt>Gain archives</dt>
+    <dd>{% if fengine.archives and fengine.archives.count %}{{ fengine.archives.count }} on disk, newest <code>{{ fengine.archives.newest }}</code> ({{ since(fengine.archives.newest_at, now_ts) }}){% elif fengine.archives %}none{% else %}—{% endif %}</dd>
+    <dt>Other users of the crate</dt>
+    <dd>{% if fengine.conflicts is none %}—{% elif not fengine.conflicts %}none{% else %}
+        {% for c in fengine.conflicts %}<div>pid {{ c.pid }} ({{ c.user }}): <code>{{ c.cmdline }}</code> <span class="note">{{ c.reason }}</span></div>{% endfor %}{% endif %}</dd>
+    {% if disc and (disc.error or not disc.listening) %}
+    <dt>Board beacons</dt>
+    <dd>{% if disc.error %}<code>{{ disc.error }}</code>{% else %}not listening{% endif %}</dd>
+    {% endif %}
+</dl>
+{% if fengine.events %}
+<figure class="scroll-x">
+<table class="table-sm">
+    <thead><tr><th>Time (UTC)</th><th>Source</th><th>Event</th><th>Message</th></tr></thead>
+    <tbody>
+        {% for e in fengine.events %}
+        <tr>
+            <td class="mono" style="white-space: nowrap;">{{ (e.time or '')[:19] | replace('T', ' ') }}</td>
+            <td>{{ e.source }}</td>
+            <td>{% if e.level == 'error' %}{{ tag('bad', e.kind) }}{% elif e.level == 'warning' %}{{ tag('warn', e.kind) }}{% else %}{{ e.kind }}{% endif %}</td>
+            <td>{{ e.message }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    <figcaption>The service's newest events; it keeps them in memory and in its own log.</figcaption>
+</table>
+</figure>
+{% endif %}
 {% endif %}

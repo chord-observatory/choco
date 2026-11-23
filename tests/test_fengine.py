@@ -5,8 +5,8 @@ from unittest.mock import patch
 import pytest
 import responses
 
-from choco.fengine import FengineMonitor, parse_master, parse_psu
-from tests.helpers import login
+from choco.fengine import FengineMonitor, parse_archives, parse_boards, parse_master, parse_psu
+from tests.helpers import csrf, login
 
 
 HOST = "crs.example"
@@ -62,7 +62,72 @@ class TestParsers:
         assert parse_master({"ok": True}) is None
 
 
+#: One board of the service's ``/boards``, as read on site (2026-11-23).
+BOARD = {"key": "0228", "booted": True, "stale": False, "age_s": 0.3, "ip": "10.222.100.106",
+         "board": {"part": "CRS", "serial": "0228"}, "slot": 1,
+         "bootloader": "tcpipe", "bootloader_version": "1.6-dirty"}
+BOARDS = {"listening": True, "error": None, "summary": {"n_boards": 2, "n_stale": 1},
+          "boards": [BOARD, {**BOARD, "slot": 2, "stale": True, "board": {"serial": "0244"}},
+                     {**BOARD, "slot": None}]}
+
+
+class TestServiceParsers:
+    def test_boards_by_crate_slot(self):
+        boards = parse_boards(BOARDS)
+        assert boards["n_boards"] == 3 and boards["n_booted"] == 1 and boards["unplaced"] == 1
+        assert boards["by_slot"][1] == {"serial": "0228", "ip": "10.222.100.106",
+                                        "bootloader": "tcpipe 1.6-dirty", "booted": True,
+                                        "stale": False, "age_s": 0.3}
+        assert boards["by_slot"][2]["stale"] is True
+        assert parse_boards({"boards": None}) is None
+
+    def test_archives_count_and_newest_run(self):
+        files = [{"filename": "/d/20260808T053625Z_chord_pathfinder_digitalgain/00000000.h5",
+                  "modified": 10.0},
+                 {"filename": "/d/20261123T212958Z_chord_pathfinder_digitalgain/00000000.h5",
+                  "modified": 20.0}]
+        assert parse_archives(files) == {
+            "count": 2, "newest": "20261123T212958Z_chord_pathfinder_digitalgain", "newest_at": 20.0}
+        assert parse_archives([])["count"] == 0
+        assert parse_archives({"detail": "x"}) is None
+
+
+class TestSupplyControl:
+    @responses.activate
+    def test_on_posts_and_reports_the_output(self, monitor):
+        on = responses.post(f"{BASE}/psu/on", json=PSU)
+        responses.get(f"{BASE}/fpga-master", json=MASTER)
+        responses.get(f"{BASE}/psu/metrics", json=PSU)
+        assert monitor.psu_action("on") == (True, "output on")
+        assert on.calls[0].request.body == b"{}"
+        assert monitor.health == "ok"                    # it polled again
+
+    @responses.activate
+    def test_refusal_is_the_services_reason(self, monitor):
+        responses.post(f"{BASE}/psu/off", status=409,
+                       json={"detail": "fpga_master is running. Stop first, or use force=true"})
+        ok, message = monitor.psu_action("off")
+        assert ok is False and message.startswith("fpga_master is running")
+
+    def test_unknown_action_never_asks(self, monitor):
+        assert monitor.psu_action("explode")[0] is False
+
+
 class TestPoll:
+    @responses.activate
+    def test_extras_are_read_and_their_failures_are_not_the_health(self, monitor):
+        responses.get(f"{BASE}/fpga-master", json=MASTER)
+        responses.get(f"{BASE}/psu/metrics", json=PSU)
+        responses.get(f"{BASE}/boards", json=BOARDS)
+        responses.get(f"{BASE}/events", json=[{"time": "t1", "kind": "a"}, {"time": "t2", "kind": "b"}])
+        responses.get(f"{BASE}/conflicts", json=[{"pid": 7, "user": "crs", "cmdline": "x"}])
+        responses.get(f"{BASE}/gains/session", status=404, json={"detail": "No gain session"})
+        monitor.poll_once()
+        assert monitor.health == "ok" and monitor.boards["n_boards"] == 3
+        assert [e["kind"] for e in monitor.events] == ["b", "a"]          # newest first
+        assert monitor.conflicts[0]["pid"] == 7 and monitor.session is None
+        assert monitor.archives is None                  # /gains/archives did not answer
+
     def test_unconfigured_never_asks(self):
         m = FengineMonitor(host=None, port=None)
         assert m.health == "unconfigured"
@@ -122,42 +187,123 @@ class TestWiring:
 
 
 class TestPage:
-    def _configure(self, app):
+    def _configure(self, app, psu=PSU, master=MASTER):
         fpga = app.config["fpga_monitor"]
         fpga.host, fpga.port = "fpga.example", 54321
         fengine = app.config["fengine_monitor"]
         fengine.host, fengine.port = HOST, PORT
+        fengine.health, fengine.psu, fengine.master = "ok", parse_psu(psu), parse_master(master)
         return fpga, fengine
 
-    def test_absent_when_not_configured(self, client, app):
+    def _status(self, client, fpga, fengine):
+        with patch.object(fpga, "poll_if_stale"), patch.object(fengine, "poll_if_stale"):
+            return client.get("/partials/service-fpga").data.decode()
+
+    def test_without_the_service_the_page_is_fpga_masters(self, client, app):
         fpga = app.config["fpga_monitor"]
         fpga.host, fpga.port = "fpga.example", 54321
         login(client)
         with patch.object(fpga, "poll_if_stale"):
             body = client.get("/partials/service-fpga").data.decode()
-        assert "Crate supply" not in body
+            page = client.get("/fpga").data.decode()
+        assert "Crate supply" not in body and "Endpoint" in body
+        assert "/service/fpga/start" in page and "/service/fpga/psu/" not in page
 
-    def test_status_block_shows_supply_and_supervisor(self, client, app):
+    def test_dashboard_shows_supply_and_supervisor(self, client, app):
         fpga, fengine = self._configure(app)
-        fengine.health, fengine.psu, fengine.master = "ok", parse_psu(PSU), parse_master(MASTER)
+        fengine.archives = {"count": 12, "newest": "20261123T212958Z_x", "newest_at": 1.0}
         login(client)
         with patch.object(fpga, "poll_if_stale"), patch.object(fengine, "poll_if_stale") as pis:
             body = client.get("/partials/service-fpga").data.decode()
             page = client.get("/fpga").data.decode()
         pis.assert_called_once_with(5)
-        assert "12.35 V · 107.8 A · 1331 W" in body and "input 203 V" in body
-        assert "outlet 69 °C" in body and "fan 12576 rpm" in body
+        assert "12.35 V · 107.8 A · 1331 W" in body and "<dd>203 V</dd>" in body
+        assert "outlet 69 °C" in body and "12576 rpm" in body
         assert "<code>running</code> (pid 5098)" in body and "1 restarts, 0 power cycles" in body
-        assert "Crate supply and supervisor" in page
+        assert "12, newest" in body
+        assert "Crate supply" in page and page.count("/service/fpga/start") == 1
 
     def test_output_off_and_faults_are_marked(self, client, app):
-        fpga, fengine = self._configure(app)
-        fengine.health, fengine.master = "ok", parse_master({**MASTER, "state": "stopped", "pid": None})
-        fengine.psu = parse_psu({**PSU, "output_on": False})
+        fpga, fengine = self._configure(app, psu={**PSU, "output_on": False},
+                                        master={**MASTER, "state": "stopped", "pid": None})
         login(client)
-        with patch.object(fpga, "poll_if_stale"), patch.object(fengine, "poll_if_stale"):
-            off = client.get("/partials/service-fpga").data.decode()
-            fengine.psu = parse_psu({**PSU, "faults": ["OTP"]})
-            fault = client.get("/partials/service-fpga").data.decode()
+        off = self._status(client, fpga, fengine)
+        fengine.psu = parse_psu({**PSU, "faults": ["OTP"]})
+        fault = self._status(client, fpga, fengine)
         assert "tag-warn" in off and "output off" in off and "<code>stopped</code>" in off
         assert "tag-bad" in fault and "<code>OTP</code>" in fault
+
+    @staticmethod
+    def _button(body, action):
+        """The submit button of one control's form."""
+        form = body.split(f'/service/fpga/{action}"', 1)[1]
+        return form.split("<button", 1)[1].split(">", 1)[0]
+
+    def test_start_needs_the_supply_on(self, client, app):
+        stopped = {**MASTER, "state": "stopped", "pid": None}
+        fpga, fengine = self._configure(app, psu={**PSU, "output_on": False}, master=stopped)
+        login(client)
+        off = self._status(client, fpga, fengine)
+        assert "disabled" in self._button(off, "start")
+        assert "Start is off: the crate supply&#39;s output is off" in off
+        assert "disabled" not in self._button(off, "psu/on")
+        assert "disabled" in self._button(off, "psu/off")
+        fengine.psu = parse_psu(PSU)
+        on = self._status(client, fpga, fengine)
+        assert "disabled" not in self._button(on, "start")
+        assert "disabled" in self._button(on, "stop")        # nothing to stop
+
+    def test_supply_off_waits_for_fpga_master(self, client, app):
+        fpga, fengine = self._configure(app)                  # running, output on
+        login(client)
+        body = self._status(client, fpga, fengine)
+        assert "disabled" in self._button(body, "start")
+        assert "disabled" not in self._button(body, "stop")
+        assert "Stop fpga_master first" in self._button(body, "psu/off")
+        assert "Stop fpga_master first" in self._button(body, "psu/power-cycle")
+
+    def test_start_is_refused_server_side_with_the_supply_off(self, client, app):
+        fpga, fengine = self._configure(app, psu={**PSU, "output_on": False})
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "poll_once"), patch.object(fpga, "start_master") as start:
+            resp = client.post("/service/fpga/start", data={"_csrf_token": token})
+        assert resp.status_code == 302
+        start.assert_not_called()
+        assert fpga.actions[0]["ok"] is False and "output is off" in fpga.actions[0]["message"]
+
+    def test_supply_route_calls_the_service_and_records(self, client, app):
+        fpga, fengine = self._configure(app)
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "psu_action", return_value=(True, "output on")) as act:
+            resp = client.post("/service/fpga/psu/on", data={"_csrf_token": token})
+            missing = client.post("/service/fpga/psu/explode", data={"_csrf_token": token})
+        assert resp.status_code == 302 and missing.status_code == 404
+        act.assert_called_once_with("on")
+        assert fpga.actions[0]["action"] == "supply on" and fpga.actions[0]["user"] == "tester"
+
+    def test_supply_route_needs_control(self, client, app):
+        fpga, fengine = self._configure(app)
+        app.config["fengine_cfg"] = {"control": False}
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "psu_action") as act:
+            resp = client.post("/service/fpga/psu/off", data={"_csrf_token": token})
+        assert resp.status_code == 403
+        act.assert_not_called()
+        assert "/service/fpga/psu/" not in self._status(client, fpga, fengine)
+
+    def test_boards_join_the_service_and_fpga_master(self, client, app):
+        fpga, fengine = self._configure(app)
+        fengine.boards = parse_boards(BOARDS)
+        fengine.events = [{"time": "2026-11-23T21:29:58+00:00", "source": "gain_session",
+                           "kind": "approve", "level": "warning", "message": "approve finished"}]
+        fengine.conflicts = []
+        fpga.hw_map = {0: ["CRS0228"]}
+        login(client)
+        body = client.get("/partials/fpga-boards").data.decode()
+        assert "CRS0228" in body and "10.222.100.106" in body and "tcpipe 1.6-dirty" in body
+        assert "silent" in body                              # slot 2: heard, not in the map
+        assert "2026-11-23 21:29:58" in body and "approve finished" in body
+        assert "none open" in body

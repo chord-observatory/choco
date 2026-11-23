@@ -377,6 +377,7 @@ def create_app(
     app.config["fpga_monitor"] = fpga_monitor
     app.config["fpga_cfg"] = fpga_cfg
     app.config["fengine_monitor"] = fengine_monitor
+    app.config["fengine_cfg"] = fengine_cfg
     app.config["gain_archive"] = gain_archive
     # eigencal's newest archived solution, read from the job's state
     # directory on demand; the path is looked up at each refresh so a
