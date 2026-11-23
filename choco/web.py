@@ -2172,6 +2172,7 @@ def _fpga_context(monitor) -> dict:
     fengine_cfg = current_app.config.get("fengine_cfg") or {}
     return {"fpga": fpga, "frame0_fmt": fmt_utc((fpga["frame0_ns"] or 0) / 1e9),
             "fengine": fengine, "start_blocked": _fpga_start_blocked(fengine),
+            "busy_why": _fengine_busy(fengine),
             "board_rows": _fpga_board_rows(fpga, fengine),
             "gain": _gain_run_context(fengine),
             "control": bool(fpga_cfg.get("control", True)),
@@ -2193,10 +2194,28 @@ def _gain_run_context(fengine: dict | None) -> dict | None:
     problems = (session or {}).get("problems") or []
     # The plots change with each step: the history's length names a version.
     version = len((session or {}).get("history") or [])
+    busy = busy or bool(fengine.get("progress"))
     return {"session": session, "live": live, "busy": busy, "run": run,
             "steps": gain_steps(session) if session else [],
             "can_run": not busy and not applied, "can_decide": applied and not busy,
             "problems": problems, "version": version}
+
+
+def _fengine_busy(fengine: dict | None, session: bool = True) -> str | None:
+    """Why the supply's and fpga_master's controls may not be used now,
+    or None: one action at a time, so that what the page follows is the
+    only thing changing the crate, and none while a gain session holds
+    the boards.  The gain run's own buttons pass ``session=False``."""
+    if fengine is None:
+        return None
+    progress = fengine.get("progress")
+    if progress:
+        return f"{progress['label'].lower()} is in progress"
+    if (fengine.get("gain_run") or {}).get("active"):
+        return "a gain run is in progress"
+    if session and gain_session_live(fengine.get("session")):
+        return "a gain session is open"
+    return None
 
 
 def _fpga_board_rows(fpga: dict, fengine: dict | None) -> list[dict]:
@@ -2959,29 +2978,44 @@ def fpga_control(action):
         abort(403)
     user = _audit_user()
     logger.warning(f"fpga_master {action} requested by {user}")
+    # Through the F-engine service the action is followed to its end
+    # state (FengineMonitor.begin), and that end is what gets recorded.
+    fengine = current_app.config.get("fengine_monitor")
+    via = fengine is not None and fengine.configured
+
+    def record(ok, message):
+        monitor.record_action(action, user, ok, message)
+
+    blocked = None
+    if via:
+        fengine.poll_once()
+        state = fengine.to_dict()
+        blocked = _fengine_busy(state) or (_fpga_start_blocked(state) if action == "start" else None)
+    if blocked:
+        record(False, f"refused: {blocked}")
+        flash(f"FPGA {action} refused: {blocked}.", "error")
+        return redirect(url_for("web.fpga_page"))
     if action == "start":
-        fengine = current_app.config.get("fengine_monitor")
-        blocked = None
-        if fengine is not None and fengine.configured:
-            fengine.poll_once()
-            blocked = _fpga_start_blocked(fengine.to_dict())
-        if blocked:
-            monitor.record_action("start", user, False, f"refused: {blocked}")
-            flash(f"FPGA start refused: {blocked}.", "error")
-            return redirect(url_for("web.fpga_page"))
         ok, message = monitor.start_master()
-        monitor.record_action("start", user, ok, message)
+        record(None if via and ok else ok, message)
+        if via and ok:
+            fengine.begin("start", user, record)
         # fpga_master acknowledges a start before checking its state; a
         # no-op start ("already started") only surfaces afterwards in
         # the status block's "Last start result".
         flash(f"FPGA start: {message}", "success" if ok else "error")
     else:
-        monitor.record_action("stop", user, None,
-                              "requested — shutdown in progress")
+        record(None, "requested — shutdown in progress")
+        if via:
+            fengine.begin("stop", user, record, returned=False)
 
         def _stop_and_record():
             ok, message = monitor.stop_master()
-            monitor.record_action("stop", user, ok, message)
+            if via:
+                fengine.finish_request(ok, message)
+                fengine.poll_once()
+            else:
+                record(ok, message)
 
         gevent.spawn(_stop_and_record)
         flash("FPGA stop requested — the state below follows the shutdown.",
@@ -3008,20 +3042,35 @@ def fpga_psu_control(action):
     user = _audit_user()
     name = f"supply {action}"
     logger.warning(f"crate supply {action} requested by {user}")
-    if action == "power-cycle":
-        monitor.record_action(name, user, None, "requested — in progress")
 
-        def _cycle_and_record():
+    def record(ok, message):
+        (logger.error if ok is False else logger.info)(f"crate supply {action}: {message}")
+        monitor.record_action(name, user, ok, message)
+
+    busy = _fengine_busy(fengine.to_dict())
+    if busy:
+        record(False, f"refused: {busy}")
+        flash(f"Crate supply {action} refused: {busy}.", "error")
+    elif action == "power-cycle":
+        record(None, "requested — in progress")
+        fengine.begin(name, user, record, returned=False)
+
+        def _cycle():
             ok, message = fengine.psu_action(action)
-            (logger.info if ok else logger.error)(f"crate supply {action}: {message}")
-            monitor.record_action(name, user, ok, message)
+            fengine.finish_request(ok, message)
+            fengine.poll_once()
 
-        gevent.spawn(_cycle_and_record)
-        flash("Crate supply power cycle requested — the state below follows it.", "success")
+        gevent.spawn(_cycle)
+        flash("Crate supply power cycle requested — the progress below follows it.", "success")
     else:
         ok, message = fengine.psu_action(action)
-        (logger.info if ok else logger.error)(f"crate supply {action}: {message}")
-        monitor.record_action(name, user, ok, message)
+        if ok and action in ("on", "off"):
+            # Followed until the boards have booted, or the output is off.
+            record(None, message)
+            fengine.begin(name, user, record)
+            fengine.poll_once()
+        else:
+            record(ok, message)
         flash(f"Crate supply {action}: {message}", "success" if ok else "error")
     return redirect(url_for("web.fpga_page"))
 
@@ -3033,9 +3082,9 @@ def fpga_gain_control(action):
     to ``applied`` (the service stops fpga_master and programs the boards
     itself), in a greenlet the page's poll follows; ``approve``,
     ``approve-anyway`` and ``reject`` end it."""
+    _check_csrf()
     if action not in ("run", "approve", "approve-anyway", "reject"):
         abort(404)
-    _check_csrf()
     fengine = current_app.config.get("fengine_monitor")
     monitor = current_app.config.get("fpga_monitor")
     fpga_cfg = current_app.config.get("fpga_cfg") or {}
@@ -3048,7 +3097,7 @@ def fpga_gain_control(action):
     if action == "run":
         fengine.poll_once()
         state = fengine.to_dict()
-        blocked = _fpga_start_blocked(state)
+        blocked = _fengine_busy(state, session=False) or _fpga_start_blocked(state)
         if not blocked and not _gain_run_context(state)["can_run"]:
             blocked = "a gain session is busy or waits for its review"
         if blocked:

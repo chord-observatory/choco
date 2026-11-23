@@ -54,18 +54,18 @@
 <div class="fpga-controls">
     {% if gain.can_decide %}
     {{ button('gains/approve', 'Approve', 'Approve these gains?\n\nThey are written to a new gain archive and fpga_master starts again.',
-              disabled=gain.problems, why='A capture had problems', main=true) }}
+              disabled=gain.problems, why='A capture had problems', main=true, always=true) }}
     {% if gain.problems %}
-    {{ button('gains/approve-anyway', 'Approve anyway', 'Approve these gains although the captures had problems?\n\n' ~ (gain.problems | join('\n')) ~ '\n\nThey are written to a new gain archive and fpga_master starts again.') }}
+    {{ button('gains/approve-anyway', 'Approve anyway', 'Approve these gains although the captures had problems?\n\n' ~ (gain.problems | join('\n')) ~ '\n\nThey are written to a new gain archive and fpga_master starts again.', always=true) }}
     {% endif %}
-    {{ button('gains/reject', 'Reject', 'Reject these gains?\n\nThe session is discarded and fpga_master stays stopped; the boards keep the applied gains until it starts again.') }}
+    {{ button('gains/reject', 'Reject', 'Reject these gains?\n\nThe session is discarded and fpga_master stays stopped; the boards keep the applied gains until it starts again.', always=true) }}
     {% else %}
     {{ button('gains/run', 'Continue gain run' if gain.live else 'Start gain run',
               ('Continue the gain run from where it stopped?' if gain.live else 'Start a digital gain run?\n\nfpga_master is stopped and the F-engine sends no data until you approve the result or start it again.'),
               disabled=(gain.busy or (start_blocked and not gain.live)),
-              why='A gain run is in progress' if gain.busy else (start_blocked or '')) }}
+              why=(busy_why | capitalize if busy_why else 'A gain run is in progress') if gain.busy else (start_blocked or ''), always=true) }}
     {% if gain.live %}
-    {{ button('gains/reject', 'Cancel run' if gain.busy else 'Abandon', 'Abandon this gain session?\n\nThe step in progress is cancelled and fpga_master stays stopped.') }}
+    {{ button('gains/reject', 'Cancel run' if gain.busy else 'Abandon', 'Abandon this gain session?\n\nThe step in progress is cancelled and fpga_master stays stopped.', always=true) }}
     {% endif %}
     {% endif %}
 </div>

@@ -1,7 +1,7 @@
 {# The F-engine page's dashboard when choco reaches the crate through the
-   F-engine service (fengine.FengineMonitor): one summary row, then the
-   crate supply and fpga_master side by side, each with its readings and
-   its controls.  Inside the status block, so its 5 s poll redraws it and
+   F-engine service (fengine.FengineMonitor): the action in progress, if
+   any, then the crate supply and fpga_master side by side, each with its
+   readings and its controls, then the gain run.  Inside the status block, so its 5 s poll redraws it and
    the buttons follow the state. #}
 {% from "_service_macros.html" import monitor_tone, monitor_label, since, tag %}
 {% set psu = fengine.psu %}
@@ -23,7 +23,10 @@
 {%- else -%}{{ tag('warn', master.state) }}
 {%- endif -%}
 {%- endmacro %}
-{% macro button(action, label, question, disabled=false, why='', main=false) -%}
+{# One control.  While an action is followed (busy_why) every control is
+   off but those marked always: the way out of a gain run. #}
+{% macro button(action, label, question, disabled=false, why='', main=false, always=false) -%}
+{%- if busy_why and not always %}{% set disabled = true %}{% set why = busy_why | capitalize %}{% endif -%}
 <form method="post" action="{{ request.script_root }}/service/fpga/{{ action }}"
       onsubmit="return confirm({{ question | tojson | forceescape }})">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -31,18 +34,21 @@
 </form>
 {%- endmacro %}
 
-<table class="ports fpga-summary">
-    <thead><tr><th>Crate supply</th><th>Output</th><th>fpga_master</th><th>frame0</th><th>Boards on the network</th><th>Gain archives</th><th>Service</th></tr></thead>
-    <tbody><tr>
-        <td>{{ supply_tag() }}</td>
-        <td class="num">{% if psu and psu.watts is defined %}{{ '%.2f' | format(psu.vout) }} V · {{ '%.1f' | format(psu.iout) }} A · {{ '%.0f' | format(psu.watts) }} W{% else %}—{% endif %}</td>
-        <td>{{ master_tag() }}</td>
-        <td>{% if fpga.frame0_ns and fpga.health == 'ok' %}{{ frame0_fmt }}{% else %}—{% endif %}</td>
-        <td>{% if disc %}{{ disc.n_booted }} of {{ disc.n_boards }} booted{% if disc.n_stale %} · {{ tag('warn', disc.n_stale ~ ' silent') }}{% endif %}{% else %}—{% endif %}</td>
-        <td>{% if fengine.archives and fengine.archives.count %}{{ fengine.archives.count }}, newest {{ since(fengine.archives.newest_at, now_ts) }}{% else %}—{% endif %}</td>
-        <td>{{ tag(monitor_tone(fengine.health), monitor_label(fengine.health)) }}{% if fengine.conflicts %} {{ tag('warn', fengine.conflicts | length ~ ' other users') }}{% endif %}{% if fengine.session %} {{ tag('info', 'gain session') }}{% endif %}</td>
-    </tr></tbody>
-</table>
+{% set progress = fengine.progress %}
+{% if progress %}
+<div class="notice fpga-progress">
+    {{ tag('info', 'in progress') }} <strong>{{ progress.label }}</strong>: {{ progress.phase }}
+    <span class="note">· {{ progress.elapsed | int }} s of up to {{ progress.limit }} s · by {{ progress.by }}</span>
+    <progress value="{{ progress.elapsed | int }}" max="{{ progress.limit }}"></progress>
+    {% if progress.log %}<pre>{{ progress.log | join('\n') }}</pre>{% endif %}
+    <p class="note">The controls are off until it ends.</p>
+</div>
+{% elif busy_why %}
+<div class="notice">
+    {{ tag('info', 'gain run') }} The supply's and fpga_master's controls are off: {{ busy_why }}
+    (<a href="#gain-run">below</a>).
+</div>
+{% endif %}
 
 <div class="fpga-panels">
 <section>
@@ -73,6 +79,10 @@
         <dt>Faults</dt>
         <dd>{% if psu.faults %}<code>{{ psu.faults | join(', ') }}</code>{% else %}none{% endif %}</dd>
         {% endif %}
+        {% if disc %}
+        <dt>Boards</dt>
+        <dd>{{ disc.n_booted }} of {{ disc.n_boards }} booted on the network{% if disc.n_stale %} · {{ tag('warn', disc.n_stale ~ ' silent') }}{% endif %}</dd>
+        {% endif %}
     </dl>
     {% if psu_control %}
     {% set busy = 'Stop fpga_master first' if running else '' %}
@@ -86,7 +96,7 @@
         {{ button('psu/clear-faults', 'Clear faults', 'Clear the supply\'s faults?',
                   disabled=(psu and not psu.faults), why='No faults') }}
     </div>
-    {% if running %}<p class="note">Off and power cycle wait for fpga_master to be stopped.</p>{% endif %}
+    {% if running and not busy_why %}<p class="note">Off and power cycle wait for fpga_master to be stopped.</p>{% endif %}
     {% endif %}
 </section>
 <section>
@@ -130,7 +140,7 @@
         {{ button('stop', 'Stop', 'Stop fpga_master?\n\nThe F-engine shuts down and the process ends (this can take a while). The next start assigns a new frame0.',
                   disabled=(master and master.state == 'stopped'), why='fpga_master is stopped') }}
     </div>
-    {% if start_blocked and not running %}<p class="note">Start is off: {{ start_blocked }}.</p>{% endif %}
+    {% if start_blocked and not running and not busy_why %}<p class="note">Start is off: {{ start_blocked }}.</p>{% endif %}
     {% endif %}
 </section>
 </div>

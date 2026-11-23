@@ -175,9 +175,10 @@ buttons did (fpga_master stayed up, stopped), and it is what the service's
 watchdog expects: a process it did not stop is one it restarts.
 
 With the service, ``/fpga`` is a dashboard (``_fengine_dashboard.html``, in
-the status block's 5 s poll so the buttons follow the state): one summary
-row, then the crate supply and fpga_master side by side, each with its
-readings and its own controls.  The two are separate on purpose, and
+the status block's 5 s poll so the buttons follow the state): the crate
+supply and fpga_master side by side, each with its readings and its own
+controls (a summary row above them said the same things twice and was
+removed, user 2026-11-23).  The two are separate on purpose, and
 ordered: Start is off unless the supply's output is on (the page disables
 it and ``fpga_control`` refuses it after a fresh poll), because a start with
 no boards fails and the watchdog answers a failure with restarts and then a
@@ -191,6 +192,23 @@ is heard whether or not fpga_master runs), and the service's gain session,
 gain archives (read once a minute), other users of the crate and newest
 events follow.  Each of these reads may fail without changing the
 service's health.
+
+**Progress.**  A start takes minutes and a supply switch is followed by the
+boards' boot, so an answered request is not the end of an action.
+``FengineMonitor.begin`` marks the action in flight and every poll compares
+it with what was read: a start ends at the supervisor's ``running`` (or
+``failed``, with its error), a stop at ``stopped``, supply on and a power
+cycle when the output is on and every board the service hears has booted,
+supply off when the output is off; each has a time limit (a start gets the
+service's 600 s and a margin).  The page shows it as a strip with the
+phase, the elapsed time and, for a start or stop, the tail of
+fpga_master's log, and the end is what the action trail records.  While
+one is in flight every control is off, on the page and in the routes
+(``_fengine_busy``): one action at a time, so what the strip follows is the
+only thing changing the crate.  The supply's and fpga_master's controls
+are also off while a gain session is open, since the session holds the
+boards.  The progress is choco's memory only; after a choco restart the
+state words still tell the truth.
 
 **The gain run.**  The service's gain session is five steps (open, capture,
 compute, apply, approve), each a POST that answers at once while the work

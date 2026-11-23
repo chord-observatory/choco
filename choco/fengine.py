@@ -96,6 +96,26 @@ def parse_archives(data) -> dict | None:
             "newest_at": newest.get("modified")}
 
 
+#: The actions whose progress the page follows, as ``(what it says while
+#: it runs, seconds it is given)``.  A start is given the service's own
+#: ``ready_timeout_s`` (600) and a margin.
+PROGRESS = {
+    "start": ("Starting fpga_master", 660),
+    "stop": ("Stopping fpga_master", 180),
+    "supply on": ("Turning the crate supply on", 120),
+    "supply off": ("Turning the crate supply off", 60),
+    "supply power-cycle": ("Power-cycling the crate", 240),
+}
+
+
+def _boards_up(boards: dict | None) -> tuple[bool, str]:
+    """Whether every board the service hears has booted, and the count."""
+    if not boards or not boards["n_boards"]:
+        return False, "no boards heard yet"
+    n, up = boards["n_boards"], boards["n_booted"]
+    return up == n, f"{up} of {n} boards booted"
+
+
 #: A gain session's states in the order a run passes them, and the step
 #: that takes each to the next (``GainSessionManager``).
 GAIN_STEPS = ("open", "capture", "compute", "apply")
@@ -148,6 +168,7 @@ class FengineMonitor(HttpMonitor):
     # A power cycle answers after the off and boot delays (25 s as configured).
     PSU_ACTION_TIMEOUT_S = 180
     MAX_EVENTS = 15
+    LOG_LINES = 8
     # A gain run: the open answers after fpga_master's shutdown; a step
     # (programming the boards, a capture) is given this long to finish.
     GAIN_POST_TIMEOUT_S = 30
@@ -173,11 +194,20 @@ class FengineMonitor(HttpMonitor):
         # choco's own chain through a gain session's steps, while it runs
         # and its outcome after: {"active", "ok", "message", "started"}.
         self.gain_run: dict | None = None
+        # The supply or fpga_master action in flight, followed by each
+        # poll until its end state: {"action", "by", "started", "phase",
+        # "returned", "record"}.  See begin().
+        self.progress: dict | None = None
+        self.master_log: list[str] = []
 
     def _get(self, path: str, **kwargs) -> requests.Response:
         return fetch("GET", f"{self.base_url}{path}", timeout=self.timeout, retries=1, **kwargs)
 
     def poll_once(self) -> None:
+        self._poll()
+        self._follow_progress()
+
+    def _poll(self) -> None:
         self.last_polled = time.time()
         if not self.configured:
             self.health = "unconfigured"
@@ -218,8 +248,88 @@ class FengineMonitor(HttpMonitor):
         self.health = "ok"
         self.error = None
 
+    def begin(self, action: str, user: str, record=None, returned: bool = True) -> None:
+        """Follow *action* (a key of ``PROGRESS``) from now until the
+        polls show its end state or its time runs out; *record* is then
+        called with ``(ok, message)``.  ``returned`` False marks an action
+        whose request is still out (a power cycle answers after the boot
+        delay); ``finish_request`` says when it came back."""
+        self.progress = {"action": action, "by": user, "started": time.time(),
+                         "phase": "requested", "returned": returned, "record": record}
+        self.master_log = []
+
+    def finish_request(self, ok: bool, message: str) -> None:
+        """The request of the action in flight came back.  A failure ends
+        the progress here; a success leaves the end to the polls."""
+        progress = self.progress
+        if progress is None:
+            return
+        progress["returned"] = True
+        if not ok:
+            self._end_progress(False, message)
+
+    def _end_progress(self, ok: bool, message: str) -> None:
+        progress, self.progress = self.progress, None
+        if progress and progress.get("record"):
+            progress["record"](ok, message)
+
+    def _follow_progress(self) -> None:
+        """Compare the action in flight with what this poll read."""
+        progress = self.progress
+        if progress is None:
+            return
+        action = progress["action"]
+        elapsed = time.time() - progress["started"]
+        state = (self.master or {}).get("state")
+        output_on = self.psu["output_on"] if self.psu else None
+        done = failed = None
+        if action == "start":
+            phase = f"fpga_master is {state}"
+            if state == "running":
+                done = f"fpga_master is running after {elapsed:.0f} s"
+            elif state == "failed" or (state == "stopped" and elapsed > 15):
+                failed = (self.master or {}).get("error") or f"fpga_master is {state}"
+        elif action == "stop":
+            phase = f"fpga_master is {state}"
+            if state == "stopped":
+                done = f"fpga_master is stopped after {elapsed:.0f} s"
+        elif action == "supply off":
+            phase = "output on" if output_on else "output off"
+            if output_on is False:
+                done = "the output is off"
+        else:                           # supply on, supply power-cycle
+            up, count = _boards_up(self.boards)
+            phase = f"output {'on' if output_on else 'off'}, {count}"
+            if progress["returned"] and output_on and up:
+                done = f"the output is on, {count}"
+        progress["phase"] = phase
+        if done:
+            self._end_progress(True, done)
+        elif failed:
+            self._end_progress(False, str(failed)[:300])
+        elif elapsed > PROGRESS[action][1]:
+            self._end_progress(False, f"not finished after {elapsed:.0f} s: {phase}")
+
+    def progress_view(self) -> dict | None:
+        """The action in flight, for the page."""
+        progress = self.progress
+        if progress is None:
+            return None
+        label, limit = PROGRESS[progress["action"]]
+        return {"action": progress["action"], "label": label, "by": progress["by"],
+                "elapsed": time.time() - progress["started"], "limit": limit,
+                "phase": progress["phase"],
+                "log": self.master_log if progress["action"] in ("start", "stop") else []}
+
     def _poll_extras(self) -> None:
         """The boards, events, conflicts, gain session and archives."""
+        # fpga_master's own log, while a start or stop is followed.
+        if self.progress and self.progress["action"] in ("start", "stop"):
+            try:
+                lines = self._get(f"/fpga-master/logs?lines={self.LOG_LINES}").json().get("lines")
+                self.master_log = [str(line) for line in lines or []]
+            except (OSError, ValueError, AttributeError):
+                pass
         try:
             self.boards = parse_boards(self._get("/boards").json())
         except (OSError, ValueError):
@@ -381,6 +491,7 @@ class FengineMonitor(HttpMonitor):
             "conflicts": self.conflicts,
             "session": self.session,
             "gain_run": self.gain_run,
+            "progress": self.progress_view(),
             "archives": self.archives,
             "configured": self.configured,
             "host": self.host,

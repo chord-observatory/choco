@@ -192,6 +192,77 @@ class TestGainRun:
         assert words(_session("applied")) == ["done"] * 4
 
 
+class TestProgress:
+    def _monitor(self, monitor, state="stopped", output_on=True, boards=None):
+        monitor.master = parse_master({**MASTER, "state": state})
+        monitor.psu = parse_psu({**PSU, "output_on": output_on})
+        monitor.boards = boards
+        self.ended = []
+        return lambda ok, message: self.ended.append((ok, message))
+
+    def test_start_is_followed_to_running(self, monitor):
+        record = self._monitor(monitor, "starting")
+        monitor.begin("start", "tester", record)
+        monitor._follow_progress()
+        view = monitor.progress_view()
+        assert view["label"] == "Starting fpga_master" and view["phase"] == "fpga_master is starting"
+        assert view["limit"] == 660 and self.ended == []
+        monitor.master["state"] = "running"
+        monitor._follow_progress()
+        assert monitor.progress is None and self.ended[0][0] is True
+        assert "running after" in self.ended[0][1]
+
+    def test_a_failed_start_ends_with_the_supervisors_error(self, monitor):
+        record = self._monitor(monitor, "failed")
+        monitor.master["error"] = "fpga_master exited during startup (exit code 1); see the log"
+        monitor.begin("start", "tester", record)
+        monitor._follow_progress()
+        assert self.ended == [(False, "fpga_master exited during startup (exit code 1); see the log")]
+
+    def test_supply_on_waits_for_every_board(self, monitor):
+        record = self._monitor(monitor, boards=parse_boards({"boards": []}))
+        monitor.begin("supply on", "tester", record)
+        monitor._follow_progress()
+        assert monitor.progress["phase"] == "output on, no boards heard yet"
+        monitor.boards = parse_boards({"boards": [BOARD, {**BOARD, "slot": 2, "booted": False}]})
+        monitor._follow_progress()
+        assert monitor.progress["phase"] == "output on, 1 of 2 boards booted"
+        monitor.boards = parse_boards({"boards": [BOARD, {**BOARD, "slot": 2}]})
+        monitor._follow_progress()
+        assert self.ended == [(True, "the output is on, 2 of 2 boards booted")]
+
+    def test_a_power_cycle_is_not_done_before_its_request_returns(self, monitor):
+        up = parse_boards({"boards": [BOARD]})
+        record = self._monitor(monitor, boards=up)
+        monitor.begin("supply power-cycle", "tester", record, returned=False)
+        monitor._follow_progress()                       # still the state from before the cycle
+        assert monitor.progress is not None
+        monitor.finish_request(True, "output on")
+        monitor._follow_progress()
+        assert self.ended and self.ended[0][0] is True
+
+    def test_a_failed_request_and_a_timeout_end_it(self, monitor):
+        record = self._monitor(monitor, "running")
+        monitor.begin("stop", "tester", record, returned=False)
+        monitor.finish_request(False, "ConnectionError: refused")
+        assert self.ended == [(False, "ConnectionError: refused")] and monitor.progress is None
+        monitor.begin("stop", "tester", record)
+        monitor.progress["started"] -= 181
+        monitor._follow_progress()
+        assert self.ended[1][0] is False and "not finished after" in self.ended[1][1]
+
+    @responses.activate
+    def test_the_log_is_read_while_a_start_is_followed(self, monitor):
+        responses.get(f"{BASE}/fpga-master", json={**MASTER, "state": "starting"})
+        responses.get(f"{BASE}/psu/metrics", json=PSU)
+        logs = responses.get(f"{BASE}/fpga-master/logs", json={"lines": ["a", "b"]})
+        monitor.poll_once()
+        assert logs.call_count == 0
+        monitor.begin("start", "tester")
+        monitor.poll_once()
+        assert monitor.progress_view()["log"] == ["a", "b"]
+
+
 class TestPoll:
     @responses.activate
     def test_extras_are_read_and_their_failures_are_not_the_health(self, monitor):
@@ -299,7 +370,7 @@ class TestPage:
         assert "12.35 V · 107.8 A · 1331 W" in body and "<dd>203 V</dd>" in body
         assert "outlet 69 °C" in body and "12576 rpm" in body
         assert "<code>running</code> (pid 5098)" in body and "1 restarts, 0 power cycles" in body
-        assert "12, newest" in body
+        assert "summary" not in body                         # the two panels say it all
         assert "Crate supply" in page and page.count("/service/fpga/start") == 1
 
     def test_output_off_and_faults_are_marked(self, client, app):
@@ -355,12 +426,19 @@ class TestPage:
         fpga, fengine = self._configure(app)
         login(client)
         token = csrf(client)
-        with patch.object(fengine, "psu_action", return_value=(True, "output on")) as act:
+        with patch.object(fengine, "psu_action", return_value=(True, "output on")) as act, \
+                patch.object(fengine, "_poll"):
             resp = client.post("/service/fpga/psu/on", data={"_csrf_token": token})
             missing = client.post("/service/fpga/psu/explode", data={"_csrf_token": token})
-        assert resp.status_code == 302 and missing.status_code == 404
+            # The boards are not up yet: the action is followed, and a
+            # second one is refused meanwhile.
+            assert fengine.progress["action"] == "supply on"
+            again = client.post("/service/fpga/psu/off", data={"_csrf_token": token})
+        assert resp.status_code == 302 and missing.status_code == 404 and again.status_code == 302
         act.assert_called_once_with("on")
-        assert fpga.actions[0]["action"] == "supply on" and fpga.actions[0]["user"] == "tester"
+        assert "refused: turning the crate supply on is in progress" in fpga.actions[0]["message"]
+        assert fpga.actions[1]["action"] == "supply on" and fpga.actions[1]["user"] == "tester"
+        assert fpga.actions[1]["ok"] is None
 
     def test_supply_route_needs_control(self, client, app):
         fpga, fengine = self._configure(app)
@@ -390,6 +468,8 @@ class TestPage:
                                    reports={"fft": {"label": "FFT", "problems": []}})
         body = self._status(client, fpga, fengine)
         assert "disabled" not in self._button(body, "gains/approve") and "gains/reject" in body
+        assert "disabled" in self._button(body, "start")       # the session holds the boards
+        assert "disabled" in self._button(body, "psu/off")
         assert "gains/run" not in body and "approve-anyway" not in body
         assert "/service/fpga/gains/plot/target.png?v=20261123T212018Z-2" in body
         fengine.session = _session("applied", problems=["fft: dropped packets"],
@@ -432,6 +512,30 @@ class TestPage:
             other = client.get("/service/fpga/gains/plot/secret.png")
         assert png.data == b"PNG" and png.mimetype == "image/png" and other.status_code == 404
         assert fetch.call_count == 1
+
+    def test_progress_strip_locks_the_controls(self, client, app):
+        fpga, fengine = self._configure(app, master={**MASTER, "state": "starting"})
+        fengine.begin("start", "tester")
+        fengine._follow_progress()
+        fengine.master_log = ["Programming FPGAs"]
+        login(client)
+        body = self._status(client, fpga, fengine)
+        assert "Starting fpga_master" in body and "fpga_master is starting" in body
+        assert "Programming FPGAs" in body and "of up to 660 s" in body
+        for action in ("start", "stop", "psu/on", "psu/power-cycle", "gains/run"):
+            assert "disabled" in self._button(body, action), action
+
+    def test_start_through_the_service_is_followed(self, client, app):
+        fpga, fengine = self._configure(app, master={**MASTER, "state": "stopped", "pid": None})
+        login(client)
+        token = csrf(client)
+        with patch.object(fengine, "_poll"), \
+                patch.object(fpga, "start_master", return_value=(True, "fpga_master starting")):
+            client.post("/service/fpga/start", data={"_csrf_token": token})
+        assert fengine.progress["action"] == "start" and fpga.actions[0]["ok"] is None
+        fengine.master["state"] = "running"
+        fengine._follow_progress()
+        assert fpga.actions[0]["ok"] is True and "running after" in fpga.actions[0]["message"]
 
     def test_boards_join_the_service_and_fpga_master(self, client, app):
         fpga, fengine = self._configure(app)
