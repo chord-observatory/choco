@@ -258,6 +258,24 @@ class TestMain:
         assert json.loads((tmp_path / "run.json").read_text())["requested"] == [new]
         assert list((tmp_path / "remeasure.d").iterdir()) == []
 
+    def test_a_request_spares_an_emptied_acquisition(self, root, tmp_path, stub_steps, stub_render):
+        """Data files deleted on site, notes kept: the measurements are all
+        that is left of it, so a re-measure does not forget them."""
+        old, new = "acq_20261016_000000_1", "acq_20261018_000000_2"
+        gone = make_acq(root, old, ["20261016T_000100"])
+        make_acq(root, new, ["20261018T_000100"])
+        conf = tmp_path / "acqnotes.yaml"
+        conf.write_text(f"root: {root}\n")
+        acqnotes.main(["--config", str(conf)])
+        for f in gone.glob("*.h5"):
+            f.unlink()
+        stub_steps.clear()
+        acqnotes.main(["--config", str(conf), "--remeasure-from", "acq_20261015"])
+        assert {c[1] for c in stub_steps} == {new}
+        assert json.loads((tmp_path / "run.json").read_text())["requested"] == [new]
+        assert old in json.loads((tmp_path / acqnotes.INDEX_FILE).read_text())
+        assert (gone / "README.md").exists()
+
     def test_queue_only_queues(self, root, tmp_path, stub_steps, stub_render):
         conf = tmp_path / "acqnotes.yaml"
         conf.write_text(f"root: {root}\n")

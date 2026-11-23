@@ -287,7 +287,9 @@ def request_remeasure(state_dir: Path, names=(), since: str | None = None) -> Pa
 def take_requests(state_dir: Path, acqs) -> list[str]:
     """Forget the measurements the queued requests name and remove the
     requests; the names, for the run record.  A request that arrives while
-    this runs is left for the next run."""
+    this runs is left for the next run.  An acquisition with no data file
+    left (deleted on site once the archive held it, its notes kept) keeps
+    its measurements: nothing could measure it again."""
     files = sorted((state_dir / REQUEST_DIR).glob("*.json"))
     names: set[str] = set()
     for p in files:
@@ -300,6 +302,7 @@ def take_requests(state_dir: Path, acqs) -> list[str]:
         since = req.get("since")
         if since:
             names.update(n for n in acqs if n >= since)
+    names = {n for n in names if n not in acqs or acqs[n]["n_files"]}
     if names:
         forget(state_dir, sorted(names))
     for p in files:

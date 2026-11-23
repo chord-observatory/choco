@@ -67,7 +67,9 @@ acquisitions it affects with `--remeasure`, or `--remeasure-from` and a name or 
 (a full backfill is roughly 5-10 min of NFS reads per acquisition).  A request is queued in
 the state directory (`remeasure.d/`) and the next run takes it under its lock, so a request
 made while the timer's run holds the lock is not lost.  Each run measures at most
-`max_acqs_per_run`; the timer works through the rest.  `--queue` only queues.  The
+`max_acqs_per_run`; the timer works through the rest.  `--queue` only queues.  A request
+skips an acquisition that has no data file left (deleted on site, the notes kept): its
+stored measurements are the only source of its notes, so they are kept.  The
 chord-sysops `choco-setup.yaml` playbook queues one with
 `-e choco_acqnotes_remeasure_from=acq_20261017` (or `choco_acqnotes_remeasure=[...]`) and
 starts the unit.
