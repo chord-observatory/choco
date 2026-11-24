@@ -8,7 +8,7 @@ import yaml
 
 from choco.state import (
     Mode, Registry, Node, NodeStatus,
-    strip_updatable_values, find_updatable_blocks, fits_block,
+    strip_updatable_values, find_updatable_blocks, fits_block, runs_value,
 )
 
 
@@ -901,6 +901,25 @@ class TestDesiredUpdatable:
         assert not fits_block({"enabled": 1}, block)               # a bool is not an integer
         assert not fits_block({"valid_at_time_ns": 7.0}, block)    # a float is not an integer
         assert not fits_block({"start_time": 2}, block)            # nor an integer a float
+
+    def test_runs_value_takes_kotekans_time_for_a_passed_one(self):
+        now = 1_000.0
+        passed, ahead, later = 990 * 10**9, 1_010 * 10**9, 995 * 10**9
+        on = {"enabled": True, "valid_at_time_ns": passed}
+        assert runs_value(on, on, now)
+        # kotekan moved the passed time (or 0) to one just ahead
+        assert runs_value({"enabled": True, "valid_at_time_ns": later}, on, now)
+        assert runs_value({"enabled": True, "valid_at_time_ns": later},
+                          {"enabled": True, "valid_at_time_ns": 0}, now)
+        # but the switch has not happened: off, or switched before the time
+        assert not runs_value({"enabled": False, "valid_at_time_ns": later}, on, now)
+        assert not runs_value({"enabled": True, "valid_at_time_ns": passed - 1}, on, now)
+        # a time still ahead is kept by kotekan, so it must be equal
+        on_ahead = {"enabled": True, "valid_at_time_ns": ahead}
+        assert not runs_value({"enabled": True, "valid_at_time_ns": ahead + 5}, on_ahead, now)
+        # no time in the desired value: equality only
+        assert not runs_value({"enabled": True, "valid_at_time_ns": later}, {"enabled": True}, now)
+        assert not runs_value(None, on, now)
 
     def test_normal_merges_over_the_rendered_block_for_rendered_endpoints(self):
         node = self._node(Mode.NORMAL)

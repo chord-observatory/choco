@@ -39,7 +39,7 @@ from gevent.lock import BoundedSemaphore
 
 from .state import (
     Mode, Node, Registry, NodeStatus,
-    strip_updatable_values, find_updatable_blocks,
+    strip_updatable_values, find_updatable_blocks, runs_value,
     CONFIG_SUFFIXES,
     UPDATABLE_DIR,
 )
@@ -468,8 +468,9 @@ class NodeWorker:
         against the live blocks ``_note_live`` just kept."""
         node = self.node
         live = node.live_updatable or {}
+        now = time.time()
         for endpoint, values in node.desired_updatable().items():
-            if live.get(endpoint) != values:
+            if not runs_value(live.get(endpoint), values, now):
                 logger.info(f"Updatable config drift on {node.key} "
                             f"at /{endpoint}")
                 if not node.push_updatable(f"/{endpoint}", values):

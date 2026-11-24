@@ -166,6 +166,21 @@ def fits_block(values: dict, block: dict) -> bool:
                for key, value in values.items())
 
 
+def runs_value(live: dict | None, desired: dict, now: float) -> bool:
+    """Whether a node running the block *live* runs the *desired* value.
+    kotekan moves a ``valid_at_time_ns`` its clock has passed, 0 included,
+    to a time just ahead, so a desired time that has passed is met by any
+    live time at or after it; every other field must be equal."""
+    if live == desired:
+        return True
+    at = desired.get("valid_at_time_ns")
+    if live is None or not isinstance(at, int) or at > now * 1e9:
+        return False
+    live_at = live.get("valid_at_time_ns")
+    return (isinstance(live_at, int) and live_at >= at
+            and {**live, "valid_at_time_ns": at} == desired)
+
+
 def find_updatable_blocks(config: dict, _prefix: str = "") -> dict[str, dict]:
     """Find all updatable config blocks and return their endpoint paths + values.
 

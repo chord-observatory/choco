@@ -132,6 +132,17 @@ returns — no job-side re-send needed (an unreachable node's checks back off
 towards ``sync.max_retry_interval``, default 60 s, so "first poll after it
 returns" can be up to that far behind the return)
 
+"Differ" is ``state.runs_value``, for the sync and the panel alike.
+kotekan moves a ``valid_at_time_ns`` its clock has passed, 0 included, to
+the next whole 5 s, so a stored switch with a passed time never comes
+back as sent.  Exact equality then re-pushed every poll: on 2026-11-24
+djgormley's DTV mask schedule (``choco set`` every 10 min, 20 s ahead)
+was held by the maintenance after a choco restart, and once lifted
+choco POSTed ``/dtv_mask_enabled`` to all eight nodes every 10 s until
+the next switch.  A passed desired time is therefore met by any live
+time at or after it, the other fields equal; a time still ahead, which
+kotekan keeps, must be equal.
+
 Since 2026-11-05 the worker keeps what it compared: ``Node.live_base`` (the
 live config without its updatable values, at every read, maintenance's
 30 s read included) and ``Node.live_differs`` (against ``rendered_base``,

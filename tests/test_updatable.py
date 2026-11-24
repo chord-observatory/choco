@@ -147,6 +147,15 @@ class TestRows:
         assert _states(extra) == {"recv1": "extra"}
         assert extra.rendered_on == 0 and not extra.values
 
+    def test_a_passed_time_kotekan_moved_is_live(self, registry):
+        now = time.time()
+        cx2 = registry.get_node("cx/cx2")
+        # cx2 stores the switch from 1 ns, long passed: kotekan runs it from later
+        _running(cx2, {"fringestop_enabled": {"enabled": False,
+                                              "valid_at_time_ns": int(now * 1e9)}}, now)
+        rows = fleet_rows([cx2], OWNERS, now=now)
+        assert _states(_row(rows, "fringestop_enabled")) == {"cx2": "live"}
+
     def test_no_current_read_is_unread(self, registry):
         now = time.time()
         cx1, cx2, recv1 = (registry.get_node(k) for k in ("cx/cx1", "cx/cx2", "recv/recv1"))

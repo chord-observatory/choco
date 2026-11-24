@@ -19,7 +19,7 @@ import json
 import time
 from dataclasses import dataclass
 
-from .state import Mode, NodeStatus, fits_block
+from .state import Mode, NodeStatus, fits_block, runs_value
 from .sync import LIVE_READ_MAINTENANCE_S
 
 #: A live read older than this is not shown.  The worker reads every poll
@@ -175,7 +175,7 @@ def _cell(node, endpoint: str, desired: dict | None,
     if value is None:
         return Cell(name, "absent", f"{name}: the running config has no "
                                     f"/{endpoint} ({age}).{held}")
-    if value == desired:
+    if runs_value(value, desired, now):
         return Cell(name, "live", f"{name} runs the desired value ({age}).")
     return Cell(name, "differs", f"{name} runs {_compact(value)} ({age}).{held}")
 

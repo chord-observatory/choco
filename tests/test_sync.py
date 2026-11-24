@@ -511,6 +511,47 @@ class TestDownNodeFlagFanout:
         assert node.push_updatable.call_count == 2
 
 
+class TestScheduledSwitch:
+    """kotekan moves a ``valid_at_time_ns`` its clock has passed to a time
+    just ahead, so the stored value never comes back as sent.  A switch
+    stored during maintenance and pushed after its time must be pushed
+    once, not at every poll (2026-11-24, /dtv_mask_enabled)."""
+
+    _CONFIG = """\
+dtv_mask_enabled:
+  kotekan_update_endpoint: json
+  enabled: false
+  valid_at_time_ns: 0
+"""
+
+    def _poll(self, orchestrator, live: dict):
+        node = orchestrator.registry.get_node("cx/cx1")
+        node.started = True
+        node.save_base(self._CONFIG)
+        passed = int((time.time() - 60) * 1e9)
+        node.save_updatable("dtv_mask_enabled", {"enabled": True, "valid_at_time_ns": passed})
+        running = copy.deepcopy(node.rendered_config)
+        running["dtv_mask_enabled"].update(
+            {k: v if v != "passed" else passed for k, v in live.items()})
+        node.get_status = MagicMock(return_value=NodeStatus.STARTED)
+        node.get_config = MagicMock(return_value=running)
+        node.get_version_info = MagicMock(return_value={})
+        node.push_updatable = MagicMock(return_value=True)
+        node.queue_put(ChangeItem(type=ChangeType.POLL))
+        NodeWorker(node, orchestrator).process()
+        return node
+
+    def test_a_moved_time_is_not_drift(self, orchestrator):
+        node = self._poll(orchestrator, {"enabled": True,
+                                         "valid_at_time_ns": int((time.time() + 3) * 1e9)})
+        node.push_updatable.assert_not_called()
+
+    def test_the_switch_not_yet_made_is_pushed(self, orchestrator):
+        node = self._poll(orchestrator, {"enabled": False, "valid_at_time_ns": "passed"})
+        node.push_updatable.assert_called_once()
+        assert node.push_updatable.call_args[0][1]["enabled"] is True
+
+
 class TestPushBlockedByLoadError:
     """A node with a load_error must never have its config pushed."""
 
