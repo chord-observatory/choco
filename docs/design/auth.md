@@ -200,3 +200,38 @@ renders as the plain cell for a reader, and the registry does not load its
 editor script.  Roles exist only behind the proxy, which is
 why choco's own login went (above).  Trusted hosts and loopback callers keep
 full access, as before.
+
+## The baseband trigger route (2026-11)
+
+Outside telescopes that see a burst ask for a baseband dump, in time for
+the nodes' voltage ring to still hold it.  The request is kotekan's own
+``POST /baseband`` body (CHIME's: the start is the arrival time at
+400 MHz).  The path is sender → site proxy → ``POST /trigger/baseband`` →
+the X-engine nodes.
+
+The proxy does everything that faces the internet: TLS, the senders'
+addresses, a token per sender, the method, a body limit and a rate limit,
+in one exact-match location that can reach only this route.  A separate
+validating service on the proxy was considered and dropped (user,
+2026-11-24): once nginx admits only known senders it would protect only
+against one of them sending a malformed 1 kB body, at the cost of a second
+service and the checks written twice.  So the checks are here.
+
+The route has its own secret, not ``server.proxy_auth.secret``.  That one
+together with a ``Remote-User`` header signs a person in, so whatever
+holds it is an administrator; the trigger secret opens one route.
+``load_config`` refuses the two being equal.
+
+What choco decides (``choco.trigger``): the seven fields exactly, typed
+and bounded; a start inside a window around now; ``file_path`` replaced
+by ``<sender>/YYYY/MM/DD/event_<id>``, because kotekan's handler only
+strips trailing slashes before using it as a directory; one forward per
+``(sender, event_id)``, remembered in the record across restarts.  The
+duration and DM-error limits are generous (10 s, 500): the node's readout
+stage applies its own.
+
+Which nodes: those of ``groups`` that the worker last saw running, in
+normal or development mode.  ``basebandApiManager`` is registered by every
+kotekan at startup, but its handler asks for the telescope, which is a
+FATAL before a config is loaded; so an idle kotekan is never sent a
+trigger.  A running kotekan without a readout stage answers ``{}``.

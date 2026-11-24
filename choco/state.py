@@ -812,6 +812,25 @@ class Node:
             return False
         return self._request("POST", path, json=values) is not None
 
+    def trigger_baseband(self, request: dict, timeout: float) -> dict | None:
+        """Ask a running kotekan for a baseband dump (``POST /baseband``).
+
+        Returns kotekan's reply, or None when nothing was sent or it
+        failed.  Nothing is sent in maintenance (no REST write), nor
+        unless the worker's last probe saw the pipeline running: an idle
+        kotekan has no telescope yet and the request is fatal to it.
+        One attempt with the caller's short *timeout*: a late trigger
+        finds the data gone.
+        """
+        if self.mode is Mode.MAINTENANCE or self.status is not NodeStatus.STARTED:
+            return None
+        try:
+            resp = fetch("POST", f"{self._base_url}/baseband", timeout=timeout, json=request)
+        except OSError as e:
+            logger.warning(f"baseband trigger to {self.key}: {type(e).__name__}: {e}")
+            return None
+        return self._json_dict(resp)
+
     def start(self, desired_config: dict, *,
               override_maintenance: bool = False) -> bool:
         """Start kotekan with the desired config via POST /start.

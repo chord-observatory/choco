@@ -99,7 +99,8 @@ def _count(value):
     return _num(value)
 
 
-def render(*, started_at: float, services: dict, nodes, workers, job_dirs: dict[str, Path]) -> str:
+def render(*, started_at: float, services: dict, nodes, workers, job_dirs: dict[str, Path],
+           triggers: dict[str, int] | None = None) -> str:
     """The whole exposition.
 
     *services* is ``web._services_health()``: name to health dict (or
@@ -112,6 +113,10 @@ def render(*, started_at: float, services: dict, nodes, workers, job_dirs: dict[
           "(a restart re-engages cluster-wide maintenance mode).", float(started_at))
     _services(g, services)
     _nodes(g, list(nodes), list(workers))
+    for result, count in sorted((triggers or {}).items()):
+        g.add("choco_baseband_triggers_total", "Baseband dump triggers received since "
+              "choco started, by what became of them (forwarded, or why refused).",
+              count, kind="counter", result=result)
     for name, root in job_dirs.items():
         _job(g, name, root, services.get(name))
     _process(g)

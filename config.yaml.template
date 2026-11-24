@@ -238,3 +238,26 @@ vis_files:
     root: /mnt/cs00/data/kotekan_vis_files/subset   # the root the archive mirrors (the transfer's source)
     interval: 600                                   # seconds between polls
     timeout: 300                                    # seconds to wait for one answer
+
+# Baseband dump triggers from outside telescopes, relayed by the site proxy
+# to POST /trigger/baseband.  The body is kotekan's /baseband request.  The
+# proxy checks the sender's address and token and names the sender in
+# X-Choco-Trigger-Sender; choco admits only `peer` carrying `secret`
+# (X-Choco-Trigger-Secret; it must differ from server.proxy_auth.secret,
+# and opens nothing but this route).  choco checks every field against the
+# limits below, sets file_path to <sender>/YYYY/MM/DD/event_<id>, and sends
+# the request to each node of `groups` that is running and not in
+# maintenance.  Every trigger is recorded in
+# <state_dir>/server/baseband_triggers.jsonl.  Without `peer` the route
+# answers 404.  The limits shown are the defaults.
+# baseband_trigger:
+#   peer: 10.220.1.13               # the proxy, as choco sees it
+#   secret: <64 hex characters>
+#   senders: [chime]                # names the proxy may put in the header
+#   groups: [cx]                    # node groups that get the trigger
+#   max_duration_s: 10              # duration_nano above this is refused
+#   max_dm: 10000
+#   max_dm_error: 500
+#   max_age_s: 120                  # the start may lie this far in the past
+#   max_ahead_s: 10                 # ... and this far ahead (clock error)
+#   node_timeout_s: 2               # one attempt per node; a late trigger is useless

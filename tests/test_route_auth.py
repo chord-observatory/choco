@@ -50,7 +50,12 @@ def _routes():
 
 
 ROUTES = _routes()
-GUARDED = [r for r in ROUTES if r[2] not in PUBLIC]
+#: No login either, but not public: a machine's route, admitted by the
+#: proxy's address and its own secret, and absent (404) until configured
+#: (the baseband trigger relay; tests/test_trigger.py covers its gate).
+SECRET_GATED = {"web.trigger_baseband"}
+
+GUARDED = [r for r in ROUTES if r[2] not in PUBLIC | SECRET_GATED]
 _id = "{0[0]} {0[1]}".format
 
 
@@ -145,3 +150,10 @@ def test_loopback_writes_need_neither_login_nor_token(client, configs_dir):
     resp = client.put("/api/configs/cx/cx1.yaml", json={"content": "num_elements: 8\n"},
                       **LOCAL)
     assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("route", [r for r in ROUTES if r[2] in SECRET_GATED], ids=lambda r: _id(r))
+@pytest.mark.parametrize("peer", [REMOTE, LOCAL])
+def test_a_secret_gated_route_is_absent_until_configured(client, route, peer):
+    method, _rule, _endpoint, url = route
+    assert client.open(url, method=method, json={}, **peer).status_code == 404

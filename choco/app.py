@@ -27,6 +27,7 @@ from .gnss import TransitMonitor
 from .jobstatus import read_state_json
 from .state import Registry
 from .sync import Orchestrator
+from .trigger import TriggerLog, parse_config as parse_trigger_config
 from .upstream import DEFAULTS as _UPSTREAM_DEFAULTS, Upstream
 from .web import _JOBS, bp
 
@@ -68,6 +69,9 @@ _DEFAULT_CONFIG = {
     "mapmaker": {},
     "acqnotes": {},
     "vis_files": {},
+    # Baseband dump triggers relayed by the site proxy (choco/trigger.py).
+    # Off until the block names the proxy (peer) and a secret.
+    "baseband_trigger": {},
     # Where the jobs keep their state (systemd's StateDirectory=choco/<job>).
     # choco reads <state_dir>/<job>/... here; a dev instance points it at
     # a scratch directory.  The per-job state_file keys this replaced are
@@ -219,6 +223,8 @@ def load_config(path: str | Path) -> dict:
             raise ValueError(f"{key} must be a mapping{hint}")
         config[key] = {**defaults, **(block or {})}
     Upstream.from_config(config["upstream"])  # a bad block is a startup error
+    parse_trigger_config(config["baseband_trigger"],
+                         (config["server"].get("proxy_auth") or {}).get("secret"))
     return config
 
 
@@ -392,6 +398,12 @@ def create_app(
     app.config["instrument_monitor"] = instrument_monitor
     app.config["instrument_cfg"] = inst_cfg
     app.config["state_dir"] = Path(config.get("state_dir") or _DEFAULT_CONFIG["state_dir"])
+    # Triggers from outside telescopes: None unless configured.  The record
+    # is the server's own state (StateDirectory=choco/server).
+    app.config["trigger_cfg"] = parse_trigger_config(
+        config.get("baseband_trigger"),
+        (config["server"].get("proxy_auth") or {}).get("secret"))
+    app.config["trigger_log"] = None
     # Each job's block, as the registry and its page read it.
     for name in _JOBS:
         app.config[f"{name}_cfg"] = config.get(name) or {}

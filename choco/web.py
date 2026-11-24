@@ -49,6 +49,7 @@ from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import Mode, NodeStatus, find_updatable_blocks, fits_block, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
+from . import trigger
 from .updatable import endpoint_block, fleet_rows, node_states, switch_values
 
 logger = logging.getLogger(__name__)
@@ -3518,8 +3519,68 @@ def metrics():
         nodes=registry.nodes.values(),
         workers=filter(None, (orchestrator.worker_status(key) for key in registry.nodes)),
         job_dirs={name: root / name for name in _JOBS},
+        triggers=dict(_trigger_log().counts),
     )
     return Response(text, mimetype="text/plain; version=0.0.4")
+
+
+def _trigger_log() -> trigger.TriggerLog:
+    """The trigger record, opened on first use (the state root is only
+    final once the app is configured)."""
+    log = current_app.config.get("trigger_log")
+    if log is None:
+        log = trigger.TriggerLog(_state_root() / "server" / "baseband_triggers.jsonl")
+        current_app.config["trigger_log"] = log
+    return log
+
+
+@bp.route("/trigger/baseband", methods=["POST"])
+def trigger_baseband():
+    """A baseband dump trigger from an outside telescope, relayed by the
+    site proxy (``choco.trigger``).
+
+    No login: the caller is a machine.  It is admitted by the proxy's
+    address and the trigger secret, which opens nothing else, and the
+    route does not exist (404) until ``baseband_trigger`` is configured.
+    The request is checked, rebuilt and sent at once to every node of
+    the configured groups that is running and not in maintenance -- not
+    through the nodes' queues, where it could wait behind a restart.
+    The reply tells the sender counts only, never node names.
+    """
+    cfg = current_app.config.get("trigger_cfg")
+    if cfg is None:
+        abort(404)
+    if not trigger.authorized(cfg, request.remote_addr, request.headers.get(trigger.SECRET_HEADER)):
+        abort(403)
+    log = _trigger_log()
+    sender = request.headers.get(trigger.SENDER_HEADER, "")
+    if (request.content_length or 0) > trigger.MAX_BODY_BYTES:
+        log.record("malformed", sender=sender, error="body too large")
+        return {"error": "body too large"}, 413
+    try:
+        req = trigger.parse_request(request.get_data(cache=False), cfg, sender, time.time())
+    except trigger.Refused as e:
+        logger.warning(f"baseband trigger from {sender!r} refused ({e.reason}): {e}")
+        log.record(e.reason, sender=sender, error=str(e))
+        return {"error": str(e)}, 400
+    if not log.claim(sender, req["event_id"]):
+        log.record("duplicate", sender=sender, event_id=req["event_id"])
+        return {"error": "this event_id was already forwarded"}, 409
+
+    nodes = [n for n in _registry().nodes.values() if n.group in cfg["groups"]]
+    replies: dict[str, dict | None] = {}
+
+    def one(node):
+        replies[node.key] = node.trigger_baseband(req, cfg["node_timeout_s"])
+
+    gevent.joinall([gevent.spawn(one, n) for n in nodes])
+    accepted = sorted(key for key, reply in replies.items() if reply is not None)
+    logger.info(f"baseband trigger from {sender}: event {req['event_id']}, "
+                f"dm {req['dm']:g}, accepted by {len(accepted)} of {len(nodes)} nodes")
+    log.record("forwarded", sender=sender, event_id=req["event_id"], request=req,
+               nodes=replies)
+    return {"event_id": req["event_id"], "file_path": req["file_path"],
+            "nodes": len(nodes), "accepted": len(accepted)}, 202
 
 
 @bp.route("/api/nodes/status", methods=["GET"])

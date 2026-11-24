@@ -342,6 +342,7 @@ Read-only status endpoints:
 - `GET /api/files` — the `/files` scan as JSON (`?refresh=1` bypasses the cache): per root, each directory's count, size, span and `h5`, every counted file's `[bytes, mtime]` by name; the baseband dumps under `baseband`
 - `GET /api/transits` — the transit forecast as fetched (`forecast`, schema `chord-gnss-transit-windows/0`), what choco reads from it now (`summary`: whether the sky is quiet, the next transit, the quiet windows of at least `gnss.min_quiet_s` still ahead, every pass with its times) and the monitor's health; for anything that times a gain measurement
 - `GET /metrics` — the same overall health in Prometheus exposition format (see below)
+- `POST /trigger/baseband` — a baseband dump trigger from an outside telescope, relayed by the site proxy. The body is kotekan's `/baseband` request. choco checks it against the limits in `baseband_trigger`, sets `file_path`, and sends it to the running nodes. Only the proxy can call it (see `config.yaml.template`).
 
 One-off configs go the same way: `POST /oneshot/<group>` or `POST /oneshot/<group>/<node>` with `{"config_content": "..."}` starts the supplied config on nodes that are in maintenance and idle, recording nothing (200 with `started`/`skipped` per node, 409 if nothing started, 400 if the text does not render).
 
@@ -584,6 +585,7 @@ choco/
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
+├── trigger.py      # baseband dump triggers relayed by the site proxy: the gate, the strict request check, the record (no Flask)
 ├── auth.py         # login sessions (signed cookie + in-memory users), proxy sign-in and roles, trusted hosts, localhost bypass decorator
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js

@@ -78,6 +78,7 @@ choco/
 ├── healpix.py      # 408 MHz HEALPix map: FITS reader + RING lookup (numpy; jobs only, never the web)
 ├── n2file.py       # kotekan N² file axes: element labels, freq, prod (h5py; jobs only, never the web)
 ├── jobclient.py    # loopback JSON client, state dirs, atomic writes, run plumbing (stdlib; jobs + CLI)
+├── trigger.py      # baseband dump triggers relayed by the site proxy: the gate, the strict request check, the record (no Flask)
 ├── auth.py         # login sessions (signed cookie + in-memory users), proxy sign-in and roles, trusted hosts, localhost bypass decorator
 ├── templates/      # Jinja2; _*.html are htmx partials; pipeline/plot are standalone pages
 └── static/         # pico.css, htmx, idiomorph, Sortable (vendored); bufferplot.js, pipeline.js
@@ -231,6 +232,17 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   must stay aggregate-only: no node names, hosts or configs.  `tests/test_route_auth.py` sweeps the URL
   map for this, the loopback bypass and CSRF; a new exception goes in its
   lists, deliberately.
+- `POST /trigger/baseband` (`choco.trigger`) has no login because its
+  caller is a machine: the site proxy relaying an outside telescope's
+  request for a baseband dump.  It is admitted by the proxy's address
+  **and** `baseband_trigger.secret`, which must differ from the sign-in
+  secret and opens nothing else; unconfigured, the route is a 404.  The
+  body is parsed strictly and rebuilt, never passed on as received, and
+  `file_path` is always choco's (kotekan joins it into a path).  The
+  request goes straight to the nodes, not through their queues (a late
+  trigger is useless), and only to a node the worker last saw running
+  and that is not in maintenance: `/baseband` is fatal to an idle
+  kotekan.  The reply carries counts, never node names.
 - `/update/*`, `/oneshot/*` and `/api/*` (including the config library's
   `/api/configs`) bypass login for loopback callers
   (`localhost_or_login_required`); the jobs and the CLI use only these.  From
