@@ -1,0 +1,55 @@
+{% from "_service_macros.html" import since %}
+{# The beam page's two event lists (web._beam_events_context), newest
+   first: the search's candidates that passed the intensity dump cut or
+   have no flag, and the baseband triggers choco relayed. #}
+<div class="beam-events">
+    <section>
+        <h3>Incoherent beam</h3>
+        {% if candidates.error %}<p class="note">{{ candidates.error }}</p>
+        {% elif not candidates.events %}<p class="note">No event in the newest part of the candidate file.</p>
+        {% else %}
+        <div class="beam-list">
+        <table class="beam-table">
+            <thead><tr><th>UTC</th><th></th><th class="num">S/N</th><th class="num">DM</th><th class="num">width</th><th>dump</th><th>flags</th></tr></thead>
+            <tbody>
+            {% for e in candidates.events %}
+            <tr>
+                <td class="num">{{ hms(e.unix) }}</td>
+                <td class="muted">{{ since(e.unix, now_ts) if e.unix else "" }}</td>
+                <td class="num">{{ "%.1f" | format(e.snr) if e.snr is not none else "" }}</td>
+                <td class="num">{{ "%.1f" | format(e.dm) if e.dm is not none else "" }}</td>
+                <td class="num">{{ e.width | int if e.width is not none else "" }}</td>
+                <td class="num">{{ e.dump if e.dump is not none else "" }}</td>
+                <td class="muted">{{ e.flags | join(", ") }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% endif %}
+    </section>
+    <section>
+        <h3>CHIME triggers</h3>
+        {% if not triggers %}<p class="note">No baseband trigger on record.</p>
+        {% else %}
+        <div class="beam-list">
+        <table class="beam-table">
+            <thead><tr><th>UTC</th><th></th><th>sender</th><th class="num">event</th><th class="num">DM</th><th>result</th><th class="num">dumps</th></tr></thead>
+            <tbody>
+            {% for t in triggers %}
+            <tr>
+                <td class="num">{{ hms(t.unix) }}</td>
+                <td class="muted">{{ since(t.unix, now_ts) if t.unix else "" }}</td>
+                <td>{{ t.sender or "" }}</td>
+                <td class="num">{{ t.event_id if t.event_id is not none else "" }}</td>
+                <td class="num">{{ "%.1f" | format(t.dm) if t.dm is not none else "" }}</td>
+                <td{% if t.result != "forwarded" %} class="beam-refused"{% endif %}>{{ t.result }}</td>
+                <td class="num">{% if t.asked is not none %}{{ t.dumps }} / {{ t.asked }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% endif %}
+    </section>
+</div>

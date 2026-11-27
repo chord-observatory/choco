@@ -49,7 +49,7 @@ from .gnss import timeline as transit_timeline
 from .pipeline_svg import PIPELINE_LAYOUTS, render_dot_svg, sanitize_pipeline_svg
 from .state import Mode, NodeStatus, find_updatable_blocks, fits_block, validate_nodes_payload
 from .sync import ChangeItem, ChangeType
-from . import trigger
+from . import beam, trigger
 from .updatable import endpoint_block, fleet_rows, node_states, switch_values
 
 logger = logging.getLogger(__name__)
@@ -1818,6 +1818,7 @@ MENU = (
     )),
     ("Data", (
         ("Acquisitions", "/files", "data", ("/waterfall/",)),
+        ("Beam", "/beam", None, ()),
         ("Sky maps", "/service/mapmaker", "mapmaker", ()),
         ("Stellarium", STELLARIUM_URL, None, ()),
     )),
@@ -3532,6 +3533,105 @@ def _trigger_log() -> trigger.TriggerLog:
         log = trigger.TriggerLog(_state_root() / "server" / "baseband_triggers.jsonl")
         current_app.config["trigger_log"] = log
     return log
+
+
+#: Events listed in each column of the beam page.
+BEAM_EVENTS = 20
+#: The beam page asks for new waterfall rows this often (ms): about one
+#: search pass, which is how often kotekan writes them.
+BEAM_POLL_MS = 300
+
+
+def _beam_cache(key: str, factory):
+    """A cache of the beam page's, made on first use."""
+    cache = current_app.config.get(key)
+    if cache is None:
+        cache = current_app.config[key] = factory()
+    return cache
+
+
+def _beam_candidates(stage: dict | None) -> dict:
+    """The search's newest events (``beam.read_candidates``), from the
+    file its block names; a note in ``error`` when there is none to read."""
+    path = stage.get("candidate_file") if stage else None
+    if not isinstance(path, str) or not path.startswith("/"):
+        return {"events": [], "clock": None,
+                "error": "no search with a candidate_file in any node's config"}
+    return _beam_cache("beam_events", beam.EventsCache).get(
+        path, lambda p: run_blocking(beam.read_candidates, p, BEAM_EVENTS, timeout=5))
+
+
+def _beam_events_context() -> dict:
+    _node, stage = beam.find_search(_registry().nodes.values())
+    return {"candidates": _beam_candidates(stage),
+            "triggers": beam.read_triggers(_trigger_log().path, BEAM_EVENTS),
+            "hms": lambda ts: time.strftime("%H:%M:%S", time.gmtime(ts)) if ts else "?",
+            "now_ts": time.time()}
+
+
+@bp.route("/beam")
+@login_required
+def beam_page():
+    """The incoherent beam: the newest events of the search and of the
+    relayed baseband triggers, and the live waterfall of the samples the
+    search sees (``choco.beam``)."""
+    node, stage = beam.find_search(_registry().nodes.values())
+    buffer_name = stage.get("waterfall_buf") if stage else None
+    return render_template(
+        "beam.html", node=node, has_waterfall=isinstance(buffer_name, str),
+        axis=beam.freq_axis(stage) if stage else None, poll_ms=BEAM_POLL_MS,
+        **_beam_events_context())
+
+
+@bp.route("/partials/beam/events")
+@login_required
+def partial_beam_events():
+    """The two event lists (htmx, every 5 s)."""
+    return render_template("_beam_events.html", **_beam_events_context())
+
+
+@bp.route("/beam/waterfall")
+@login_required
+def beam_waterfall():
+    """The waterfall's rows after row number ``after``, as raw int8,
+    oldest first (``beam.rows_after``); every held row without ``after``.
+
+    The headers give the number of the first row sent (``X-Beam-First``)
+    and of the newest row held (``X-Beam-Newest``), the column count, the
+    seconds per row and, when a candidate has dated the stream, the UTC
+    at which the newest row ends.  A browser
+    that asks again within the image's length misses no row; one that
+    was away longer sees the jump in ``X-Beam-First``.
+
+    Errors are JSON: 400 bad ``after``, 404 no search with a waterfall or
+    no frame yet, 502 kotekan unreachable or its reply malformed.
+    """
+    after = request.args.get("after")
+    if after is not None:
+        if not re.fullmatch(r"\d{1,18}", after):
+            return {"error": "bad after"}, 400
+        after = int(after)
+    node, stage = beam.find_search(_registry().nodes.values())
+    buffer_name = stage.get("waterfall_buf") if stage else None
+    if not isinstance(buffer_name, str) or not _BUFFER_NAME_RE.fullmatch(buffer_name):
+        return {"error": "no IncoherentBeamSearch with a waterfall_buf in any node's config"}, 404
+    got = _beam_cache("beam_frames", beam.FrameCache).get(node, buffer_name)
+    if "error" in got:
+        return {"error": got["error"]}, got["status"]
+    image = got["image"]
+    first, data = beam.rows_after(image, after)
+    resp = Response(data, mimetype="application/octet-stream")
+    resp.headers["X-Beam-First"] = str(first)
+    resp.headers["X-Beam-Newest"] = str(image["first"] + image["rows"] - 1)
+    resp.headers["X-Beam-Columns"] = str(image["columns"])
+    resp.headers["X-Beam-Row-Seconds"] = repr(image["step"] * beam.FPGA_SEQ_S)
+    path = stage.get("candidate_file")
+    end = beam.row_unix(_beam_cache("beam_events", beam.EventsCache).clock(path), image,
+                        image["first"] + image["rows"])
+    if end is not None:
+        resp.headers["X-Beam-End-Unix"] = f"{end:.3f}"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @bp.route("/trigger/baseband", methods=["POST"])

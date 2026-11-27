@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Beam — CHOCO{% endblock %}
+
+{% block styles %}
+/* Two event lists side by side (one column below 1024 px), each a few
+   rows tall with its own scroll, so the waterfall stays on the screen. */
+.beam-events { display: grid; grid-template-columns: 1fr 1fr; gap: 0 2em; }
+@media (max-width: 1023px) { .beam-events { grid-template-columns: 1fr; } }
+.beam-events h3 { margin: 0.5rem 0 0.3rem 0; }
+.beam-list { max-height: 11.5em; overflow: auto; border: 1px solid var(--surface-border); border-radius: 3px; }
+table.beam-table { margin: 0; }
+table.beam-table td, table.beam-table th { font-size: 0.8em; padding: 0.2em 0.6em; white-space: nowrap; }
+table.beam-table th { position: sticky; top: 0; background: var(--surface); }
+table.beam-table td.num, table.beam-table th.num { text-align: right; font-family: var(--pico-font-family-monospace); }
+table.beam-table td.beam-refused { color: var(--warn-text, var(--pico-muted-color)); }
+/* The waterfall: frequency across, time down, the newest row at the top.
+   beam.js draws into the canvas and writes the axes' labels. */
+#beam-waterfall { margin-top: 1rem; }
+.beam-frame { position: relative; margin: 0 0 0 3.2em; }
+.beam-frame canvas { display: block; width: 100%; height: 62vh; min-height: 300px; image-rendering: pixelated;
+                     border: 1px solid var(--surface-border); background: var(--surface); }
+.beam-axis { position: relative; height: 1.4em; margin: 0 0 0 3.2em; font-family: var(--pico-font-family-monospace);
+             font-size: 0.7em; color: var(--pico-muted-color); }
+.beam-axis span { position: absolute; top: 0.2em; transform: translateX(-50%); white-space: nowrap; }
+.beam-time { position: absolute; left: -3.2em; top: 0; bottom: 0; width: 3em; font-family: var(--pico-font-family-monospace);
+             font-size: 0.7em; color: var(--pico-muted-color); }
+.beam-time span { position: absolute; right: 0.3em; transform: translateY(-50%); white-space: nowrap; }
+.beam-status { display: flex; flex-wrap: wrap; gap: 0 1.5em; font-size: 0.8em; color: var(--pico-muted-color);
+               font-family: var(--pico-font-family-monospace); margin: 0.2em 0 0 3.2em; }
+.beam-status .beam-missed { color: var(--bad); }
+.beam-key { display: inline-flex; align-items: center; gap: 0.4em; }
+.beam-key canvas { width: 9em; height: 0.8em; border: 1px solid var(--surface-border); }
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h2><span class="crumb">{{ menu_group }}</span><span class="crumb-sep">/</span>Beam</h2>
+</div>
+<p class="note">The incoherent beam: the summed power of every feed, which the pulse search on
+    {% if node %}<code>{{ node.key }}</code>{% else %}the receiver node{% endif %} reads. Left, the search's
+    candidates that passed the intensity dump cut or have no flag; right, the baseband dump triggers
+    that choco relayed. Below, the samples as the search sees them, after the raw data mask.</p>
+
+<div id="beam-events"
+     hx-get="{{ request.script_root }}/partials/beam/events"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+{% include "_beam_events.html" %}
+</div>
+
+<h3>Live waterfall</h3>
+{% if not has_waterfall %}
+<p class="notice">No node's config has an <code>IncoherentBeamSearch</code> stage with a
+    <code>waterfall_buf</code>, so there is nothing to draw.</p>
+{% else %}
+<div id="beam-waterfall" data-poll-ms="{{ poll_ms }}"
+     {% if axis %}data-low-mhz="{{ axis.low_mhz }}" data-column-mhz="{{ axis.column_mhz }}"{% endif %}>
+    <div class="beam-frame">
+        <div class="beam-time"></div>
+        <canvas width="16" height="16" aria-label="Live waterfall of the incoherent beam"></canvas>
+    </div>
+    <div class="beam-axis"></div>
+    <div class="beam-status">
+        <span class="beam-state">waiting for kotekan</span>
+        <span class="beam-clock"></span>
+        <span class="beam-missed"></span>
+        <span class="beam-key">&minus;4&sigma; <canvas width="64" height="1"></canvas> +4&sigma; · masked is blank</span>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if has_waterfall %}<script src="{{ url_for('static', filename='beam.js') }}"></script>{% endif %}
+{% endblock %}

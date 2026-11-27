@@ -71,6 +71,7 @@ choco/
 ├── instrument.py   # / (front page): wiring.csv, boards from dish_inputs + crs_board_remap, InstrumentMonitor (kotekan /metrics, switch eAPI, Prometheus), flow_diagram
 ├── datafiles.py    # /files scan and the DATA badge probe (threadpooled NFS access)
 ├── waterfalls.py   # Read side of the waterfall image tree (hub-safe, cached)
+├── beam.py         # /beam: the incoherent search's live waterfall (rows by number from its peek-held frame) and the newest candidates and relayed triggers (no Flask)
 ├── h5read.py       # h5py subprocess for the gain archive (never imported for its deps)
 ├── dishlabels.py   # dish_inputs table (dish_table, DishType) + per-element label layout (stdlib; shared with the jobs)
 ├── acqtree.py      # the data trees and their names: acquisitions, vis files, waterfall shards (stdlib)
@@ -441,6 +442,15 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   are meaningful replies, not outages.  A 404 from `/logs` is one too:
   kotekan keeps no log buffer (no `log_buffer: true` in its config, or a
   build from before the endpoint).
+- The beam page's waterfall is gap-free by construction, not by pushing:
+  `IncoherentBeamSearch` writes the whole image of the last seconds to a
+  peek-held `waterfall_buf` every pass, with the sequence number of its
+  first row; choco numbers rows by sequence number and serves the rows
+  after the one the browser names (`beam.rows_after`), one kotekan read
+  per `FRAME_TTL_S` for every viewer.  Nothing consumes the buffer, so a
+  slow reader cannot hold the search.  Do not replace this with a
+  consumer stage, a stream or a per-request `len=`: a missed poll costs
+  nothing while it is shorter than the image.
 - Imaging conventions, fixed on a Cyg A transit ([mapmaker.md](docs/design/mapmaker.md)):
   hour angle is the file's `bin_ERA_deg` + `itrs_lon_deg` − CIRS RA; a
   baseline is `feed_positions_m[input_b] − feed_positions_m[input_a]`
