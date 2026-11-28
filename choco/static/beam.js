@@ -34,20 +34,22 @@
     var LEAD = 16;          // rows held back so the scroll does not wait for a poll
     var NO_DATA = -128;     // the stage's mark of a bin with nothing in use
     var PER_SIGMA = 16;     // the stage's units per sigma
-    var RANGE = 4;          // sigma at the ends of the colour scale
+    var LOW = -3, HIGH = 5; // sigma at the ends of the colour scale
     var GAP = [179, 54, 46];
 
-    // One colour per int8 value: blue below zero, grey at zero, pale
-    // yellow above; a blank (transparent) pixel for no data.
+    // One colour per int8 value, on the viridis scale (dark violet, teal,
+    // green, yellow) from LOW to HIGH; a blank (transparent) pixel for no
+    // data.
+    var STOPS = [[68, 1, 84], [71, 44, 122], [59, 81, 139], [44, 113, 142], [33, 144, 141],
+                 [39, 173, 129], [92, 200, 99], [170, 220, 50], [253, 231, 37]];
     var LUT = new Uint8ClampedArray(256 * 4);
     (function () {
-        var zero = [70, 76, 88], low = [22, 52, 104], high = [247, 232, 160];
         for (var i = 0; i < 256; i++) {
             var v = i < 128 ? i : i - 256;
             if (v === NO_DATA) continue;
-            var t = Math.max(-1, Math.min(1, v / PER_SIGMA / RANGE));
-            var to = t < 0 ? low : high, a = Math.abs(t);
-            for (var k = 0; k < 3; k++) LUT[i * 4 + k] = zero[k] + (to[k] - zero[k]) * a;
+            var t = Math.max(0, Math.min(1, (v / PER_SIGMA - LOW) / (HIGH - LOW))) * (STOPS.length - 1);
+            var n = Math.min(Math.floor(t), STOPS.length - 2), a = t - n;
+            for (var k = 0; k < 3; k++) LUT[i * 4 + k] = STOPS[n][k] + (STOPS[n + 1][k] - STOPS[n][k]) * a;
             LUT[i * 4 + 3] = 255;
         }
     })();
@@ -56,7 +58,7 @@
         if (!key) return;
         var kctx = key.getContext("2d"), img = kctx.createImageData(key.width, 1);
         for (var x = 0; x < key.width; x++) {
-            var v = Math.round((x / (key.width - 1) * 2 - 1) * RANGE * PER_SIGMA) & 255;
+            var v = Math.round((LOW + x / (key.width - 1) * (HIGH - LOW)) * PER_SIGMA) & 255;
             for (var k = 0; k < 4; k++) img.data[x * 4 + k] = LUT[v * 4 + k];
         }
         kctx.putImageData(img, 0, 0);
