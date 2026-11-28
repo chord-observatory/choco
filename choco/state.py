@@ -941,8 +941,8 @@ class Node:
         """Peek the newest full frame of a buffer (``GET /buffer_frame?name=``).
 
         ``length`` bounds the data bytes copied out of the frame
-        (``0`` = metadata and frame descriptor only); None copies the
-        whole frame.  Returns the parsed JSON reply; ``{"error": ...}``
+        (``0`` = metadata and frame descriptor only); None leaves it to
+        kotekan, which copies the first 64 KiB.  Returns the parsed JSON reply; ``{"error": ...}``
         when kotekan has no full frame to serve (HTTP 402 — expected on
         fast-draining buffers without ``peek_hold``) or when kotekan
         doesn't know the buffer (HTTP 404 — idle kotekan with no

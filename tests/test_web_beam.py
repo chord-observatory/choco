@@ -72,7 +72,7 @@ class TestBeamWaterfall:
         assert abs(float(resp.headers["X-Beam-Row-Seconds"]) - 8192 * 5.12e-6) < 1e-12
         assert "X-Beam-End-Unix" not in resp.headers
         assert resp.headers["Cache-Control"] == "no-store"
-        peek.assert_called_once_with("incoherent_waterfall_buffer")
+        peek.assert_called_once_with("incoherent_waterfall_buffer", beam.MAX_FRAME_BYTES)
 
     def test_everything_without_after_and_dated_by_a_candidate(self, client, tmp_path):
         login(client)

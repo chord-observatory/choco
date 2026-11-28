@@ -449,8 +449,9 @@ docs/design/        # Design rationale, one file per subsystem (see the end of t
   after the one the browser names (`beam.rows_after`), one kotekan read
   per `FRAME_TTL_S` for every viewer.  Nothing consumes the buffer, so a
   slow reader cannot hold the search.  Do not replace this with a
-  consumer stage, a stream or a per-request `len=`: a missed poll costs
-  nothing while it is shorter than the image.
+  consumer stage, a stream or a read per browser request: a missed poll
+  costs nothing while it is shorter than the image.  The read names its
+  length (`beam.MAX_FRAME_BYTES`): kotekan sends 64 KiB when not told.
 - Imaging conventions, fixed on a Cyg A transit ([mapmaker.md](docs/design/mapmaker.md)):
   hour angle is the file's `bin_ERA_deg` + `itrs_lon_deg` − CIRS RA; a
   baseline is `feed_positions_m[input_b] − feed_positions_m[input_a]`

@@ -25,8 +25,9 @@ class Node:
         self.frames = list(frames)
         self.asked = 0
 
-    def get_buffer_frame(self, name):
+    def get_buffer_frame(self, name, length=None):
         self.asked += 1
+        self.length = length
         return self.frames.pop(0) if self.frames else None
 
 
@@ -94,6 +95,7 @@ def test_frame_cache_reads_kotekan_once_per_ttl(monkeypatch):
     assert cache.get(node, "wf")["image"]["first"] == 1000
     assert cache.get(node, "wf")["image"]["first"] == 1000
     assert node.asked == 1
+    assert node.length == beam.MAX_FRAME_BYTES
     now[0] += beam.FRAME_TTL_S + 0.01
     assert cache.get(node, "wf")["image"]["first"] == 1008
     now[0] += 1

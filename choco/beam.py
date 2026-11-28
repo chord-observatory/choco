@@ -34,6 +34,9 @@ DEFAULT_FREQ_BIN = 8
 #: A peeked frame is reused for this long: the stage writes one every
 #: search pass (0.34 s), so every viewer shares one read per pass.
 FRAME_TTL_S = 0.25
+#: The most bytes of a frame asked of kotekan, which sends 64 KiB when not
+#: told: above the 20 s image (0.4 MB) with room for other bin sizes.
+MAX_FRAME_BYTES = 1 << 22
 
 #: The candidate file is read again at most this often, and this much of
 #: its end: about half an hour of lines at the 2026-11 rate.
@@ -148,7 +151,7 @@ class FrameCache:
             now = time.monotonic()
             if self._value is not None and self._key == key and now - self._at < FRAME_TTL_S:
                 return self._value
-            frame = node.get_buffer_frame(buffer_name)
+            frame = node.get_buffer_frame(buffer_name, MAX_FRAME_BYTES)
             if frame is None:
                 value = {"error": "kotekan unreachable", "status": 502}
             elif frame.get("error"):
