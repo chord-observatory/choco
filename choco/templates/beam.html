@@ -31,6 +31,8 @@ table.beam-table td.beam-refused { color: var(--warn-text, var(--pico-muted-colo
 .beam-status .beam-missed { color: var(--bad); }
 .beam-key { display: inline-flex; align-items: center; gap: 0.4em; }
 .beam-key canvas { width: 9em; height: 0.8em; border: 1px solid var(--surface-border); }
+.beam-key select { width: auto; margin: 0; padding: 0.1em 1.8em 0.1em 0.4em; font-size: 1em; height: auto;
+                   font-family: inherit; background-position: center right 0.4em; }
 {% endblock %}
 
 {% block content %}
@@ -65,7 +67,8 @@ table.beam-table td.beam-refused { color: var(--warn-text, var(--pico-muted-colo
         <span class="beam-state">waiting for kotekan</span>
         <span class="beam-clock"></span>
         <span class="beam-missed"></span>
-        <span class="beam-key">&minus;3&sigma; <canvas width="64" height="1"></canvas> +5&sigma; · masked is blank</span>
+        <span class="beam-key">low <canvas width="64" height="1"></canvas> high
+            <select class="beam-scale" aria-label="Colour scale"></select> · histogram normalized · masked is blank</span>
     </div>
 </div>
 {% endif %}

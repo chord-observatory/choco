@@ -32,36 +32,79 @@
     var RETRY_MS = 3000;
     var SHOWN = 600;        // rows on the screen (25 s at 42 ms a row)
     var LEAD = 16;          // rows held back so the scroll does not wait for a poll
-    var NO_DATA = -128;     // the stage's mark of a bin with nothing in use
-    var PER_SIGMA = 16;     // the stage's units per sigma
-    var LOW = -3, HIGH = 5; // sigma at the ends of the colour scale
     var GAP = [179, 54, 46];
 
-    // One colour per int8 value, on the viridis scale (dark violet, teal,
-    // green, yellow) from LOW to HIGH; a blank (transparent) pixel for no
-    // data.
-    var STOPS = [[68, 1, 84], [71, 44, 122], [59, 81, 139], [44, 113, 142], [33, 144, 141],
-                 [39, 173, 129], [92, 200, 99], [170, 220, 50], [253, 231, 37]];
+    // The colour scales the page offers; the first is the default and the
+    // choice is kept in the browser.  The scale is histogram normalized:
+    // a value's place on it is the fraction of the bins on the screen
+    // that are below it, so the colours are spread evenly over the data.
+    var SCALES = {
+        afmhot: [[0, 0, 0], [128, 0, 0], [255, 128, 0], [255, 255, 128], [255, 255, 255]],
+        inferno: [[0, 0, 4], [31, 12, 72], [85, 15, 109], [136, 34, 106], [186, 54, 85],
+                  [227, 89, 51], [249, 140, 10], [249, 201, 50], [252, 255, 164]]
+    };
+    var RELUT_ROWS = 24;    // rows drawn between two reckonings of the scale (1 s)
+    var scaleEl = box.querySelector(".beam-scale");
+    var keyEl = box.querySelector(".beam-key canvas");
+    var counts = new Float64Array(256);     // of each int8 value in `held`
+    var held = [];          // the rows the histogram counts: those on the screen
+    var sinceLut = Infinity;
+
+    function colour(stops, t, out, o) {
+        t *= stops.length - 1;
+        var n = Math.min(Math.floor(t), stops.length - 2), a = t - n;
+        for (var k = 0; k < 3; k++) out[o + k] = stops[n][k] + (stops[n + 1][k] - stops[n][k]) * a;
+        out[o + 3] = 255;
+    }
+
+    // One colour per int8 value; -128, the stage's mark of a bin with
+    // nothing in use, stays a blank (transparent) pixel.
     var LUT = new Uint8ClampedArray(256 * 4);
-    (function () {
-        for (var i = 0; i < 256; i++) {
-            var v = i < 128 ? i : i - 256;
-            if (v === NO_DATA) continue;
-            var t = Math.max(0, Math.min(1, (v / PER_SIGMA - LOW) / (HIGH - LOW))) * (STOPS.length - 1);
-            var n = Math.min(Math.floor(t), STOPS.length - 2), a = t - n;
-            for (var k = 0; k < 3; k++) LUT[i * 4 + k] = STOPS[n][k] + (STOPS[n + 1][k] - STOPS[n][k]) * a;
-            LUT[i * 4 + 3] = 255;
+    function setLut() {
+        var stops = SCALES[scaleEl.value] || SCALES.afmhot;
+        var total = 0, below = 0, v;
+        for (v = -127; v <= 127; v++) total += counts[v & 255];
+        for (v = -127; v <= 127; v++) {
+            var n = counts[v & 255];
+            colour(stops, total ? (below + n / 2) / total : (v + 127) / 254, LUT, (v & 255) * 4);
+            below += n;
         }
-    })();
-    (function () {
-        var key = box.querySelector(".beam-key canvas");
-        if (!key) return;
-        var kctx = key.getContext("2d"), img = kctx.createImageData(key.width, 1);
-        for (var x = 0; x < key.width; x++) {
-            var v = Math.round((LOW + x / (key.width - 1) * (HIGH - LOW)) * PER_SIGMA) & 255;
-            for (var k = 0; k < 4; k++) img.data[x * 4 + k] = LUT[v * 4 + k];
+        sinceLut = 0;
+    }
+    function count(data, sign) {
+        for (var c = 0; c < data.length; c++) counts[data[c]] += sign;
+    }
+    function hold(rows) {
+        for (var r = 0; r < rows.length; r++) {
+            if (rows[r].gap) continue;
+            count(rows[r].data, 1);
+            held.push(rows[r].data);
         }
-        kctx.putImageData(img, 0, 0);
+        while (held.length > SHOWN) count(held.shift(), -1);
+        sinceLut += rows.length;
+        if (sinceLut >= RELUT_ROWS) setLut();
+    }
+    (function () {
+        var kept = null;
+        try { kept = localStorage.getItem("chocoBeamScale"); } catch (e) {}
+        Object.keys(SCALES).forEach(function (name, i) {
+            var o = document.createElement("option");
+            o.value = o.textContent = name;
+            o.selected = kept in SCALES ? name === kept : i === 0;
+            scaleEl.appendChild(o);
+        });
+        function key() {
+            var kctx = keyEl.getContext("2d"), img = kctx.createImageData(keyEl.width, 1);
+            for (var x = 0; x < keyEl.width; x++)
+                colour(SCALES[scaleEl.value], x / (keyEl.width - 1), img.data, x * 4);
+            kctx.putImageData(img, 0, 0);
+        }
+        scaleEl.addEventListener("change", function () {
+            try { localStorage.setItem("chocoBeamScale", scaleEl.value); } catch (e) {}
+            key();
+            setLut();
+        });
+        key();
     })();
 
     var columns = 0;        // of the image; set by the first reply
@@ -101,6 +144,9 @@
         canvas.height = SHOWN;
         queue = [];
         drawn = null;
+        held = [];
+        counts.fill(0);
+        sinceLut = Infinity;
         buildAxes();
     }
 
@@ -137,6 +183,7 @@
     function draw(rows) {
         var k = Math.min(rows.length, SHOWN);
         rows = rows.slice(rows.length - k);
+        hold(rows);
         if (k < SHOWN) {
             ctx.globalCompositeOperation = "copy";
             ctx.drawImage(canvas, 0, 0, columns, SHOWN - k, 0, k, columns, SHOWN - k);
